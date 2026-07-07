@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/datallboy/gonzb/internal/nzb"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
@@ -573,9 +574,49 @@ type decodedArticle struct {
 }
 
 func fetchDecodedArticle(ctx context.Context, fetcher ArticleFetcher, groups []string, messageID string) (*decodedArticle, error) {
+	var lastErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		article, err := fetchDecodedArticleOnce(ctx, fetcher, groups, messageID)
+		if err == nil {
+			return article, nil
+		}
+		lastErr = err
+		if !isRetryableArticleFetchError(err) || attempt == 3 {
+			break
+		}
+		timer := time.NewTimer(time.Duration(attempt*100) * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return nil, lastErr
+}
+
+func fetchYencHeader(ctx context.Context, fetcher ArticleFetcher, groups []string, messageID string) (*nzb.YencHeader, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	reader, err := fetcher.Fetch(ctx, messageID, groups)
+	if err != nil {
+		return nil, fmt.Errorf("fetch article %s: %w", messageID, err)
+	}
+	if closer, ok := reader.(io.Closer); ok {
+		defer closer.Close()
+	}
+	header, err := nzb.ReadYencHeader(reader)
+	if err != nil {
+		return nil, fmt.Errorf("decode article %s header: %w", messageID, err)
+	}
+	return &header, nil
+}
+
+func fetchDecodedArticleOnce(ctx context.Context, fetcher ArticleFetcher, groups []string, messageID string) (*decodedArticle, error) {
 	reader, err := fetcher.Fetch(ctx, messageID, groups)
 	if err != nil {
 		return nil, fmt.Errorf("fetch article %s: %w", messageID, err)
@@ -601,22 +642,17 @@ func fetchDecodedArticle(ctx context.Context, fetcher ArticleFetcher, groups []s
 	}, nil
 }
 
-func fetchYencHeader(ctx context.Context, fetcher ArticleFetcher, groups []string, messageID string) (*nzb.YencHeader, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
+func isRetryableArticleFetchError(err error) bool {
+	if err == nil {
+		return false
 	}
-	reader, err := fetcher.Fetch(ctx, messageID, groups)
-	if err != nil {
-		return nil, fmt.Errorf("fetch article %s: %w", messageID, err)
-	}
-	if closer, ok := reader.(io.Closer); ok {
-		defer closer.Close()
-	}
-	header, err := nzb.ReadYencHeader(reader)
-	if err != nil {
-		return nil, fmt.Errorf("decode article %s header: %w", messageID, err)
-	}
-	return &header, nil
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "checksum mismatch") ||
+		strings.Contains(msg, "unexpected eof") ||
+		strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "provider ") && strings.Contains(msg, " is closed")
 }
 
 func prepareArchiveProbeFiles(ctx context.Context, repo CatalogReader, fetcher ArticleFetcher, groups []string, family []pgindex.CatalogReleaseFile) ([]archiveProbeFile, error) {

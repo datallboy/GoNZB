@@ -9,10 +9,12 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 )
 
 type binaryRecoverySeed struct {
 	ID                int64
+	SourcePostedAt    time.Time
 	ProviderID        int64
 	NewsgroupID       int64
 	ReleaseFamilyKey  string
@@ -25,6 +27,8 @@ type binaryRecoverySeed struct {
 	IsAuxiliary       bool
 	IsMainPayload     bool
 }
+
+const maxArchiveFamilyRecoverySiblings = 4096
 
 var binaryRecoveryUnsafeRE = regexp.MustCompile(`[^A-Za-z0-9._ -]+`)
 
@@ -56,19 +60,22 @@ func (s *Store) ApplyBinaryRecovery(ctx context.Context, in BinaryRecoveryRecord
 
 	newName := recoveredFileName(seed.FileName, seed.ReleaseName, seed.BinaryName, seed.FileIndex, seed.ExpectedFileCount, in.Kind, in.Extension)
 	renamePredicate := `file_name = '' OR LOWER(file_name) LIKE '%.bin' OR file_name !~ '\.[A-Za-z0-9]{1,8}$'`
+	recoveryRenamePredicate := `recovered_file_name = '' OR LOWER(recovered_file_name) LIKE '%.bin' OR recovered_file_name !~ '\.[A-Za-z0-9]{1,8}$'`
+	completionKeyIDs := make([]int64, 0, 1)
 	if _, err := tx.ExecContext(ctx, `
-		UPDATE binaries
+		UPDATE binary_recovery_current
 		SET recovered_kind = $2,
 		    recovered_extension = $3,
 		    recovered_source = $4,
 		    recovered_confidence = GREATEST(recovered_confidence, $5),
-		    recovered_at = NOW(),
-		    file_name = CASE
-		    	WHEN $6 AND (`+renamePredicate+`) THEN $7
-		    	ELSE file_name
+		    recovered_file_name = CASE
+		    	WHEN $6 AND (`+recoveryRenamePredicate+`) THEN $7
+		    	ELSE recovered_file_name
 		    END,
+		    recovered_at = NOW(),
 		    updated_at = NOW()
-		WHERE id = $1`,
+		WHERE binary_id = $1
+		  AND source_posted_at = $8`,
 		in.BinaryID,
 		in.Kind,
 		in.Extension,
@@ -76,8 +83,27 @@ func (s *Store) ApplyBinaryRecovery(ctx context.Context, in BinaryRecoveryRecord
 		in.Confidence,
 		in.Canonicalize,
 		newName,
+		seed.SourcePostedAt,
 	); err != nil {
 		return fmt.Errorf("update binary recovery %d: %w", in.BinaryID, err)
+	}
+	if in.Canonicalize {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE binary_identity_current
+			SET file_name = CASE
+			    	WHEN `+renamePredicate+` THEN $2
+			    	ELSE file_name
+			    END,
+			    updated_at = NOW()
+			WHERE binary_id = $1
+			  AND source_posted_at = $3`,
+			in.BinaryID,
+			newName,
+			seed.SourcePostedAt,
+		); err != nil {
+			return fmt.Errorf("update binary recovery identity %d: %w", in.BinaryID, err)
+		}
+		completionKeyIDs = append(completionKeyIDs, in.BinaryID)
 	}
 
 	if in.Canonicalize {
@@ -97,9 +123,11 @@ func (s *Store) ApplyBinaryRecovery(ctx context.Context, in BinaryRecoveryRecord
 			UPDATE binary_parts
 			SET file_name = $2
 			WHERE binary_id = $1
+			  AND source_posted_at = $3
 			  AND (`+renamePredicate+`)`,
 			in.BinaryID,
 			newName,
+			seed.SourcePostedAt,
 		); err != nil {
 			return fmt.Errorf("update binary part recovery %d: %w", in.BinaryID, err)
 		}
@@ -137,7 +165,7 @@ func (s *Store) ApplyBinaryRecovery(ctx context.Context, in BinaryRecoveryRecord
 			for idx, sibling := range siblings {
 				recoveredName := recoveredFileName(sibling.FileName, sibling.ReleaseName, sibling.BinaryName, idx+1, familyCount, in.Kind, in.Extension)
 				if _, err := tx.ExecContext(ctx, `
-					UPDATE binaries
+					UPDATE binary_recovery_current
 					SET recovered_kind = CASE
 					    	WHEN recovered_kind = '' THEN $2
 					    	ELSE recovered_kind
@@ -151,22 +179,40 @@ func (s *Store) ApplyBinaryRecovery(ctx context.Context, in BinaryRecoveryRecord
 					    	ELSE recovered_source
 					    END,
 					    recovered_confidence = GREATEST(recovered_confidence, $5),
-					    recovered_at = NOW(),
-					    file_name = CASE
-					    	WHEN `+renamePredicate+` THEN $6
-					    	ELSE file_name
+					    recovered_file_name = CASE
+					    	WHEN `+recoveryRenamePredicate+` THEN $6
+					    	ELSE recovered_file_name
 					    END,
+					    recovered_at = NOW(),
 					    updated_at = NOW()
-					WHERE id = $1`,
+					WHERE binary_id = $1
+					  AND source_posted_at = $7`,
 					sibling.ID,
 					"archive",
 					in.Extension,
 					"family_signature",
 					in.Confidence*0.85,
 					recoveredName,
+					sibling.SourcePostedAt,
 				); err != nil {
 					return fmt.Errorf("update sibling binary recovery %d: %w", sibling.ID, err)
 				}
+				if _, err := tx.ExecContext(ctx, `
+					UPDATE binary_identity_current
+					SET file_name = CASE
+					    	WHEN `+renamePredicate+` THEN $2
+					    	ELSE file_name
+					    END,
+					    updated_at = NOW()
+					WHERE binary_id = $1
+					  AND source_posted_at = $3`,
+					sibling.ID,
+					recoveredName,
+					sibling.SourcePostedAt,
+				); err != nil {
+					return fmt.Errorf("update sibling binary recovery identity %d: %w", sibling.ID, err)
+				}
+				completionKeyIDs = append(completionKeyIDs, sibling.ID)
 				if _, err := tx.ExecContext(ctx, `
 					UPDATE release_files
 					SET file_name = $2
@@ -181,9 +227,11 @@ func (s *Store) ApplyBinaryRecovery(ctx context.Context, in BinaryRecoveryRecord
 					UPDATE binary_parts
 					SET file_name = $2
 					WHERE binary_id = $1
+					  AND source_posted_at = $3
 					  AND (`+renamePredicate+`)`,
 					sibling.ID,
 					recoveredName,
+					sibling.SourcePostedAt,
 				); err != nil {
 					return fmt.Errorf("update sibling binary parts recovery %d: %w", sibling.ID, err)
 				}
@@ -191,6 +239,9 @@ func (s *Store) ApplyBinaryRecovery(ctx context.Context, in BinaryRecoveryRecord
 		}
 	}
 
+	if err := syncBinaryCompletionKeysForBinaryIDsInTx(ctx, tx, completionKeyIDs); err != nil {
+		return err
+	}
 	if err := markReleaseFamilyDirty(ctx, tx, seed.ProviderID, seed.NewsgroupID, "release_family", seed.ReleaseFamilyKey); err != nil {
 		return err
 	}
@@ -205,23 +256,29 @@ func loadBinaryRecoverySeed(ctx context.Context, tx *sql.Tx, binaryID int64) (bi
 	var row binaryRecoverySeed
 	err := tx.QueryRowContext(ctx, `
 		SELECT
-			id,
-			provider_id,
-			newsgroup_id,
-			release_family_key,
-			COALESCE(release_name, ''),
-			COALESCE(binary_name, ''),
-			COALESCE(file_name, ''),
-			COALESCE(file_index, 0),
-			COALESCE(expected_file_count, 0),
-			COALESCE(total_bytes, 0),
-			is_auxiliary,
-			is_main_payload
-		FROM binaries
-		WHERE id = $1`,
+			bc.binary_id,
+			bc.source_posted_at,
+			bc.provider_id,
+			bc.newsgroup_id,
+			bic.release_family_key,
+			COALESCE(bic.release_name, ''),
+			COALESCE(bic.binary_name, ''),
+			COALESCE(bic.file_name, ''),
+			COALESCE(bic.file_index, 0),
+			COALESCE(bic.expected_file_count, 0),
+			COALESCE(bos.total_bytes, 0),
+			bic.is_auxiliary,
+			bic.is_main_payload
+		FROM binary_core bc
+		JOIN binary_identity_current bic ON bic.source_posted_at = bc.source_posted_at
+		AND bic.binary_id = bc.binary_id
+		JOIN binary_observation_stats bos ON bos.source_posted_at = bc.source_posted_at
+			AND bos.binary_id = bc.binary_id
+		WHERE bc.binary_id = $1`,
 		binaryID,
 	).Scan(
 		&row.ID,
+		&row.SourcePostedAt,
 		&row.ProviderID,
 		&row.NewsgroupID,
 		&row.ReleaseFamilyKey,
@@ -246,27 +303,34 @@ func loadBinaryRecoverySeed(ctx context.Context, tx *sql.Tx, binaryID int64) (bi
 func loadBinaryRecoverySiblings(ctx context.Context, tx *sql.Tx, seed binaryRecoverySeed) ([]binaryRecoverySeed, error) {
 	rows, err := tx.QueryContext(ctx, `
 		SELECT
-			id,
-			provider_id,
-			newsgroup_id,
-			release_family_key,
-			COALESCE(release_name, ''),
-			COALESCE(binary_name, ''),
-			COALESCE(file_name, ''),
-			COALESCE(file_index, 0),
-			COALESCE(expected_file_count, 0),
-			COALESCE(total_bytes, 0),
-			is_auxiliary,
-			is_main_payload
-		FROM binaries
-		WHERE provider_id = $1
-		  AND newsgroup_id = $2
-		  AND release_family_key = $3
-		  AND (is_main_payload = TRUE OR is_auxiliary = FALSE)
-		ORDER BY CASE WHEN file_index > 0 THEN file_index ELSE 2147483647 END, id`,
+			bc.binary_id,
+			bc.source_posted_at,
+			bc.provider_id,
+			bc.newsgroup_id,
+			bic.release_family_key,
+			COALESCE(bic.release_name, ''),
+			COALESCE(bic.binary_name, ''),
+			COALESCE(bic.file_name, ''),
+			COALESCE(bic.file_index, 0),
+			COALESCE(bic.expected_file_count, 0),
+			COALESCE(bos.total_bytes, 0),
+			bic.is_auxiliary,
+			bic.is_main_payload
+		FROM binary_core bc
+		JOIN binary_identity_current bic ON bic.source_posted_at = bc.source_posted_at
+		AND bic.binary_id = bc.binary_id
+		JOIN binary_observation_stats bos ON bos.source_posted_at = bc.source_posted_at
+			AND bos.binary_id = bc.binary_id
+		WHERE bc.provider_id = $1
+		  AND bc.newsgroup_id = $2
+		  AND bic.release_family_key = $3
+		  AND (bic.is_main_payload = TRUE OR bic.is_auxiliary = FALSE)
+		ORDER BY CASE WHEN bic.file_index > 0 THEN bic.file_index ELSE 2147483647 END, bc.binary_id
+		LIMIT $4`,
 		seed.ProviderID,
 		seed.NewsgroupID,
 		seed.ReleaseFamilyKey,
+		maxArchiveFamilyRecoverySiblings+1,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("load binary recovery siblings %d/%d %q: %w", seed.ProviderID, seed.NewsgroupID, seed.ReleaseFamilyKey, err)
@@ -278,6 +342,7 @@ func loadBinaryRecoverySiblings(ctx context.Context, tx *sql.Tx, seed binaryReco
 		var row binaryRecoverySeed
 		if err := rows.Scan(
 			&row.ID,
+			&row.SourcePostedAt,
 			&row.ProviderID,
 			&row.NewsgroupID,
 			&row.ReleaseFamilyKey,
@@ -356,8 +421,18 @@ func shouldApplyArchiveFamilyRecovery(seed binaryRecoverySeed, siblings []binary
 	if len(siblings) <= 1 {
 		return false
 	}
+	if len(siblings) > maxArchiveFamilyRecoverySiblings {
+		return false
+	}
 	if seed.ExpectedFileCount > 1 {
-		return true
+		allowed := seed.ExpectedFileCount * 2
+		if allowed < seed.ExpectedFileCount+50 {
+			allowed = seed.ExpectedFileCount + 50
+		}
+		if allowed > maxArchiveFamilyRecoverySiblings {
+			allowed = maxArchiveFamilyRecoverySiblings
+		}
+		return len(siblings) <= allowed
 	}
 
 	opaque := 0

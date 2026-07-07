@@ -1,10 +1,8 @@
 package processor
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -45,6 +43,7 @@ func (z *CLI7z) CanExtract(filePath string) (bool, error) {
 		if len(matches) != 2 || matches[1] != "001" {
 			return false, nil
 		}
+	case filepath.Ext(lower) == "":
 	default:
 		return false, nil
 	}
@@ -77,21 +76,9 @@ func (z *CLI7z) Extract(ctx context.Context, archivePath string, destDir string,
 
 // has7zSignature checks if the file has a valid 7z magic byte signature
 func has7zSignature(filePath string) (bool, error) {
-	file, err := os.Open(filePath)
+	kind, err := detectArchiveSignature(filePath)
 	if err != nil {
 		return false, err
 	}
-	defer file.Close()
-
-	header := make([]byte, 6)
-	n, err := file.Read(header)
-	if err != nil {
-		return false, err
-	}
-
-	if n < 6 {
-		return false, nil
-	}
-
-	return bytes.Equal(header, sevenZipSignature), nil
+	return kind == archiveSignature7z, nil
 }

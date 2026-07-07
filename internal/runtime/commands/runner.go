@@ -25,7 +25,10 @@ func (r *Runner) loadRuntimeConfig() (*config.Config, *logger.Logger) {
 		log.Fatalf("Config error: %v", err)
 	}
 
-	appLogger, err := logger.New(cfg.Log.Path, logger.ParseLevel(cfg.Log.Level), cfg.Log.IncludeStdout)
+	appLogger, err := logger.NewWithOptions(cfg.Log.Path, logger.ParseLevel(cfg.Log.Level), cfg.Log.IncludeStdout, logger.Options{
+		MaxSizeMB:  cfg.Log.MaxSizeMB,
+		MaxBackups: cfg.Log.MaxBackups,
+	})
 	if err != nil {
 		log.Fatalf("Could not initialize logger %v\n", err)
 	}
@@ -56,6 +59,7 @@ func (r *Runner) setupApp(ctx context.Context) *app.Context {
 	}
 
 	wiring.BindApplicationModules(appCtx)
+	appCtx.AddCloser(appLogger)
 
 	return appCtx
 }

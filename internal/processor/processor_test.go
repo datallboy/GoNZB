@@ -49,6 +49,82 @@ func TestCLI7zCanExtractPrimarySplitVolume(t *testing.T) {
 	}
 }
 
+func TestExtractorsCanDetectExtensionlessArchivesBySignature(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+
+	rarPath := filepath.Join(dir, "opaque-rar")
+	if err := os.WriteFile(rarPath, append([]byte{}, rarSignatures[1]...), 0644); err != nil {
+		t.Fatalf("write rar fixture: %v", err)
+	}
+	unrar := &CLIUnrar{}
+	canExtract, err := unrar.CanExtract(rarPath)
+	if err != nil {
+		t.Fatalf("unrar CanExtract() error = %v", err)
+	}
+	if !canExtract {
+		t.Fatal("expected extensionless RAR signature to be extractable")
+	}
+
+	sevenZipPath := filepath.Join(dir, "opaque-7z")
+	if err := os.WriteFile(sevenZipPath, append([]byte{}, sevenZipSignature...), 0644); err != nil {
+		t.Fatalf("write 7z fixture: %v", err)
+	}
+	sevenZ := &CLI7z{}
+	canExtract, err = sevenZ.CanExtract(sevenZipPath)
+	if err != nil {
+		t.Fatalf("7z CanExtract() error = %v", err)
+	}
+	if !canExtract {
+		t.Fatal("expected extensionless 7z signature to be extractable")
+	}
+
+	zipPath := filepath.Join(dir, "opaque-zip")
+	if err := os.WriteFile(zipPath, append([]byte{}, zipSignatures[0]...), 0644); err != nil {
+		t.Fatalf("write zip fixture: %v", err)
+	}
+	unzip := &CLIUnzip{}
+	canExtract, err = unzip.CanExtract(zipPath)
+	if err != nil {
+		t.Fatalf("zip CanExtract() error = %v", err)
+	}
+	if !canExtract {
+		t.Fatal("expected extensionless ZIP signature to be extractable")
+	}
+}
+
+func TestManagerDedupesExtensionlessArchiveFamily(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	first := filepath.Join(dir, "opaque-a")
+	second := filepath.Join(dir, "opaque-b")
+	if err := os.WriteFile(first, append([]byte{}, rarSignatures[1]...), 0644); err != nil {
+		t.Fatalf("write first rar fixture: %v", err)
+	}
+	if err := os.WriteFile(second, append([]byte{}, rarSignatures[1]...), 0644); err != nil {
+		t.Fatalf("write second rar fixture: %v", err)
+	}
+
+	manager := &Manager{extractors: []Extractor{&CLIUnrar{}}}
+	firstTask := &domain.DownloadFile{FinalPath: first, FileName: filepath.Base(first)}
+	secondTask := &domain.DownloadFile{FinalPath: second, FileName: filepath.Base(second)}
+	archives, err := manager.DetectArchives([]*domain.DownloadFile{firstTask, secondTask})
+	if err != nil {
+		t.Fatalf("DetectArchives() error = %v", err)
+	}
+	if len(archives) != 1 {
+		t.Fatalf("expected one extensionless archive family candidate, got %d", len(archives))
+	}
+	if _, ok := archives[firstTask]; !ok {
+		t.Fatal("expected first extensionless archive task to be selected")
+	}
+	if _, ok := archives[secondTask]; ok {
+		t.Fatal("expected duplicate extensionless archive task to be skipped")
+	}
+}
+
 func TestBuildMoveTaskListDropsArchiveArtifacts(t *testing.T) {
 	t.Parallel()
 
@@ -77,7 +153,40 @@ func TestBuildMoveTaskListDropsArchiveArtifacts(t *testing.T) {
 	}
 }
 
-func TestPostProcessExtracts7zAndMovesExtractedFilesOnly(t *testing.T) {
+func TestBuildMoveTaskListDropsExtensionlessArchiveArtifacts(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	archivePath := filepath.Join(dir, "opaque-archive")
+	if err := os.WriteFile(archivePath, append([]byte{}, rarSignatures[1]...), 0644); err != nil {
+		t.Fatalf("write archive fixture: %v", err)
+	}
+	textPath := filepath.Join(dir, "opaque-note")
+	if err := os.WriteFile(textPath, []byte("not an archive"), 0644); err != nil {
+		t.Fatalf("write text fixture: %v", err)
+	}
+
+	extractedPath := filepath.Join(dir, "video.mkv")
+	moveTasks := buildMoveTaskList(
+		[]*domain.DownloadFile{
+			{FinalPath: archivePath},
+			{FinalPath: textPath},
+		},
+		[]*domain.DownloadFile{{FinalPath: extractedPath}},
+	)
+
+	if len(moveTasks) != 2 {
+		t.Fatalf("expected 2 move tasks, got %d", len(moveTasks))
+	}
+	if moveTasks[0].FinalPath != textPath {
+		t.Fatalf("expected non-archive extensionless file to be retained, got %s", moveTasks[0].FinalPath)
+	}
+	if moveTasks[1].FinalPath != extractedPath {
+		t.Fatalf("expected extracted media to be retained, got %s", moveTasks[1].FinalPath)
+	}
+}
+
+func TestPostProcessExtractsExtensionless7zAndMovesExtractedFilesOnly(t *testing.T) {
 	extractor, err := NewCLI7z()
 	if err != nil {
 		t.Skipf("7z unavailable: %v", err)
@@ -96,11 +205,15 @@ func TestPostProcessExtracts7zAndMovesExtractedFilesOnly(t *testing.T) {
 		t.Fatalf("write payload: %v", err)
 	}
 
-	archivePath := filepath.Join(outDir, "release.7z")
-	cmd := exec.Command("7z", "a", "-y", archivePath, filepath.Base(payloadPath))
+	tmpArchivePath := filepath.Join(outDir, "release.7z")
+	cmd := exec.Command("7z", "a", "-y", tmpArchivePath, filepath.Base(payloadPath))
 	cmd.Dir = outDir
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("create 7z archive: %v\n%s", err, string(output))
+	}
+	archivePath := filepath.Join(outDir, "opaque-archive")
+	if err := os.Rename(tmpArchivePath, archivePath); err != nil {
+		t.Fatalf("rename archive to extensionless path: %v", err)
 	}
 	if err := os.Remove(payloadPath); err != nil {
 		t.Fatalf("remove original payload: %v", err)
@@ -151,7 +264,7 @@ func TestPostProcessExtracts7zAndMovesExtractedFilesOnly(t *testing.T) {
 		switch filepath.Base(path) {
 		case "video.txt":
 			foundPayload = true
-		case "release.7z":
+		case "opaque-archive":
 			t.Fatalf("raw archive should not remain in completed output: %s", path)
 		}
 		return nil

@@ -14,19 +14,19 @@ func TestValidateRuntimeSettingsRejectsEnabledIndexerStageWithoutServer(t *testi
 	runtime.Indexing.ScrapeLatest.Enabled = true
 
 	err := ValidateRuntimeSettings(&config.Config{}, runtime)
-	if err == nil || !strings.Contains(err.Error(), "indexing stages require at least one NNTP server in indexer_servers") {
+	if err == nil || !strings.Contains(err.Error(), "indexing stages require at least one NNTP server in servers") {
 		t.Fatalf("expected NNTP validation error, got %v", err)
 	}
 }
 
-func TestValidateRuntimeSettingsRejectsEnabledIndexerStageWithoutNewsgroup(t *testing.T) {
+func TestValidateRuntimeSettingsAllowsEnabledIndexerStageWithoutNewsgroup(t *testing.T) {
 	runtime := app.DefaultRuntimeSettings()
-	runtime.IndexerServers = []app.ServerRuntimeSettings{{ID: "primary", Host: "news.example.com", Port: 563}}
+	runtime.Servers = []app.ServerRuntimeSettings{{ID: "primary", Host: "news.example.com", Port: 563}}
 	runtime.Indexing.ScrapeLatest.Enabled = true
 
 	err := ValidateRuntimeSettings(&config.Config{}, runtime)
-	if err == nil || !strings.Contains(err.Error(), "indexing stages require at least one newsgroup in indexing.newsgroups") {
-		t.Fatalf("expected newsgroup validation error, got %v", err)
+	if err != nil {
+		t.Fatalf("expected zero-group scrape config to save, got %v", err)
 	}
 }
 
@@ -70,6 +70,89 @@ func TestValidateRuntimeSettingsAllowsLocalIndexerAggregatorSourceWhenModuleEnab
 	}, runtime)
 	if err != nil {
 		t.Fatalf("expected local indexer source to save without NNTP/newsgroup prerequisites, got %v", err)
+	}
+}
+
+func TestBuildCapabilitiesReportsIndexerNeedsScrapeGroup(t *testing.T) {
+	runtime := app.DefaultRuntimeSettings()
+	runtime.IndexerServers = []app.ServerRuntimeSettings{{ID: "primary", Host: "news.example.com", Port: 563}}
+
+	caps := BuildCapabilities(&config.Config{
+		Modules: config.ModulesConfig{UsenetIndexer: config.ModuleToggle{Enabled: true}},
+	}, runtime)
+
+	indexer := caps.Modules["usenet_indexer"]
+	if indexer.Ready || len(indexer.Requirements) == 0 {
+		t.Fatalf("expected scrape-group requirement, got %+v", indexer)
+	}
+	if !strings.Contains(strings.Join(indexer.Requirements, " "), "scrape group") {
+		t.Fatalf("expected scrape-group detail, got %+v", indexer.Requirements)
+	}
+}
+
+func TestValidateRuntimeSettingsRejectsInvalidStorageGuardThresholds(t *testing.T) {
+	runtime := app.DefaultRuntimeSettings()
+	runtime.Indexing.StorageGuard.MinFreeBytes = -1
+	runtime.Indexing.StorageGuard.MinFreePercent = 101
+
+	err := ValidateRuntimeSettings(&config.Config{}, runtime)
+	if err == nil {
+		t.Fatalf("expected validation error")
+	}
+	if !strings.Contains(err.Error(), "indexing.storage_guard.min_free_bytes") {
+		t.Fatalf("expected min_free_bytes detail, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "indexing.storage_guard.min_free_percent") {
+		t.Fatalf("expected min_free_percent detail, got %v", err)
+	}
+}
+
+func TestValidateRuntimeSettingsRejectsInvalidMemoryGuardThresholds(t *testing.T) {
+	runtime := app.DefaultRuntimeSettings()
+	runtime.Indexing.MemoryGuard.MinAvailableBytes = -1
+	runtime.Indexing.MemoryGuard.MinAvailablePercent = 101
+	runtime.Indexing.MemoryGuard.MinSwapFreeBytes = -1
+
+	err := ValidateRuntimeSettings(&config.Config{}, runtime)
+	if err == nil {
+		t.Fatalf("expected validation error")
+	}
+	if !strings.Contains(err.Error(), "indexing.memory_guard.min_available_bytes") {
+		t.Fatalf("expected min_available_bytes detail, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "indexing.memory_guard.min_available_percent") {
+		t.Fatalf("expected min_available_percent detail, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "indexing.memory_guard.min_swap_free_bytes") {
+		t.Fatalf("expected min_swap_free_bytes detail, got %v", err)
+	}
+}
+
+func TestValidateRuntimeSettingsAllowsDashboardMaintenanceOneHourInterval(t *testing.T) {
+	runtime := app.DefaultRuntimeSettings()
+	task := runtime.Indexing.MaintenanceTasks["dashboard_stats_refresh"]
+	task.ScheduleEnabled = true
+	task.IntervalHours = 1
+	runtime.Indexing.MaintenanceTasks["dashboard_stats_refresh"] = task
+
+	if err := ValidateRuntimeSettingsMutation(&config.Config{}, runtime, runtime); err != nil {
+		t.Fatalf("expected dashboard stats refresh one-hour interval to be valid, got %v", err)
+	}
+}
+
+func TestValidateRuntimeSettingsRejectsSourcePurgeBelowMinimumInterval(t *testing.T) {
+	runtime := app.DefaultRuntimeSettings()
+	task := runtime.Indexing.MaintenanceTasks["release_source_purge"]
+	task.ScheduleEnabled = true
+	task.IntervalHours = 1
+	runtime.Indexing.MaintenanceTasks["release_source_purge"] = task
+
+	err := ValidateRuntimeSettingsMutation(&config.Config{}, runtime, runtime)
+	if err == nil {
+		t.Fatalf("expected source purge interval validation error")
+	}
+	if !strings.Contains(err.Error(), "at least 6 hours") {
+		t.Fatalf("expected minimum interval detail, got %v", err)
 	}
 }
 

@@ -80,6 +80,54 @@ func TestRunOncePassesRichMatchCandidateAndPersistsMatchFields(t *testing.T) {
 	if _, ok := got.GroupingEvidence["summary"]; !ok {
 		t.Fatalf("expected persisted grouping evidence, got %#v", got.GroupingEvidence)
 	}
+	if got.PosterID != 0 {
+		t.Fatalf("expected raw poster text to remain read-only when no materialized ref exists, got poster_id=%d", got.PosterID)
+	}
+}
+
+func TestRunOncePreservesMaterializedPosterID(t *testing.T) {
+	postedAt := time.Date(2026, 6, 15, 18, 0, 0, 0, time.UTC)
+	repo := &fakeRepository{
+		headers: []pgindex.AssemblyCandidate{
+			{
+				ID:          12,
+				ProviderID:  1,
+				NewsgroupID: 2,
+				MessageID:   "<poster-ref@test.example>",
+				Subject:     `Poster.Ref "poster.ref.r00" yEnc (1/2)`,
+				Poster:      `Poster <poster@example.com>`,
+				PosterID:    1234,
+				DateUTC:     &postedAt,
+				Bytes:       2048,
+				Lines:       50,
+			},
+		},
+	}
+	matcher := &fakeMatcher{
+		result: match.Result{
+			ReleaseName:     "Poster.Ref",
+			ReleaseKey:      "poster ref",
+			BinaryName:      "poster.ref.r00",
+			BinaryKey:       "poster ref::poster ref r00",
+			FileName:        "poster.ref.r00",
+			PartNumber:      1,
+			TotalParts:      2,
+			MatchConfidence: 0.9,
+			MatchStatus:     "matched",
+		},
+	}
+
+	svc := NewService(repo, matcher, nil, testLogger{}, Options{BatchSize: 10})
+	if err := svc.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	if len(repo.upsertedBinaries) != 1 {
+		t.Fatalf("expected one upserted binary, got %d", len(repo.upsertedBinaries))
+	}
+	if got := repo.upsertedBinaries[0].PosterID; got != 1234 {
+		t.Fatalf("expected materialized poster_id to be preserved, got %d", got)
+	}
 }
 
 func TestRunOnceRecoversObfuscatedMultipartIdentityFromYEncHeader(t *testing.T) {
@@ -209,6 +257,25 @@ func TestRunOnceSkipsYEncRecoveryWhenStructuredIdentityAlreadyMatchesExistingBin
 	}
 }
 
+func TestCanonicalizeRecoveredYEncMatchUsesRecoveredFileKey(t *testing.T) {
+	got := canonicalizeRecoveredYEncMatch(match.Result{
+		SourceReleaseKey: "random subject context release 3372000000",
+		ReleaseFamilyKey: "BFVOHwfmP29vSW4Zi",
+		FileSetKey:       "BFVOHwfmP29vSW4Zi",
+		ReleaseKey:       "random subject context release 3372000000",
+		BinaryKey:        "random subject context release 3372000000::BFVOHwfmP29vSW4Zi part080 rar",
+		BinaryName:       "BFVOHwfmP29vSW4Zi.part080.rar",
+		FileName:         "BFVOHwfmP29vSW4Zi.part080.rar",
+	})
+
+	if got.BinaryKey != "bfvohwfmp29vsw4zi::bfvohwfmp29vsw4zi part080 rar" {
+		t.Fatalf("expected recovered file binary key, got %q", got.BinaryKey)
+	}
+	if got.SourceReleaseKey != "BFVOHwfmP29vSW4Zi" {
+		t.Fatalf("expected recovered file-set source key, got %q", got.SourceReleaseKey)
+	}
+}
+
 func TestRunOnceSkipsYEncRecoveryWhenSubjectAlreadyExposesFileName(t *testing.T) {
 	postedAt := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
 	repo := &fakeRepository{
@@ -257,6 +324,85 @@ func TestRunOnceSkipsYEncRecoveryWhenSubjectAlreadyExposesFileName(t *testing.T)
 
 	if fetcher.calls != 0 {
 		t.Fatalf("expected yEnc recovery to stay off the hot path when subject already exposes file name, got %d calls", fetcher.calls)
+	}
+}
+
+func TestRunOnceGroupsSubjectMultipartObfuscatedPartsWithoutYEncRecovery(t *testing.T) {
+	firstPosted := time.Date(2026, 6, 25, 14, 28, 29, 0, time.UTC)
+	secondPosted := time.Date(2026, 6, 25, 16, 44, 2, 0, time.UTC)
+	repo := &fakeRepository{
+		headers: []pgindex.AssemblyCandidate{
+			{
+				ID:             81,
+				ProviderID:     1,
+				NewsgroupID:    2,
+				NewsgroupName:  "alt.binaries.newznzb.bravo",
+				ArticleNumber:  2961163479,
+				MessageID:      "<TxVq9M3lZw0BXeSOK5lY8tq9eOkIXcDM@xI9O2SXR.zm5>",
+				Subject:        `[1/8] - "rZVWpKbxI7KyXz2Oy2BtrOLZzXwmLCoG.mkv" yEnc (7152/28465) 20403308372`,
+				Poster:         `ZZY5wdELKQYA7W <ChrqPqF0fcAwPv@0r2Px.uOc>`,
+				DateUTC:        &firstPosted,
+				SourcePostedAt: firstPosted,
+				Bytes:          740354,
+				Lines:          5691,
+				Xref:           `news.easynews.com alt.binaries.newznzb.bravo:2961163479`,
+			},
+			{
+				ID:             82,
+				ProviderID:     1,
+				NewsgroupID:    2,
+				NewsgroupName:  "alt.binaries.newznzb.bravo",
+				ArticleNumber:  2961166034,
+				MessageID:      "<XHmxauRue9IRwOdLNjPHePyIr4KoqzdJ@NGzwvBZW.0T2>",
+				Subject:        `[1/8] - "rZVWpKbxI7KyXz2Oy2BtrOLZzXwmLCoG.mkv" yEnc (8996/28465) 20403308372`,
+				Poster:         `zzwRVvdHpvTUN3 <vujC9maTnSIGI9@g1hmM.h62>`,
+				DateUTC:        &secondPosted,
+				SourcePostedAt: secondPosted,
+				Bytes:          740276,
+				Lines:          5691,
+				Xref:           `news.easynews.com alt.binaries.newznzb.bravo:2961166034`,
+			},
+		},
+	}
+	fetcher := &countingArticleFetcher{
+		payloads: map[string]string{
+			"<TxVq9M3lZw0BXeSOK5lY8tq9eOkIXcDM@xI9O2SXR.zm5>": "=ybegin part=7152 total=28465 line=128 size=20403308372 name=976e18143f3a00cdd333a41017886215c57ca1653d5bfcf6\r\n",
+			"<XHmxauRue9IRwOdLNjPHePyIr4KoqzdJ@NGzwvBZW.0T2>": "=ybegin part=8996 total=28465 line=128 size=20403308372 name=cd6e277ecbd42befcc99a76a9355398d27468af2324a4231\r\n",
+		},
+	}
+
+	svc := NewService(repo, match.NewService(), fetcher, testLogger{}, Options{BatchSize: 10})
+	metrics, err := svc.RunOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("run once with metrics: %v", err)
+	}
+
+	if fetcher.calls != 0 {
+		t.Fatalf("expected subject multipart evidence to skip yEnc recovery, got %d fetches", fetcher.calls)
+	}
+	if len(repo.upsertedBinaries) != 1 {
+		t.Fatalf("expected one binary upsert for both subject parts, got %d", len(repo.upsertedBinaries))
+	}
+	if got := repo.upsertedBinaries[0]; got.FileName != "rZVWpKbxI7KyXz2Oy2BtrOLZzXwmLCoG.mkv" || got.TotalParts != 28465 {
+		t.Fatalf("expected subject-derived binary with 28465 parts, got file=%q total=%d", got.FileName, got.TotalParts)
+	}
+	if len(repo.upsertedParts) != 2 {
+		t.Fatalf("expected two binary parts, got %d", len(repo.upsertedParts))
+	}
+	if repo.upsertedParts[0].BinaryID != repo.upsertedParts[1].BinaryID {
+		t.Fatalf("expected both parts on the same binary id, got %d / %d", repo.upsertedParts[0].BinaryID, repo.upsertedParts[1].BinaryID)
+	}
+	if repo.upsertedParts[0].PartNumber != 7152 || repo.upsertedParts[1].PartNumber != 8996 {
+		t.Fatalf("expected sorted part numbers 7152 and 8996, got %d / %d", repo.upsertedParts[0].PartNumber, repo.upsertedParts[1].PartNumber)
+	}
+	if got := intValue(metrics["unique_binary_upserts"]); got != 1 {
+		t.Fatalf("expected one unique binary upsert, got %d", got)
+	}
+	if got := intValue(metrics["binary_upsert_cache_hits"]); got != 1 {
+		t.Fatalf("expected one binary upsert cache hit, got %d", got)
+	}
+	if got := intValue(metrics["recovery_attempts"]); got != 0 {
+		t.Fatalf("expected no inline recovery attempts, got %d", got)
 	}
 }
 
@@ -430,17 +576,30 @@ func (f *fakeRepository) ListUnassembledArticleHeaders(context.Context, int) ([]
 }
 
 func (f *fakeRepository) ClaimUnassembledArticleHeaders(_ context.Context, req pgindex.AssemblyClaimRequest) ([]pgindex.AssemblyCandidate, error) {
+	return f.ClaimAssemblyQueueBatch(context.Background(), req)
+}
+
+func (f *fakeRepository) ClaimAssemblyQueueBatch(_ context.Context, req pgindex.AssemblyClaimRequest) ([]pgindex.AssemblyCandidate, error) {
 	f.lastClaimRequest = req
 	return f.headers, nil
 }
 
-func (f *fakeRepository) EnsurePoster(context.Context, string) (int64, error) {
-	return 44, nil
+func (f *fakeRepository) CleanupStaleAssemblyQueueRows(context.Context, int) (int, error) {
+	return 0, nil
 }
 
 func (f *fakeRepository) UpsertBinary(_ context.Context, in pgindex.BinaryRecord) (int64, error) {
 	f.upsertedBinaries = append(f.upsertedBinaries, in)
 	return 77, nil
+}
+
+func (f *fakeRepository) UpsertBinaries(_ context.Context, records []pgindex.BinaryRecord) ([]int64, error) {
+	f.upsertedBinaries = append(f.upsertedBinaries, records...)
+	out := make([]int64, 0, len(records))
+	for range records {
+		out = append(out, 77)
+	}
+	return out, nil
 }
 
 func (f *fakeRepository) UpsertBinaryParts(_ context.Context, records []pgindex.BinaryPartRecord) error {
@@ -552,7 +711,11 @@ func intValue(v any) int {
 
 func TestRunOncePassesLaneSelectionIntoClaims(t *testing.T) {
 	repo := &fakeRepository{}
-	svc := NewService(repo, &fakeMatcher{}, nil, testLogger{}, Options{BatchSize: 25, Lane: pgindex.AssemblyClaimLaneB})
+	svc := NewService(repo, &fakeMatcher{}, nil, testLogger{}, Options{
+		BatchSize:              25,
+		Lane:                   pgindex.AssemblyClaimLaneB,
+		LaneATimeWindowMinutes: 9,
+	})
 
 	if _, err := svc.RunOnceWithMetrics(context.Background()); err != nil {
 		t.Fatalf("run once with metrics: %v", err)
@@ -560,6 +723,9 @@ func TestRunOncePassesLaneSelectionIntoClaims(t *testing.T) {
 
 	if repo.lastClaimRequest.Lane != pgindex.AssemblyClaimLaneB {
 		t.Fatalf("expected lane-b claim request, got %+v", repo.lastClaimRequest)
+	}
+	if repo.lastClaimRequest.LaneATimeWindowMinutes != 9 {
+		t.Fatalf("expected lane A time window to be passed through, got %+v", repo.lastClaimRequest)
 	}
 }
 

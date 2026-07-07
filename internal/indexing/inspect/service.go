@@ -37,23 +37,25 @@ type namedRunner struct {
 }
 
 type Options struct {
-	WorkDir            string
-	WorkspaceBackend   string
-	MemoryWorkDir      string
-	MaxBytes           int64
-	MinBinaryBytes     int64
-	MaxBinaryBytes     int64
-	BlockedMagicHex    []string
-	MaxArchiveDepth    int
-	ToolTimeout        time.Duration
-	FFProbePath        string
-	SevenZipPath       string
-	UnrarPath          string
-	PAR2Path           string
-	CandidateBatchSize int
-	Concurrency        int
-	ClaimOwner         string
-	ClaimLease         time.Duration
+	WorkDir                  string
+	WorkspaceBackend         string
+	MemoryWorkDir            string
+	MaxBytes                 int64
+	MinBinaryBytes           int64
+	MaxBinaryBytes           int64
+	RequireExpectedFileCount bool
+	BlockedMagicHex          []string
+	MaxArchiveDepth          int
+	ToolTimeout              time.Duration
+	FFmpegPath               string
+	FFProbePath              string
+	SevenZipPath             string
+	UnrarPath                string
+	PAR2Path                 string
+	CandidateBatchSize       int
+	Concurrency              int
+	ClaimOwner               string
+	ClaimLease               time.Duration
 }
 
 type ContentFilterDecision struct {
@@ -129,6 +131,9 @@ func DefaultOptions(opts Options) Options {
 	}
 	if strings.TrimSpace(opts.FFProbePath) == "" {
 		opts.FFProbePath = "ffprobe"
+	}
+	if strings.TrimSpace(opts.FFmpegPath) == "" {
+		opts.FFmpegPath = "ffmpeg"
 	}
 	if strings.TrimSpace(opts.SevenZipPath) == "" {
 		opts.SevenZipPath = "7z"

@@ -1,10 +1,13 @@
 services:
   postgres:
-    image: postgres:17
+    image: postgres:17.10
     container_name: gonzb-postgres
     restart: unless-stopped
+    shm_size: 2gb
     command:
       - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements
       - -c
       - shared_buffers=1GB
       - -c
@@ -14,6 +17,12 @@ services:
       - -c
       - maintenance_work_mem=512MB
       - -c
+      - max_wal_size=32GB
+      - -c
+      - checkpoint_timeout=15min
+      - -c
+      - wal_compression=on
+      - -c
       - random_page_cost=1.1
       - -c
       - effective_io_concurrency=64
@@ -22,16 +31,22 @@ services:
       - -c
       - default_statistics_target=250
       - -c
+      - max_locks_per_transaction=512
+      - -c
       - jit=off
     environment:
       POSTGRES_DB: gonzb
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
+      POSTGRES_APP_USER: gonzb
+      POSTGRES_APP_PASSWORD: gonzb
+      POSTGRES_INITDB_ARGS: "--data-checksums"
       TZ: America/New_York
     ports:
       - "5432:5432"
     volumes:
-      - gonzb_postgres_data:/var/lib/postgresql/data
+      - /mnt/vm-store/docker-vols/gonzb_gonzb_postgres_data/:/var/lib/postgresql/data
+      - ./docker/postgres/initdb:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d gonzb"]
       interval: 5s

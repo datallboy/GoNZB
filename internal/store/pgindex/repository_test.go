@@ -13,14 +13,218 @@ import (
 	"github.com/datallboy/gonzb/internal/categories/newsnab"
 )
 
+func ptrTime(v time.Time) *time.Time { return &v }
+
+func ensureTestPoster(t *testing.T, store *Store, ctx context.Context, posterName string) (int64, error) {
+	t.Helper()
+	posterName = strings.TrimSpace(posterName)
+	if posterName == "" {
+		return 0, nil
+	}
+
+	var id int64
+	err := store.DB().QueryRowContext(ctx, `
+		WITH inserted AS (
+			INSERT INTO posters (poster_name)
+			VALUES ($1)
+			ON CONFLICT (poster_name) DO NOTHING
+			RETURNING id
+		)
+		SELECT id
+		FROM inserted
+		UNION ALL
+		SELECT p.id
+		FROM posters p
+		WHERE p.poster_name = $1
+		LIMIT 1`,
+		posterName,
+	).Scan(&id)
+	if err != nil {
+		return 0, fmt.Errorf("ensure test poster %q: %w", posterName, err)
+	}
+	return id, nil
+}
+
 func TestInspectCandidateFilterPasswordRequiresEncryptedRelease(t *testing.T) {
-	filter, err := inspectCandidateFilter("inspect_password")
+	filter, err := inspectCandidateFilter("inspect_password", false)
 	if err != nil {
 		t.Fatalf("inspectCandidateFilter() error = %v", err)
 	}
 
 	if !strings.Contains(filter, "r.encrypted = TRUE") {
 		t.Fatalf("expected inspect_password filter to require encrypted releases, got %q", filter)
+	}
+}
+
+func TestInspectCandidateFilterArchiveUsesPayloadCompletionNotReleaseCompletion(t *testing.T) {
+	filter, err := inspectCandidateFilter("inspect_archive", false)
+	if err != nil {
+		t.Fatalf("inspectCandidateFilter(false) error = %v", err)
+	}
+	if !strings.Contains(filter, "b.observed_parts >= b.total_parts") {
+		t.Fatalf("expected inspect_archive filter to require candidate payload completion, got %q", filter)
+	}
+	if strings.Contains(filter, "r.completion_pct >= 100") {
+		t.Fatalf("expected inspect_archive filter to omit release completion gate, got %q", filter)
+	}
+	if strings.Contains(filter, "r.file_count >= r.expected_file_count") {
+		t.Fatalf("expected inspect_archive filter without expected-file gate to omit file-count match, got %q", filter)
+	}
+
+	filter, err = inspectCandidateFilter("inspect_archive", true)
+	if err != nil {
+		t.Fatalf("inspectCandidateFilter(true) error = %v", err)
+	}
+	if strings.Contains(filter, "r.file_count >= r.expected_file_count") {
+		t.Fatalf("expected inspect_archive filter to ignore release-level expected-file gate, got %q", filter)
+	}
+}
+
+func TestReleaseDetailDiagnosticsTreatsArchivePayloadAsCompleteWhenNonPARFilesMeetExpectedArchiveCount(t *testing.T) {
+	release := IndexerReleaseSummary{
+		FileCount:                11,
+		ParFileCount:             6,
+		ExpectedArchiveFileCount: 5,
+		ExpectedFileCount:        12,
+		HasPAR2:                  true,
+	}
+	files := []IndexerReleaseFileSummary{{FileName: "example.vol00+01.par2", IsPars: true}}
+
+	diag := buildReleaseDetailDiagnostics(release, files)
+	if !diag.PayloadComplete {
+		t.Fatalf("expected payload to be complete when non-PAR file count meets expected archive count, got %+v", diag)
+	}
+	if !diag.PayloadCompletenessKnown {
+		t.Fatalf("expected payload completeness to be known, got %+v", diag)
+	}
+	if diag.PayloadCompletionPct != 100 {
+		t.Fatalf("expected payload completion 100, got %.2f", diag.PayloadCompletionPct)
+	}
+	if diag.ExpectedFileCountComplete {
+		t.Fatalf("expected total expected file count to remain incomplete, got %+v", diag)
+	}
+	if !strings.Contains(diag.ReadinessNote, "sidecar-only") {
+		t.Fatalf("expected sidecar-only readiness note, got %q", diag.ReadinessNote)
+	}
+}
+
+func TestReleaseDetailDiagnosticsTreatsArchivePayloadWithUnknownExpectedCountAsUnknown(t *testing.T) {
+	release := IndexerReleaseSummary{
+		FileCount:                2,
+		ParFileCount:             0,
+		ExpectedArchiveFileCount: 0,
+		CompletionPct:            100,
+		ArchiveCount:             1,
+	}
+
+	diag := buildReleaseDetailDiagnostics(release, nil)
+	if diag.PayloadComplete {
+		t.Fatalf("expected archive payload with unknown expected count to be incomplete, got %+v", diag)
+	}
+	if diag.PayloadCompletenessKnown {
+		t.Fatalf("expected archive payload completeness to be unknown, got %+v", diag)
+	}
+	if diag.KnownBinaryCompletionPct != 100 {
+		t.Fatalf("expected known binary completion to remain 100, got %.2f", diag.KnownBinaryCompletionPct)
+	}
+	if diag.PayloadCompletionPct != 0 {
+		t.Fatalf("expected unknown payload completion pct to be 0 sentinel, got %.2f", diag.PayloadCompletionPct)
+	}
+	if !strings.Contains(diag.ReadinessNote, "unknown") {
+		t.Fatalf("expected unknown payload readiness note, got %q", diag.ReadinessNote)
+	}
+}
+
+func TestReleaseDetailDiagnosticsCountsMissingArchivePayloadFiles(t *testing.T) {
+	release := IndexerReleaseSummary{
+		FileCount:                3,
+		ParFileCount:             1,
+		ExpectedArchiveFileCount: 8,
+		ArchiveCount:             1,
+	}
+
+	diag := buildReleaseDetailDiagnostics(release, nil)
+	if diag.PayloadComplete {
+		t.Fatalf("expected payload to be incomplete, got %+v", diag)
+	}
+	if !diag.PayloadCompletenessKnown {
+		t.Fatalf("expected payload completeness to be known, got %+v", diag)
+	}
+	if diag.MissingExpectedArchiveFileCount != 6 {
+		t.Fatalf("expected 6 missing archive payload files, got %d", diag.MissingExpectedArchiveFileCount)
+	}
+	if diag.PayloadCompletionPct != 25 {
+		t.Fatalf("expected payload completion pct 25, got %.2f", diag.PayloadCompletionPct)
+	}
+}
+
+func TestReleaseDetailDiagnosticsUsesPayloadPartCompletionForDirectMedia(t *testing.T) {
+	release := IndexerReleaseSummary{
+		FileCount:         3,
+		ParFileCount:      2,
+		CompletionPct:     98.2,
+		ArchiveCount:      0,
+		VideoCount:        1,
+		ExpectedFileCount: 3,
+	}
+	files := []IndexerReleaseFileSummary{
+		{FileName: "opaque.mkv", ObservedParts: 1378, TotalParts: 1378},
+		{FileName: "opaque.vol01+02.par2", IsPars: true, ObservedParts: 1, TotalParts: 2},
+		{FileName: "opaque.vol03+04.par2", IsPars: true, ObservedParts: 1, TotalParts: 3},
+	}
+
+	diag := buildReleaseDetailDiagnostics(release, files)
+	if !diag.PayloadComplete {
+		t.Fatalf("expected complete media payload despite partial PAR2 sidecars, got %+v", diag)
+	}
+	if !diag.PayloadCompletenessKnown {
+		t.Fatalf("expected direct-media payload completeness to be known, got %+v", diag)
+	}
+	if diag.PayloadCompletionPct != 100 {
+		t.Fatalf("expected direct-media payload completion 100, got %.2f", diag.PayloadCompletionPct)
+	}
+	if diag.KnownBinaryCompletionPct != 98.2 {
+		t.Fatalf("expected overall binary completion to remain 98.2, got %.2f", diag.KnownBinaryCompletionPct)
+	}
+}
+
+func TestReleaseDetailDiagnosticsRejectsIncompleteDirectMediaPayload(t *testing.T) {
+	release := IndexerReleaseSummary{
+		FileCount:     1,
+		CompletionPct: 100,
+		VideoCount:    1,
+	}
+	files := []IndexerReleaseFileSummary{{FileName: "partial.mkv", ObservedParts: 2, TotalParts: 150}}
+
+	diag := buildReleaseDetailDiagnostics(release, files)
+	if diag.PayloadComplete {
+		t.Fatalf("expected incomplete direct-media payload, got %+v", diag)
+	}
+	if !diag.PayloadCompletenessKnown {
+		t.Fatalf("expected direct-media payload completeness to be known, got %+v", diag)
+	}
+	if diag.PayloadCompletionPct <= 0 || diag.PayloadCompletionPct >= 2 {
+		t.Fatalf("expected low direct-media payload completion pct, got %.2f", diag.PayloadCompletionPct)
+	}
+}
+
+func TestReleaseDetailDiagnosticsTreatsDirectMediaUnknownTotalAsUnknown(t *testing.T) {
+	release := IndexerReleaseSummary{
+		FileCount:     1,
+		CompletionPct: 100,
+		VideoCount:    1,
+	}
+	files := []IndexerReleaseFileSummary{{FileName: "unknown.mkv", ObservedParts: 2, TotalParts: 0}}
+
+	diag := buildReleaseDetailDiagnostics(release, files)
+	if diag.PayloadComplete {
+		t.Fatalf("expected unknown direct-media total to remain incomplete, got %+v", diag)
+	}
+	if diag.PayloadCompletenessKnown {
+		t.Fatalf("expected unknown direct-media total to be reported unknown, got %+v", diag)
+	}
+	if diag.PayloadCompletionPct != 0 {
+		t.Fatalf("expected unknown direct-media completion pct sentinel 0, got %.2f", diag.PayloadCompletionPct)
 	}
 }
 
@@ -314,7 +518,7 @@ func TestApplyReleaseInspectionUpdateKnownPasswordClearsUnknownRollup(t *testing
 		Encrypted:         boolPtr(true),
 		Passworded:        &passworded,
 		PasswordedUnknown: &passwordedUnknown,
-		PasswordState:     "passworded_unknown",
+		PasswordState:     "password_unknown",
 	}); err != nil {
 		t.Fatalf("apply unresolved password state: %v", err)
 	}
@@ -326,7 +530,7 @@ func TestApplyReleaseInspectionUpdateKnownPasswordClearsUnknownRollup(t *testing
 		Passworded:        &passworded,
 		PasswordedKnown:   &passwordedKnown,
 		PasswordedUnknown: &passwordedUnknown,
-		PasswordState:     "passworded_known",
+		PasswordState:     "password_known",
 	}); err != nil {
 		t.Fatalf("apply verified password state: %v", err)
 	}
@@ -341,11 +545,46 @@ func TestApplyReleaseInspectionUpdateKnownPasswordClearsUnknownRollup(t *testing
 	if !release.Release.Passworded || !release.Release.PasswordedKnown || release.Release.PasswordedUnknown {
 		t.Fatalf("expected known password rollup to win, got %+v", release.Release)
 	}
-	if release.Release.PasswordState != "passworded_known" {
-		t.Fatalf("expected passworded_known state, got %q", release.Release.PasswordState)
+	if release.Release.PasswordState != "password_known" {
+		t.Fatalf("expected password_known state, got %q", release.Release.PasswordState)
 	}
 	if !release.Release.Encrypted {
 		t.Fatalf("expected encrypted flag to remain true, got %+v", release.Release)
+	}
+}
+
+func TestApplyReleaseInspectionUpdateRollsUpPAR2ExpectedCounts(t *testing.T) {
+	store := openTestStore(t)
+	releaseID := seedTestRelease(t, store, "par2_expected_counts")
+
+	ctx := context.Background()
+	hasPAR2 := true
+	expectedFileCount := 9
+	expectedArchiveFileCount := 7
+	if err := store.ApplyReleaseInspectionUpdate(ctx, ReleaseInspectionUpdate{
+		ReleaseID:                releaseID,
+		HasPAR2:                  &hasPAR2,
+		ExpectedFileCount:        &expectedFileCount,
+		ExpectedArchiveFileCount: &expectedArchiveFileCount,
+	}); err != nil {
+		t.Fatalf("apply par2 expected counts: %v", err)
+	}
+
+	release, err := store.GetIndexerReleaseDetail(ctx, releaseID)
+	if err != nil {
+		t.Fatalf("get release detail: %v", err)
+	}
+	if release == nil {
+		t.Fatalf("expected release %s", releaseID)
+	}
+	if !release.Release.HasPAR2 {
+		t.Fatalf("expected has_par2 after update, got %+v", release.Release)
+	}
+	if release.Release.ExpectedFileCount != expectedFileCount {
+		t.Fatalf("expected expected_file_count %d, got %d", expectedFileCount, release.Release.ExpectedFileCount)
+	}
+	if release.Release.ExpectedArchiveFileCount != expectedArchiveFileCount {
+		t.Fatalf("expected expected_archive_file_count %d, got %d", expectedArchiveFileCount, release.Release.ExpectedArchiveFileCount)
 	}
 }
 
@@ -361,7 +600,7 @@ func TestApplyReleaseInspectionUpdateUnknownPasswordReducesAvailabilityWhileComp
 		Encrypted:         boolPtr(true),
 		Passworded:        &passworded,
 		PasswordedUnknown: &passwordedUnknown,
-		PasswordState:     "passworded_unknown",
+		PasswordState:     "password_unknown",
 	}); err != nil {
 		t.Fatalf("apply unresolved password state: %v", err)
 	}
@@ -379,8 +618,25 @@ func TestApplyReleaseInspectionUpdateUnknownPasswordReducesAvailabilityWhileComp
 	if release.Release.AvailabilityScore >= release.Release.CompletionPct {
 		t.Fatalf("expected availability_score %.2f to drop below completion_pct %.2f", release.Release.AvailabilityScore, release.Release.CompletionPct)
 	}
-	if release.Release.PasswordState != "passworded_unknown" {
-		t.Fatalf("expected passworded_unknown state, got %q", release.Release.PasswordState)
+	if release.Release.PasswordState != "password_unknown" {
+		t.Fatalf("expected password_unknown state, got %q", release.Release.PasswordState)
+	}
+}
+
+func TestApplyReleaseInspectionUpdateReturnsReleaseNotFoundForMissingRelease(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	hasNFO := true
+
+	err := store.ApplyReleaseInspectionUpdate(ctx, ReleaseInspectionUpdate{
+		ReleaseID: "missing-release-id",
+		HasNFO:    &hasNFO,
+	})
+	if err == nil {
+		t.Fatal("expected missing release error")
+	}
+	if !IsReleaseNotFound(err) {
+		t.Fatalf("expected ErrReleaseNotFound, got %v", err)
 	}
 }
 
@@ -536,6 +792,11 @@ func TestUpsertReleasePreservesInspectionDerivedTitleAgainstLaterSourceSnapshot(
 		MediaQualityScore:       90,
 		MediaQualityTier:        "premium",
 		IdentityConfidenceScore: 90,
+		RuntimeSeconds:          1535,
+		PrimaryResolution:       "1080p",
+		PrimaryVideoCodec:       "h264",
+		PrimaryAudioCodec:       "aac",
+		SubtitleLanguages:       []string{"eng"},
 		MetadataUpdatedAt:       &now,
 	})
 	if err != nil {
@@ -585,6 +846,21 @@ func TestUpsertReleasePreservesInspectionDerivedTitleAgainstLaterSourceSnapshot(
 	}
 	if release.Release.DeobfuscatedTitle != "Kevin.S01E06.Fourth.of.July.720p.AMZN.WEB-DL.DDP5.1.H.264-playWEB" {
 		t.Fatalf("expected deobfuscated title to be preserved, got %q", release.Release.DeobfuscatedTitle)
+	}
+	if release.Release.RuntimeSeconds != 1535 {
+		t.Fatalf("expected inspected runtime to be preserved, got %d", release.Release.RuntimeSeconds)
+	}
+	if release.Release.PrimaryResolution != "1080p" {
+		t.Fatalf("expected inspected resolution to be preserved, got %q", release.Release.PrimaryResolution)
+	}
+	if release.Release.PrimaryVideoCodec != "h264" {
+		t.Fatalf("expected inspected video codec to be preserved, got %q", release.Release.PrimaryVideoCodec)
+	}
+	if release.Release.PrimaryAudioCodec != "aac" {
+		t.Fatalf("expected inspected audio codec to be preserved, got %q", release.Release.PrimaryAudioCodec)
+	}
+	if len(release.Release.SubtitleLanguages) != 1 || release.Release.SubtitleLanguages[0] != "eng" {
+		t.Fatalf("expected inspected subtitle languages to be preserved, got %#v", release.Release.SubtitleLanguages)
 	}
 }
 
@@ -844,6 +1120,97 @@ func TestReplaceBinaryInspectionPersistenceHelpersBatchAndClearRows(t *testing.T
 	assertTableCount("binary_par2_sets", 0)
 }
 
+func TestReplaceBinaryInspectionPersistenceHelpersDropStaleReleaseIDs(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.inspect.stale.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+	releaseID := seedTestRelease(t, store, "inspect-stale-artifacts")
+
+	t.Cleanup(func() {
+		cleanupCtx := context.Background()
+		_, _ = store.DB().ExecContext(cleanupCtx, `DELETE FROM binary_inspection_artifacts WHERE binary_id IN (SELECT id FROM binaries WHERE newsgroup_id = $1)`, newsgroupID)
+		_, _ = store.DB().ExecContext(cleanupCtx, `DELETE FROM binary_archive_entries WHERE binary_id IN (SELECT id FROM binaries WHERE newsgroup_id = $1)`, newsgroupID)
+		_, _ = store.DB().ExecContext(cleanupCtx, `DELETE FROM binary_media_streams WHERE binary_id IN (SELECT id FROM binaries WHERE newsgroup_id = $1)`, newsgroupID)
+		_, _ = store.DB().ExecContext(cleanupCtx, `DELETE FROM binaries WHERE newsgroup_id = $1`, newsgroupID)
+		_, _ = store.DB().ExecContext(cleanupCtx, `DELETE FROM newsgroups WHERE id = $1`, newsgroupID)
+		_, _ = store.DB().ExecContext(cleanupCtx, `DELETE FROM releases WHERE release_id = $1`, releaseID)
+	})
+
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		SourceReleaseKey:  "inspect-stale-source",
+		ReleaseFamilyKey:  "inspect-stale-family",
+		BinaryKey:         fmt.Sprintf("inspect-stale-%d", time.Now().UnixNano()),
+		BinaryName:        "inspect.stale.sample.bin",
+		FileName:          "inspect.stale.sample.bin",
+		ExpectedFileCount: 1,
+		TotalParts:        1,
+		MatchConfidence:   0.99,
+		MatchStatus:       "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+
+	staleReleaseID := "missing-release-id"
+	if err := store.ReplaceBinaryInspectionArtifacts(ctx, "inspect_archive", binaryID, []BinaryInspectionArtifactRecord{
+		{ReleaseID: staleReleaseID, ArtifactRole: "primary", ArtifactName: "sample.7z", SourceKind: "archive"},
+		{ReleaseID: releaseID, ArtifactRole: "sidecar", ArtifactName: "sample.nfo", SourceKind: "archive"},
+	}); err != nil {
+		t.Fatalf("replace inspection artifacts with stale release id: %v", err)
+	}
+	if err := store.ReplaceBinaryArchiveEntries(ctx, binaryID, []BinaryArchiveEntryRecord{
+		{ReleaseID: staleReleaseID, EntryName: "video.mkv", MediaType: "video"},
+	}); err != nil {
+		t.Fatalf("replace archive entries with stale release id: %v", err)
+	}
+	if err := store.ReplaceBinaryMediaStreams(ctx, binaryID, []BinaryMediaStreamRecord{
+		{ReleaseID: staleReleaseID, StreamIndex: 0, StreamType: "video", CodecName: "h264"},
+	}); err != nil {
+		t.Fatalf("replace media streams with stale release id: %v", err)
+	}
+
+	var staleArtifacts int
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM binary_inspection_artifacts
+		WHERE binary_id = $1 AND release_id IS NULL`, binaryID,
+	).Scan(&staleArtifacts); err != nil {
+		t.Fatalf("count null artifact release ids: %v", err)
+	}
+	if staleArtifacts != 1 {
+		t.Fatalf("expected one stale artifact release id to be stored as NULL, got %d", staleArtifacts)
+	}
+
+	var validArtifacts int
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM binary_inspection_artifacts
+		WHERE binary_id = $1 AND release_id = $2`, binaryID, releaseID,
+	).Scan(&validArtifacts); err != nil {
+		t.Fatalf("count retained artifact release ids: %v", err)
+	}
+	if validArtifacts != 1 {
+		t.Fatalf("expected valid artifact release id to be retained, got %d", validArtifacts)
+	}
+
+	for _, table := range []string{"binary_archive_entries", "binary_media_streams"} {
+		var nullRows int
+		if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM `+table+` WHERE binary_id = $1 AND release_id IS NULL`, binaryID).Scan(&nullRows); err != nil {
+			t.Fatalf("count null release ids in %s: %v", table, err)
+		}
+		if nullRows != 1 {
+			t.Fatalf("expected stale release id in %s to be stored as NULL, got %d", table, nullRows)
+		}
+	}
+}
+
 func TestEnrichmentPersistenceHelpersBatchAndPreserveSemantics(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
@@ -960,6 +1327,129 @@ func TestEnrichmentPersistenceHelpersBatchAndPreserveSemantics(t *testing.T) {
 	assertReleaseCount("release_predb_matches", 0)
 }
 
+func TestApplyReleasePredbUpdateReplacesSourceObfuscatedTitle(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	releaseID := seedTestRelease(t, store, "predb-source-obfuscated")
+	t.Cleanup(func() {
+		if _, err := store.DB().ExecContext(context.Background(), `DELETE FROM releases WHERE release_id = $1`, releaseID); err != nil {
+			t.Fatalf("cleanup release: %v", err)
+		}
+	})
+
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE releases
+		SET title = 'unknown-release',
+		    source_title = 'tVXofScxpPrnpZg9WDP3g2uxRzTFfwbK.vol01+02',
+		    deobfuscated_title = '',
+		    title_source = 'source_obfuscated',
+		    title_confidence = 0.30,
+		    search_title = 'unknown-release'
+		WHERE release_id = $1`, releaseID); err != nil {
+		t.Fatalf("mark release source-obfuscated: %v", err)
+	}
+
+	now := time.Now().UTC()
+	if err := store.ApplyReleasePredbUpdate(ctx, ReleasePredbUpdate{
+		ReleaseID:               releaseID,
+		Title:                   "Example Feature 1963 720p HDTV x264-GRP",
+		DeobfuscatedTitle:       "Example.Feature.1963.720p.HDTV.x264-GRP",
+		TitleSource:             "predb",
+		TitleConfidence:         0.91,
+		IdentityStatus:          "probable",
+		IdentityConfidenceScore: 0.91,
+		MetadataUpdatedAt:       &now,
+	}); err != nil {
+		t.Fatalf("apply predb update: %v", err)
+	}
+
+	release, err := store.GetIndexerReleaseDetail(ctx, releaseID)
+	if err != nil {
+		t.Fatalf("get release detail: %v", err)
+	}
+	if release.Release.TitleSource != "predb" {
+		t.Fatalf("expected predb title source, got %q", release.Release.TitleSource)
+	}
+	if release.Release.Title != "Example Feature 1963 720p HDTV x264-GRP" {
+		t.Fatalf("expected predb title, got %q", release.Release.Title)
+	}
+	if release.Release.DeobfuscatedTitle != "Example.Feature.1963.720p.HDTV.x264-GRP" {
+		t.Fatalf("expected predb deobfuscated title, got %q", release.Release.DeobfuscatedTitle)
+	}
+}
+
+func TestApplyReleaseManualIdentityChoosesPredbCandidate(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	releaseID := seedTestRelease(t, store, "manual-predb-identity")
+	normalized := normalizePredbTitle("The.Doomies.S01E22.720p.WEB.H264-AFO")
+	t.Cleanup(func() {
+		cleanupCtx := context.Background()
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM release_predb_matches WHERE release_id = $1`, releaseID); err != nil {
+			t.Fatalf("cleanup predb matches: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM predb_entries WHERE normalized_title = $1`, normalized); err != nil {
+			t.Fatalf("cleanup predb entry: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM releases WHERE release_id = $1`, releaseID); err != nil {
+			t.Fatalf("cleanup release: %v", err)
+		}
+	})
+
+	if err := store.ReplaceReleasePredbMatches(ctx, releaseID, []ReleasePredbMatchRecord{{
+		NormalizedTitle: normalized,
+		Title:           "The.Doomies.S01E22.720p.WEB.H264-AFO",
+		Category:        "TV-720P",
+		Source:          "predb",
+		ExternalID:      1001,
+		Confidence:      0.86,
+		Chosen:          false,
+	}}); err != nil {
+		t.Fatalf("replace predb matches: %v", err)
+	}
+
+	var entryID int64
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT p.id
+		FROM release_predb_matches rpm
+		JOIN predb_entries p ON p.id = rpm.predb_entry_id
+		WHERE rpm.release_id = $1
+		  AND p.normalized_title = $2`, releaseID, normalized,
+	).Scan(&entryID); err != nil {
+		t.Fatalf("load predb entry id: %v", err)
+	}
+
+	if err := store.ApplyReleaseManualIdentity(ctx, ReleaseManualIdentityUpdate{
+		ReleaseID:               releaseID,
+		Title:                   "The Doomies S01E22",
+		TitleSource:             "manual_predb",
+		PredbEntryID:            entryID,
+		ExternalMediaType:       "tv",
+		SeasonNumber:            1,
+		EpisodeNumber:           22,
+		IdentityConfidenceScore: 1,
+	}); err != nil {
+		t.Fatalf("apply manual identity: %v", err)
+	}
+
+	release, err := store.GetIndexerReleaseDetail(ctx, releaseID)
+	if err != nil {
+		t.Fatalf("get release detail: %v", err)
+	}
+	if release.Release.Title != "The Doomies S01E22" || release.Release.TitleSource != "manual_predb" {
+		t.Fatalf("expected manual predb identity, got title=%q source=%q", release.Release.Title, release.Release.TitleSource)
+	}
+	if release.Release.IdentityStatus != "identified" || release.Release.IdentityConfidenceScore != 1 {
+		t.Fatalf("expected identified identity, got status=%q confidence=%.2f", release.Release.IdentityStatus, release.Release.IdentityConfidenceScore)
+	}
+	if release.Release.ExternalMediaType != "tv" || release.Release.SeasonNumber != 1 || release.Release.EpisodeNumber != 22 {
+		t.Fatalf("expected tv episode identity, got type=%q season=%d episode=%d", release.Release.ExternalMediaType, release.Release.SeasonNumber, release.Release.EpisodeNumber)
+	}
+	if len(release.PredbMatches) != 1 || !release.PredbMatches[0].Chosen {
+		t.Fatalf("expected selected predb match to be chosen, got %+v", release.PredbMatches)
+	}
+}
+
 func TestUpsertBinaryStoresCompactGroupingEvidenceInlineWhenStable(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
@@ -1003,16 +1493,16 @@ func TestUpsertBinaryStoresCompactGroupingEvidenceInlineWhenStable(t *testing.T)
 		t.Fatalf("upsert binary: %v", err)
 	}
 
-	var inlineEvidence []byte
+	var summaryKind string
 	if err := store.DB().QueryRowContext(ctx, `
-		SELECT grouping_evidence_json
+		SELECT grouping_summary_kind
 		FROM binaries
 		WHERE id = $1`, binaryID,
-	).Scan(&inlineEvidence); err != nil {
-		t.Fatalf("query inline grouping evidence: %v", err)
+	).Scan(&summaryKind); err != nil {
+		t.Fatalf("query grouping summary kind: %v", err)
 	}
-	if !strings.Contains(string(inlineEvidence), "\"readable_title\"") {
-		t.Fatalf("expected compact inline grouping evidence, got %s", string(inlineEvidence))
+	if summaryKind != "readable_title" {
+		t.Fatalf("expected scalar grouping summary kind, got %q", summaryKind)
 	}
 
 	var sideEvidence []byte
@@ -1039,7 +1529,7 @@ func TestUpsertBinaryStoresCompactGroupingEvidenceInlineWhenStable(t *testing.T)
 	}
 }
 
-func TestUpsertBinaryStoresGroupingEvidenceInSideTableForWeakMatches(t *testing.T) {
+func TestUpsertBinarySkipsDetailedGroupingEvidenceSideTableForWeakMatches(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
 
@@ -1089,16 +1579,17 @@ func TestUpsertBinaryStoresGroupingEvidenceInSideTableForWeakMatches(t *testing.
 		t.Fatalf("upsert binary: %v", err)
 	}
 
-	var inlineEvidence []byte
+	var summaryKind, summaryStatus string
+	var fallbackUsed bool
 	if err := store.DB().QueryRowContext(ctx, `
-		SELECT grouping_evidence_json
+		SELECT grouping_summary_kind, grouping_summary_status, grouping_summary_fallback_used
 		FROM binaries
 		WHERE id = $1`, binaryID,
-	).Scan(&inlineEvidence); err != nil {
-		t.Fatalf("query inline grouping evidence: %v", err)
+	).Scan(&summaryKind, &summaryStatus, &fallbackUsed); err != nil {
+		t.Fatalf("query scalar grouping summary: %v", err)
 	}
-	if !strings.Contains(string(inlineEvidence), "\"fallback_used\":true") {
-		t.Fatalf("expected inline summary to retain fallback flag, got %s", string(inlineEvidence))
+	if summaryKind != "contextual_obfuscated" || summaryStatus != "probable" || !fallbackUsed {
+		t.Fatalf("expected scalar fallback summary, got kind=%q status=%q fallback=%v", summaryKind, summaryStatus, fallbackUsed)
 	}
 
 	var sideEvidence []byte
@@ -1106,11 +1597,11 @@ func TestUpsertBinaryStoresGroupingEvidenceInSideTableForWeakMatches(t *testing.
 		SELECT payload_json
 		FROM binary_grouping_evidence
 		WHERE binary_id = $1`, binaryID,
-	).Scan(&sideEvidence); err != nil {
+	).Scan(&sideEvidence); err != nil && err != sql.ErrNoRows {
 		t.Fatalf("query side-table grouping evidence: %v", err)
 	}
-	if !strings.Contains(string(sideEvidence), "\"fallback\"") {
-		t.Fatalf("expected weak evidence payload in side table, got %s", string(sideEvidence))
+	if len(sideEvidence) != 0 {
+		t.Fatalf("expected weak detailed evidence to skip side-table retention, got %s", string(sideEvidence))
 	}
 
 	detail, err := store.GetIndexerBinaryDetail(ctx, binaryID)
@@ -1120,8 +1611,9 @@ func TestUpsertBinaryStoresGroupingEvidenceInSideTableForWeakMatches(t *testing.
 	if detail == nil {
 		t.Fatalf("expected binary detail for %d", binaryID)
 	}
-	if !strings.Contains(string(detail.GroupingEvidence), "\"fallback\"") {
-		t.Fatalf("expected binary detail grouping evidence from side table, got %s", string(detail.GroupingEvidence))
+	if !strings.Contains(string(detail.GroupingEvidence), "\"fallback_used\":true") &&
+		!strings.Contains(string(detail.GroupingEvidence), "\"fallback_used\": true") {
+		t.Fatalf("expected binary detail grouping evidence from inline summary, got %s", string(detail.GroupingEvidence))
 	}
 }
 
@@ -1136,7 +1628,7 @@ func TestRefreshBinaryStatsBackfillsPostedAtFromArticleHeaders(t *testing.T) {
 	}
 
 	posterName := fmt.Sprintf("poster-%d@example.com", time.Now().UnixNano())
-	posterID, err := store.EnsurePoster(ctx, posterName)
+	posterID, err := ensureTestPoster(t, store, ctx, posterName)
 	if err != nil {
 		t.Fatalf("ensure poster: %v", err)
 	}
@@ -1328,17 +1820,118 @@ func TestRefreshBinaryStatsBackfillsPostedAtFromArticleHeaders(t *testing.T) {
 	var dirtyCount int
 	if err := store.DB().QueryRowContext(ctx, `
 		SELECT COUNT(*)
-		FROM release_family_readiness_summaries
-		WHERE provider_id = 1
+		FROM release_family_readiness_summaries s
+		LEFT JOIN release_family_readiness_acks a
+		  ON a.provider_id = s.provider_id
+		 AND a.newsgroup_id = s.newsgroup_id
+		 AND a.key_kind = s.key_kind
+		 AND a.family_key = s.family_key
+		WHERE s.provider_id = 1
 		  AND newsgroup_id = $1
 		  AND key_kind = 'release_family'
 		  AND family_key = 'test-release-family'
-		  AND updated_at > COALESCE(processed_at, updated_at)`, newsgroupID,
+		  AND s.updated_at > COALESCE(a.processed_at, TIMESTAMPTZ 'epoch')`, newsgroupID,
 	).Scan(&dirtyCount); err != nil {
 		t.Fatalf("query release summary queue state: %v", err)
 	}
 	if dirtyCount != 1 {
 		t.Fatalf("expected refreshed binary stats to requeue release family once, got %d rows", dirtyCount)
+	}
+}
+
+func TestRefreshBinaryStatsAllowsBlankSummaryKeys(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.refresh.blankkeys.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+	posterID, err := ensureTestPoster(t, store, ctx, fmt.Sprintf("poster-refresh-blankkeys-%d@example.com", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatalf("ensure poster: %v", err)
+	}
+
+	now := time.Now().UTC()
+	messageID := fmt.Sprintf("<refresh-blankkeys-%d@test>", time.Now().UnixNano())
+	if _, err := store.InsertArticleHeaders(ctx, 1, newsgroupID, []ArticleHeader{{
+		ArticleNumber: 101,
+		MessageID:     messageID,
+		Subject:       `Blank Summary Keys [1/1] - "blank.bin" yEnc (1/1)`,
+		Poster:        "poster-refresh-blankkeys@example.com",
+		DateUTC:       &now,
+		Bytes:         1234,
+		Lines:         10,
+	}}); err != nil {
+		t.Fatalf("insert article headers: %v", err)
+	}
+
+	var headerID int64
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT id
+		FROM article_headers
+		WHERE newsgroup_id = $1
+		  AND message_id = $2`, newsgroupID, messageID,
+	).Scan(&headerID); err != nil {
+		t.Fatalf("lookup inserted article header: %v", err)
+	}
+
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:       1,
+		NewsgroupID:      newsgroupID,
+		PosterID:         posterID,
+		SourceReleaseKey: "refresh-blankkeys-source",
+		ReleaseKey:       "refresh-blankkeys-release",
+		ReleaseName:      "Refresh Blank Keys",
+		BinaryKey:        fmt.Sprintf("refresh-blankkeys-binary-%d", time.Now().UnixNano()),
+		BinaryName:       "blank.bin",
+		FileName:         "blank.bin",
+		FileIndex:        1,
+		TotalParts:       1,
+		MatchConfidence:  0.5,
+		MatchStatus:      "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE binaries
+		SET release_family_key = '',
+		    base_stem = '',
+		    expected_file_count = 0,
+		    expected_archive_file_count = 0
+		WHERE id = $1`, binaryID); err != nil {
+		t.Fatalf("blank binary summary keys: %v", err)
+	}
+
+	if err := store.UpsertBinaryPart(ctx, BinaryPartRecord{
+		BinaryID:        binaryID,
+		ArticleHeaderID: headerID,
+		MessageID:       fmt.Sprintf("<refresh-blankkeys-part-%d@test>", time.Now().UnixNano()),
+		PartNumber:      1,
+		TotalParts:      1,
+		SegmentBytes:    1234,
+		FileName:        "blank.bin",
+	}); err != nil {
+		t.Fatalf("upsert binary part: %v", err)
+	}
+
+	if err := store.RefreshBinaryStats(ctx, binaryID); err != nil {
+		t.Fatalf("refresh binary stats with blank summary keys: %v", err)
+	}
+
+	var observedParts int
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT observed_parts
+		FROM binaries
+		WHERE id = $1`, binaryID,
+	).Scan(&observedParts); err != nil {
+		t.Fatalf("query refreshed binary observed_parts: %v", err)
+	}
+	if observedParts != 1 {
+		t.Fatalf("expected observed_parts=1, got %d", observedParts)
 	}
 }
 
@@ -1446,6 +2039,579 @@ func TestInsertArticleHeadersBatchDedupesDuplicateRowsLastPayloadWins(t *testing
 	}
 }
 
+func TestInsertArticleHeadersStripsNULBytesFromTextFields(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.scrape.nul.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	t.Cleanup(func() {
+		cleanupCtx := context.Background()
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM article_headers WHERE newsgroup_id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup article headers: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM newsgroups WHERE id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup newsgroup: %v", err)
+		}
+	})
+
+	now := time.Date(2026, 6, 11, 10, 30, 0, 0, time.UTC)
+	inserted, err := store.InsertArticleHeaders(ctx, 1, newsgroupID, []ArticleHeader{{
+		ArticleNumber: 7001,
+		MessageID:     "<nul-byte-test@test>\x00",
+		Subject:       "Bad\x00Subject [1/1] - \"nul.rar\" yEnc (1/1)",
+		Poster:        "bad\x00poster@example.com",
+		DateUTC:       &now,
+		Bytes:         1234,
+		Lines:         12,
+		Xref:          "xref\x00value",
+	}})
+	if err != nil {
+		t.Fatalf("insert article headers with nul bytes: %v", err)
+	}
+	if inserted != 1 {
+		t.Fatalf("expected 1 processed header, got %d", inserted)
+	}
+
+	var (
+		messageID string
+		subject   string
+		poster    string
+		xref      string
+	)
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT
+			ah.message_id,
+			p.subject,
+			COALESCE(po.poster_name, p.poster, ''),
+			p.xref
+		FROM article_headers ah
+		JOIN article_header_ingest_payloads p ON p.article_header_id = ah.id
+		LEFT JOIN posters po ON po.id = p.poster_id
+		WHERE ah.newsgroup_id = $1`, newsgroupID,
+	).Scan(&messageID, &subject, &poster, &xref); err != nil {
+		t.Fatalf("query sanitized header payload: %v", err)
+	}
+
+	if strings.ContainsRune(messageID, '\x00') || strings.ContainsRune(subject, '\x00') || strings.ContainsRune(poster, '\x00') || strings.ContainsRune(xref, '\x00') {
+		t.Fatalf("expected nul bytes stripped, got message_id=%q subject=%q poster=%q xref=%q", messageID, subject, poster, xref)
+	}
+}
+
+func TestInsertArticleHeadersBatchResolvesExistingRowsWithoutPerRowProbe(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.scrape.batch.resolve.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	t.Cleanup(func() {
+		cleanupCtx := context.Background()
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM article_headers WHERE newsgroup_id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup article headers: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM newsgroups WHERE id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup newsgroup: %v", err)
+		}
+	})
+
+	now := time.Date(2026, 6, 11, 9, 0, 0, 0, time.UTC)
+	messageID := fmt.Sprintf("<scrape-existing-resolve-%d@test>", time.Now().UnixNano())
+	firstBatch := []ArticleHeader{{
+		ArticleNumber: 777,
+		MessageID:     messageID,
+		Subject:       `Existing Resolve [1/1] - "resolve.part1.rar" yEnc (1/4)`,
+		Poster:        "poster-existing@example.com",
+		DateUTC:       &now,
+		Bytes:         1000,
+		Lines:         10,
+		Xref:          "xref-existing",
+	}}
+	if inserted, err := store.InsertArticleHeaders(ctx, 1, newsgroupID, firstBatch); err != nil {
+		t.Fatalf("insert first batch: %v", err)
+	} else if inserted != 1 {
+		t.Fatalf("expected first batch count 1, got %d", inserted)
+	}
+
+	secondBatch := []ArticleHeader{
+		{
+			ArticleNumber: 777,
+			MessageID:     messageID,
+			Subject:       `Existing Resolve [1/1] - "resolve.part1.rar" yEnc (2/4)`,
+			Poster:        "poster-existing-second@example.com",
+			DateUTC:       &now,
+			Bytes:         1200,
+			Lines:         12,
+			Xref:          "xref-existing-second",
+		},
+		{
+			ArticleNumber: 778,
+			MessageID:     fmt.Sprintf("<scrape-existing-resolve-fresh-%d@test>", time.Now().UnixNano()),
+			Subject:       `Existing Resolve [2/2] - "resolve.part2.rar" yEnc (3/4)`,
+			Poster:        "poster-fresh@example.com",
+			DateUTC:       &now,
+			Bytes:         1300,
+			Lines:         13,
+			Xref:          "xref-fresh",
+		},
+	}
+	if inserted, err := store.InsertArticleHeaders(ctx, 1, newsgroupID, secondBatch); err != nil {
+		t.Fatalf("insert second batch: %v", err)
+	} else if inserted != 2 {
+		t.Fatalf("expected second batch count 2, got %d", inserted)
+	}
+
+	var count int
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM article_headers
+		WHERE newsgroup_id = $1`, newsgroupID,
+	).Scan(&count); err != nil {
+		t.Fatalf("count article headers: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("expected 2 stored article headers, got %d", count)
+	}
+}
+
+func TestResolveArticleHeaderIDsBatchFindsCommittedConflictRows(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.scrape.batch.resolve.conflict.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx := context.Background()
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM article_headers WHERE newsgroup_id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup article headers: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM newsgroups WHERE id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup newsgroup: %v", err)
+		}
+	})
+
+	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+	messageID := fmt.Sprintf("<scrape-resolve-conflict-%d@test>", time.Now().UnixNano())
+	if inserted, err := store.InsertArticleHeaders(ctx, 1, newsgroupID, []ArticleHeader{{
+		ArticleNumber: 9001,
+		MessageID:     messageID,
+		Subject:       `Conflict Resolve [1/1] - "resolve.rar" yEnc (1/4)`,
+		DateUTC:       &now,
+		Bytes:         100,
+		Lines:         1,
+	}}); err != nil {
+		t.Fatalf("seed article header: %v", err)
+	} else if inserted != 1 {
+		t.Fatalf("expected one seed insert, got %d", inserted)
+	}
+
+	tx, err := store.DB().BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer tx.Rollback()
+
+	resolved, count, err := resolveArticleHeaderIDsBatch(ctx, tx, 1, newsgroupID, []preparedArticleHeaderInsert{{
+		ArticleNumber: 9001,
+		MessageID:     messageID,
+		DateUTC:       &now,
+		Bytes:         100,
+		Lines:         1,
+	}}, []articleHeaderResolution{{}})
+	if err != nil {
+		t.Fatalf("resolve article header ids fallback: %v", err)
+	}
+	if count != 1 || len(resolved) != 1 || resolved[0].ID <= 0 || resolved[0].SourcePostedAt.IsZero() {
+		t.Fatalf("expected one resolved id, count=%d ids=%v", count, resolved)
+	}
+}
+
+func TestUpsertBinaryDeferredSummaryRefreshMarksFamilyDirtyWithoutInlineRecompute(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.release.summary.defer.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	deferredCtx := WithDeferredReleaseFamilySummaryRefresh(ctx)
+	if _, err := store.UpsertBinary(deferredCtx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		ReleaseFamilyKey:  "deferred-release-family",
+		SourceReleaseKey:  "deferred-source",
+		ReleaseKey:        "deferred-release-family",
+		ReleaseName:       "Deferred Release Family",
+		BinaryKey:         "deferred-binary",
+		BinaryName:        "deferred.part01.rar",
+		FileName:          "deferred.part01.rar",
+		ExpectedFileCount: 4,
+		TotalParts:        12,
+		MatchConfidence:   0.99,
+		MatchStatus:       "strong",
+	}); err != nil {
+		t.Fatalf("upsert binary with deferred summary refresh: %v", err)
+	}
+
+	var (
+		summaryCount int
+		queueCount   int
+	)
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM release_family_readiness_summaries
+		WHERE provider_id = 1
+		  AND newsgroup_id = $1
+		  AND key_kind = 'release_family'
+		  AND family_key = 'deferred-release-family'`, newsgroupID,
+	).Scan(&summaryCount); err != nil {
+		t.Fatalf("count deferred summary rows: %v", err)
+	}
+	if summaryCount != 0 {
+		t.Fatalf("expected deferred summary refresh to avoid inline summary row writes, got %d rows", summaryCount)
+	}
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM release_family_summary_refresh_queue
+		WHERE provider_id = 1
+		  AND newsgroup_id = $1
+		  AND key_kind = 'release_family'
+		  AND family_key = 'deferred-release-family'`, newsgroupID,
+	).Scan(&queueCount); err != nil {
+		t.Fatalf("count deferred summary queue rows: %v", err)
+	}
+	if queueCount != 1 {
+		t.Fatalf("expected deferred summary refresh to enqueue one family key, got %d", queueCount)
+	}
+}
+
+func TestUpsertBinaryDeferredSummaryRefreshMarksOldAndNewFamiliesDirtyOnIdentityChange(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.release.summary.change.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	record := BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		SourceReleaseKey:  "original-source",
+		ReleaseFamilyKey:  "original-family",
+		ReleaseKey:        "original-family",
+		ReleaseName:       "Original Family",
+		BinaryKey:         "moving-binary",
+		BinaryName:        "moving.part01.rar",
+		FileName:          "moving.part01.rar",
+		BaseStem:          "original-stem",
+		ExpectedFileCount: 2,
+		TotalParts:        10,
+		MatchConfidence:   0.95,
+		MatchStatus:       "matched",
+	}
+	if _, err := store.UpsertBinary(ctx, record); err != nil {
+		t.Fatalf("seed original binary: %v", err)
+	}
+
+	cleanAt := time.Now().UTC().Add(-time.Hour)
+	for _, key := range []struct {
+		keyKind   string
+		familyKey string
+	}{
+		{keyKind: "release_family", familyKey: "original-family"},
+		{keyKind: "release_family", familyKey: "renamed-family"},
+		{keyKind: "base_stem", familyKey: "original-stem"},
+		{keyKind: "base_stem", familyKey: "renamed-stem"},
+	} {
+		if _, err := store.DB().ExecContext(ctx, `
+			INSERT INTO release_family_readiness_summaries (
+				provider_id, newsgroup_id, key_kind, family_key,
+				source_release_key, release_key, release_name,
+				binary_count, complete_binary_count, complete_main_payload_binary_count, incomplete_binary_count,
+				expected_file_count, expected_archive_file_count, has_expected_file_count, has_expected_archive_file_count,
+				total_bytes, earliest_posted_at, dominant_family_kind, dominant_file_name, dominant_match_confidence,
+				readiness_bucket, expected_file_coverage_pct, archive_file_coverage_pct, updated_at, processed_at
+			)
+			VALUES (
+				1, $1, $2, $3,
+				'', '', '',
+				0, 0, 0, 0,
+				0, 0, false, false,
+				0, NULL, '', '', 0,
+				$4, 0, 0, $5, $5
+			)
+			ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
+			SET updated_at = EXCLUDED.updated_at,
+			    processed_at = EXCLUDED.processed_at`,
+			newsgroupID, key.keyKind, key.familyKey, releaseReadinessStaleCleanupOnly, cleanAt,
+		); err != nil {
+			t.Fatalf("seed readiness row %s/%s: %v", key.keyKind, key.familyKey, err)
+		}
+	}
+
+	changed := record
+	changed.SourceReleaseKey = "renamed-source"
+	changed.ReleaseFamilyKey = "renamed-family"
+	changed.ReleaseKey = "renamed-family"
+	changed.ReleaseName = "Renamed Family"
+	changed.BaseStem = "renamed-stem"
+	changed.ExpectedFileCount = 3
+
+	deferredCtx := WithDeferredReleaseFamilySummaryRefresh(ctx)
+	if _, err := store.UpsertBinary(deferredCtx, changed); err != nil {
+		t.Fatalf("upsert binary with changed deferred identity: %v", err)
+	}
+
+	rows, err := store.DB().QueryContext(ctx, `
+		SELECT key_kind, family_key
+		FROM release_family_summary_refresh_queue
+		WHERE provider_id = 1
+		  AND newsgroup_id = $1
+		  AND (
+		  	(key_kind = 'release_family' AND family_key IN ('original-family', 'renamed-family'))
+		  	OR (key_kind = 'base_stem' AND family_key IN ('original-stem', 'renamed-stem'))
+		  )`, newsgroupID,
+	)
+	if err != nil {
+		t.Fatalf("query changed refresh queue rows: %v", err)
+	}
+	defer rows.Close()
+
+	got := make(map[string]bool, 4)
+	for rows.Next() {
+		var keyKind, familyKey string
+		if err := rows.Scan(&keyKind, &familyKey); err != nil {
+			t.Fatalf("scan changed refresh queue row: %v", err)
+		}
+		got[keyKind+":"+familyKey] = true
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate changed refresh queue rows: %v", err)
+	}
+
+	for _, key := range []string{
+		"release_family:original-family",
+		"release_family:renamed-family",
+		"base_stem:original-stem",
+		"base_stem:renamed-stem",
+	} {
+		if !got[key] {
+			t.Fatalf("expected readiness row %s to be marked dirty, got=%v", key, got)
+		}
+	}
+}
+
+func TestUpsertBinarySkipsUnchangedRowRewriteButUpdatesOnRealChange(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.binary.upsert.noop.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	record := BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		SourceReleaseKey:  "noop-source",
+		ReleaseFamilyKey:  "noop-family",
+		FileSetKey:        "noop-fileset",
+		FileFamilyKey:     "noop-family::file",
+		IdentityStrength:  "strong",
+		IdentityReason:    "test",
+		SubjectSetToken:   "noop-token",
+		SubjectSetKind:    "subject",
+		FamilyKind:        "archive_stem",
+		BaseStem:          "noop",
+		IsMainPayload:     true,
+		ReleaseKey:        "noop-family",
+		ReleaseName:       "Noop Family",
+		BinaryKey:         "noop-binary",
+		BinaryName:        "noop.rar",
+		FileName:          "noop.rar",
+		FileIndex:         1,
+		ExpectedFileCount: 2,
+		TotalParts:        3,
+		MatchConfidence:   0.95,
+		MatchStatus:       "strong",
+		GroupingEvidence: map[string]any{
+			"summary": map[string]any{
+				"status": "matched",
+			},
+		},
+	}
+
+	binaryID, err := store.UpsertBinary(ctx, record)
+	if err != nil {
+		t.Fatalf("initial upsert binary: %v", err)
+	}
+
+	var firstUpdatedAt time.Time
+	if err := store.DB().QueryRowContext(ctx, `SELECT updated_at FROM binaries WHERE id = $1`, binaryID).Scan(&firstUpdatedAt); err != nil {
+		t.Fatalf("query initial updated_at: %v", err)
+	}
+
+	time.Sleep(20 * time.Millisecond)
+
+	sameBinaryID, err := store.UpsertBinary(ctx, record)
+	if err != nil {
+		t.Fatalf("noop upsert binary: %v", err)
+	}
+	if sameBinaryID != binaryID {
+		t.Fatalf("expected same binary id %d, got %d", binaryID, sameBinaryID)
+	}
+
+	var noopUpdatedAt time.Time
+	if err := store.DB().QueryRowContext(ctx, `SELECT updated_at FROM binaries WHERE id = $1`, binaryID).Scan(&noopUpdatedAt); err != nil {
+		t.Fatalf("query noop updated_at: %v", err)
+	}
+	if !noopUpdatedAt.Equal(firstUpdatedAt) {
+		t.Fatalf("expected noop upsert to preserve updated_at %s, got %s", firstUpdatedAt.UTC(), noopUpdatedAt.UTC())
+	}
+
+	time.Sleep(20 * time.Millisecond)
+
+	changed := record
+	changed.MatchConfidence = 0.99
+	changed.MatchStatus = "very_strong"
+	if _, err := store.UpsertBinary(ctx, changed); err != nil {
+		t.Fatalf("changed upsert binary: %v", err)
+	}
+
+	var changedUpdatedAt time.Time
+	var changedStatus string
+	var changedConfidence float64
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT updated_at, match_status, match_confidence
+		FROM binaries
+		WHERE id = $1`, binaryID,
+	).Scan(&changedUpdatedAt, &changedStatus, &changedConfidence); err != nil {
+		t.Fatalf("query changed binary row: %v", err)
+	}
+	if !changedUpdatedAt.After(noopUpdatedAt) {
+		t.Fatalf("expected changed upsert to advance updated_at beyond %s, got %s", noopUpdatedAt.UTC(), changedUpdatedAt.UTC())
+	}
+	if changedStatus != "very_strong" || changedConfidence != 0.99 {
+		t.Fatalf("expected changed upsert to persist stronger match, got status=%q confidence=%f", changedStatus, changedConfidence)
+	}
+}
+
+func TestUpsertBinaryDoesNotDowngradeIdentityWithLowerConfidence(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.binary.upsert.identity.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	record := BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		SourceReleaseKey:  "strong-source",
+		ReleaseFamilyKey:  "strong-family",
+		FileSetKey:        "strong-fileset",
+		FileFamilyKey:     "strong-file-family",
+		IdentityStrength:  "strong",
+		IdentityReason:    "strong evidence",
+		SubjectSetToken:   "strong-token",
+		SubjectSetKind:    "subject",
+		FamilyKind:        "readable_title",
+		BaseStem:          "strong-stem",
+		IsMainPayload:     true,
+		ReleaseKey:        "strong-family",
+		ReleaseName:       "Strong Family",
+		BinaryKey:         "stable-identity-binary",
+		BinaryName:        "strong.part01.rar",
+		FileName:          "strong.part01.rar",
+		FileIndex:         1,
+		ExpectedFileCount: 2,
+		TotalParts:        10,
+		MatchConfidence:   0.95,
+		MatchStatus:       "matched",
+	}
+	binaryID, err := store.UpsertBinary(ctx, record)
+	if err != nil {
+		t.Fatalf("seed strong binary: %v", err)
+	}
+
+	downgrade := record
+	downgrade.SourceReleaseKey = "weak-source"
+	downgrade.ReleaseFamilyKey = "weak-family"
+	downgrade.FileSetKey = "weak-fileset"
+	downgrade.FileFamilyKey = "weak-file-family"
+	downgrade.IdentityStrength = "weak"
+	downgrade.IdentityReason = "weak evidence"
+	downgrade.SubjectSetToken = "weak-token"
+	downgrade.FamilyKind = "contextual_obfuscated"
+	downgrade.BaseStem = "weak-stem"
+	downgrade.ReleaseKey = "weak-family"
+	downgrade.ReleaseName = "Weak Family"
+	downgrade.BinaryName = "weak.bin"
+	downgrade.FileName = "weak.bin"
+	downgrade.FileIndex = 99
+	downgrade.ExpectedFileCount = 3
+	downgrade.TotalParts = 12
+	downgrade.MatchConfidence = 0.50
+	downgrade.MatchStatus = "probable"
+	if _, err := store.UpsertBinary(ctx, downgrade); err != nil {
+		t.Fatalf("upsert lower-confidence binary: %v", err)
+	}
+
+	var got struct {
+		releaseFamilyKey string
+		releaseName      string
+		fileName         string
+		fileIndex        int
+		expectedCount    int
+		totalParts       int
+		matchConfidence  float64
+		matchStatus      string
+	}
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT release_family_key, release_name, file_name, file_index,
+		       expected_file_count, total_parts, match_confidence, match_status
+		FROM binaries
+		WHERE id = $1`, binaryID,
+	).Scan(
+		&got.releaseFamilyKey,
+		&got.releaseName,
+		&got.fileName,
+		&got.fileIndex,
+		&got.expectedCount,
+		&got.totalParts,
+		&got.matchConfidence,
+		&got.matchStatus,
+	); err != nil {
+		t.Fatalf("query binary after lower-confidence upsert: %v", err)
+	}
+	if got.releaseFamilyKey != "strong-family" || got.releaseName != "Strong Family" || got.fileName != "strong.part01.rar" || got.fileIndex != 1 {
+		t.Fatalf("expected strong identity to be retained, got family=%q release=%q file=%q index=%d", got.releaseFamilyKey, got.releaseName, got.fileName, got.fileIndex)
+	}
+	if got.expectedCount != 3 || got.totalParts != 12 {
+		t.Fatalf("expected monotonic counters to advance, got expected=%d total_parts=%d", got.expectedCount, got.totalParts)
+	}
+	if got.matchConfidence != 0.95 || got.matchStatus != "matched" {
+		t.Fatalf("expected stronger match status to remain, got confidence=%f status=%q", got.matchConfidence, got.matchStatus)
+	}
+}
+
 func TestStartBinaryInspectionIgnoresMissingReleaseID(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
@@ -1457,7 +2623,7 @@ func TestStartBinaryInspectionIgnoresMissingReleaseID(t *testing.T) {
 	}
 
 	posterName := fmt.Sprintf("poster-%d@example.com", time.Now().UnixNano())
-	posterID, err := store.EnsurePoster(ctx, posterName)
+	posterID, err := ensureTestPoster(t, store, ctx, posterName)
 	if err != nil {
 		t.Fatalf("ensure poster: %v", err)
 	}
@@ -1488,16 +2654,23 @@ func TestStartBinaryInspectionIgnoresMissingReleaseID(t *testing.T) {
 		t.Fatalf("start binary inspection with missing release id: %v", err)
 	}
 
-	var releaseID sql.NullString
+	var (
+		releaseID    sql.NullString
+		claimedBy    string
+		claimedUntil sql.NullTime
+	)
 	if err := store.DB().QueryRowContext(ctx, `
-		SELECT release_id
+		SELECT release_id, inspection_claimed_by, inspection_claimed_until
 		FROM binary_inspections
 		WHERE stage_name = 'inspect_discovery' AND binary_id = $1`, binaryID,
-	).Scan(&releaseID); err != nil {
+	).Scan(&releaseID, &claimedBy, &claimedUntil); err != nil {
 		t.Fatalf("query binary inspection row: %v", err)
 	}
 	if releaseID.Valid {
 		t.Fatalf("expected missing release id to be normalized to NULL, got %q", releaseID.String)
+	}
+	if claimedBy == "" || !claimedUntil.Valid || !claimedUntil.Time.After(time.Now()) {
+		t.Fatalf("expected start inspection to set active claim, got claimed_by=%q claimed_until=%v", claimedBy, claimedUntil)
 	}
 
 	if _, err := store.DB().ExecContext(ctx, `
@@ -1617,6 +2790,1028 @@ func TestListReleaseCandidatesPrefersFamiliesWithCompleteBinaries(t *testing.T) 
 	}
 	if _, err := store.DB().ExecContext(ctx, `DELETE FROM newsgroups WHERE id = $1`, newsgroupID); err != nil {
 		t.Fatalf("cleanup newsgroup: %v", err)
+	}
+}
+
+func TestRecoveredFileSetReleaseCandidatesBridgeGroupsAndAckUnderlyingSummaries(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupA := fmt.Sprintf("alt.test.recovered.groupa.%d", time.Now().UnixNano())
+	groupB := fmt.Sprintf("alt.test.recovered.groupb.%d", time.Now().UnixNano())
+	groupAID, err := store.EnsureNewsgroup(ctx, groupA)
+	if err != nil {
+		t.Fatalf("ensure group A: %v", err)
+	}
+	groupBID, err := store.EnsureNewsgroup(ctx, groupB)
+	if err != nil {
+		t.Fatalf("ensure group B: %v", err)
+	}
+
+	fileSetKey := fmt.Sprintf("recovered-file-set-%d", time.Now().UnixNano())
+	familyA := fileSetKey + "-family-a"
+	familyB := fileSetKey + "-family-b"
+	baseA := fileSetKey + "-base-a"
+	baseB := fileSetKey + "-base-b"
+
+	makeRecoveredBinary := func(groupID int64, familyKey, baseStem, binaryKey, fileName string, fileIndex int) int64 {
+		binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+			ProviderID:       1,
+			NewsgroupID:      groupID,
+			SourceReleaseKey: familyKey,
+			ReleaseFamilyKey: familyKey,
+			FileSetKey:       fileSetKey,
+			FileFamilyKey:    fileSetKey + "::" + fileName,
+			IdentityStrength: "recovered_yenc",
+			IdentityReason:   "yenc_header",
+			FamilyKind:       "file_name",
+			BaseStem:         baseStem,
+			IsMainPayload:    true,
+			ReleaseKey:       familyKey,
+			ReleaseName:      familyKey,
+			BinaryKey:        binaryKey,
+			BinaryName:       fileName,
+			FileName:         fileName,
+			FileIndex:        fileIndex,
+			TotalParts:       10,
+			MatchConfidence:  0.97,
+			MatchStatus:      "matched",
+		})
+		if err != nil {
+			t.Fatalf("upsert recovered binary %s: %v", binaryKey, err)
+		}
+		if _, err := store.DB().ExecContext(ctx, `
+			UPDATE binaries
+			SET observed_parts = total_parts,
+			    total_bytes = 12345,
+			    posted_at = NOW() - INTERVAL '30 minutes',
+			    recovered_source = 'yenc_header',
+			    updated_at = NOW()
+			WHERE id = $1`, binaryID,
+		); err != nil {
+			t.Fatalf("update recovered binary %s: %v", binaryKey, err)
+		}
+		return binaryID
+	}
+
+	binaryA := makeRecoveredBinary(groupAID, familyA, baseA, fileSetKey+"::a", "movie.part01.rar", 1)
+	binaryB := makeRecoveredBinary(groupBID, familyB, baseB, fileSetKey+"::b", "movie.part02.rar", 2)
+
+	keys := []releaseFamilySummaryKey{
+		{ProviderID: 1, NewsgroupID: groupAID, KeyKind: "release_family", FamilyKey: familyA},
+		{ProviderID: 1, NewsgroupID: groupAID, KeyKind: "base_stem", FamilyKey: strings.ToLower(baseA)},
+		{ProviderID: 1, NewsgroupID: groupBID, KeyKind: "release_family", FamilyKey: familyB},
+		{ProviderID: 1, NewsgroupID: groupBID, KeyKind: "base_stem", FamilyKey: strings.ToLower(baseB)},
+	}
+	if err := markReleaseFamiliesDirtyBatch(ctx, store.DB(), keys); err != nil {
+		t.Fatalf("queue release summary refresh: %v", err)
+	}
+	if _, err := store.RefreshQueuedReleaseFamilySummaries(ctx, len(keys)); err != nil {
+		t.Fatalf("refresh queued release summaries: %v", err)
+	}
+
+	candidates, err := store.ListReleaseCandidates(ctx, 1, ReleaseCandidateSelectionOptions{MinExpectedFileCoveragePct: 90})
+	if err != nil {
+		t.Fatalf("list release candidates: %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("expected one candidate, got %d", len(candidates))
+	}
+	candidate := candidates[0]
+	if candidate.KeyKind != ReleaseCandidateKeyKindRecoveredFileSet {
+		t.Fatalf("expected recovered-file-set candidate, got %+v", candidate)
+	}
+	expectedRepresentativeGroup := groupAID
+	if groupBID < expectedRepresentativeGroup {
+		expectedRepresentativeGroup = groupBID
+	}
+	if candidate.NewsgroupID != expectedRepresentativeGroup {
+		t.Fatalf("expected representative newsgroup %d, got %d", expectedRepresentativeGroup, candidate.NewsgroupID)
+	}
+	if candidate.ReleaseFamilyKey != fileSetKey {
+		t.Fatalf("expected file set key %q, got %q", fileSetKey, candidate.ReleaseFamilyKey)
+	}
+	if candidate.ExpectedFileCount != 0 || candidate.ExpectedArchiveFileCount != 0 {
+		t.Fatalf("expected recovered-file-set candidate without PAR2 expected counts, got file=%d archive=%d", candidate.ExpectedFileCount, candidate.ExpectedArchiveFileCount)
+	}
+
+	binaries, err := store.ListBinariesForReleaseCandidate(ctx, candidate.ProviderID, candidate.NewsgroupID, candidate.KeyKind, candidate.ReleaseFamilyKey)
+	if err != nil {
+		t.Fatalf("list binaries for recovered-file-set candidate: %v", err)
+	}
+	if len(binaries) != 2 {
+		t.Fatalf("expected both groups' binaries, got %d", len(binaries))
+	}
+
+	if err := store.AckReleaseCandidate(ctx, candidate.ProviderID, candidate.NewsgroupID, candidate.KeyKind, candidate.ReleaseFamilyKey); err != nil {
+		t.Fatalf("ack recovered-file-set candidate: %v", err)
+	}
+
+	var pending int
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM release_family_readiness_summaries s
+		LEFT JOIN release_family_readiness_acks a
+		  ON a.provider_id = s.provider_id
+		 AND a.newsgroup_id = s.newsgroup_id
+		 AND a.key_kind = s.key_kind
+		 AND a.family_key = s.family_key
+			WHERE s.provider_id = 1
+			  AND newsgroup_id IN ($1, $2)
+			  AND family_key IN ($3, $4, $5, $6)
+			  AND s.updated_at > COALESCE(a.processed_at, TIMESTAMPTZ 'epoch')`,
+		groupAID, groupBID, familyA, familyB, strings.ToLower(baseA), strings.ToLower(baseB),
+	).Scan(&pending); err != nil {
+		t.Fatalf("count pending summaries after ack: %v", err)
+	}
+	if pending != 0 {
+		t.Fatalf("expected recovered ack to process underlying group summaries, got pending=%d", pending)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `DELETE FROM binaries WHERE id IN ($1, $2)`, binaryA, binaryB); err != nil {
+		t.Fatalf("cleanup binaries: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `
+			DELETE FROM release_family_readiness_summaries
+			WHERE provider_id = 1 AND newsgroup_id IN ($1, $2) AND family_key IN ($3, $4, $5, $6)`,
+		groupAID, groupBID, familyA, familyB, strings.ToLower(baseA), strings.ToLower(baseB),
+	); err != nil {
+		t.Fatalf("cleanup release summaries: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `DELETE FROM newsgroups WHERE id IN ($1, $2)`, groupAID, groupBID); err != nil {
+		t.Fatalf("cleanup newsgroups: %v", err)
+	}
+}
+
+func TestListBinariesForReleaseCandidateReadsBinaryV2Projections(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.release.binaryfanout.v2.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		SourceReleaseKey:  "fanout-v2-source",
+		ReleaseFamilyKey:  "fanout-v2-family",
+		ReleaseKey:        "fanout-v2-family",
+		ReleaseName:       "Fanout V2 Family",
+		BinaryKey:         "fanout-v2-binary",
+		BinaryName:        "fanout.v2.rar",
+		FileName:          "fanout.v2.rar",
+		ExpectedFileCount: 3,
+		TotalParts:        7,
+		MatchConfidence:   0.88,
+		MatchStatus:       "strong",
+		FamilyKind:        "archive_stem",
+		BaseStem:          "fanout.v2",
+		IsMainPayload:     true,
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE binaries
+		SET release_name = 'LEGACY FANOUT POISON',
+		    binary_name = 'legacy.poison.bin',
+		    file_name = 'legacy.poison.bin',
+		    expected_file_count = 99,
+		    family_kind = 'legacy_poison',
+		    match_confidence = 0.01
+		WHERE id = $1`, binaryID); err != nil {
+		t.Fatalf("poison legacy binary row: %v", err)
+	}
+
+	binaries, err := store.ListBinariesForReleaseCandidate(ctx, 1, newsgroupID, ReleaseCandidateKeyKindReleaseFamily, "fanout-v2-family")
+	if err != nil {
+		t.Fatalf("list binaries for release candidate: %v", err)
+	}
+	if len(binaries) != 1 {
+		t.Fatalf("expected one binary, got %d", len(binaries))
+	}
+	got := binaries[0]
+	if got.ReleaseName != "Fanout V2 Family" ||
+		got.BinaryName != "fanout.v2.rar" ||
+		got.FileName != "fanout.v2.rar" ||
+		got.ExpectedFileCount != 3 ||
+		got.FamilyKind != "archive_stem" ||
+		got.MatchConfidence != 0.88 {
+		t.Fatalf("expected fan-out to use v2 projection values, got %+v", got)
+	}
+}
+
+func TestListBinariesForReleaseCandidateReleaseFamilyCrossesNewsgroups(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupA := fmt.Sprintf("alt.test.release.cross-group.a.%d", time.Now().UnixNano())
+	groupB := fmt.Sprintf("alt.test.release.cross-group.b.%d", time.Now().UnixNano())
+	groupAID, err := store.EnsureNewsgroup(ctx, groupA)
+	if err != nil {
+		t.Fatalf("ensure group a: %v", err)
+	}
+	groupBID, err := store.EnsureNewsgroup(ctx, groupB)
+	if err != nil {
+		t.Fatalf("ensure group b: %v", err)
+	}
+	defer func() {
+		cleanupCtx := context.Background()
+		_, _ = store.DB().ExecContext(cleanupCtx, `DELETE FROM binaries WHERE newsgroup_id IN ($1, $2)`, groupAID, groupBID)
+		_, _ = store.DB().ExecContext(cleanupCtx, `DELETE FROM newsgroups WHERE id IN ($1, $2)`, groupAID, groupBID)
+	}()
+
+	family := fmt.Sprintf("cross-group-family-%d", time.Now().UnixNano())
+	for i, newsgroupID := range []int64{groupAID, groupBID} {
+		if _, err := store.UpsertBinary(ctx, BinaryRecord{
+			ProviderID:        1,
+			NewsgroupID:       newsgroupID,
+			SourceReleaseKey:  family,
+			ReleaseFamilyKey:  family,
+			ReleaseKey:        family,
+			ReleaseName:       "Cross Group Family",
+			BinaryKey:         fmt.Sprintf("%s-%d", family, i),
+			BinaryName:        fmt.Sprintf("cross.group.part%02d.rar", i+1),
+			FileName:          fmt.Sprintf("cross.group.part%02d.rar", i+1),
+			FileIndex:         i + 1,
+			ExpectedFileCount: 2,
+			TotalParts:        1,
+			IsMainPayload:     true,
+		}); err != nil {
+			t.Fatalf("upsert binary %d: %v", i, err)
+		}
+	}
+
+	binaries, err := store.ListBinariesForReleaseCandidate(ctx, 1, groupAID, ReleaseCandidateKeyKindReleaseFamily, family)
+	if err != nil {
+		t.Fatalf("list binaries for release-family candidate: %v", err)
+	}
+	if len(binaries) != 2 {
+		t.Fatalf("expected release-family fan-out across both newsgroups, got %d", len(binaries))
+	}
+	gotGroups := map[int64]bool{}
+	for _, binary := range binaries {
+		gotGroups[binary.NewsgroupID] = true
+	}
+	if !gotGroups[groupAID] || !gotGroups[groupBID] {
+		t.Fatalf("expected groups %d and %d, got %+v", groupAID, groupBID, gotGroups)
+	}
+}
+
+func TestAckReleaseCandidateStoresAckWithoutMutatingSummaryRow(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.release.ack.table.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	family := fmt.Sprintf("ack-family-%d", time.Now().UnixNano())
+	updatedAt := time.Now().UTC().Add(-time.Minute).Truncate(time.Microsecond)
+	processedAt := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Microsecond)
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO release_family_readiness_summaries (
+			provider_id, newsgroup_id, key_kind, family_key,
+			source_release_key, release_key, release_name,
+			binary_count, complete_binary_count, complete_main_payload_binary_count, incomplete_binary_count,
+			expected_file_count, has_expected_file_count, total_bytes, earliest_posted_at,
+			readiness_bucket, expected_file_coverage_pct, updated_at, processed_at
+		)
+		VALUES ($1, $2, 'release_family', $3, '', '', '', 1, 1, 1, 0, 1, true, 100, NOW(), 'actionable', 100, $4, $5)`,
+		1, newsgroupID, family, updatedAt, processedAt,
+	); err != nil {
+		t.Fatalf("seed release summary row: %v", err)
+	}
+
+	if err := store.AckReleaseCandidate(ctx, 1, newsgroupID, "release_family", family); err != nil {
+		t.Fatalf("ack release candidate: %v", err)
+	}
+
+	var summaryProcessedAt time.Time
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT processed_at
+		FROM release_family_readiness_summaries
+		WHERE provider_id = 1
+		  AND newsgroup_id = $1
+		  AND key_kind = 'release_family'
+		  AND family_key = $2`,
+		newsgroupID, family,
+	).Scan(&summaryProcessedAt); err != nil {
+		t.Fatalf("query summary processed_at: %v", err)
+	}
+	if !summaryProcessedAt.Equal(processedAt) {
+		t.Fatalf("expected summary processed_at unchanged at %s, got %s", processedAt, summaryProcessedAt)
+	}
+
+	var ackProcessedAt time.Time
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT processed_at
+		FROM release_family_readiness_acks
+		WHERE provider_id = 1
+		  AND newsgroup_id = $1
+		  AND key_kind = 'release_family'
+		  AND family_key = $2`,
+		newsgroupID, family,
+	).Scan(&ackProcessedAt); err != nil {
+		t.Fatalf("query ack processed_at: %v", err)
+	}
+	if !ackProcessedAt.Equal(updatedAt) {
+		t.Fatalf("expected ack processed_at %s, got %s", updatedAt, ackProcessedAt)
+	}
+}
+
+func TestAckReleaseCandidateAggregatesDuplicateReadyCandidateRows(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.release.ready.ack.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	family := fmt.Sprintf("ready-ack-family-%d", time.Now().UnixNano())
+	firstUpdatedAt := time.Now().UTC().Add(-2 * time.Minute).Truncate(time.Microsecond)
+	secondUpdatedAt := time.Now().UTC().Add(-1 * time.Minute).Truncate(time.Microsecond)
+	firstSourcePostedAt := time.Date(2026, 6, 26, 15, 0, 0, 0, time.UTC)
+	secondSourcePostedAt := firstSourcePostedAt.Add(time.Second)
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO release_ready_candidates (
+			source_posted_at,
+			provider_id, newsgroup_id, key_kind, family_key,
+			source_release_key, release_key, release_name,
+			binary_count, complete_binary_count, complete_main_payload_binary_count,
+			expected_file_count, expected_archive_file_count,
+			has_expected_file_count, has_expected_archive_file_count,
+			expected_file_coverage_pct, archive_file_coverage_pct,
+			total_bytes, earliest_posted_at, ready_reason, updated_at
+		)
+		VALUES
+			($1, 1, $3, 'release_family', $4, $4, $4, $4, 1, 1, 1, 1, 0, true, false, 100, 0, 100, $1, 'actionable', $5),
+			($2, 1, $3, 'release_family', $4, $4, $4, $4, 1, 1, 1, 1, 0, true, false, 100, 0, 100, $2, 'actionable', $6)`,
+		firstSourcePostedAt,
+		secondSourcePostedAt,
+		newsgroupID,
+		family,
+		firstUpdatedAt,
+		secondUpdatedAt,
+	); err != nil {
+		t.Fatalf("seed duplicate ready candidates: %v", err)
+	}
+
+	if err := store.AckReleaseCandidate(ctx, 1, newsgroupID, "release_family", family); err != nil {
+		t.Fatalf("ack release candidate: %v", err)
+	}
+
+	var ackCount int
+	var ackProcessedAt time.Time
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT COUNT(*), MAX(processed_at)
+		FROM release_ready_candidate_acks
+		WHERE provider_id = 1
+		  AND newsgroup_id = $1
+		  AND key_kind = 'release_family'
+		  AND family_key = $2`,
+		newsgroupID,
+		family,
+	).Scan(&ackCount, &ackProcessedAt); err != nil {
+		t.Fatalf("query release ready candidate ack: %v", err)
+	}
+	if ackCount != 1 {
+		t.Fatalf("expected one aggregated ack row, got %d", ackCount)
+	}
+	if !ackProcessedAt.Equal(secondUpdatedAt) {
+		t.Fatalf("expected ack processed_at %s, got %s", secondUpdatedAt, ackProcessedAt)
+	}
+}
+
+func TestCatalogReleaseNewsgroupsAndArticlesPreserveMultiGroupProvenance(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupA := fmt.Sprintf("alt.test.catalog.groupa.%d", time.Now().UnixNano())
+	groupB := fmt.Sprintf("alt.test.catalog.groupb.%d", time.Now().UnixNano())
+	groupC := fmt.Sprintf("alt.test.catalog.groupc.%d", time.Now().UnixNano())
+	groupAID, err := store.EnsureNewsgroup(ctx, groupA)
+	if err != nil {
+		t.Fatalf("ensure group A: %v", err)
+	}
+	groupBID, err := store.EnsureNewsgroup(ctx, groupB)
+	if err != nil {
+		t.Fatalf("ensure group B: %v", err)
+	}
+	if _, err := store.EnsureNewsgroup(ctx, groupC); err != nil {
+		t.Fatalf("ensure group C: %v", err)
+	}
+
+	releaseID, err := store.UpsertRelease(ctx, ReleaseRecord{
+		ReleaseID:         fmt.Sprintf("rel-%d", time.Now().UnixNano()),
+		GUID:              fmt.Sprintf("guid-%d", time.Now().UnixNano()),
+		ProviderID:        1,
+		SourceReleaseKey:  "catalog-multigroup",
+		ReleaseFamilyKey:  "catalog-multigroup",
+		ReleaseKey:        "catalog-multigroup",
+		GroupName:         "release-group-catalog-multigroup",
+		Title:             "Catalog Multigroup Release",
+		SearchTitle:       "catalog multigroup release",
+		Category:          "Other/Misc",
+		Classification:    "other",
+		PostedAt:          ptrTime(time.Now().UTC()),
+		IdentityStatus:    "identified",
+		AvailabilityTier:  "good",
+		MediaQualityTier:  "unknown",
+		MetadataUpdatedAt: ptrTime(time.Now().UTC()),
+	})
+	if err != nil {
+		t.Fatalf("upsert release: %v", err)
+	}
+
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       groupAID,
+		SourceReleaseKey:  "catalog-multigroup",
+		ReleaseFamilyKey:  "catalog-multigroup",
+		FileFamilyKey:     "catalog-multigroup::movie",
+		FamilyKind:        "file_name",
+		BaseStem:          "catalog-multigroup",
+		IsMainPayload:     true,
+		ReleaseKey:        "catalog-multigroup",
+		ReleaseName:       "Catalog Multigroup Release",
+		BinaryKey:         fmt.Sprintf("catalog-multigroup::binary-%d", time.Now().UnixNano()),
+		BinaryName:        "movie.part01.rar",
+		FileName:          "movie.part01.rar",
+		FileIndex:         1,
+		ExpectedFileCount: 1,
+		TotalParts:        2,
+		MatchConfidence:   0.95,
+		MatchStatus:       "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+
+	if _, err := store.InsertArticleHeaders(ctx, 1, groupAID, []ArticleHeader{{
+		ArticleNumber: 1001,
+		MessageID:     "<catalog-a@test>",
+		Subject:       `"movie.part01.rar" yEnc (1/2)`,
+		Poster:        "poster-a",
+		Xref:          fmt.Sprintf("Xref: news.example.com %s:1001 %s:3001", groupA, groupC),
+		DateUTC:       ptrTime(time.Now().UTC()),
+		Bytes:         111,
+	}}); err != nil {
+		t.Fatalf("insert article one: %v", err)
+	}
+	if _, err := store.InsertArticleHeaders(ctx, 1, groupBID, []ArticleHeader{{
+		ArticleNumber: 2002,
+		MessageID:     "<catalog-b@test>",
+		Subject:       `"movie.part01.rar" yEnc (2/2)`,
+		Poster:        "poster-b",
+		DateUTC:       ptrTime(time.Now().UTC()),
+		Bytes:         222,
+	}}); err != nil {
+		t.Fatalf("insert article two: %v", err)
+	}
+
+	var articleOneID int64
+	var articleOneSourcePostedAt time.Time
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT id, source_posted_at FROM article_headers
+		WHERE newsgroup_id = $1 AND message_id = $2`,
+		groupAID, "<catalog-a@test>",
+	).Scan(&articleOneID, &articleOneSourcePostedAt); err != nil {
+		t.Fatalf("load article one id: %v", err)
+	}
+	var articleTwoID int64
+	var articleTwoSourcePostedAt time.Time
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT id, source_posted_at FROM article_headers
+		WHERE newsgroup_id = $1 AND message_id = $2`,
+		groupBID, "<catalog-b@test>",
+	).Scan(&articleTwoID, &articleTwoSourcePostedAt); err != nil {
+		t.Fatalf("load article two id: %v", err)
+	}
+	if err := store.UpsertBinaryParts(ctx, []BinaryPartRecord{
+		{BinaryID: binaryID, ArticleHeaderID: articleOneID, SourcePostedAt: articleOneSourcePostedAt, MessageID: "<catalog-a@test>", PartNumber: 1, TotalParts: 2, SegmentBytes: 111, FileName: "movie.part01.rar"},
+		{BinaryID: binaryID, ArticleHeaderID: articleTwoID, SourcePostedAt: articleTwoSourcePostedAt, MessageID: "<catalog-b@test>", PartNumber: 2, TotalParts: 2, SegmentBytes: 222, FileName: "movie.part01.rar"},
+	}); err != nil {
+		t.Fatalf("upsert binary parts: %v", err)
+	}
+	if err := store.ReplaceReleaseFiles(ctx, releaseID, []ReleaseFileRecord{{
+		BinaryID:  binaryID,
+		FileName:  "movie.part01.rar",
+		SizeBytes: 333,
+		FileIndex: 1,
+		Articles: []ReleaseFileArticleRecord{
+			{ArticleHeaderID: articleOneID, PartNumber: 1},
+			{ArticleHeaderID: articleTwoID, PartNumber: 2},
+		},
+	}}); err != nil {
+		t.Fatalf("replace release files: %v", err)
+	}
+	if err := store.ReplaceReleaseNewsgroups(ctx, releaseID, []int64{groupBID, groupAID}); err != nil {
+		t.Fatalf("replace release newsgroups: %v", err)
+	}
+
+	groups, err := store.ListCatalogReleaseNewsgroups(ctx, releaseID)
+	if err != nil {
+		t.Fatalf("list catalog release newsgroups: %v", err)
+	}
+	if len(groups) != 3 || groups[0] != groupA || groups[1] != groupB || groups[2] != groupC {
+		t.Fatalf("unexpected catalog release groups: got %v want [%s %s %s]", groups, groupA, groupB, groupC)
+	}
+
+	files, err := store.ListCatalogReleaseFiles(ctx, releaseID)
+	if err != nil {
+		t.Fatalf("list catalog release files: %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("expected one catalog release file, got %d", len(files))
+	}
+	articles, err := store.ListCatalogReleaseFileArticles(ctx, files[0].ID)
+	if err != nil {
+		t.Fatalf("list catalog release file articles: %v", err)
+	}
+	if len(articles) != 2 {
+		t.Fatalf("expected two article refs, got %d", len(articles))
+	}
+	if articles[0].MessageID != "<catalog-a@test>" || articles[1].MessageID != "<catalog-b@test>" {
+		t.Fatalf("unexpected article refs: %+v", articles)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `DELETE FROM release_files WHERE release_id = $1`, releaseID); err != nil {
+		t.Fatalf("cleanup release files: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `DELETE FROM binary_parts WHERE binary_id = $1`, binaryID); err != nil {
+		t.Fatalf("cleanup binary parts: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `DELETE FROM article_headers WHERE id IN ($1, $2)`, articleOneID, articleTwoID); err != nil {
+		t.Fatalf("cleanup article headers: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `DELETE FROM binaries WHERE id = $1`, binaryID); err != nil {
+		t.Fatalf("cleanup binary: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `DELETE FROM releases WHERE release_id = $1`, releaseID); err != nil {
+		t.Fatalf("cleanup release: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `DELETE FROM newsgroups WHERE id IN ($1, $2)`, groupAID, groupBID); err != nil {
+		t.Fatalf("cleanup newsgroups: %v", err)
+	}
+}
+
+func TestCatalogReleaseFileArticlesUseBinaryPartSourceSpan(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.catalog.span.%d", time.Now().UnixNano())
+	groupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure group: %v", err)
+	}
+	rootPostedAt := time.Date(2026, 6, 26, 19, 17, 45, 0, time.UTC)
+	releaseID, err := store.UpsertRelease(ctx, ReleaseRecord{
+		ReleaseID:         fmt.Sprintf("rel-span-%d", time.Now().UnixNano()),
+		GUID:              fmt.Sprintf("guid-span-%d", time.Now().UnixNano()),
+		ProviderID:        1,
+		SourceReleaseKey:  "catalog-span",
+		ReleaseFamilyKey:  "catalog-span",
+		ReleaseKey:        "catalog-span",
+		GroupName:         "release-group-catalog-span",
+		Title:             "Catalog Span Release",
+		SearchTitle:       "catalog span release",
+		Category:          "Other/Misc",
+		Classification:    "other",
+		PostedAt:          ptrTime(rootPostedAt),
+		IdentityStatus:    "identified",
+		AvailabilityTier:  "good",
+		MediaQualityTier:  "unknown",
+		MetadataUpdatedAt: ptrTime(rootPostedAt),
+	})
+	if err != nil {
+		t.Fatalf("upsert release: %v", err)
+	}
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       groupID,
+		SourceReleaseKey:  "catalog-span",
+		ReleaseFamilyKey:  "catalog-span",
+		FileFamilyKey:     "catalog-span::movie",
+		FamilyKind:        "file_name",
+		BaseStem:          "catalog-span",
+		IsMainPayload:     true,
+		ReleaseKey:        "catalog-span",
+		ReleaseName:       "Catalog Span Release",
+		BinaryKey:         fmt.Sprintf("catalog-span::binary-%d", time.Now().UnixNano()),
+		BinaryName:        "span.mkv",
+		FileName:          "span.mkv",
+		FileIndex:         1,
+		ExpectedFileCount: 1,
+		TotalParts:        3,
+		PostedAt:          ptrTime(rootPostedAt),
+		MatchConfidence:   0.95,
+		MatchStatus:       "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+
+	headers := []ArticleHeader{
+		{ArticleNumber: 1001, MessageID: "<catalog-span-1@test>", Subject: `"span.mkv" yEnc (1/3)`, Poster: "poster-a", DateUTC: ptrTime(rootPostedAt.Add(-10 * time.Second)), Bytes: 111},
+		{ArticleNumber: 1002, MessageID: "<catalog-span-2@test>", Subject: `"span.mkv" yEnc (2/3)`, Poster: "poster-b", DateUTC: ptrTime(rootPostedAt), Bytes: 222},
+		{ArticleNumber: 1004, MessageID: "<catalog-span-2-copy@test>", Subject: `[1/1] "span.mkv" yEnc (2/3)`, Poster: "poster-copy", DateUTC: ptrTime(rootPostedAt.Add(2 * time.Second)), Bytes: 999},
+		{ArticleNumber: 1003, MessageID: "<catalog-span-3@test>", Subject: `"span.mkv" yEnc (3/3)`, Poster: "poster-c", DateUTC: ptrTime(rootPostedAt.Add(8 * time.Second)), Bytes: 333},
+	}
+	if _, err := store.InsertArticleHeaders(ctx, 1, groupID, headers); err != nil {
+		t.Fatalf("insert article headers: %v", err)
+	}
+
+	type partSeed struct {
+		id             int64
+		sourcePostedAt time.Time
+		messageID      string
+		partNumber     int
+		bytes          int64
+	}
+	parts := make([]partSeed, 0, len(headers))
+	for i, header := range headers {
+		partNumber := i + 1
+		if header.MessageID == "<catalog-span-2-copy@test>" {
+			partNumber = 2
+		}
+		part := partSeed{
+			messageID:  header.MessageID,
+			partNumber: partNumber,
+			bytes:      header.Bytes,
+		}
+		if err := store.DB().QueryRowContext(ctx, `
+			SELECT id, source_posted_at
+			FROM article_headers
+			WHERE newsgroup_id = $1 AND message_id = $2`,
+			groupID, header.MessageID,
+		).Scan(&part.id, &part.sourcePostedAt); err != nil {
+			t.Fatalf("load article %s: %v", header.MessageID, err)
+		}
+		parts = append(parts, part)
+	}
+
+	partRecords := make([]BinaryPartRecord, 0, len(parts))
+	for _, part := range parts {
+		partRecords = append(partRecords, BinaryPartRecord{
+			BinaryID:        binaryID,
+			ArticleHeaderID: part.id,
+			SourcePostedAt:  part.sourcePostedAt,
+			MessageID:       part.messageID,
+			PartNumber:      part.partNumber,
+			TotalParts:      3,
+			SegmentBytes:    part.bytes,
+			FileName:        "span.mkv",
+		})
+	}
+	if err := store.UpsertBinaryParts(ctx, partRecords); err != nil {
+		t.Fatalf("upsert binary parts: %v", err)
+	}
+	if err := store.RefreshBinaryStats(ctx, binaryID); err != nil {
+		t.Fatalf("refresh binary stats: %v", err)
+	}
+	if err := store.ReplaceReleaseFiles(ctx, releaseID, []ReleaseFileRecord{{
+		BinaryID:  binaryID,
+		FileName:  "span.mkv",
+		SizeBytes: 666,
+		FileIndex: 1,
+		Articles: []ReleaseFileArticleRecord{
+			{ArticleHeaderID: parts[0].id, PartNumber: 1},
+			{ArticleHeaderID: parts[1].id, PartNumber: 2},
+			{ArticleHeaderID: parts[2].id, PartNumber: 3},
+		},
+	}}); err != nil {
+		t.Fatalf("replace release files: %v", err)
+	}
+
+	files, err := store.ListCatalogReleaseFiles(ctx, releaseID)
+	if err != nil {
+		t.Fatalf("list catalog release files: %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("expected one file, got %d", len(files))
+	}
+	articles, err := store.ListCatalogReleaseFileArticles(ctx, files[0].ID)
+	if err != nil {
+		t.Fatalf("list catalog release file articles: %v", err)
+	}
+	if len(articles) != 3 {
+		t.Fatalf("expected 3 logical cross-second article refs, got %d: %+v", len(articles), articles)
+	}
+	if articles[1].MessageID != "<catalog-span-2@test>" {
+		t.Fatalf("expected earliest article for duplicate part 2, got %+v", articles)
+	}
+
+	var articleCount, observedParts int
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT article_count, observed_parts
+		FROM release_catalog_files
+		WHERE release_id = $1 AND file_name = 'span.mkv'`,
+		releaseID,
+	).Scan(&articleCount, &observedParts); err != nil {
+		t.Fatalf("query release catalog article count: %v", err)
+	}
+	if articleCount != 3 || observedParts != 3 {
+		t.Fatalf("expected release catalog logical counts=3/3, got article_count=%d observed_parts=%d", articleCount, observedParts)
+	}
+
+	var binaryObserved int
+	var spanMin, spanMax time.Time
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT observed_parts, part_source_posted_at_min, part_source_posted_at_max
+		FROM binary_observation_stats
+		WHERE binary_id = $1`,
+		binaryID,
+	).Scan(&binaryObserved, &spanMin, &spanMax); err != nil {
+		t.Fatalf("query binary stats span: %v", err)
+	}
+	if binaryObserved != 3 {
+		t.Fatalf("expected binary observed parts to count logical parts, got %d", binaryObserved)
+	}
+	if !spanMin.Equal(parts[0].sourcePostedAt) || !spanMax.Equal(parts[3].sourcePostedAt) {
+		t.Fatalf("unexpected part source span: got %s - %s want %s - %s", spanMin, spanMax, parts[0].sourcePostedAt, parts[3].sourcePostedAt)
+	}
+}
+
+func TestInsertArticleHeadersTracksCrosspostPopularity(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	sourceA := fmt.Sprintf("alt.test.crosspost.sourcea.%d", time.Now().UnixNano())
+	sourceB := fmt.Sprintf("alt.test.crosspost.sourceb.%d", time.Now().UnixNano())
+	popularTarget := fmt.Sprintf("alt.test.crosspost.popular.%d", time.Now().UnixNano())
+	extraTarget := fmt.Sprintf("alt.test.crosspost.extra.%d", time.Now().UnixNano())
+	sourceAID, err := store.EnsureNewsgroup(ctx, sourceA)
+	if err != nil {
+		t.Fatalf("ensure source A: %v", err)
+	}
+	sourceBID, err := store.EnsureNewsgroup(ctx, sourceB)
+	if err != nil {
+		t.Fatalf("ensure source B: %v", err)
+	}
+
+	if _, err := store.InsertArticleHeaders(ctx, 1, sourceAID, []ArticleHeader{{
+		ArticleNumber: 101,
+		MessageID:     "<crosspost-1@test>",
+		Subject:       "Crosspost One",
+		Poster:        "poster@test",
+		Xref:          fmt.Sprintf("Xref: news.example.com %s:101 %s:201 %s:301 %s:201", sourceA, popularTarget, extraTarget, popularTarget),
+	}}); err != nil {
+		t.Fatalf("insert source A headers: %v", err)
+	}
+	if _, err := store.InsertArticleHeaders(ctx, 1, sourceBID, []ArticleHeader{{
+		ArticleNumber: 102,
+		MessageID:     "<crosspost-1@test>",
+		Subject:       "Crosspost One Copy",
+		Poster:        "poster@test",
+		Xref:          fmt.Sprintf("Xref: news.example.com %s:102 %s:202 %s:302", sourceB, popularTarget, extraTarget),
+	}}); err != nil {
+		t.Fatalf("insert source B headers: %v", err)
+	}
+	if out, err := store.RefreshCrosspostPopularity(ctx, 1000); err != nil {
+		t.Fatalf("refresh crosspost popularity: %v", err)
+	} else if out == nil || out.GroupsRefreshed < 2 {
+		t.Fatalf("expected refreshed crosspost groups, got %+v", out)
+	}
+
+	items, err := store.GetIndexerCrosspostNewsgroupPopularity(ctx, 20)
+	if err != nil {
+		t.Fatalf("get crosspost popularity: %v", err)
+	}
+	byGroup := make(map[string]IndexerCrosspostPopularityItem, len(items))
+	for _, item := range items {
+		byGroup[item.GroupName] = item
+	}
+
+	popular, ok := byGroup[popularTarget]
+	if !ok {
+		t.Fatalf("expected %s in popularity report, got %+v", popularTarget, items)
+	}
+	if popular.ObservedArticleCount != 2 {
+		t.Fatalf("expected observed article count 2, got %+v", popular)
+	}
+	if popular.DistinctMessageCount != 1 {
+		t.Fatalf("expected distinct message count 1, got %+v", popular)
+	}
+	if popular.DistinctSourceGroupCount != 2 {
+		t.Fatalf("expected distinct source group count 2, got %+v", popular)
+	}
+	if popular.LastSeenAt == nil {
+		t.Fatalf("expected last_seen_at for %+v", popular)
+	}
+
+	extra, ok := byGroup[extraTarget]
+	if !ok {
+		t.Fatalf("expected %s in popularity report, got %+v", extraTarget, items)
+	}
+	if extra.ObservedArticleCount != 2 || extra.DistinctMessageCount != 1 || extra.DistinctSourceGroupCount != 2 {
+		t.Fatalf("unexpected extra-target aggregation: %+v", extra)
+	}
+
+	var firstWatermark int64
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT last_refreshed_article_header_id
+		FROM article_header_crosspost_group_summary
+		WHERE observed_group_name = $1`, popularTarget).Scan(&firstWatermark); err != nil {
+		t.Fatalf("load first crosspost watermark: %v", err)
+	}
+	if firstWatermark <= 0 {
+		t.Fatalf("expected positive crosspost watermark, got %d", firstWatermark)
+	}
+	if out, err := store.RefreshCrosspostPopularity(ctx, 1000); err != nil {
+		t.Fatalf("refresh crosspost popularity with no deltas: %v", err)
+	} else if out == nil || out.GroupsRefreshed != 0 {
+		t.Fatalf("expected no refreshed groups without new deltas, got %+v", out)
+	}
+	var secondWatermark int64
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT last_refreshed_article_header_id
+		FROM article_header_crosspost_group_summary
+		WHERE observed_group_name = $1`, popularTarget).Scan(&secondWatermark); err != nil {
+		t.Fatalf("load second crosspost watermark: %v", err)
+	}
+	if secondWatermark != firstWatermark {
+		t.Fatalf("expected stable crosspost watermark without deltas, first=%d second=%d", firstWatermark, secondWatermark)
+	}
+}
+
+func TestPersistReleaseSnapshotSeedsFilesGroupsAndNZBCache(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupA := fmt.Sprintf("alt.test.snapshot.groupa.%d", time.Now().UnixNano())
+	groupB := fmt.Sprintf("alt.test.snapshot.groupb.%d", time.Now().UnixNano())
+	groupAID, err := store.EnsureNewsgroup(ctx, groupA)
+	if err != nil {
+		t.Fatalf("ensure group A: %v", err)
+	}
+	groupBID, err := store.EnsureNewsgroup(ctx, groupB)
+	if err != nil {
+		t.Fatalf("ensure group B: %v", err)
+	}
+
+	now := time.Now().UTC()
+	result, err := store.PersistReleaseSnapshot(ctx, ReleaseRecord{
+		ReleaseID:         fmt.Sprintf("rel-snapshot-%d", now.UnixNano()),
+		GUID:              fmt.Sprintf("guid-snapshot-%d", now.UnixNano()),
+		ProviderID:        1,
+		SourceReleaseKey:  "snapshot-release",
+		ReleaseFamilyKey:  "snapshot-release",
+		ReleaseKey:        "snapshot-release",
+		GroupName:         "release-group-snapshot",
+		Title:             "Snapshot Release",
+		SearchTitle:       "snapshot release",
+		Category:          "Other/Misc",
+		Classification:    "other",
+		PostedAt:          &now,
+		IdentityStatus:    "identified",
+		AvailabilityTier:  "good",
+		MediaQualityTier:  "unknown",
+		MetadataUpdatedAt: &now,
+	}, []ReleaseFileRecord{{
+		FileName:  "snapshot.part01.rar",
+		SizeBytes: 1234,
+		FileIndex: 1,
+	}}, []int64{groupBID, groupAID})
+	if err != nil {
+		t.Fatalf("persist release snapshot: %v", err)
+	}
+	if result.Status != ReleaseSnapshotStatusInserted {
+		t.Fatalf("expected inserted snapshot status, got %q", result.Status)
+	}
+	releaseID := result.ReleaseID
+
+	files, err := store.ListCatalogReleaseFiles(ctx, releaseID)
+	if err != nil {
+		t.Fatalf("list snapshot files: %v", err)
+	}
+	if len(files) != 1 || files[0].FileName != "snapshot.part01.rar" {
+		t.Fatalf("unexpected files: %+v", files)
+	}
+
+	groups, err := store.ListCatalogReleaseNewsgroups(ctx, releaseID)
+	if err != nil {
+		t.Fatalf("list snapshot groups: %v", err)
+	}
+	if len(groups) != 2 || groups[0] != groupA || groups[1] != groupB {
+		t.Fatalf("unexpected groups: %v", groups)
+	}
+
+	var generationStatus string
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT generation_status
+		FROM nzb_cache
+		WHERE release_id = $1`,
+		releaseID,
+	).Scan(&generationStatus); err != nil {
+		t.Fatalf("load snapshot nzb cache: %v", err)
+	}
+	if generationStatus != "pending" {
+		t.Fatalf("unexpected generation status: %q", generationStatus)
+	}
+}
+
+func TestPersistReleaseSnapshotDoesNotReplaceBetterSnapshotWithFragment(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("release-group-downgrade-%d", time.Now().UnixNano())
+	now := time.Now().UTC()
+	strong := ReleaseRecord{
+		ReleaseID:         fmt.Sprintf("rel-downgrade-strong-%d", now.UnixNano()),
+		GUID:              fmt.Sprintf("guid-downgrade-strong-%d", now.UnixNano()),
+		ProviderID:        1,
+		SourceReleaseKey:  "strong-source",
+		ReleaseFamilyKey:  "strong-family",
+		ReleaseKey:        "strong-family",
+		GroupName:         groupName,
+		Title:             "Strong Snapshot",
+		SearchTitle:       "strong snapshot",
+		Category:          "Other/Misc",
+		Classification:    "other",
+		SizeBytes:         599_392_993,
+		PostedAt:          &now,
+		FileCount:         18,
+		ExpectedFileCount: 18,
+		CompletionPct:     98,
+		MatchConfidence:   0.86,
+		IdentityStatus:    "probable",
+		AvailabilityTier:  "good",
+		MediaQualityTier:  "unknown",
+		MetadataUpdatedAt: &now,
+	}
+	files := make([]ReleaseFileRecord, 0, 18)
+	for i := 1; i <= 18; i++ {
+		files = append(files, ReleaseFileRecord{
+			FileName:  fmt.Sprintf("strong.part%02d.rar", i),
+			SizeBytes: 1024,
+			FileIndex: i,
+		})
+	}
+	result, err := store.PersistReleaseSnapshot(ctx, strong, files, nil)
+	if err != nil {
+		t.Fatalf("persist strong snapshot: %v", err)
+	}
+	if result.Status != ReleaseSnapshotStatusInserted {
+		t.Fatalf("expected strong snapshot insert, got %q", result.Status)
+	}
+	releaseID := result.ReleaseID
+
+	weak := strong
+	weak.ReleaseID = fmt.Sprintf("rel-downgrade-weak-%d", now.UnixNano())
+	weak.GUID = fmt.Sprintf("guid-downgrade-weak-%d", now.UnixNano())
+	weak.SourceReleaseKey = "weak-source"
+	weak.SizeBytes = 8_143_389
+	weak.FileCount = 2
+	weak.CompletionPct = 7.43
+	gotResult, err := store.PersistReleaseSnapshot(ctx, weak, []ReleaseFileRecord{
+		{FileName: "strong.part01.rar", SizeBytes: 7_403_203, FileIndex: 1},
+		{FileName: "strong.part02.rar", SizeBytes: 740_186, FileIndex: 2},
+	}, nil)
+	if err != nil {
+		t.Fatalf("persist weak snapshot: %v", err)
+	}
+	if gotResult.ReleaseID != releaseID {
+		t.Fatalf("expected existing release id %s, got %s", releaseID, gotResult.ReleaseID)
+	}
+	if gotResult.Status != ReleaseSnapshotStatusSkippedDowngrade {
+		t.Fatalf("expected weak snapshot downgrade skip, got %q", gotResult.Status)
+	}
+
+	var fileCount int
+	var completion float64
+	var sizeBytes int64
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT file_count, completion_pct, size_bytes
+		FROM releases
+		WHERE release_id = $1`,
+		releaseID,
+	).Scan(&fileCount, &completion, &sizeBytes); err != nil {
+		t.Fatalf("load release after weak snapshot: %v", err)
+	}
+	if fileCount != 18 || completion != 98 || sizeBytes != 599_392_993 {
+		t.Fatalf("expected strong snapshot to remain, got file_count=%d completion=%.2f size=%d", fileCount, completion, sizeBytes)
+	}
+
+	var storedFiles int
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM release_files
+		WHERE release_id = $1`,
+		releaseID,
+	).Scan(&storedFiles); err != nil {
+		t.Fatalf("count release files after weak snapshot: %v", err)
+	}
+	if storedFiles != 18 {
+		t.Fatalf("expected 18 release files to remain, got %d", storedFiles)
 	}
 }
 
@@ -1860,6 +4055,2497 @@ func TestListReleaseCandidatesQueueWindowPrefersActionableFamiliesOverOlderWeakS
 	}
 	if _, err := store.DB().ExecContext(ctx, `DELETE FROM newsgroups WHERE id = $1`, newsgroupID); err != nil {
 		t.Fatalf("cleanup newsgroup: %v", err)
+	}
+}
+
+func TestListReleaseCandidatesSkipsRecoverPendingYEncFamilies(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.release.recover-pending.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	pendingFamily := fmt.Sprintf("pending-yenc-family-%d", time.Now().UnixNano())
+	pendingBaseStem := fmt.Sprintf("pending-yenc-%d", time.Now().UnixNano())
+	actionableFamily := fmt.Sprintf("actionable-family-%d", time.Now().UnixNano())
+
+	pendingBinaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		ReleaseFamilyKey:  pendingFamily,
+		FileFamilyKey:     pendingFamily + "::part",
+		FamilyKind:        "opaque_set",
+		BaseStem:          pendingBaseStem,
+		IsMainPayload:     true,
+		ReleaseKey:        pendingFamily,
+		ReleaseName:       "Pending YEnc Family",
+		BinaryKey:         fmt.Sprintf("%s::binary", pendingFamily),
+		BinaryName:        "deadbeefcafebabe.bin",
+		FileName:          "deadbeefcafebabe.bin",
+		ExpectedFileCount: 2,
+		TotalParts:        1,
+		MatchConfidence:   0.56,
+		MatchStatus:       "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert pending binary: %v", err)
+	}
+
+	postedAt := time.Now().UTC().Add(-2 * time.Minute)
+	if _, err := store.InsertArticleHeaders(ctx, 1, newsgroupID, []ArticleHeader{{
+		ArticleNumber: 1,
+		MessageID:     fmt.Sprintf("<recover-pending-%d@test>", time.Now().UnixNano()),
+		Subject:       `Pending Release [1/2] - "payload.dat" yEnc (1/1)`,
+		Poster:        "pending@test",
+		DateUTC:       &postedAt,
+		Bytes:         512,
+		Lines:         10,
+	}}); err != nil {
+		t.Fatalf("insert pending article header: %v", err)
+	}
+
+	var articleHeaderID int64
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT id
+		FROM article_headers
+		WHERE newsgroup_id = $1
+		ORDER BY id DESC
+		LIMIT 1`, newsgroupID,
+	).Scan(&articleHeaderID); err != nil {
+		t.Fatalf("query pending article header: %v", err)
+	}
+
+	if err := store.UpsertBinaryPart(ctx, BinaryPartRecord{
+		BinaryID:        pendingBinaryID,
+		ArticleHeaderID: articleHeaderID,
+		MessageID:       fmt.Sprintf("<recover-pending-part-%d@test>", time.Now().UnixNano()),
+		PartNumber:      1,
+		TotalParts:      1,
+		SegmentBytes:    512,
+		FileName:        "payload.dat",
+	}); err != nil {
+		t.Fatalf("upsert pending binary part: %v", err)
+	}
+
+	actionableBinaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		ReleaseFamilyKey:  actionableFamily,
+		FileFamilyKey:     actionableFamily + "::part",
+		FamilyKind:        "archive_stem",
+		IsMainPayload:     true,
+		ReleaseKey:        actionableFamily,
+		ReleaseName:       "Actionable Family",
+		BinaryKey:         fmt.Sprintf("%s::binary", actionableFamily),
+		BinaryName:        "movie.part01.rar",
+		FileName:          "movie.part01.rar",
+		ExpectedFileCount: 1,
+		TotalParts:        1,
+		MatchConfidence:   0.98,
+		MatchStatus:       "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert actionable binary: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE binaries
+		SET observed_parts = total_parts,
+		    total_bytes = 4096,
+		    posted_at = NOW(),
+		    updated_at = NOW()
+		WHERE id IN ($1, $2)`,
+		pendingBinaryID,
+		actionableBinaryID,
+	); err != nil {
+		t.Fatalf("update binary readiness state: %v", err)
+	}
+
+	keys := []releaseFamilySummaryKey{
+		{ProviderID: 1, NewsgroupID: newsgroupID, KeyKind: "release_family", FamilyKey: pendingFamily},
+		{ProviderID: 1, NewsgroupID: newsgroupID, KeyKind: "base_stem", FamilyKey: strings.ToLower(pendingBaseStem)},
+		{ProviderID: 1, NewsgroupID: newsgroupID, KeyKind: "release_family", FamilyKey: actionableFamily},
+	}
+	if err := markReleaseFamiliesDirtyBatch(ctx, store.DB(), keys); err != nil {
+		t.Fatalf("queue release summary refresh: %v", err)
+	}
+	if _, err := store.RefreshQueuedReleaseFamilySummaries(ctx, len(keys)); err != nil {
+		t.Fatalf("refresh queued release summaries: %v", err)
+	}
+
+	candidates, err := store.ListReleaseCandidates(ctx, 5, ReleaseCandidateSelectionOptions{MinExpectedFileCoveragePct: 90})
+	if err != nil {
+		t.Fatalf("list release candidates: %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("expected only actionable candidates after recover-pending filter, got %d", len(candidates))
+	}
+	if candidates[0].ReleaseFamilyKey != actionableFamily {
+		t.Fatalf("expected actionable family %q, got %q", actionableFamily, candidates[0].ReleaseFamilyKey)
+	}
+	for _, candidate := range candidates {
+		if candidate.ReleaseFamilyKey == pendingFamily || candidate.ReleaseFamilyKey == strings.ToLower(pendingBaseStem) {
+			t.Fatalf("unexpected recover-pending candidate returned: kind=%s family=%q", candidate.KeyKind, candidate.ReleaseFamilyKey)
+		}
+	}
+}
+
+func TestBackfillYEncRecoveryWorkItemsQueuesRecoverableStructuredSubjects(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.yenc-recovery.opaque.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	opaqueBinaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:       1,
+		NewsgroupID:      newsgroupID,
+		ReleaseFamilyKey: "opaque-yenc-family",
+		FileFamilyKey:    "opaque-yenc-family::part",
+		FamilyKind:       "opaque_set",
+		BaseStem:         "opaque-yenc-family",
+		IsMainPayload:    true,
+		ReleaseKey:       "opaque-yenc-family",
+		ReleaseName:      "Opaque YEnc Family",
+		BinaryKey:        "opaque-yenc-family::binary",
+		BinaryName:       "a8f7c1d2e3b4c5d6f7a8b9c0d1e2f3a4.bin",
+		FileName:         "a8f7c1d2e3b4c5d6f7a8b9c0d1e2f3a4.bin",
+		TotalParts:       1,
+		MatchConfidence:  0.56,
+		MatchStatus:      "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert opaque binary: %v", err)
+	}
+	placeholderBinaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:       1,
+		NewsgroupID:      newsgroupID,
+		ReleaseFamilyKey: "placeholder-yenc-family",
+		FileFamilyKey:    "placeholder-yenc-family::part",
+		FamilyKind:       "opaque_set",
+		BaseStem:         "placeholder-yenc-family",
+		IsMainPayload:    true,
+		ReleaseKey:       "placeholder-yenc-family",
+		ReleaseName:      "Placeholder YEnc Family",
+		BinaryKey:        "placeholder-yenc-family::binary",
+		BinaryName:       "payload.dat",
+		FileName:         "payload.dat",
+		TotalParts:       1,
+		MatchConfidence:  0.56,
+		MatchStatus:      "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert placeholder binary: %v", err)
+	}
+	readableBinaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:       1,
+		NewsgroupID:      newsgroupID,
+		ReleaseFamilyKey: "readable-yenc-family",
+		FileFamilyKey:    "readable-yenc-family::part",
+		FamilyKind:       "opaque_set",
+		BaseStem:         "readable-yenc-family",
+		IsMainPayload:    true,
+		ReleaseKey:       "readable-yenc-family",
+		ReleaseName:      "Readable YEnc Family",
+		BinaryKey:        "readable-yenc-family::binary",
+		BinaryName:       "movie.part01.rar",
+		FileName:         "movie.part01.rar",
+		TotalParts:       1,
+		MatchConfidence:  0.56,
+		MatchStatus:      "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert readable binary: %v", err)
+	}
+
+	now := time.Now().UTC()
+	if _, err := store.InsertArticleHeaders(ctx, 1, newsgroupID, []ArticleHeader{
+		{
+			ArticleNumber: 1101,
+			MessageID:     "<opaque-yenc@test>",
+			Subject:       `"a8f7c1d2e3b4c5d6f7a8b9c0d1e2f3a4.bin" yEnc (1/1)`,
+			Poster:        "poster@test",
+			DateUTC:       &now,
+			Bytes:         111,
+			Lines:         11,
+		},
+		{
+			ArticleNumber: 1102,
+			MessageID:     "<placeholder-yenc@test>",
+			Subject:       `"payload.dat" yEnc (1/1)`,
+			Poster:        "poster@test",
+			DateUTC:       &now,
+			Bytes:         123,
+			Lines:         12,
+		},
+		{
+			ArticleNumber: 1103,
+			MessageID:     "<readable-yenc@test>",
+			Subject:       `"movie.part01.rar" yEnc (1/1)`,
+			Poster:        "poster@test",
+			DateUTC:       &now,
+			Bytes:         222,
+			Lines:         22,
+		},
+	}); err != nil {
+		t.Fatalf("insert article headers: %v", err)
+	}
+
+	var opaqueArticleID int64
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT id FROM article_headers
+		WHERE newsgroup_id = $1 AND message_id = $2`,
+		newsgroupID, "<opaque-yenc@test>",
+	).Scan(&opaqueArticleID); err != nil {
+		t.Fatalf("load opaque article id: %v", err)
+	}
+	var placeholderArticleID int64
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT id FROM article_headers
+		WHERE newsgroup_id = $1 AND message_id = $2`,
+		newsgroupID, "<placeholder-yenc@test>",
+	).Scan(&placeholderArticleID); err != nil {
+		t.Fatalf("load placeholder article id: %v", err)
+	}
+	var readableArticleID int64
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT id FROM article_headers
+		WHERE newsgroup_id = $1 AND message_id = $2`,
+		newsgroupID, "<readable-yenc@test>",
+	).Scan(&readableArticleID); err != nil {
+		t.Fatalf("load readable article id: %v", err)
+	}
+
+	if err := store.UpsertBinaryParts(ctx, []BinaryPartRecord{
+		{
+			BinaryID:        opaqueBinaryID,
+			ArticleHeaderID: opaqueArticleID,
+			MessageID:       "<opaque-yenc@test>",
+			PartNumber:      1,
+			TotalParts:      1,
+			SegmentBytes:    111,
+			FileName:        "a8f7c1d2e3b4c5d6f7a8b9c0d1e2f3a4.bin",
+		},
+		{
+			BinaryID:        placeholderBinaryID,
+			ArticleHeaderID: placeholderArticleID,
+			MessageID:       "<placeholder-yenc@test>",
+			PartNumber:      1,
+			TotalParts:      1,
+			SegmentBytes:    123,
+			FileName:        "payload.dat",
+		},
+		{
+			BinaryID:        readableBinaryID,
+			ArticleHeaderID: readableArticleID,
+			MessageID:       "<readable-yenc@test>",
+			PartNumber:      1,
+			TotalParts:      1,
+			SegmentBytes:    222,
+			FileName:        "movie.part01.rar",
+		},
+	}); err != nil {
+		t.Fatalf("upsert binary parts: %v", err)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO release_family_readiness_summaries (
+			provider_id, newsgroup_id, key_kind, family_key,
+			source_release_key, release_key, release_name,
+			binary_count, complete_binary_count, complete_main_payload_binary_count, incomplete_binary_count,
+			expected_file_count, has_expected_file_count, total_bytes, earliest_posted_at,
+			dominant_family_kind, dominant_file_name, dominant_match_confidence,
+			readiness_bucket, expected_file_coverage_pct, updated_at, processed_at
+		)
+		VALUES
+			(1, $1, 'release_family', 'opaque-yenc-family', 'opaque-yenc-family', 'opaque-yenc-family', 'Opaque YEnc Family', 1, 1, 1, 0, 0, false, 111, NOW(), 'opaque_set', 'a8f7c1d2e3b4c5d6f7a8b9c0d1e2f3a4.bin', 0.56, 'weak_single_binary', 0, NOW(), TIMESTAMPTZ 'epoch'),
+			(1, $1, 'release_family', 'placeholder-yenc-family', 'placeholder-yenc-family', 'placeholder-yenc-family', 'Placeholder YEnc Family', 1, 1, 1, 0, 0, false, 123, NOW(), 'opaque_set', 'payload.dat', 0.56, 'weak_single_binary', 0, NOW(), TIMESTAMPTZ 'epoch'),
+			(1, $1, 'release_family', 'readable-yenc-family', 'readable-yenc-family', 'readable-yenc-family', 'Readable YEnc Family', 1, 1, 1, 0, 0, false, 222, NOW(), 'opaque_set', 'movie.part01.rar', 0.56, 'weak_single_binary', 0, NOW(), TIMESTAMPTZ 'epoch')
+		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
+		SET binary_count = EXCLUDED.binary_count,
+		    complete_binary_count = EXCLUDED.complete_binary_count,
+		    complete_main_payload_binary_count = EXCLUDED.complete_main_payload_binary_count,
+		    incomplete_binary_count = EXCLUDED.incomplete_binary_count,
+		    expected_file_count = EXCLUDED.expected_file_count,
+		    has_expected_file_count = EXCLUDED.has_expected_file_count,
+		    total_bytes = EXCLUDED.total_bytes,
+		    earliest_posted_at = EXCLUDED.earliest_posted_at,
+		    dominant_family_kind = EXCLUDED.dominant_family_kind,
+		    dominant_file_name = EXCLUDED.dominant_file_name,
+		    dominant_match_confidence = EXCLUDED.dominant_match_confidence,
+		    readiness_bucket = EXCLUDED.readiness_bucket,
+		    expected_file_coverage_pct = EXCLUDED.expected_file_coverage_pct,
+		    updated_at = EXCLUDED.updated_at,
+		    processed_at = EXCLUDED.processed_at`,
+		newsgroupID,
+	); err != nil {
+		t.Fatalf("seed readiness summaries: %v", err)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE binaries
+		SET family_kind = 'plain',
+		    is_main_payload = false,
+		    recovered_source = 'yenc_header',
+		    release_family_key = '',
+		    identity_strength = 'strong',
+		    expected_file_count = 0,
+		    expected_archive_file_count = 0,
+		    total_parts = 0
+		WHERE id IN ($1, $2)`,
+		opaqueBinaryID,
+		placeholderBinaryID,
+	); err != nil {
+		t.Fatalf("poison legacy binary yenc fields: %v", err)
+	}
+
+	upserted, retired, err := store.BackfillYEncRecoveryWorkItems(ctx, 10)
+	if err != nil {
+		t.Fatalf("backfill yenc recovery work items: %v", err)
+	}
+	if upserted != 2 {
+		t.Fatalf("expected 2 upserted work items, got %d retired=%d", upserted, retired)
+	}
+
+	rows, err := store.DB().QueryContext(ctx, `
+		SELECT binary_id
+		FROM yenc_recovery_work_items
+		WHERE newsgroup_id = $1
+		ORDER BY binary_id`,
+		newsgroupID,
+	)
+	if err != nil {
+		t.Fatalf("query queued yenc work items: %v", err)
+	}
+	defer rows.Close()
+
+	queued := make([]int64, 0, 2)
+	for rows.Next() {
+		var binaryID int64
+		if err := rows.Scan(&binaryID); err != nil {
+			t.Fatalf("scan queued yenc work item: %v", err)
+		}
+		queued = append(queued, binaryID)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate queued yenc work items: %v", err)
+	}
+	if len(queued) != 2 {
+		t.Fatalf("expected 2 queued binaries, got %v", queued)
+	}
+	if queued[0] != opaqueBinaryID || queued[1] != placeholderBinaryID {
+		t.Fatalf("expected opaque and placeholder binaries to queue, got %v", queued)
+	}
+}
+
+func TestListYEncRecoveryCandidatesSeedsWhenWorkTableIsNonEmpty(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.yenc-recovery.seed-refresh.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	eligibleBinaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:       1,
+		NewsgroupID:      newsgroupID,
+		ReleaseFamilyKey: "seed-refresh-family",
+		FileFamilyKey:    "seed-refresh-family::part",
+		FamilyKind:       "opaque_set",
+		BaseStem:         "seed-refresh-family",
+		IsMainPayload:    true,
+		ReleaseKey:       "seed-refresh-family",
+		ReleaseName:      "Seed Refresh Family",
+		BinaryKey:        "seed-refresh-family::binary",
+		BinaryName:       "deadbeefcafebabe1234567890abcdef.bin",
+		FileName:         "deadbeefcafebabe1234567890abcdef.bin",
+		TotalParts:       1,
+		MatchConfidence:  0.56,
+		MatchStatus:      "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert eligible binary: %v", err)
+	}
+	otherBinaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:       1,
+		NewsgroupID:      newsgroupID,
+		ReleaseFamilyKey: "seed-refresh-other",
+		FileFamilyKey:    "seed-refresh-other::part",
+		FamilyKind:       "opaque_set",
+		BaseStem:         "seed-refresh-other",
+		IsMainPayload:    true,
+		ReleaseKey:       "seed-refresh-other",
+		ReleaseName:      "Seed Refresh Other",
+		BinaryKey:        "seed-refresh-other::binary",
+		BinaryName:       "movie.part01.rar",
+		FileName:         "movie.part01.rar",
+		TotalParts:       1,
+		MatchConfidence:  0.56,
+		MatchStatus:      "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert other binary: %v", err)
+	}
+
+	now := time.Now().UTC()
+	if _, err := store.InsertArticleHeaders(ctx, 1, newsgroupID, []ArticleHeader{
+		{
+			ArticleNumber: 1201,
+			MessageID:     "<seed-refresh-eligible@test>",
+			Subject:       `"deadbeefcafebabe1234567890abcdef.bin" yEnc (1/1)`,
+			Poster:        "poster@test",
+			DateUTC:       &now,
+			Bytes:         111,
+			Lines:         11,
+		},
+		{
+			ArticleNumber: 1202,
+			MessageID:     "<seed-refresh-other@test>",
+			Subject:       `"movie.part01.rar" yEnc (1/1)`,
+			Poster:        "poster@test",
+			DateUTC:       &now,
+			Bytes:         222,
+			Lines:         22,
+		},
+	}); err != nil {
+		t.Fatalf("insert article headers: %v", err)
+	}
+
+	var eligibleArticleID int64
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT id FROM article_headers
+		WHERE newsgroup_id = $1 AND message_id = $2`,
+		newsgroupID, "<seed-refresh-eligible@test>",
+	).Scan(&eligibleArticleID); err != nil {
+		t.Fatalf("load eligible article id: %v", err)
+	}
+	var otherArticleID int64
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT id FROM article_headers
+		WHERE newsgroup_id = $1 AND message_id = $2`,
+		newsgroupID, "<seed-refresh-other@test>",
+	).Scan(&otherArticleID); err != nil {
+		t.Fatalf("load other article id: %v", err)
+	}
+
+	if err := store.UpsertBinaryParts(ctx, []BinaryPartRecord{
+		{
+			BinaryID:        eligibleBinaryID,
+			ArticleHeaderID: eligibleArticleID,
+			MessageID:       "<seed-refresh-eligible@test>",
+			PartNumber:      1,
+			TotalParts:      1,
+			SegmentBytes:    111,
+			FileName:        "deadbeefcafebabe1234567890abcdef.bin",
+		},
+		{
+			BinaryID:        otherBinaryID,
+			ArticleHeaderID: otherArticleID,
+			MessageID:       "<seed-refresh-other@test>",
+			PartNumber:      1,
+			TotalParts:      1,
+			SegmentBytes:    222,
+			FileName:        "movie.part01.rar",
+		},
+	}); err != nil {
+		t.Fatalf("upsert binary parts: %v", err)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO release_family_readiness_summaries (
+			provider_id, newsgroup_id, key_kind, family_key,
+			source_release_key, release_key, release_name,
+			binary_count, complete_binary_count, complete_main_payload_binary_count, incomplete_binary_count,
+			expected_file_count, has_expected_file_count, total_bytes, earliest_posted_at,
+			dominant_family_kind, dominant_file_name, dominant_match_confidence,
+			readiness_bucket, expected_file_coverage_pct, updated_at, processed_at
+		)
+		VALUES
+			(1, $1, 'release_family', 'seed-refresh-family', 'seed-refresh-family', 'seed-refresh-family', 'Seed Refresh Family', 1, 1, 1, 0, 0, false, 111, NOW(), 'opaque_set', 'deadbeefcafebabe1234567890abcdef.bin', 0.56, 'weak_single_binary', 0, NOW(), TIMESTAMPTZ 'epoch'),
+			(1, $1, 'release_family', 'seed-refresh-other', 'seed-refresh-other', 'seed-refresh-other', 'Seed Refresh Other', 1, 1, 1, 0, 0, false, 222, NOW(), 'opaque_set', 'movie.part01.rar', 0.56, 'weak_single_binary', 0, NOW(), TIMESTAMPTZ 'epoch')
+		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
+		SET binary_count = EXCLUDED.binary_count,
+		    complete_binary_count = EXCLUDED.complete_binary_count,
+		    complete_main_payload_binary_count = EXCLUDED.complete_main_payload_binary_count,
+		    incomplete_binary_count = EXCLUDED.incomplete_binary_count,
+		    expected_file_count = EXCLUDED.expected_file_count,
+		    has_expected_file_count = EXCLUDED.has_expected_file_count,
+		    total_bytes = EXCLUDED.total_bytes,
+		    earliest_posted_at = EXCLUDED.earliest_posted_at,
+		    dominant_family_kind = EXCLUDED.dominant_family_kind,
+		    dominant_file_name = EXCLUDED.dominant_file_name,
+		    dominant_match_confidence = EXCLUDED.dominant_match_confidence,
+		    readiness_bucket = EXCLUDED.readiness_bucket,
+		    expected_file_coverage_pct = EXCLUDED.expected_file_coverage_pct,
+		    updated_at = EXCLUDED.updated_at,
+		    processed_at = EXCLUDED.processed_at`,
+		newsgroupID,
+	); err != nil {
+		t.Fatalf("seed readiness summaries: %v", err)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO yenc_recovery_work_items (
+			binary_id,
+			article_header_id,
+			provider_id,
+			newsgroup_id,
+			message_id,
+			status,
+			ready_at,
+			priority_rank,
+			missing_count,
+			current_binary_key,
+			current_release_family_key,
+			current_base_stem,
+			current_readiness_bucket,
+			structured_identity_binary_matched,
+			updated_at
+		) VALUES (
+			$1, $2, 1, $3, '<seed-refresh-other@test>', 'done', NOW(), 2, 0,
+			'seed-refresh-other::binary', 'seed-refresh-other', 'seed-refresh-other',
+			'weak_single_binary', false, NOW()
+		)`,
+		otherBinaryID, otherArticleID, newsgroupID,
+	); err != nil {
+		t.Fatalf("seed existing yenc work item: %v", err)
+	}
+
+	if _, err := store.ListYEncRecoveryCandidates(ctx, 10); err != nil {
+		t.Fatalf("list yenc recovery candidates: %v", err)
+	}
+
+	var status string
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT status
+		FROM yenc_recovery_work_items
+		WHERE binary_id = $1`,
+		eligibleBinaryID,
+	).Scan(&status); err != nil {
+		t.Fatalf("load eligible work item: %v", err)
+	}
+	if status != "ready" {
+		t.Fatalf("expected eligible binary to be queued as ready, got %q", status)
+	}
+}
+
+func TestListYEncRecoveryCandidatesRefillsPriorityOpaqueCohortsWhenGenericReadyExists(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.yenc-recovery.priority-cohort.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	now := time.Now().UTC()
+	var genericBinaryID int64
+	var genericArticleID int64
+	for i := 0; i < yencRecoveryOpaqueCohortMin+1; i++ {
+		name := fmt.Sprintf("opaque-priority-%02d-%d.bin", i, time.Now().UnixNano())
+		binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+			ProviderID:       1,
+			NewsgroupID:      newsgroupID,
+			ReleaseFamilyKey: name,
+			FileFamilyKey:    name + "::part",
+			IdentityStrength: "provisional",
+			IdentityReason:   "opaque_subject_set",
+			FamilyKind:       "opaque_set",
+			BaseStem:         name,
+			IsMainPayload:    true,
+			ReleaseKey:       name,
+			ReleaseName:      name,
+			BinaryKey:        name + "::binary",
+			BinaryName:       name,
+			FileName:         name,
+			TotalParts:       1,
+			PostedAt:         &now,
+			MatchConfidence:  0.50,
+			MatchStatus:      "provisional",
+		})
+		if err != nil {
+			t.Fatalf("upsert binary %d: %v", i, err)
+		}
+		messageID := fmt.Sprintf("<opaque-priority-%02d-%d@test>", i, time.Now().UnixNano())
+		if _, err := store.InsertArticleHeaders(ctx, 1, newsgroupID, []ArticleHeader{{
+			ArticleNumber: int64(2000 + i),
+			MessageID:     messageID,
+			Subject:       name,
+			Poster:        "poster@test",
+			DateUTC:       &now,
+			Bytes:         111,
+			Lines:         11,
+		}}); err != nil {
+			t.Fatalf("insert article header %d: %v", i, err)
+		}
+		var articleID int64
+		if err := store.DB().QueryRowContext(ctx, `
+			SELECT id FROM article_headers
+			WHERE newsgroup_id = $1 AND message_id = $2`,
+			newsgroupID, messageID,
+		).Scan(&articleID); err != nil {
+			t.Fatalf("load article id %d: %v", i, err)
+		}
+		if err := store.UpsertBinaryParts(ctx, []BinaryPartRecord{{
+			BinaryID:        binaryID,
+			ArticleHeaderID: articleID,
+			MessageID:       messageID,
+			PartNumber:      1,
+			TotalParts:      1,
+			SegmentBytes:    111,
+			FileName:        name,
+		}}); err != nil {
+			t.Fatalf("upsert binary part %d: %v", i, err)
+		}
+		if i == 0 {
+			genericBinaryID = binaryID
+			genericArticleID = articleID
+		}
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO yenc_recovery_work_items (
+			binary_id,
+			article_header_id,
+			provider_id,
+			newsgroup_id,
+			message_id,
+			status,
+			ready_at,
+			priority_rank,
+			missing_count,
+			current_binary_key,
+			current_release_family_key,
+			current_base_stem,
+			current_readiness_bucket,
+			structured_identity_binary_matched,
+			updated_at
+		) VALUES (
+			$1, $2, 1, $3, '<generic-ready@test>', 'ready', NOW(), 1, 0,
+			'generic-ready::binary', 'generic-ready', 'generic-ready',
+			'weak_single_binary', false, NOW()
+		)`,
+		genericBinaryID, genericArticleID, newsgroupID,
+	); err != nil {
+		t.Fatalf("seed generic ready yenc work item: %v", err)
+	}
+
+	if _, err := store.ListYEncRecoveryCandidates(ctx, 10); err != nil {
+		t.Fatalf("list yenc recovery candidates: %v", err)
+	}
+
+	var priorityCohortCount int
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM yenc_recovery_work_items
+		WHERE newsgroup_id = $1
+		  AND priority_rank = 0
+		  AND admission_reason = 'opaque_near_time_cohort'
+		  AND status IN ('ready', 'running')`,
+		newsgroupID,
+	).Scan(&priorityCohortCount); err != nil {
+		t.Fatalf("count priority opaque cohort work items: %v", err)
+	}
+	if priorityCohortCount == 0 {
+		t.Fatalf("expected priority opaque cohort work to be seeded despite existing generic ready work")
+	}
+}
+
+func TestListYEncRecoveryCandidatesRoundRobinsAcrossGroups(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupA := fmt.Sprintf("alt.test.yenc-recovery.fair.a.%d", time.Now().UnixNano())
+	groupB := fmt.Sprintf("alt.test.yenc-recovery.fair.b.%d", time.Now().UnixNano())
+	groupAID, err := store.EnsureNewsgroup(ctx, groupA)
+	if err != nil {
+		t.Fatalf("ensure group A: %v", err)
+	}
+	groupBID, err := store.EnsureNewsgroup(ctx, groupB)
+	if err != nil {
+		t.Fatalf("ensure group B: %v", err)
+	}
+
+	makeBinary := func(groupID int64, family, fileName string) int64 {
+		binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+			ProviderID:       1,
+			NewsgroupID:      groupID,
+			ReleaseFamilyKey: family,
+			FileFamilyKey:    family + "::part",
+			FamilyKind:       "opaque_set",
+			BaseStem:         family,
+			IsMainPayload:    true,
+			ReleaseKey:       family,
+			ReleaseName:      family,
+			BinaryKey:        family + "::binary",
+			BinaryName:       fileName,
+			FileName:         fileName,
+			TotalParts:       1,
+			MatchConfidence:  0.56,
+			MatchStatus:      "matched",
+		})
+		if err != nil {
+			t.Fatalf("upsert binary %s: %v", family, err)
+		}
+		return binaryID
+	}
+
+	binaryA1 := makeBinary(groupAID, "fair-a-1", "fair-a-1.bin")
+	binaryA2 := makeBinary(groupAID, "fair-a-2", "fair-a-2.bin")
+	binaryB1 := makeBinary(groupBID, "fair-b-1", "fair-b-1.bin")
+
+	now := time.Now().UTC()
+	insertHeader := func(groupID int64, articleNumber int64, messageID, subject string) int64 {
+		if _, err := store.InsertArticleHeaders(ctx, 1, groupID, []ArticleHeader{{
+			ArticleNumber: articleNumber,
+			MessageID:     messageID,
+			Subject:       subject,
+			Poster:        "poster@test",
+			DateUTC:       &now,
+			Bytes:         100,
+			Lines:         10,
+		}}); err != nil {
+			t.Fatalf("insert article header %s: %v", messageID, err)
+		}
+		var articleID int64
+		if err := store.DB().QueryRowContext(ctx, `
+			SELECT id FROM article_headers
+			WHERE newsgroup_id = $1 AND message_id = $2`,
+			groupID, messageID,
+		).Scan(&articleID); err != nil {
+			t.Fatalf("load article id %s: %v", messageID, err)
+		}
+		return articleID
+	}
+
+	articleA1 := insertHeader(groupAID, 1301, "<fair-a-1@test>", `"fair-a-1.bin" yEnc (1/1)`)
+	articleA2 := insertHeader(groupAID, 1302, "<fair-a-2@test>", `"fair-a-2.bin" yEnc (1/1)`)
+	articleB1 := insertHeader(groupBID, 1401, "<fair-b-1@test>", `"fair-b-1.bin" yEnc (1/1)`)
+
+	if err := store.UpsertBinaryParts(ctx, []BinaryPartRecord{
+		{BinaryID: binaryA1, ArticleHeaderID: articleA1, MessageID: "<fair-a-1@test>", PartNumber: 1, TotalParts: 1, SegmentBytes: 100, FileName: "fair-a-1.bin"},
+		{BinaryID: binaryA2, ArticleHeaderID: articleA2, MessageID: "<fair-a-2@test>", PartNumber: 1, TotalParts: 1, SegmentBytes: 100, FileName: "fair-a-2.bin"},
+		{BinaryID: binaryB1, ArticleHeaderID: articleB1, MessageID: "<fair-b-1@test>", PartNumber: 1, TotalParts: 1, SegmentBytes: 100, FileName: "fair-b-1.bin"},
+	}); err != nil {
+		t.Fatalf("upsert binary parts: %v", err)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO yenc_recovery_work_items (
+			binary_id,
+			article_header_id,
+			provider_id,
+			newsgroup_id,
+			message_id,
+			status,
+			ready_at,
+			priority_rank,
+			missing_count,
+			current_binary_key,
+			current_release_family_key,
+			current_base_stem,
+			current_readiness_bucket,
+			structured_identity_binary_matched,
+			updated_at
+		) VALUES
+			($1, $2, 1, $3, '<fair-a-1@test>', 'ready', NOW(), 2, 0, 'fair-a-1::binary', 'fair-a-1', 'fair-a-1', 'weak_single_binary', false, NOW()),
+			($4, $5, 1, $3, '<fair-a-2@test>', 'ready', NOW(), 2, 0, 'fair-a-2::binary', 'fair-a-2', 'fair-a-2', 'weak_single_binary', false, NOW() - INTERVAL '1 minute'),
+			($6, $7, 1, $8, '<fair-b-1@test>', 'ready', NOW(), 2, 0, 'fair-b-1::binary', 'fair-b-1', 'fair-b-1', 'weak_single_binary', false, NOW() - INTERVAL '2 minutes')`,
+		binaryA1, articleA1, groupAID,
+		binaryA2, articleA2,
+		binaryB1, articleB1, groupBID,
+	); err != nil {
+		t.Fatalf("seed yenc recovery work items: %v", err)
+	}
+
+	candidates, err := store.ListYEncRecoveryCandidates(ctx, 3)
+	if err != nil {
+		t.Fatalf("list yenc recovery candidates: %v", err)
+	}
+	if len(candidates) != 3 {
+		t.Fatalf("expected 3 candidates, got %d", len(candidates))
+	}
+	if candidates[0].BinaryID != binaryA1 {
+		t.Fatalf("expected first candidate %d, got %d", binaryA1, candidates[0].BinaryID)
+	}
+	if candidates[1].BinaryID != binaryB1 {
+		t.Fatalf("expected second candidate %d from other group, got %d", binaryB1, candidates[1].BinaryID)
+	}
+	if candidates[2].BinaryID != binaryA2 {
+		t.Fatalf("expected third candidate %d, got %d", binaryA2, candidates[2].BinaryID)
+	}
+
+	var runningCount int
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM yenc_recovery_work_items
+		WHERE binary_id IN ($1, $2, $3)
+		  AND status = 'running'
+		  AND lease_owner = 'recover_yenc'
+		  AND lease_expires_at > NOW()`,
+		binaryA1, binaryA2, binaryB1,
+	).Scan(&runningCount); err != nil {
+		t.Fatalf("count running yenc work items: %v", err)
+	}
+	if runningCount != 3 {
+		t.Fatalf("expected 3 claimed running work items, got %d", runningCount)
+	}
+
+	leasedAgain, err := store.ListYEncRecoveryCandidates(ctx, 3)
+	if err != nil {
+		t.Fatalf("list yenc recovery candidates after claim: %v", err)
+	}
+	if len(leasedAgain) != 0 {
+		t.Fatalf("expected claimed candidates to be skipped, got %+v", leasedAgain)
+	}
+
+	if err := store.RecordYEncRecoveryTransientFailure(ctx, articleA1); err != nil {
+		t.Fatalf("record transient failure: %v", err)
+	}
+	var releasedStatus, leaseOwner string
+	var releasedReadyAfter time.Time
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT status, lease_owner, ready_at
+		FROM yenc_recovery_work_items
+		WHERE binary_id = $1`,
+		binaryA1,
+	).Scan(&releasedStatus, &leaseOwner, &releasedReadyAfter); err != nil {
+		t.Fatalf("load released yenc work item: %v", err)
+	}
+	if releasedStatus != "ready" || leaseOwner != "" || !releasedReadyAfter.After(time.Now().UTC()) {
+		t.Fatalf("expected transient failure to release with future backoff, got status=%q lease=%q ready_at=%s", releasedStatus, leaseOwner, releasedReadyAfter)
+	}
+}
+
+func TestListYEncRecoveryCandidatesPrioritizesPostedTimeBucketsOverQueueUpdate(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupA := fmt.Sprintf("alt.test.yenc-recovery.posted.a.%d", time.Now().UnixNano())
+	groupB := fmt.Sprintf("alt.test.yenc-recovery.posted.b.%d", time.Now().UnixNano())
+	groupAID, err := store.EnsureNewsgroup(ctx, groupA)
+	if err != nil {
+		t.Fatalf("ensure group A: %v", err)
+	}
+	groupBID, err := store.EnsureNewsgroup(ctx, groupB)
+	if err != nil {
+		t.Fatalf("ensure group B: %v", err)
+	}
+
+	makeBinary := func(groupID int64, family string) int64 {
+		binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+			ProviderID:       1,
+			NewsgroupID:      groupID,
+			ReleaseFamilyKey: family,
+			FileFamilyKey:    family + "::part",
+			FamilyKind:       "opaque_set",
+			BaseStem:         family,
+			IsMainPayload:    true,
+			ReleaseKey:       family,
+			ReleaseName:      family,
+			BinaryKey:        family + "::binary",
+			BinaryName:       family + ".bin",
+			FileName:         family + ".bin",
+			TotalParts:       1,
+			MatchConfidence:  0.56,
+			MatchStatus:      "matched",
+		})
+		if err != nil {
+			t.Fatalf("upsert binary %s: %v", family, err)
+		}
+		return binaryID
+	}
+
+	hotA := makeBinary(groupAID, "posted-hot-a")
+	hotB := makeBinary(groupBID, "posted-hot-b")
+	coldUpdated := makeBinary(groupAID, "posted-cold-updated")
+
+	now := time.Now().UTC().Truncate(time.Second)
+	hotDate := now.Add(-2 * time.Minute)
+	coldDate := now.Add(-2 * time.Hour)
+	insertHeader := func(groupID int64, articleNumber int64, messageID, subject string, postedAt time.Time) int64 {
+		if _, err := store.InsertArticleHeaders(ctx, 1, groupID, []ArticleHeader{{
+			ArticleNumber: articleNumber,
+			MessageID:     messageID,
+			Subject:       subject,
+			Poster:        "release@YWx0aHVi.com",
+			DateUTC:       &postedAt,
+			Bytes:         100,
+			Lines:         10,
+		}}); err != nil {
+			t.Fatalf("insert article header %s: %v", messageID, err)
+		}
+		var articleID int64
+		if err := store.DB().QueryRowContext(ctx, `
+			SELECT id FROM article_headers
+			WHERE newsgroup_id = $1 AND message_id = $2`,
+			groupID, messageID,
+		).Scan(&articleID); err != nil {
+			t.Fatalf("load article id %s: %v", messageID, err)
+		}
+		return articleID
+	}
+
+	hotArticleA := insertHeader(groupAID, 2101, "<posted-hot-a@YWx0aHVi>", "posted-hot-a", hotDate)
+	hotArticleB := insertHeader(groupBID, 2201, "<posted-hot-b@YWx0aHVi>", "posted-hot-b", hotDate.Add(3*time.Second))
+	coldArticle := insertHeader(groupAID, 2102, "<posted-cold-updated@YWx0aHVi>", "posted-cold-updated", coldDate)
+
+	if err := store.UpsertBinaryParts(ctx, []BinaryPartRecord{
+		{BinaryID: hotA, ArticleHeaderID: hotArticleA, MessageID: "<posted-hot-a@YWx0aHVi>", PartNumber: 1, TotalParts: 1, SegmentBytes: 100, FileName: "posted-hot-a.bin"},
+		{BinaryID: hotB, ArticleHeaderID: hotArticleB, MessageID: "<posted-hot-b@YWx0aHVi>", PartNumber: 1, TotalParts: 1, SegmentBytes: 100, FileName: "posted-hot-b.bin"},
+		{BinaryID: coldUpdated, ArticleHeaderID: coldArticle, MessageID: "<posted-cold-updated@YWx0aHVi>", PartNumber: 1, TotalParts: 1, SegmentBytes: 100, FileName: "posted-cold-updated.bin"},
+	}); err != nil {
+		t.Fatalf("upsert binary parts: %v", err)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO yenc_recovery_work_items (
+			binary_id,
+			article_header_id,
+			provider_id,
+			newsgroup_id,
+			newsgroup_name,
+			article_number,
+			message_id,
+			subject,
+			poster,
+			date_utc,
+			status,
+			ready_at,
+			priority_rank,
+			missing_count,
+			current_binary_key,
+			current_release_family_key,
+			current_base_stem,
+			current_readiness_bucket,
+			structured_identity_binary_matched,
+			updated_at
+		) VALUES
+			($1, $2, 1, $3, $4, 2101, '<posted-hot-a@YWx0aHVi>', 'posted-hot-a', 'release@YWx0aHVi.com', $5, 'ready', NOW(), 1, 0, 'posted-hot-a::binary', 'posted-hot-a', 'posted-hot-a', 'weak_single_binary', false, NOW() - INTERVAL '20 minutes'),
+			($6, $7, 1, $8, $9, 2201, '<posted-hot-b@YWx0aHVi>', 'posted-hot-b', 'release@YWx0aHVi.com', $10, 'ready', NOW(), 1, 0, 'posted-hot-b::binary', 'posted-hot-b', 'posted-hot-b', 'weak_single_binary', false, NOW() - INTERVAL '21 minutes'),
+			($11, $12, 1, $3, $4, 2102, '<posted-cold-updated@YWx0aHVi>', 'posted-cold-updated', 'release@YWx0aHVi.com', $13, 'ready', NOW(), 1, 0, 'posted-cold-updated::binary', 'posted-cold-updated', 'posted-cold-updated', 'weak_single_binary', false, NOW())`,
+		hotA, hotArticleA, groupAID, groupA, hotDate,
+		hotB, hotArticleB, groupBID, groupB, hotDate.Add(3*time.Second),
+		coldUpdated, coldArticle, coldDate,
+	); err != nil {
+		t.Fatalf("seed yenc recovery work items: %v", err)
+	}
+
+	candidates, err := store.ListYEncRecoveryCandidates(ctx, 2)
+	if err != nil {
+		t.Fatalf("list yenc recovery candidates: %v", err)
+	}
+	if len(candidates) != 2 {
+		t.Fatalf("expected 2 candidates, got %d", len(candidates))
+	}
+	got := map[int64]bool{candidates[0].BinaryID: true, candidates[1].BinaryID: true}
+	if !got[hotA] || !got[hotB] {
+		t.Fatalf("expected hot posted-time bucket candidates %d and %d, got %+v", hotA, hotB, candidates)
+	}
+	if got[coldUpdated] {
+		t.Fatalf("did not expect newer queue update to outrank posted-time bucket, got %+v", candidates)
+	}
+}
+
+func TestListYEncRecoveryCandidatesIncludesOlderFairnessCohort(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.yenc-recovery.fairness-window.%d", time.Now().UnixNano())
+	groupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure group: %v", err)
+	}
+
+	makeBinary := func(family string) int64 {
+		binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+			ProviderID:       1,
+			NewsgroupID:      groupID,
+			ReleaseFamilyKey: family,
+			FileFamilyKey:    family + "::part",
+			FamilyKind:       "opaque_set",
+			BaseStem:         family,
+			IsMainPayload:    true,
+			ReleaseKey:       family,
+			ReleaseName:      family,
+			BinaryKey:        family + "::binary",
+			BinaryName:       family + ".bin",
+			FileName:         family + ".bin",
+			TotalParts:       1,
+			MatchConfidence:  0.56,
+			MatchStatus:      "matched",
+		})
+		if err != nil {
+			t.Fatalf("upsert binary %s: %v", family, err)
+		}
+		return binaryID
+	}
+	insertHeader := func(articleNumber int64, messageID, subject string, postedAt time.Time) int64 {
+		if _, err := store.InsertArticleHeaders(ctx, 1, groupID, []ArticleHeader{{
+			ArticleNumber: articleNumber,
+			MessageID:     messageID,
+			Subject:       subject,
+			Poster:        "release@YWx0aHVi.com",
+			DateUTC:       &postedAt,
+			Bytes:         100,
+			Lines:         10,
+		}}); err != nil {
+			t.Fatalf("insert article header %s: %v", messageID, err)
+		}
+		var articleID int64
+		if err := store.DB().QueryRowContext(ctx, `
+			SELECT id FROM article_headers
+			WHERE newsgroup_id = $1 AND message_id = $2`,
+			groupID, messageID,
+		).Scan(&articleID); err != nil {
+			t.Fatalf("load article id %s: %v", messageID, err)
+		}
+		return articleID
+	}
+	insertWork := func(binaryID, articleID, articleNumber int64, family, messageID string, postedAt time.Time) {
+		if _, err := store.DB().ExecContext(ctx, `
+			INSERT INTO yenc_recovery_work_items (
+				binary_id,
+				article_header_id,
+				provider_id,
+				newsgroup_id,
+				newsgroup_name,
+				article_number,
+				message_id,
+				subject,
+				poster,
+				date_utc,
+				status,
+				ready_at,
+				priority_rank,
+				missing_count,
+				current_binary_key,
+				current_release_family_key,
+				current_base_stem,
+				current_readiness_bucket,
+				structured_identity_binary_matched,
+				updated_at
+			) VALUES (
+				$1, $2, 1, $3, $4, $5, $6, $7, 'release@YWx0aHVi.com', $8,
+				'ready', NOW(), 1, 0, $9, $7, $7, 'weak_single_binary', false, NOW()
+			)`,
+			binaryID,
+			articleID,
+			groupID,
+			groupName,
+			articleNumber,
+			messageID,
+			family,
+			postedAt,
+			family+"::binary",
+		); err != nil {
+			t.Fatalf("insert yenc work item %s: %v", family, err)
+		}
+	}
+
+	now := time.Now().UTC().Truncate(time.Second)
+	newerDate := now.Add(-5 * time.Minute)
+	olderDate := now.Add(-1 * time.Hour)
+	olderBinary := makeBinary("fairness-older")
+	olderArticle := insertHeader(3001, "<fairness-older@YWx0aHVi>", "fairness-older", olderDate)
+	if err := store.UpsertBinaryParts(ctx, []BinaryPartRecord{{
+		BinaryID: olderBinary, ArticleHeaderID: olderArticle, MessageID: "<fairness-older@YWx0aHVi>", PartNumber: 1, TotalParts: 1, SegmentBytes: 100, FileName: "fairness-older.bin",
+	}}); err != nil {
+		t.Fatalf("upsert older binary part: %v", err)
+	}
+	insertWork(olderBinary, olderArticle, 3001, "fairness-older", "<fairness-older@YWx0aHVi>", olderDate)
+
+	for i := 0; i < 8; i++ {
+		family := fmt.Sprintf("fairness-newer-%02d", i)
+		messageID := fmt.Sprintf("<fairness-newer-%02d@YWx0aHVi>", i)
+		binaryID := makeBinary(family)
+		articleID := insertHeader(int64(3100+i), messageID, family, newerDate.Add(time.Duration(i)*time.Second))
+		if err := store.UpsertBinaryParts(ctx, []BinaryPartRecord{{
+			BinaryID: binaryID, ArticleHeaderID: articleID, MessageID: messageID, PartNumber: 1, TotalParts: 1, SegmentBytes: 100, FileName: family + ".bin",
+		}}); err != nil {
+			t.Fatalf("upsert newer binary part: %v", err)
+		}
+		insertWork(binaryID, articleID, int64(3100+i), family, messageID, newerDate.Add(time.Duration(i)*time.Second))
+	}
+
+	candidates, err := store.ListYEncRecoveryCandidates(ctx, 4)
+	if err != nil {
+		t.Fatalf("list yenc recovery candidates: %v", err)
+	}
+	if len(candidates) != 4 {
+		t.Fatalf("expected 4 candidates, got %d", len(candidates))
+	}
+	var foundOlder bool
+	for _, candidate := range candidates {
+		if candidate.BinaryID == olderBinary {
+			foundOlder = true
+			if candidate.RecoveryLane != "time_cohort_fairness" {
+				t.Fatalf("expected older candidate from fairness lane, got %+v", candidate)
+			}
+			if candidate.FairnessBucketStart == nil || candidate.FairnessBucketEnd == nil {
+				t.Fatalf("expected fairness bucket metadata on older candidate, got %+v", candidate)
+			}
+		}
+	}
+	if !foundOlder {
+		t.Fatalf("expected fairness lane to include older cohort binary %d, got %+v", olderBinary, candidates)
+	}
+}
+
+func TestListYEncRecoveryCandidatesHonorsFairnessOnlySplit(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.yenc-recovery.fairness-only.%d", time.Now().UnixNano())
+	groupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure group: %v", err)
+	}
+
+	makeBinary := func(family string) int64 {
+		binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+			ProviderID:       1,
+			NewsgroupID:      groupID,
+			ReleaseFamilyKey: family,
+			FileFamilyKey:    family + "::part",
+			FamilyKind:       "opaque_set",
+			BaseStem:         family,
+			IsMainPayload:    true,
+			ReleaseKey:       family,
+			ReleaseName:      family,
+			BinaryKey:        family + "::binary",
+			BinaryName:       family + ".bin",
+			FileName:         family + ".bin",
+			TotalParts:       1,
+			MatchConfidence:  0.56,
+			MatchStatus:      "matched",
+		})
+		if err != nil {
+			t.Fatalf("upsert binary %s: %v", family, err)
+		}
+		return binaryID
+	}
+	insertHeader := func(articleNumber int64, messageID, subject string, postedAt time.Time) int64 {
+		if _, err := store.InsertArticleHeaders(ctx, 1, groupID, []ArticleHeader{{
+			ArticleNumber: articleNumber,
+			MessageID:     messageID,
+			Subject:       subject,
+			Poster:        "release@YWx0aHVi.com",
+			DateUTC:       &postedAt,
+			Bytes:         100,
+			Lines:         10,
+		}}); err != nil {
+			t.Fatalf("insert article header %s: %v", messageID, err)
+		}
+		var articleID int64
+		if err := store.DB().QueryRowContext(ctx, `
+			SELECT id FROM article_headers
+			WHERE newsgroup_id = $1 AND message_id = $2`,
+			groupID, messageID,
+		).Scan(&articleID); err != nil {
+			t.Fatalf("load article id %s: %v", messageID, err)
+		}
+		return articleID
+	}
+	insertWork := func(binaryID, articleID, articleNumber int64, family, messageID string, postedAt time.Time) {
+		if _, err := store.DB().ExecContext(ctx, `
+			INSERT INTO yenc_recovery_work_items (
+				binary_id,
+				article_header_id,
+				provider_id,
+				newsgroup_id,
+				newsgroup_name,
+				article_number,
+				message_id,
+				subject,
+				poster,
+				date_utc,
+				status,
+				ready_at,
+				priority_rank,
+				missing_count,
+				current_binary_key,
+				current_release_family_key,
+				current_base_stem,
+				current_readiness_bucket,
+				structured_identity_binary_matched,
+				updated_at
+			) VALUES (
+				$1, $2, 1, $3, $4, $5, $6, $7, 'release@YWx0aHVi.com', $8,
+				'ready', NOW(), 1, 0, $9, $7, $7, 'weak_single_binary', false, NOW()
+			)`,
+			binaryID,
+			articleID,
+			groupID,
+			groupName,
+			articleNumber,
+			messageID,
+			family,
+			postedAt,
+			family+"::binary",
+		); err != nil {
+			t.Fatalf("insert yenc work item %s: %v", family, err)
+		}
+	}
+
+	now := time.Now().UTC().Truncate(time.Second)
+	fairnessDate := now.Add(-1 * time.Hour).Truncate(5 * time.Minute)
+	newestDate := now.Add(-5 * time.Minute)
+	for i := 0; i < 8; i++ {
+		family := fmt.Sprintf("fairness-only-%02d", i)
+		messageID := fmt.Sprintf("<fairness-only-%02d@YWx0aHVi>", i)
+		binaryID := makeBinary(family)
+		articleID := insertHeader(int64(4100+i), messageID, family, fairnessDate.Add(time.Duration(i)*time.Second))
+		if err := store.UpsertBinaryParts(ctx, []BinaryPartRecord{{
+			BinaryID: binaryID, ArticleHeaderID: articleID, MessageID: messageID, PartNumber: 1, TotalParts: 1, SegmentBytes: 100, FileName: family + ".bin",
+		}}); err != nil {
+			t.Fatalf("upsert fairness binary part: %v", err)
+		}
+		insertWork(binaryID, articleID, int64(4100+i), family, messageID, fairnessDate.Add(time.Duration(i)*time.Second))
+	}
+	for i := 0; i < 8; i++ {
+		family := fmt.Sprintf("newest-skip-%02d", i)
+		messageID := fmt.Sprintf("<newest-skip-%02d@YWx0aHVi>", i)
+		binaryID := makeBinary(family)
+		articleID := insertHeader(int64(4200+i), messageID, family, newestDate.Add(time.Duration(i)*time.Second))
+		if err := store.UpsertBinaryParts(ctx, []BinaryPartRecord{{
+			BinaryID: binaryID, ArticleHeaderID: articleID, MessageID: messageID, PartNumber: 1, TotalParts: 1, SegmentBytes: 100, FileName: family + ".bin",
+		}}); err != nil {
+			t.Fatalf("upsert newest binary part: %v", err)
+		}
+		insertWork(binaryID, articleID, int64(4200+i), family, messageID, newestDate.Add(time.Duration(i)*time.Second))
+	}
+
+	candidates, err := store.ListYEncRecoveryCandidatesWithOptions(ctx, 4, YEncRecoverySelectionOptions{
+		TargetWindowPercent: 100,
+		NewestPercent:       0,
+	})
+	if err != nil {
+		t.Fatalf("list yenc recovery candidates: %v", err)
+	}
+	if len(candidates) != 4 {
+		t.Fatalf("expected 4 candidates, got %d", len(candidates))
+	}
+	for _, candidate := range candidates {
+		if candidate.RecoveryLane != "time_cohort_fairness" {
+			t.Fatalf("expected fairness-only candidate selection, got %+v", candidates)
+		}
+		if candidate.FairnessBucketStart == nil || candidate.FairnessBucketEnd == nil {
+			t.Fatalf("expected fairness bucket metadata, got %+v", candidate)
+		}
+		if candidate.DateUTC == nil || !candidate.DateUTC.Before(now.Add(-30*time.Minute)) {
+			t.Fatalf("expected older fairness-window candidate, got %+v", candidate)
+		}
+	}
+}
+
+func TestListYEncRecoveryCandidatesWalksBackwardsToFillFairnessBatch(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	if _, err := store.DB().ExecContext(ctx, `DELETE FROM yenc_recovery_fairness_state WHERE stage_name = $1`, yencRecoveryFairnessStageName); err != nil {
+		t.Fatalf("reset yenc fairness state: %v", err)
+	}
+
+	groupName := fmt.Sprintf("alt.test.yenc-recovery.backfill-fill.%d", time.Now().UnixNano())
+	groupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure group: %v", err)
+	}
+
+	makeBinary := func(family string) int64 {
+		binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+			ProviderID:       1,
+			NewsgroupID:      groupID,
+			ReleaseFamilyKey: family,
+			FileFamilyKey:    family + "::part",
+			FamilyKind:       "opaque_set",
+			BaseStem:         family,
+			IsMainPayload:    true,
+			ReleaseKey:       family,
+			ReleaseName:      family,
+			BinaryKey:        family + "::binary",
+			BinaryName:       family + ".bin",
+			FileName:         family + ".bin",
+			TotalParts:       1,
+			MatchConfidence:  0.56,
+			MatchStatus:      "matched",
+		})
+		if err != nil {
+			t.Fatalf("upsert binary %s: %v", family, err)
+		}
+		return binaryID
+	}
+	insertHeader := func(articleNumber int64, messageID, subject string, postedAt time.Time) int64 {
+		if _, err := store.InsertArticleHeaders(ctx, 1, groupID, []ArticleHeader{{
+			ArticleNumber: articleNumber,
+			MessageID:     messageID,
+			Subject:       subject,
+			Poster:        "release@YWx0aHVi.com",
+			DateUTC:       &postedAt,
+			Bytes:         100,
+			Lines:         10,
+		}}); err != nil {
+			t.Fatalf("insert article header %s: %v", messageID, err)
+		}
+		var articleID int64
+		if err := store.DB().QueryRowContext(ctx, `
+			SELECT id FROM article_headers
+			WHERE newsgroup_id = $1 AND message_id = $2`,
+			groupID, messageID,
+		).Scan(&articleID); err != nil {
+			t.Fatalf("load article id %s: %v", messageID, err)
+		}
+		return articleID
+	}
+	insertWork := func(binaryID, articleID, articleNumber int64, family, messageID string, postedAt time.Time) {
+		if _, err := store.DB().ExecContext(ctx, `
+			INSERT INTO yenc_recovery_work_items (
+				binary_id,
+				article_header_id,
+				provider_id,
+				newsgroup_id,
+				newsgroup_name,
+				article_number,
+				message_id,
+				subject,
+				poster,
+				date_utc,
+				status,
+				ready_at,
+				priority_rank,
+				missing_count,
+				current_binary_key,
+				current_release_family_key,
+				current_base_stem,
+				current_readiness_bucket,
+				structured_identity_binary_matched,
+				updated_at
+			) VALUES (
+				$1, $2, 1, $3, $4, $5, $6, $7, 'release@YWx0aHVi.com', $8,
+				'ready', NOW(), 1, 0, $9, $7, $7, 'weak_single_binary', false, NOW()
+			)`,
+			binaryID,
+			articleID,
+			groupID,
+			groupName,
+			articleNumber,
+			messageID,
+			family,
+			postedAt,
+			family+"::binary",
+		); err != nil {
+			t.Fatalf("insert yenc work item %s: %v", family, err)
+		}
+	}
+
+	now := time.Now().UTC().Truncate(time.Second)
+	newestDate := now.Add(-5 * time.Minute)
+	articleNumber := int64(5000)
+	var newestIDs []int64
+	for i := 0; i < 4; i++ {
+		family := fmt.Sprintf("newest-not-selected-%02d", i)
+		messageID := fmt.Sprintf("<newest-not-selected-%02d@YWx0aHVi>", i)
+		binaryID := makeBinary(family)
+		articleID := insertHeader(articleNumber, messageID, family, newestDate.Add(time.Duration(i)*time.Second))
+		insertWork(binaryID, articleID, articleNumber, family, messageID, newestDate.Add(time.Duration(i)*time.Second))
+		newestIDs = append(newestIDs, binaryID)
+		articleNumber++
+	}
+
+	for bucket := 0; bucket < 3; bucket++ {
+		postedAt := now.Add(-1*time.Hour - time.Duration(bucket)*5*time.Minute).Truncate(5 * time.Minute)
+		for i := 0; i < 2; i++ {
+			family := fmt.Sprintf("windowed-fill-%02d-%02d", bucket, i)
+			messageID := fmt.Sprintf("<windowed-fill-%02d-%02d@YWx0aHVi>", bucket, i)
+			binaryID := makeBinary(family)
+			articleID := insertHeader(articleNumber, messageID, family, postedAt.Add(time.Duration(i)*time.Second))
+			insertWork(binaryID, articleID, articleNumber, family, messageID, postedAt.Add(time.Duration(i)*time.Second))
+			articleNumber++
+		}
+	}
+
+	candidates, err := store.ListYEncRecoveryCandidatesWithOptions(ctx, 5, YEncRecoverySelectionOptions{
+		TargetWindowPercent: 100,
+		NewestPercent:       0,
+	})
+	if err != nil {
+		t.Fatalf("list yenc recovery candidates: %v", err)
+	}
+	if len(candidates) != 5 {
+		t.Fatalf("expected fairness selector to fill 5 candidates, got %d: %+v", len(candidates), candidates)
+	}
+	newest := make(map[int64]bool, len(newestIDs))
+	for _, id := range newestIDs {
+		newest[id] = true
+	}
+	buckets := make(map[string]bool)
+	for _, candidate := range candidates {
+		if candidate.RecoveryLane != "time_cohort_fairness" {
+			t.Fatalf("expected fairness-only candidates, got %+v", candidates)
+		}
+		if newest[candidate.BinaryID] {
+			t.Fatalf("did not expect newest lane candidate with newest_pct=0, got %+v", candidate)
+		}
+		if candidate.FairnessBucketStart == nil {
+			t.Fatalf("expected bucket metadata on candidate %+v", candidate)
+		}
+		buckets[candidate.FairnessBucketStart.Format(time.RFC3339)] = true
+	}
+	if len(buckets) < 3 {
+		t.Fatalf("expected sparse batch to walk at least 3 buckets, got %d buckets from %+v", len(buckets), candidates)
+	}
+	stats := store.LastYEncRecoverySelectionStats()
+	if stats.BatchRequested != 5 || stats.BatchSelected != 5 || stats.WindowedRequested != 5 || stats.NewestRequested != 0 {
+		t.Fatalf("unexpected selection stats: %+v", stats)
+	}
+	if stats.BucketsScanned < 3 || stats.EmptyBuckets != 0 {
+		t.Fatalf("expected non-empty sparse bucket scan stats, got %+v", stats)
+	}
+}
+
+func TestListYEncRecoveryCandidatesWalksExplicitTargetWindowBackwards(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.yenc-recovery.target-fill.%d", time.Now().UnixNano())
+	groupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure group: %v", err)
+	}
+
+	makeBinary := func(family string) int64 {
+		binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+			ProviderID:       1,
+			NewsgroupID:      groupID,
+			ReleaseFamilyKey: family,
+			FileFamilyKey:    family + "::part",
+			FamilyKind:       "opaque_set",
+			BaseStem:         family,
+			IsMainPayload:    true,
+			ReleaseKey:       family,
+			ReleaseName:      family,
+			BinaryKey:        family + "::binary",
+			BinaryName:       family + ".bin",
+			FileName:         family + ".bin",
+			TotalParts:       1,
+			MatchConfidence:  0.56,
+			MatchStatus:      "matched",
+		})
+		if err != nil {
+			t.Fatalf("upsert binary %s: %v", family, err)
+		}
+		return binaryID
+	}
+	insertWork := func(articleNumber int64, family string, postedAt time.Time) {
+		messageID := fmt.Sprintf("<%s@YWx0aHVi>", family)
+		if _, err := store.InsertArticleHeaders(ctx, 1, groupID, []ArticleHeader{{
+			ArticleNumber: articleNumber,
+			MessageID:     messageID,
+			Subject:       family,
+			Poster:        "release@YWx0aHVi.com",
+			DateUTC:       &postedAt,
+			Bytes:         100,
+			Lines:         10,
+		}}); err != nil {
+			t.Fatalf("insert article header %s: %v", messageID, err)
+		}
+		var articleID int64
+		if err := store.DB().QueryRowContext(ctx, `
+			SELECT id FROM article_headers
+			WHERE newsgroup_id = $1 AND message_id = $2`,
+			groupID, messageID,
+		).Scan(&articleID); err != nil {
+			t.Fatalf("load article id %s: %v", messageID, err)
+		}
+		binaryID := makeBinary(family)
+		if _, err := store.DB().ExecContext(ctx, `
+			INSERT INTO yenc_recovery_work_items (
+				binary_id,
+				article_header_id,
+				provider_id,
+				newsgroup_id,
+				newsgroup_name,
+				article_number,
+				message_id,
+				subject,
+				poster,
+				date_utc,
+				status,
+				ready_at,
+				priority_rank,
+				missing_count,
+				current_binary_key,
+				current_release_family_key,
+				current_base_stem,
+				current_readiness_bucket,
+				structured_identity_binary_matched,
+				updated_at
+			) VALUES (
+				$1, $2, 1, $3, $4, $5, $6, $7, 'release@YWx0aHVi.com', $8,
+				'ready', NOW(), 1, 0, $9, $7, $7, 'weak_single_binary', false, NOW()
+			)`,
+			binaryID,
+			articleID,
+			groupID,
+			groupName,
+			articleNumber,
+			messageID,
+			family,
+			postedAt,
+			family+"::binary",
+		); err != nil {
+			t.Fatalf("insert yenc work item %s: %v", family, err)
+		}
+	}
+
+	targetStart := time.Now().UTC().Add(-1 * time.Hour).Truncate(5 * time.Minute)
+	targetEnd := targetStart.Add(5 * time.Minute)
+	articleNumber := int64(6000)
+	for bucket := 0; bucket < 3; bucket++ {
+		postedAt := targetStart.Add(-time.Duration(bucket) * 5 * time.Minute)
+		for i := 0; i < 2; i++ {
+			insertWork(articleNumber, fmt.Sprintf("target-fill-%02d-%02d", bucket, i), postedAt.Add(time.Duration(i)*time.Second))
+			articleNumber++
+		}
+	}
+
+	candidates, err := store.ListYEncRecoveryCandidatesWithOptions(ctx, 5, YEncRecoverySelectionOptions{
+		TargetWindowStart:   &targetStart,
+		TargetWindowEnd:     &targetEnd,
+		TargetWindowPercent: 100,
+		NewestPercent:       0,
+	})
+	if err != nil {
+		t.Fatalf("list yenc recovery candidates: %v", err)
+	}
+	if len(candidates) != 5 {
+		t.Fatalf("expected target-window selector to fill 5 candidates, got %d: %+v", len(candidates), candidates)
+	}
+	buckets := make(map[string]bool)
+	for _, candidate := range candidates {
+		if candidate.RecoveryLane != "target_window" {
+			t.Fatalf("expected explicit target-window lane, got %+v", candidates)
+		}
+		if candidate.FairnessBucketStart == nil {
+			t.Fatalf("expected target window metadata on candidate %+v", candidate)
+		}
+		buckets[candidate.FairnessBucketStart.Format(time.RFC3339)] = true
+	}
+	if len(buckets) < 3 {
+		t.Fatalf("expected explicit target window to walk at least 3 windows, got %d buckets from %+v", len(buckets), candidates)
+	}
+	stats := store.LastYEncRecoverySelectionStats()
+	if stats.BatchRequested != 5 || stats.BatchSelected != 5 || stats.WindowedRequested != 5 || stats.NewestRequested != 0 {
+		t.Fatalf("unexpected selection stats: %+v", stats)
+	}
+	if stats.BucketsScanned < 3 || stats.EmptyBuckets != 0 {
+		t.Fatalf("expected target window scan stats, got %+v", stats)
+	}
+}
+
+func TestListYEncRecoveryCandidatesAllowsReadyWorkItemsWithoutPayload(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.yenc-recovery.stale-ready.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	makeBinary := func(family, fileName string) (int64, int64) {
+		binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+			ProviderID:       1,
+			NewsgroupID:      newsgroupID,
+			ReleaseFamilyKey: family,
+			FileFamilyKey:    family + "::part",
+			FamilyKind:       "opaque_set",
+			BaseStem:         family,
+			IsMainPayload:    true,
+			ReleaseKey:       family,
+			ReleaseName:      family,
+			BinaryKey:        family + "::binary",
+			BinaryName:       fileName,
+			FileName:         fileName,
+			TotalParts:       1,
+			MatchConfidence:  0.56,
+			MatchStatus:      "matched",
+		})
+		if err != nil {
+			t.Fatalf("upsert binary %s: %v", family, err)
+		}
+		now := time.Now().UTC()
+		messageID := fmt.Sprintf("<%s@test>", family)
+		if _, err := store.InsertArticleHeaders(ctx, 1, newsgroupID, []ArticleHeader{{
+			ArticleNumber: time.Now().UnixNano() % 1000000,
+			MessageID:     messageID,
+			Subject:       fmt.Sprintf(`"%s" yEnc (1/1)`, fileName),
+			Poster:        "poster@test",
+			DateUTC:       &now,
+			Bytes:         100,
+			Lines:         10,
+		}}); err != nil {
+			t.Fatalf("insert article header %s: %v", family, err)
+		}
+		var articleID int64
+		if err := store.DB().QueryRowContext(ctx, `
+			SELECT id FROM article_headers
+			WHERE newsgroup_id = $1 AND message_id = $2`,
+			newsgroupID, messageID,
+		).Scan(&articleID); err != nil {
+			t.Fatalf("load article id %s: %v", family, err)
+		}
+		if err := store.UpsertBinaryParts(ctx, []BinaryPartRecord{{
+			BinaryID:        binaryID,
+			ArticleHeaderID: articleID,
+			MessageID:       messageID,
+			PartNumber:      1,
+			TotalParts:      1,
+			SegmentBytes:    100,
+			FileName:        fileName,
+		}}); err != nil {
+			t.Fatalf("upsert binary part %s: %v", family, err)
+		}
+		return binaryID, articleID
+	}
+
+	validBinaryID, validArticleID := makeBinary("stale-ready-valid", "stale-ready-valid.bin")
+	staleBinaryID, staleArticleID := makeBinary("stale-ready-stale", "stale-ready-stale.bin")
+
+	if _, err := store.DB().ExecContext(ctx, `
+		DELETE FROM article_header_ingest_payloads
+		WHERE article_header_id = $1`,
+		staleArticleID,
+	); err != nil {
+		t.Fatalf("delete stale payload: %v", err)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO yenc_recovery_work_items (
+			binary_id,
+			article_header_id,
+			provider_id,
+			newsgroup_id,
+			message_id,
+			status,
+			ready_at,
+			priority_rank,
+			missing_count,
+			current_binary_key,
+			current_release_family_key,
+			current_base_stem,
+			current_readiness_bucket,
+			structured_identity_binary_matched,
+			updated_at
+		) VALUES
+			($1, $2, 1, $3, '<stale-ready-valid@test>', 'ready', NOW(), 2, 0, 'stale-ready-valid::binary', 'stale-ready-valid', 'stale-ready-valid', 'weak_single_binary', false, NOW()),
+			($4, $5, 1, $3, '<stale-ready-stale@test>', 'ready', NOW(), 2, 0, 'stale-ready-stale::binary', 'stale-ready-stale', 'stale-ready-stale', 'weak_single_binary', false, NOW())`,
+		validBinaryID, validArticleID, newsgroupID,
+		staleBinaryID, staleArticleID,
+	); err != nil {
+		t.Fatalf("seed yenc recovery work items: %v", err)
+	}
+
+	candidates, err := store.ListYEncRecoveryCandidates(ctx, 10)
+	if err != nil {
+		t.Fatalf("list yenc recovery candidates: %v", err)
+	}
+	gotIDs := map[int64]bool{}
+	for _, candidate := range candidates {
+		gotIDs[candidate.BinaryID] = true
+	}
+	if len(candidates) != 2 || !gotIDs[validBinaryID] || !gotIDs[staleBinaryID] {
+		t.Fatalf("expected both payload-backed and payloadless candidates, got %+v", candidates)
+	}
+
+	var payloadlessStatus string
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT status
+		FROM yenc_recovery_work_items
+		WHERE binary_id = $1`,
+		staleBinaryID,
+	).Scan(&payloadlessStatus); err != nil {
+		t.Fatalf("load payloadless status: %v", err)
+	}
+	if payloadlessStatus != "ready" {
+		t.Fatalf("expected payloadless work item to remain ready, got %q", payloadlessStatus)
+	}
+}
+
+func TestListYEncRecoveryCandidatesRetiresBlankMessageWorkItems(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.yenc-recovery.blank-message.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:       1,
+		NewsgroupID:      newsgroupID,
+		ReleaseFamilyKey: "blank-message-family",
+		FileFamilyKey:    "blank-message-family::part",
+		FamilyKind:       "opaque_set",
+		BaseStem:         "blank-message-family",
+		IsMainPayload:    true,
+		ReleaseKey:       "blank-message-family",
+		ReleaseName:      "Blank Message Family",
+		BinaryKey:        "blank-message-family::binary",
+		BinaryName:       "blank-message-family.bin",
+		FileName:         "blank-message-family.bin",
+		TotalParts:       1,
+		MatchConfidence:  0.56,
+		MatchStatus:      "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+	now := time.Now().UTC()
+	if _, err := store.InsertArticleHeaders(ctx, 1, newsgroupID, []ArticleHeader{{
+		ArticleNumber: 91001,
+		MessageID:     "<blank-message-family@test>",
+		Subject:       `"blank-message-family.bin" yEnc (1/1)`,
+		Poster:        "poster@test",
+		DateUTC:       &now,
+		Bytes:         100,
+		Lines:         10,
+	}}); err != nil {
+		t.Fatalf("insert article header: %v", err)
+	}
+	var articleID int64
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT id FROM article_headers
+		WHERE newsgroup_id = $1 AND message_id = '<blank-message-family@test>'`,
+		newsgroupID,
+	).Scan(&articleID); err != nil {
+		t.Fatalf("load article id: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO yenc_recovery_work_items (
+			binary_id,
+			article_header_id,
+			provider_id,
+			newsgroup_id,
+			message_id,
+			status,
+			ready_at,
+			priority_rank,
+			updated_at
+		) VALUES ($1, $2, 1, $3, '', 'ready', NOW(), 2, NOW())`,
+		binaryID, articleID, newsgroupID,
+	); err != nil {
+		t.Fatalf("seed blank-message work item: %v", err)
+	}
+	candidates, err := store.ListYEncRecoveryCandidates(ctx, 10)
+	if err != nil {
+		t.Fatalf("list yenc recovery candidates: %v", err)
+	}
+	if len(candidates) != 0 {
+		t.Fatalf("expected no candidates for blank-message work item, got %+v", candidates)
+	}
+	var status string
+	if err := store.DB().QueryRowContext(ctx, `SELECT status FROM yenc_recovery_work_items WHERE binary_id = $1`, binaryID).Scan(&status); err != nil {
+		t.Fatalf("load work item status: %v", err)
+	}
+	if status != "stale" {
+		t.Fatalf("expected blank-message work item to be stale, got %q", status)
+	}
+}
+
+func TestRecordYEncRecoveryNoopBacksOffReadyWorkItem(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.yenc-recovery.noop-backoff.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:       1,
+		NewsgroupID:      newsgroupID,
+		ReleaseFamilyKey: "noop-backoff-family",
+		FileFamilyKey:    "noop-backoff-family::part",
+		FamilyKind:       "opaque_set",
+		BaseStem:         "noop-backoff-family",
+		IsMainPayload:    true,
+		ReleaseKey:       "noop-backoff-family",
+		ReleaseName:      "Noop Backoff Family",
+		BinaryKey:        "noop-backoff-family::binary",
+		BinaryName:       "deadbeefdeadbeefdeadbeefdeadbeef.bin",
+		FileName:         "deadbeefdeadbeefdeadbeefdeadbeef.bin",
+		TotalParts:       1,
+		MatchConfidence:  0.56,
+		MatchStatus:      "matched",
+		IdentityStrength: "weak",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+
+	now := time.Now().UTC()
+	if _, err := store.InsertArticleHeaders(ctx, 1, newsgroupID, []ArticleHeader{{
+		ArticleNumber: 1601,
+		MessageID:     "<noop-backoff@test>",
+		Subject:       `"deadbeefdeadbeefdeadbeefdeadbeef.bin" yEnc (1/1)`,
+		Poster:        "poster@test",
+		DateUTC:       &now,
+		Bytes:         100,
+		Lines:         10,
+	}}); err != nil {
+		t.Fatalf("insert article header: %v", err)
+	}
+
+	var articleID int64
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT id FROM article_headers
+		WHERE newsgroup_id = $1 AND message_id = $2`,
+		newsgroupID, "<noop-backoff@test>",
+	).Scan(&articleID); err != nil {
+		t.Fatalf("load article id: %v", err)
+	}
+
+	if err := store.UpsertBinaryParts(ctx, []BinaryPartRecord{{
+		BinaryID:        binaryID,
+		ArticleHeaderID: articleID,
+		MessageID:       "<noop-backoff@test>",
+		PartNumber:      1,
+		TotalParts:      1,
+		SegmentBytes:    100,
+		FileName:        "deadbeefdeadbeefdeadbeefdeadbeef.bin",
+	}}); err != nil {
+		t.Fatalf("upsert binary part: %v", err)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO release_family_readiness_summaries (
+			provider_id, newsgroup_id, key_kind, family_key,
+			source_release_key, release_key, release_name,
+			binary_count, complete_binary_count, complete_main_payload_binary_count, incomplete_binary_count,
+			expected_file_count, has_expected_file_count, total_bytes, earliest_posted_at,
+			dominant_family_kind, dominant_file_name, dominant_match_confidence,
+			readiness_bucket, expected_file_coverage_pct, updated_at, processed_at
+		)
+		VALUES
+			(1, $1, 'release_family', 'noop-backoff-family', 'noop-backoff-family', 'noop-backoff-family', 'Noop Backoff Family', 1, 1, 1, 0, 0, false, 100, NOW(), 'opaque_set', 'deadbeefdeadbeefdeadbeefdeadbeef.bin', 0.56, 'weak_single_binary', 0, NOW(), TIMESTAMPTZ 'epoch')
+		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO NOTHING`,
+		newsgroupID,
+	); err != nil {
+		t.Fatalf("seed readiness summary: %v", err)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO yenc_recovery_work_items (
+			binary_id,
+			article_header_id,
+			provider_id,
+			newsgroup_id,
+			message_id,
+			status,
+			ready_at,
+			priority_rank,
+			missing_count,
+			current_binary_key,
+			current_release_family_key,
+			current_base_stem,
+			current_readiness_bucket,
+			structured_identity_binary_matched,
+			updated_at
+		) VALUES (
+			$1, $2, 1, $3, '<noop-backoff@test>', 'ready', NOW(), 2, 0,
+			'noop-backoff-family::binary', 'noop-backoff-family', 'noop-backoff-family', 'weak_single_binary', false, NOW()
+		)`,
+		binaryID, articleID, newsgroupID,
+	); err != nil {
+		t.Fatalf("seed yenc recovery work item: %v", err)
+	}
+
+	if err := store.RecordYEncRecoveryNoop(ctx, articleID); err != nil {
+		t.Fatalf("record yenc recovery noop: %v", err)
+	}
+
+	candidates, err := store.ListYEncRecoveryCandidates(ctx, 10)
+	if err != nil {
+		t.Fatalf("list yenc recovery candidates: %v", err)
+	}
+	if len(candidates) != 0 {
+		t.Fatalf("expected noop-backed-off candidate to be withheld, got %d", len(candidates))
+	}
+
+	var missingCount int
+	var retryAfter time.Time
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT COALESCE(p.yenc_recovery_missing_count, 0), p.yenc_recovery_retry_after
+		FROM article_header_ingest_payloads p
+		WHERE p.article_header_id = $1`,
+		articleID,
+	).Scan(&missingCount, &retryAfter); err != nil {
+		t.Fatalf("load yenc payload retry state: %v", err)
+	}
+	if missingCount != 1 {
+		t.Fatalf("expected noop missing count to increment to 1, got %d", missingCount)
+	}
+	if !retryAfter.After(time.Now().UTC().Add(10 * time.Minute)) {
+		t.Fatalf("expected noop retry_after in the future, got %s", retryAfter.UTC())
+	}
+}
+
+func TestApplyYEncHeaderRecoveryMergesRecoveredMultipartArticlesByYEncPart(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.yenc-recovery.multipart-merge.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx := context.Background()
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM yenc_recovery_work_items WHERE newsgroup_id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup yenc work items: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM binary_core WHERE newsgroup_id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup binary core: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM article_headers WHERE newsgroup_id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup article headers: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM newsgroups WHERE id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup newsgroup: %v", err)
+		}
+	})
+
+	makeBinary := func(key, fileName string) int64 {
+		binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+			ProviderID:       1,
+			NewsgroupID:      newsgroupID,
+			ReleaseFamilyKey: key,
+			FileFamilyKey:    key + "::part",
+			FamilyKind:       "opaque_set",
+			BaseStem:         key,
+			IsMainPayload:    true,
+			ReleaseKey:       key,
+			ReleaseName:      key,
+			BinaryKey:        key + "::binary",
+			BinaryName:       fileName,
+			FileName:         fileName,
+			TotalParts:       1,
+			MatchConfidence:  0.56,
+			MatchStatus:      "matched",
+			IdentityStrength: "weak",
+		})
+		if err != nil {
+			t.Fatalf("upsert binary %s: %v", key, err)
+		}
+		return binaryID
+	}
+
+	binaryOne := makeBinary("random-yenc-one", "random-one.bin")
+	binaryTwo := makeBinary("random-yenc-two", "random-two.bin")
+
+	now := time.Date(2026, 6, 18, 14, 24, 11, 0, time.UTC)
+	if _, err := store.InsertArticleHeaders(ctx, 1, newsgroupID, []ArticleHeader{
+		{
+			ArticleNumber: 2101,
+			MessageID:     "<random-yenc-one@test>",
+			Subject:       "random-yenc-one",
+			Poster:        "poster@test",
+			DateUTC:       &now,
+			Bytes:         716800,
+			Lines:         5693,
+		},
+		{
+			ArticleNumber: 2102,
+			MessageID:     "<random-yenc-two@test>",
+			Subject:       "random-yenc-two",
+			Poster:        "poster@test",
+			DateUTC:       &now,
+			Bytes:         716800,
+			Lines:         5693,
+		},
+	}); err != nil {
+		t.Fatalf("insert article headers: %v", err)
+	}
+
+	var articleOne, articleTwo int64
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT id FROM article_headers
+		WHERE newsgroup_id = $1 AND message_id = '<random-yenc-one@test>'`,
+		newsgroupID,
+	).Scan(&articleOne); err != nil {
+		t.Fatalf("load article one: %v", err)
+	}
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT id FROM article_headers
+		WHERE newsgroup_id = $1 AND message_id = '<random-yenc-two@test>'`,
+		newsgroupID,
+	).Scan(&articleTwo); err != nil {
+		t.Fatalf("load article two: %v", err)
+	}
+
+	if err := store.UpsertBinaryParts(ctx, []BinaryPartRecord{
+		{BinaryID: binaryOne, ArticleHeaderID: articleOne, MessageID: "<random-yenc-one@test>", PartNumber: 1, TotalParts: 1, SegmentBytes: 716800, FileName: "random-one.bin"},
+		{BinaryID: binaryTwo, ArticleHeaderID: articleTwo, MessageID: "<random-yenc-two@test>", PartNumber: 1, TotalParts: 1, SegmentBytes: 716800, FileName: "random-two.bin"},
+	}); err != nil {
+		t.Fatalf("upsert binary parts: %v", err)
+	}
+
+	recovery := func(binaryID, articleID int64, partNumber int) {
+		if _, err := store.ApplyYEncHeaderRecovery(ctx, YEncHeaderRecoveryRecord{
+			BinaryID:         binaryID,
+			ArticleHeaderID:  articleID,
+			SourceReleaseKey: "5azyrs4rfboyp5fzh",
+			ReleaseFamilyKey: "5azyrs4rfboyp5fzh",
+			FileSetKey:       "5azyrs4rfboyp5fzh",
+			FileFamilyKey:    "5azyrs4rfboyp5fzh::5azyrs4rfboyp5fzh.part2.rar",
+			IdentityStrength: "strong",
+			IdentityReason:   "yenc_header",
+			SubjectSetToken:  "5azyrs4rfboyp5fzh",
+			SubjectSetKind:   "yenc_recovered",
+			FamilyKind:       "opaque_set",
+			BaseStem:         "5azyrs4rfboyp5fzh",
+			IsMainPayload:    true,
+			ReleaseKey:       "5azyrs4rfboyp5fzh",
+			ReleaseName:      "5AzyRS4rfbOyP5fZH",
+			BinaryKey:        "5azyrs4rfboyp5fzh::5azyrs4rfboyp5fzh.part2.rar",
+			BinaryName:       "5AzyRS4rfbOyP5fZH.part2.rar",
+			FileName:         "5AzyRS4rfbOyP5fZH.part2.rar",
+			PartNumber:       partNumber,
+			TotalParts:       732,
+			FileSize:         524288000,
+			MatchConfidence:  0.95,
+			MatchStatus:      "matched",
+			GroupingEvidence: map[string]any{"kind": "yenc_header"},
+		}); err != nil {
+			t.Fatalf("apply recovery binary=%d part=%d: %v", binaryID, partNumber, err)
+		}
+	}
+
+	recovery(binaryOne, articleOne, 1)
+	var ownPartNumber int
+	var ownTotalParts int
+	var ownFileName string
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT part_number, total_parts, file_name
+		FROM binary_parts
+		WHERE binary_id = $1
+		  AND article_header_id = $2`,
+		binaryOne,
+		articleOne,
+	).Scan(&ownPartNumber, &ownTotalParts, &ownFileName); err != nil {
+		t.Fatalf("load same-binary recovered part: %v", err)
+	}
+	if ownPartNumber != 1 || ownTotalParts != 732 || ownFileName != "5AzyRS4rfbOyP5fZH.part2.rar" {
+		t.Fatalf("expected same-binary recovery to strengthen part projection, got part=%d total=%d file=%q", ownPartNumber, ownTotalParts, ownFileName)
+	}
+	recovery(binaryTwo, articleTwo, 2)
+
+	var remainingSource int
+	if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM binary_core WHERE binary_id = $1`, binaryTwo).Scan(&remainingSource); err != nil {
+		t.Fatalf("count source binary: %v", err)
+	}
+	if remainingSource != 0 {
+		t.Fatalf("expected second recovered binary to merge into first, source rows=%d", remainingSource)
+	}
+
+	rows, err := store.DB().QueryContext(ctx, `
+		SELECT part_number, total_parts, file_name
+		FROM binary_parts
+		WHERE binary_id = $1
+		ORDER BY part_number`,
+		binaryOne,
+	)
+	if err != nil {
+		t.Fatalf("query merged binary parts: %v", err)
+	}
+	defer rows.Close()
+
+	type mergedPart struct {
+		PartNumber int
+		TotalParts int
+		FileName   string
+	}
+	var parts []mergedPart
+	for rows.Next() {
+		var p mergedPart
+		if err := rows.Scan(&p.PartNumber, &p.TotalParts, &p.FileName); err != nil {
+			t.Fatalf("scan merged part: %v", err)
+		}
+		parts = append(parts, p)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate merged parts: %v", err)
+	}
+	if len(parts) != 2 {
+		t.Fatalf("expected two merged parts, got %+v", parts)
+	}
+	for i, p := range parts {
+		if p.PartNumber != i+1 || p.TotalParts != 732 || p.FileName != "5AzyRS4rfbOyP5fZH.part2.rar" {
+			t.Fatalf("unexpected merged part %d: %+v", i, p)
+		}
+	}
+
+	var yencPart int
+	var yencTotal int
+	var yencSize int64
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT yenc_part_number, yenc_total_parts, yenc_file_size
+		FROM article_header_ingest_payloads
+		WHERE article_header_id = $1`,
+		articleTwo,
+	).Scan(&yencPart, &yencTotal, &yencSize); err != nil {
+		t.Fatalf("load persisted yenc payload metadata: %v", err)
+	}
+	if yencPart != 2 || yencTotal != 732 || yencSize != 524288000 {
+		t.Fatalf("expected payload yEnc metadata part=2 total=732 size=524288000, got part=%d total=%d size=%d", yencPart, yencTotal, yencSize)
+	}
+}
+
+func TestApplyYEncHeaderRecoveriesBatchMergesRecoveredMultipartArticles(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.yenc-recovery.batch-merge.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx := context.Background()
+		_, _ = store.DB().ExecContext(cleanupCtx, `DELETE FROM yenc_recovery_work_items WHERE newsgroup_id = $1`, newsgroupID)
+		_, _ = store.DB().ExecContext(cleanupCtx, `DELETE FROM binary_core WHERE newsgroup_id = $1`, newsgroupID)
+		_, _ = store.DB().ExecContext(cleanupCtx, `DELETE FROM article_headers WHERE newsgroup_id = $1`, newsgroupID)
+		_, _ = store.DB().ExecContext(cleanupCtx, `DELETE FROM newsgroups WHERE id = $1`, newsgroupID)
+	})
+
+	makeBinary := func(key, fileName string) int64 {
+		binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+			ProviderID:       1,
+			NewsgroupID:      newsgroupID,
+			ReleaseFamilyKey: key,
+			FileFamilyKey:    key + "::part",
+			FamilyKind:       "opaque_set",
+			BaseStem:         key,
+			IsMainPayload:    true,
+			ReleaseKey:       key,
+			ReleaseName:      key,
+			BinaryKey:        key + "::binary",
+			BinaryName:       fileName,
+			FileName:         fileName,
+			TotalParts:       1,
+			MatchConfidence:  0.56,
+			MatchStatus:      "matched",
+			IdentityStrength: "weak",
+		})
+		if err != nil {
+			t.Fatalf("upsert binary %s: %v", key, err)
+		}
+		return binaryID
+	}
+
+	binaryOne := makeBinary("random-yenc-batch-one", "random-batch-one.bin")
+	binaryTwo := makeBinary("random-yenc-batch-two", "random-batch-two.bin")
+	now := time.Date(2026, 6, 18, 14, 24, 11, 0, time.UTC)
+	if _, err := store.InsertArticleHeaders(ctx, 1, newsgroupID, []ArticleHeader{
+		{ArticleNumber: 3101, MessageID: "<random-yenc-batch-one@test>", Subject: "random-yenc-batch-one", Poster: "poster@test", DateUTC: &now, Bytes: 716800, Lines: 5693},
+		{ArticleNumber: 3102, MessageID: "<random-yenc-batch-two@test>", Subject: "random-yenc-batch-two", Poster: "poster@test", DateUTC: &now, Bytes: 716800, Lines: 5693},
+	}); err != nil {
+		t.Fatalf("insert article headers: %v", err)
+	}
+
+	var articleOne, articleTwo int64
+	if err := store.DB().QueryRowContext(ctx, `SELECT id FROM article_headers WHERE newsgroup_id = $1 AND message_id = '<random-yenc-batch-one@test>'`, newsgroupID).Scan(&articleOne); err != nil {
+		t.Fatalf("load article one: %v", err)
+	}
+	if err := store.DB().QueryRowContext(ctx, `SELECT id FROM article_headers WHERE newsgroup_id = $1 AND message_id = '<random-yenc-batch-two@test>'`, newsgroupID).Scan(&articleTwo); err != nil {
+		t.Fatalf("load article two: %v", err)
+	}
+
+	if err := store.UpsertBinaryParts(ctx, []BinaryPartRecord{
+		{BinaryID: binaryOne, ArticleHeaderID: articleOne, MessageID: "<random-yenc-batch-one@test>", PartNumber: 1, TotalParts: 1, SegmentBytes: 716800, FileName: "random-batch-one.bin"},
+		{BinaryID: binaryTwo, ArticleHeaderID: articleTwo, MessageID: "<random-yenc-batch-two@test>", PartNumber: 1, TotalParts: 1, SegmentBytes: 716800, FileName: "random-batch-two.bin"},
+	}); err != nil {
+		t.Fatalf("upsert binary parts: %v", err)
+	}
+
+	record := func(binaryID, articleID int64, partNumber int) YEncHeaderRecoveryRecord {
+		return YEncHeaderRecoveryRecord{
+			BinaryID:         binaryID,
+			ArticleHeaderID:  articleID,
+			SourceReleaseKey: "5azyrs4rfboyp5fzh",
+			ReleaseFamilyKey: "5azyrs4rfboyp5fzh",
+			FileSetKey:       "5azyrs4rfboyp5fzh",
+			FileFamilyKey:    "5azyrs4rfboyp5fzh::5azyrs4rfboyp5fzh.part2.rar",
+			IdentityStrength: "strong",
+			IdentityReason:   "yenc_header",
+			SubjectSetToken:  "5azyrs4rfboyp5fzh",
+			SubjectSetKind:   "yenc_recovered",
+			FamilyKind:       "opaque_set",
+			BaseStem:         "5azyrs4rfboyp5fzh",
+			IsMainPayload:    true,
+			ReleaseKey:       "5azyrs4rfboyp5fzh",
+			ReleaseName:      "5AzyRS4rfbOyP5fZH",
+			BinaryKey:        "5azyrs4rfboyp5fzh::5azyrs4rfboyp5fzh.part2.rar",
+			BinaryName:       "5AzyRS4rfbOyP5fZH.part2.rar",
+			FileName:         "5AzyRS4rfbOyP5fZH.part2.rar",
+			PartNumber:       partNumber,
+			TotalParts:       732,
+			FileSize:         524288000,
+			MatchConfidence:  0.95,
+			MatchStatus:      "matched",
+			GroupingEvidence: map[string]any{"kind": "yenc_header"},
+		}
+	}
+	results, err := store.ApplyYEncHeaderRecoveries(ctx, []YEncHeaderRecoveryRecord{
+		record(binaryOne, articleOne, 1),
+		record(binaryTwo, articleTwo, 2),
+	})
+	if err != nil {
+		t.Fatalf("apply recovery batch: %v", err)
+	}
+	if len(results) != 2 || !results[1].Merged {
+		t.Fatalf("expected two batch results with second merged, got %+v", results)
+	}
+
+	var remainingSource int
+	if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM binary_core WHERE binary_id = $1`, binaryTwo).Scan(&remainingSource); err != nil {
+		t.Fatalf("count source binary: %v", err)
+	}
+	if remainingSource != 1 {
+		t.Fatalf("expected second recovered binary to remain for purge-owned cleanup, source rows=%d", remainingSource)
+	}
+	var lifecycleStatus string
+	if err := store.DB().QueryRowContext(ctx, `SELECT lifecycle_status FROM binary_lifecycle WHERE binary_id = $1`, binaryTwo).Scan(&lifecycleStatus); err != nil {
+		t.Fatalf("load source lifecycle status: %v", err)
+	}
+	if lifecycleStatus != "superseded" {
+		t.Fatalf("expected source lifecycle superseded, got %q", lifecycleStatus)
+	}
+	var supersededTarget int64
+	if err := store.DB().QueryRowContext(ctx, `SELECT target_binary_id FROM binary_superseded_sources WHERE source_binary_id = $1`, binaryTwo).Scan(&supersededTarget); err != nil {
+		t.Fatalf("load superseded source mapping: %v", err)
+	}
+	if supersededTarget != binaryOne {
+		t.Fatalf("expected superseded source target %d, got %d", binaryOne, supersededTarget)
+	}
+	var mergedParts int
+	if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM binary_parts WHERE binary_id = $1 AND total_parts = 732`, binaryOne).Scan(&mergedParts); err != nil {
+		t.Fatalf("count merged parts: %v", err)
+	}
+	if mergedParts != 2 {
+		t.Fatalf("expected two merged parts on target, got %d", mergedParts)
+	}
+	stats := store.LastYEncRecoveryApplyStats()
+	if stats.SourceDeleteDuration != 0 {
+		t.Fatalf("expected recover_yenc source delete duration to remain zero, got %s", stats.SourceDeleteDuration)
+	}
+	if stats.SourceSupersedeDuration <= 0 {
+		t.Fatalf("expected recover_yenc source supersede duration to be recorded, got %s", stats.SourceSupersedeDuration)
+	}
+}
+
+func TestBackfillYEncRecoveryWorkItemsPrioritizesIndexedAndMultiFileRecoverables(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.yenc-recovery.priority.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	highPriorityBinaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		ReleaseFamilyKey:  "priority-high-family",
+		FileFamilyKey:     "priority-high-family::part",
+		FamilyKind:        "opaque_set",
+		BaseStem:          "priority-high-family",
+		IsMainPayload:     true,
+		ReleaseKey:        "priority-high-family",
+		ReleaseName:       "Priority High Family",
+		BinaryKey:         "priority-high-family::binary",
+		BinaryName:        "priority-high.bin",
+		FileName:          "priority-high.bin",
+		TotalParts:        2,
+		FileIndex:         3,
+		ExpectedFileCount: 12,
+		MatchConfidence:   0.56,
+		MatchStatus:       "matched",
+		IdentityStrength:  "weak",
+	})
+	if err != nil {
+		t.Fatalf("upsert high priority binary: %v", err)
+	}
+
+	lowPriorityBinaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:       1,
+		NewsgroupID:      newsgroupID,
+		ReleaseFamilyKey: "priority-low-family",
+		FileFamilyKey:    "priority-low-family::part",
+		FamilyKind:       "opaque_set",
+		BaseStem:         "priority-low-family",
+		IsMainPayload:    true,
+		ReleaseKey:       "priority-low-family",
+		ReleaseName:      "Priority Low Family",
+		BinaryKey:        "priority-low-family::binary",
+		BinaryName:       "deadbeefcafebabe1234567890abcdef.bin",
+		FileName:         "deadbeefcafebabe1234567890abcdef.bin",
+		TotalParts:       1,
+		MatchConfidence:  0.56,
+		MatchStatus:      "matched",
+		IdentityStrength: "weak",
+	})
+	if err != nil {
+		t.Fatalf("upsert low priority binary: %v", err)
+	}
+
+	now := time.Now().UTC()
+	if _, err := store.InsertArticleHeaders(ctx, 1, newsgroupID, []ArticleHeader{
+		{
+			ArticleNumber: 1501,
+			MessageID:     "<priority-high@test>",
+			Subject:       `"priority-high.bin" yEnc (03/12)`,
+			Poster:        "poster@test",
+			DateUTC:       &now,
+			Bytes:         111,
+			Lines:         11,
+		},
+		{
+			ArticleNumber: 1502,
+			MessageID:     "<priority-low@test>",
+			Subject:       `"deadbeefcafebabe1234567890abcdef.bin" yEnc (1/1)`,
+			Poster:        "poster@test",
+			DateUTC:       &now,
+			Bytes:         222,
+			Lines:         22,
+		},
+	}); err != nil {
+		t.Fatalf("insert article headers: %v", err)
+	}
+
+	var highArticleID int64
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT id FROM article_headers
+		WHERE newsgroup_id = $1 AND message_id = $2`,
+		newsgroupID, "<priority-high@test>",
+	).Scan(&highArticleID); err != nil {
+		t.Fatalf("load high priority article id: %v", err)
+	}
+	var lowArticleID int64
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT id FROM article_headers
+		WHERE newsgroup_id = $1 AND message_id = $2`,
+		newsgroupID, "<priority-low@test>",
+	).Scan(&lowArticleID); err != nil {
+		t.Fatalf("load low priority article id: %v", err)
+	}
+
+	if err := store.UpsertBinaryParts(ctx, []BinaryPartRecord{
+		{
+			BinaryID:        highPriorityBinaryID,
+			ArticleHeaderID: highArticleID,
+			MessageID:       "<priority-high@test>",
+			PartNumber:      1,
+			TotalParts:      2,
+			SegmentBytes:    111,
+			FileName:        "priority-high.bin",
+		},
+		{
+			BinaryID:        lowPriorityBinaryID,
+			ArticleHeaderID: lowArticleID,
+			MessageID:       "<priority-low@test>",
+			PartNumber:      1,
+			TotalParts:      1,
+			SegmentBytes:    222,
+			FileName:        "deadbeefcafebabe1234567890abcdef.bin",
+		},
+	}); err != nil {
+		t.Fatalf("upsert binary parts: %v", err)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO release_family_readiness_summaries (
+			provider_id, newsgroup_id, key_kind, family_key,
+			source_release_key, release_key, release_name,
+			binary_count, complete_binary_count, complete_main_payload_binary_count, incomplete_binary_count,
+			expected_file_count, has_expected_file_count, total_bytes, earliest_posted_at,
+			dominant_family_kind, dominant_file_name, dominant_match_confidence,
+			readiness_bucket, expected_file_coverage_pct, updated_at, processed_at
+		)
+		VALUES
+			(1, $1, 'release_family', 'priority-high-family', 'priority-high-family', 'priority-high-family', 'Priority High Family', 1, 0, 0, 1, 12, true, 111, NOW(), 'opaque_set', 'priority-high.bin', 0.56, 'fragment_only', 0, NOW(), TIMESTAMPTZ 'epoch'),
+			(1, $1, 'release_family', 'priority-low-family', 'priority-low-family', 'priority-low-family', 'Priority Low Family', 1, 1, 1, 0, 0, false, 222, NOW(), 'opaque_set', 'deadbeefcafebabe1234567890abcdef.bin', 0.56, 'weak_single_binary', 0, NOW(), TIMESTAMPTZ 'epoch')
+		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
+		SET binary_count = EXCLUDED.binary_count,
+		    complete_binary_count = EXCLUDED.complete_binary_count,
+		    complete_main_payload_binary_count = EXCLUDED.complete_main_payload_binary_count,
+		    incomplete_binary_count = EXCLUDED.incomplete_binary_count,
+		    expected_file_count = EXCLUDED.expected_file_count,
+		    has_expected_file_count = EXCLUDED.has_expected_file_count,
+		    total_bytes = EXCLUDED.total_bytes,
+		    earliest_posted_at = EXCLUDED.earliest_posted_at,
+		    dominant_family_kind = EXCLUDED.dominant_family_kind,
+		    dominant_file_name = EXCLUDED.dominant_file_name,
+		    dominant_match_confidence = EXCLUDED.dominant_match_confidence,
+		    readiness_bucket = EXCLUDED.readiness_bucket,
+		    expected_file_coverage_pct = EXCLUDED.expected_file_coverage_pct,
+		    updated_at = EXCLUDED.updated_at,
+		    processed_at = EXCLUDED.processed_at`,
+		newsgroupID,
+	); err != nil {
+		t.Fatalf("seed readiness summaries: %v", err)
+	}
+
+	upserted, retired, err := store.BackfillYEncRecoveryWorkItems(ctx, 10)
+	if err != nil {
+		t.Fatalf("backfill yenc recovery work items: %v", err)
+	}
+	if upserted != 2 {
+		t.Fatalf("expected 2 upserted work items, got %d retired=%d", upserted, retired)
+	}
+
+	candidates, err := store.ListYEncRecoveryCandidates(ctx, 2)
+	if err != nil {
+		t.Fatalf("list yenc recovery candidates: %v", err)
+	}
+	if len(candidates) != 2 {
+		t.Fatalf("expected 2 candidates, got %d", len(candidates))
+	}
+	if candidates[0].BinaryID != highPriorityBinaryID {
+		t.Fatalf("expected high-priority binary %d first, got %d", highPriorityBinaryID, candidates[0].BinaryID)
+	}
+
+	var highRank, lowRank int
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT priority_rank
+		FROM yenc_recovery_work_items
+		WHERE binary_id = $1`,
+		highPriorityBinaryID,
+	).Scan(&highRank); err != nil {
+		t.Fatalf("load high priority rank: %v", err)
+	}
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT priority_rank
+		FROM yenc_recovery_work_items
+		WHERE binary_id = $1`,
+		lowPriorityBinaryID,
+	).Scan(&lowRank); err != nil {
+		t.Fatalf("load low priority rank: %v", err)
+	}
+	if highRank >= lowRank {
+		t.Fatalf("expected high-priority rank lower than low-priority rank, got high=%d low=%d", highRank, lowRank)
 	}
 }
 
@@ -2449,9 +7135,15 @@ func TestRefreshBinaryStatsRequeuesFamilyAfterDirtyRowWasAcked(t *testing.T) {
 	}
 
 	if _, err := store.DB().ExecContext(ctx, `
-		UPDATE release_family_readiness_summaries
-		SET processed_at = updated_at
-		WHERE provider_id = 1 AND newsgroup_id = $1 AND family_key = 'requeue-family'`, newsgroupID,
+		INSERT INTO release_family_readiness_acks (
+			provider_id, newsgroup_id, key_kind, family_key, processed_at, updated_at
+		)
+		SELECT provider_id, newsgroup_id, key_kind, family_key, updated_at, NOW()
+		FROM release_family_readiness_summaries
+		WHERE provider_id = 1 AND newsgroup_id = $1 AND family_key = 'requeue-family'
+		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
+		SET processed_at = EXCLUDED.processed_at,
+		    updated_at = NOW()`, newsgroupID,
 	); err != nil {
 		t.Fatalf("ack summary queue row: %v", err)
 	}
@@ -2463,17 +7155,539 @@ func TestRefreshBinaryStatsRequeuesFamilyAfterDirtyRowWasAcked(t *testing.T) {
 	var dirtyCount int
 	if err := store.DB().QueryRowContext(ctx, `
 		SELECT COUNT(*)
-		FROM release_family_readiness_summaries
-		WHERE provider_id = 1
+		FROM release_family_readiness_summaries s
+		LEFT JOIN release_family_readiness_acks a
+		  ON a.provider_id = s.provider_id
+		 AND a.newsgroup_id = s.newsgroup_id
+		 AND a.key_kind = s.key_kind
+		 AND a.family_key = s.family_key
+		WHERE s.provider_id = 1
 		  AND newsgroup_id = $1
 		  AND key_kind = 'release_family'
 		  AND family_key = 'requeue-family'
-		  AND updated_at > COALESCE(processed_at, updated_at)`, newsgroupID,
+		  AND s.updated_at > COALESCE(a.processed_at, TIMESTAMPTZ 'epoch')`, newsgroupID,
 	).Scan(&dirtyCount); err != nil {
 		t.Fatalf("query requeued summary family: %v", err)
 	}
 	if dirtyCount != 1 {
 		t.Fatalf("expected family to be requeued after refresh, got %d rows", dirtyCount)
+	}
+}
+
+func TestRefreshBinaryStatsDeferredSummaryRefreshMarksFamilyDirtyWithoutInlineRecompute(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.release.summary.refresh.defer.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		SourceReleaseKey:  "deferred-refresh-source",
+		ReleaseFamilyKey:  "deferred-refresh-family",
+		ReleaseKey:        "deferred-refresh-family",
+		ReleaseName:       "Deferred Refresh Family",
+		BinaryKey:         "deferred-refresh-binary",
+		BinaryName:        "deferred.refresh.rar",
+		FileName:          "deferred.refresh.rar",
+		ExpectedFileCount: 3,
+		TotalParts:        2,
+		MatchConfidence:   0.97,
+		MatchStatus:       "strong",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+
+	postedAt := time.Date(2026, 5, 26, 22, 0, 0, 0, time.UTC)
+	for idx := 0; idx < 2; idx++ {
+		articleNumber := int64(800 + idx)
+		messageID := fmt.Sprintf("<deferred-refresh-%d-%d@test>", time.Now().UnixNano(), idx)
+		inserted, err := store.InsertArticleHeaders(ctx, 1, newsgroupID, []ArticleHeader{{
+			ArticleNumber: articleNumber,
+			MessageID:     messageID,
+			Subject:       `Deferred Refresh - "deferred.refresh.rar" yEnc (1/2)`,
+			Poster:        "poster-deferred-refresh@example.com",
+			DateUTC:       &postedAt,
+			Bytes:         1024,
+			Lines:         12,
+		}})
+		if err != nil {
+			t.Fatalf("insert article header %d: %v", idx, err)
+		}
+		if inserted != 1 {
+			t.Fatalf("expected 1 inserted article header, got %d", inserted)
+		}
+
+		var articleHeaderID int64
+		if err := store.DB().QueryRowContext(ctx, `
+			SELECT id
+			FROM article_headers
+			WHERE newsgroup_id = $1 AND article_number = $2`, newsgroupID, articleNumber,
+		).Scan(&articleHeaderID); err != nil {
+			t.Fatalf("lookup article header %d: %v", idx, err)
+		}
+
+		if err := store.UpsertBinaryPart(ctx, BinaryPartRecord{
+			BinaryID:        binaryID,
+			ArticleHeaderID: articleHeaderID,
+			MessageID:       messageID,
+			PartNumber:      idx + 1,
+			TotalParts:      2,
+			SegmentBytes:    1024,
+			FileName:        "deferred.refresh.rar",
+		}); err != nil {
+			t.Fatalf("upsert binary part %d: %v", idx, err)
+		}
+	}
+
+	deferredCtx := WithDeferredReleaseFamilySummaryRefresh(ctx)
+	if err := store.RefreshBinaryStats(deferredCtx, binaryID); err != nil {
+		t.Fatalf("refresh binary stats with deferred summary refresh: %v", err)
+	}
+
+	var (
+		summaryCount int
+		queueCount   int
+	)
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM release_family_readiness_summaries
+		WHERE provider_id = 1
+		  AND newsgroup_id = $1
+		  AND key_kind = 'release_family'
+		  AND family_key = 'deferred-refresh-family'`, newsgroupID,
+	).Scan(&summaryCount); err != nil {
+		t.Fatalf("count deferred refresh summary rows: %v", err)
+	}
+	if summaryCount != 0 {
+		t.Fatalf("expected deferred refresh to avoid inline summary writes, got %d rows", summaryCount)
+	}
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM release_family_summary_refresh_queue
+		WHERE provider_id = 1
+		  AND newsgroup_id = $1
+		  AND key_kind = 'release_family'
+		  AND family_key = 'deferred-refresh-family'`, newsgroupID,
+	).Scan(&queueCount); err != nil {
+		t.Fatalf("count deferred refresh queue rows: %v", err)
+	}
+	if queueCount != 1 {
+		t.Fatalf("expected deferred refresh to enqueue one family key, got %d", queueCount)
+	}
+}
+
+func TestRefreshQueuedReleaseFamilySummariesRecomputesDeferredFamily(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.release.summary.queue.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		SourceReleaseKey:  "queued-refresh-source",
+		ReleaseFamilyKey:  "queued-refresh-family",
+		ReleaseKey:        "queued-refresh-family",
+		ReleaseName:       "Queued Refresh Family",
+		BinaryKey:         "queued-refresh-binary",
+		BinaryName:        "queued.refresh.rar",
+		FileName:          "queued.refresh.rar",
+		ExpectedFileCount: 1,
+		TotalParts:        2,
+		MatchConfidence:   0.97,
+		MatchStatus:       "strong",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+
+	postedAt := time.Date(2026, 5, 27, 12, 0, 0, 0, time.UTC)
+	for idx := 0; idx < 2; idx++ {
+		articleNumber := int64(1800 + idx)
+		messageID := fmt.Sprintf("<queued-refresh-%d-%d@test>", time.Now().UnixNano(), idx)
+		inserted, err := store.InsertArticleHeaders(ctx, 1, newsgroupID, []ArticleHeader{{
+			ArticleNumber: articleNumber,
+			MessageID:     messageID,
+			Subject:       `Queued Refresh - "queued.refresh.rar" yEnc (1/2)`,
+			Poster:        "poster-queued-refresh@example.com",
+			DateUTC:       &postedAt,
+			Bytes:         1024,
+			Lines:         12,
+		}})
+		if err != nil {
+			t.Fatalf("insert article header %d: %v", idx, err)
+		}
+		if inserted != 1 {
+			t.Fatalf("expected 1 inserted article header, got %d", inserted)
+		}
+
+		var articleHeaderID int64
+		if err := store.DB().QueryRowContext(ctx, `
+			SELECT id
+			FROM article_headers
+			WHERE newsgroup_id = $1 AND article_number = $2`, newsgroupID, articleNumber,
+		).Scan(&articleHeaderID); err != nil {
+			t.Fatalf("lookup article header %d: %v", idx, err)
+		}
+
+		if err := store.UpsertBinaryPart(ctx, BinaryPartRecord{
+			BinaryID:        binaryID,
+			ArticleHeaderID: articleHeaderID,
+			MessageID:       messageID,
+			PartNumber:      idx + 1,
+			TotalParts:      2,
+			SegmentBytes:    1024,
+			FileName:        "queued.refresh.rar",
+		}); err != nil {
+			t.Fatalf("upsert binary part %d: %v", idx, err)
+		}
+	}
+
+	deferredCtx := WithDeferredReleaseFamilySummaryRefresh(ctx)
+	if err := store.RefreshBinaryStats(deferredCtx, binaryID); err != nil {
+		t.Fatalf("refresh binary stats with deferred summary refresh: %v", err)
+	}
+
+	refreshed, err := store.RefreshQueuedReleaseFamilySummaries(ctx, 100)
+	if err != nil {
+		t.Fatalf("refresh queued release family summaries: %v", err)
+	}
+	if refreshed != 1 {
+		t.Fatalf("expected 1 refreshed summary key, got %d", refreshed)
+	}
+
+	var (
+		binaryCount int
+		readiness   string
+		queueCount  int
+	)
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT binary_count, readiness_bucket
+		FROM release_family_readiness_summaries
+		WHERE provider_id = 1
+		  AND newsgroup_id = $1
+		  AND key_kind = 'release_family'
+		  AND family_key = 'queued-refresh-family'`, newsgroupID,
+	).Scan(&binaryCount, &readiness); err != nil {
+		t.Fatalf("query refreshed summary row: %v", err)
+	}
+	if binaryCount != 1 {
+		t.Fatalf("expected refreshed summary binary_count=1, got %d", binaryCount)
+	}
+	if readiness != releaseReadinessActionable {
+		t.Fatalf("expected actionable readiness after queued refresh, got %q", readiness)
+	}
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM release_family_summary_refresh_queue
+		WHERE provider_id = 1
+		  AND newsgroup_id = $1
+		  AND key_kind = 'release_family'
+		  AND family_key = 'queued-refresh-family'`, newsgroupID,
+	).Scan(&queueCount); err != nil {
+		t.Fatalf("query refresh queue row: %v", err)
+	}
+	if queueCount != 0 {
+		t.Fatalf("expected queued refresh row to be drained, got %d", queueCount)
+	}
+}
+
+func TestRefreshQueuedReleaseFamilySummariesReadsBinaryV2Projections(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.release.summary.v2.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		SourceReleaseKey:  "v2-summary-source",
+		ReleaseFamilyKey:  "v2-summary-family",
+		ReleaseKey:        "v2-summary-family",
+		ReleaseName:       "V2 Summary Family",
+		BinaryKey:         "v2-summary-binary",
+		BinaryName:        "v2.summary.rar",
+		FileName:          "v2.summary.rar",
+		ExpectedFileCount: 2,
+		TotalParts:        4,
+		MatchConfidence:   0.91,
+		MatchStatus:       "strong",
+		FamilyKind:        "archive_stem",
+		IsMainPayload:     true,
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE binaries
+		SET release_name = 'LEGACY POISON',
+		    expected_file_count = 99,
+		    total_bytes = 999999,
+		    match_confidence = 0.01,
+		    family_kind = 'legacy_poison'
+		WHERE id = $1`, binaryID); err != nil {
+		t.Fatalf("poison legacy binary row: %v", err)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO release_family_summary_refresh_queue (
+			provider_id, newsgroup_id, key_kind, family_key, queued_at
+		)
+		VALUES (1, $1, 'release_family', 'v2-summary-family', NOW())
+		ON CONFLICT DO NOTHING`, newsgroupID); err != nil {
+		t.Fatalf("enqueue summary refresh: %v", err)
+	}
+
+	refreshed, err := store.RefreshQueuedReleaseFamilySummaries(ctx, 100)
+	if err != nil {
+		t.Fatalf("refresh queued release family summaries: %v", err)
+	}
+	if refreshed != 1 {
+		t.Fatalf("expected 1 refreshed summary key, got %d", refreshed)
+	}
+
+	var (
+		releaseName             string
+		expectedFileCount       int
+		dominantFamilyKind      string
+		dominantMatchConfidence float64
+	)
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT
+			release_name,
+			expected_file_count,
+			dominant_family_kind,
+			dominant_match_confidence
+		FROM release_family_readiness_summaries
+		WHERE provider_id = 1
+		  AND newsgroup_id = $1
+		  AND key_kind = 'release_family'
+		  AND family_key = 'v2-summary-family'`, newsgroupID,
+	).Scan(&releaseName, &expectedFileCount, &dominantFamilyKind, &dominantMatchConfidence); err != nil {
+		t.Fatalf("query refreshed summary: %v", err)
+	}
+	if releaseName != "V2 Summary Family" || expectedFileCount != 2 || dominantFamilyKind != "archive_stem" || dominantMatchConfidence != 0.91 {
+		t.Fatalf("expected summary to use v2 projection values, got release_name=%q expected=%d family_kind=%q confidence=%v",
+			releaseName,
+			expectedFileCount,
+			dominantFamilyKind,
+			dominantMatchConfidence,
+		)
+	}
+}
+
+func TestRefreshQueuedReleaseFamilySummariesPrioritizesNonWeakResidue(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.release.summary.priority.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	weakFamily := "priority-weak-family"
+	actionableFamily := "priority-actionable-family"
+	missingFamily := "priority-missing-family"
+
+	if _, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:       1,
+		NewsgroupID:      newsgroupID,
+		ReleaseFamilyKey: actionableFamily,
+		SourceReleaseKey: actionableFamily,
+		ReleaseKey:       actionableFamily,
+		ReleaseName:      actionableFamily,
+		BinaryKey:        actionableFamily + "::binary",
+		BinaryName:       "priority.actionable.part01.rar",
+		FileName:         "priority.actionable.part01.rar",
+		FamilyKind:       "archive_stem",
+		IsMainPayload:    true,
+		TotalParts:       2,
+		MatchConfidence:  0.97,
+		MatchStatus:      "matched",
+	}); err != nil {
+		t.Fatalf("upsert actionable binary: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE binaries
+		SET observed_parts = total_parts,
+		    expected_file_count = 2,
+		    updated_at = NOW()
+		WHERE provider_id = 1
+		  AND newsgroup_id = $1
+		  AND release_family_key = $2`,
+		newsgroupID,
+		actionableFamily,
+	); err != nil {
+		t.Fatalf("complete actionable binary: %v", err)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO release_family_readiness_summaries (
+			provider_id, newsgroup_id, key_kind, family_key,
+			source_release_key, release_key, release_name,
+			binary_count, complete_binary_count, complete_main_payload_binary_count, incomplete_binary_count,
+			expected_file_count, expected_archive_file_count, has_expected_file_count, has_expected_archive_file_count,
+			total_bytes, earliest_posted_at, dominant_family_kind, dominant_file_name, dominant_match_confidence,
+			readiness_bucket, recover_pending, expected_file_coverage_pct, archive_file_coverage_pct, updated_at, processed_at
+		)
+		VALUES
+			(1, $1, 'release_family', $2, $2, $2, $2, 1, 1, 1, 0, 0, 0, false, false, 100, NOW(), 'contextual_obfuscated', 'priority-weak.bin', 0.70, 'weak_single_binary', false, 0, 0, NOW() - INTERVAL '3 minutes', TIMESTAMPTZ 'epoch'),
+			(1, $1, 'release_family', $3, $3, $3, $3, 1, 1, 1, 0, 2, 0, true, false, 200, NOW(), 'archive_stem', 'priority.actionable.part01.rar', 0.97, 'actionable', false, 50, 0, NOW() - INTERVAL '2 minutes', TIMESTAMPTZ 'epoch')`,
+		newsgroupID,
+		weakFamily,
+		actionableFamily,
+	); err != nil {
+		t.Fatalf("insert readiness rows: %v", err)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO release_family_summary_refresh_queue (
+			provider_id, newsgroup_id, key_kind, family_key, queued_at
+		)
+		VALUES
+			(1, $1, 'release_family', $2, NOW() - INTERVAL '3 minutes'),
+			(1, $1, 'release_family', $3, NOW() - INTERVAL '2 minutes'),
+			(1, $1, 'release_family', $4, NOW() - INTERVAL '1 minute')`,
+		newsgroupID,
+		weakFamily,
+		actionableFamily,
+		missingFamily,
+	); err != nil {
+		t.Fatalf("insert refresh queue rows: %v", err)
+	}
+
+	refreshed, err := store.RefreshQueuedReleaseFamilySummaries(ctx, 1)
+	if err != nil {
+		t.Fatalf("refresh queued release family summaries: %v", err)
+	}
+	if refreshed != 1 {
+		t.Fatalf("expected 1 refreshed summary key, got %d", refreshed)
+	}
+
+	rows, err := store.DB().QueryContext(ctx, `
+		SELECT family_key
+		FROM release_family_summary_refresh_queue
+		WHERE provider_id = 1
+		  AND newsgroup_id = $1
+		ORDER BY family_key`,
+		newsgroupID,
+	)
+	if err != nil {
+		t.Fatalf("query remaining refresh queue: %v", err)
+	}
+	defer rows.Close()
+
+	var remaining []string
+	for rows.Next() {
+		var familyKey string
+		if err := rows.Scan(&familyKey); err != nil {
+			t.Fatalf("scan remaining refresh queue: %v", err)
+		}
+		remaining = append(remaining, familyKey)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate remaining refresh queue: %v", err)
+	}
+
+	if len(remaining) != 2 {
+		t.Fatalf("expected 2 remaining queued keys, got %v", remaining)
+	}
+	for _, familyKey := range remaining {
+		if familyKey == missingFamily {
+			t.Fatalf("expected missing-summary family to be dequeued first, remaining=%v", remaining)
+		}
+	}
+}
+
+func TestRefreshQueuedReleaseFamilySummariesFillsHotBatchAcrossPriorityBranches(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.release.summary.fill.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	actionableFamily := "fill-actionable-family"
+	missingOne := "fill-missing-family-one"
+	missingTwo := "fill-missing-family-two"
+
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO release_family_readiness_summaries (
+			provider_id, newsgroup_id, key_kind, family_key,
+			source_release_key, release_key, release_name,
+			binary_count, complete_binary_count, complete_main_payload_binary_count, incomplete_binary_count,
+			expected_file_count, expected_archive_file_count, has_expected_file_count, has_expected_archive_file_count,
+			total_bytes, earliest_posted_at, dominant_family_kind, dominant_file_name, dominant_match_confidence,
+			readiness_bucket, recover_pending, expected_file_coverage_pct, archive_file_coverage_pct, updated_at, processed_at
+		)
+		VALUES (
+			1, $1, 'release_family', $2,
+			$2, $2, $2,
+			1, 1, 1, 0,
+			1, 0, true, false,
+			100, NOW(), 'archive_stem', 'fill.actionable.rar', 0.97,
+			'actionable', false, 100, 0, NOW() - INTERVAL '1 minute', TIMESTAMPTZ 'epoch'
+		)`,
+		newsgroupID,
+		actionableFamily,
+	); err != nil {
+		t.Fatalf("insert actionable readiness row: %v", err)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO release_family_summary_refresh_queue (
+			provider_id, newsgroup_id, key_kind, family_key, queued_at
+		)
+		VALUES
+			(1, $1, 'release_family', $2, NOW() - INTERVAL '3 minutes'),
+			(1, $1, 'release_family', $3, NOW() - INTERVAL '2 minutes'),
+			(1, $1, 'release_family', $4, NOW() - INTERVAL '1 minute')`,
+		newsgroupID,
+		actionableFamily,
+		missingOne,
+		missingTwo,
+	); err != nil {
+		t.Fatalf("insert refresh queue rows: %v", err)
+	}
+
+	refreshed, err := store.RefreshQueuedReleaseFamilySummaries(ctx, 3)
+	if err != nil {
+		t.Fatalf("refresh queued release family summaries: %v", err)
+	}
+	if refreshed != 3 {
+		t.Fatalf("expected hot refresh to fill batch across branches, got %d", refreshed)
+	}
+
+	var queueCount int
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM release_family_summary_refresh_queue
+		WHERE provider_id = 1
+		  AND newsgroup_id = $1`,
+		newsgroupID,
+	).Scan(&queueCount); err != nil {
+		t.Fatalf("query refresh queue count: %v", err)
+	}
+	if queueCount != 0 {
+		t.Fatalf("expected all queued hot keys to be drained, got %d", queueCount)
 	}
 }
 
@@ -2771,12 +7985,17 @@ func TestUpsertBinaryRefreshesOldAndNewReleaseFamilySummariesWhenFamilyChanges(t
 		var count int
 		if err := store.DB().QueryRowContext(ctx, `
 			SELECT COUNT(*)
-			FROM release_family_readiness_summaries
-			WHERE provider_id = 1
+			FROM release_family_readiness_summaries s
+			LEFT JOIN release_family_readiness_acks a
+			  ON a.provider_id = s.provider_id
+			 AND a.newsgroup_id = s.newsgroup_id
+			 AND a.key_kind = s.key_kind
+			 AND a.family_key = s.family_key
+			WHERE s.provider_id = 1
 			  AND newsgroup_id = $1
 			  AND key_kind = $2
 			  AND family_key = $3
-			  AND updated_at > COALESCE(processed_at, updated_at)`,
+			  AND s.updated_at > COALESCE(a.processed_at, TIMESTAMPTZ 'epoch')`,
 			newsgroupID,
 			row.keyKind,
 			row.familyKey,
@@ -3004,6 +8223,46 @@ func TestUpsertBinaryPartsDeduplicatesConflictingBatchRows(t *testing.T) {
 	}
 }
 
+func TestDedupeBinaryPartRecordsRemovesArticleHeaderConflicts(t *testing.T) {
+	records := []BinaryPartRecord{
+		{
+			BinaryID:        10,
+			ArticleHeaderID: 100,
+			MessageID:       "<article-100-a@test>",
+			PartNumber:      1,
+			TotalParts:      2,
+			SegmentBytes:    100,
+			FileName:        "sample.part01.rar",
+		},
+		{
+			BinaryID:        20,
+			ArticleHeaderID: 100,
+			MessageID:       "<article-100-b@test>",
+			PartNumber:      2,
+			TotalParts:      2,
+			SegmentBytes:    200,
+			FileName:        "sample.part02.rar",
+		},
+		{
+			BinaryID:        20,
+			ArticleHeaderID: 101,
+			MessageID:       "<article-101@test>",
+			PartNumber:      2,
+			TotalParts:      2,
+			SegmentBytes:    150,
+			FileName:        "sample.part02.rar",
+		},
+	}
+
+	got := dedupeBinaryPartRecords(records)
+	if len(got) != 1 {
+		t.Fatalf("expected one record after resolving article and part conflicts, got %d: %+v", len(got), got)
+	}
+	if got[0].ArticleHeaderID != 100 || got[0].BinaryID != 20 || got[0].PartNumber != 2 {
+		t.Fatalf("unexpected winning record: %+v", got[0])
+	}
+}
+
 func TestUniqueSortedArticleHeaderIDs(t *testing.T) {
 	got := uniqueSortedArticleHeaderIDs([]BinaryPartRecord{
 		{ArticleHeaderID: 42},
@@ -3036,7 +8295,7 @@ func TestListUnassembledArticleHeadersPrioritizesHeadersThatMatchExistingBinarie
 	}
 
 	posterName := fmt.Sprintf("poster-priority-%d@example.com", time.Now().UnixNano())
-	posterID, err := store.EnsurePoster(ctx, posterName)
+	posterID, err := ensureTestPoster(t, store, ctx, posterName)
 	if err != nil {
 		t.Fatalf("ensure poster: %v", err)
 	}
@@ -3139,7 +8398,7 @@ func TestListUnassembledArticleHeadersPrefersNearCompleteMainPayloadMatches(t *t
 	}
 
 	posterName := fmt.Sprintf("poster-completion-%d@example.com", time.Now().UnixNano())
-	posterID, err := store.EnsurePoster(ctx, posterName)
+	posterID, err := ensureTestPoster(t, store, ctx, posterName)
 	if err != nil {
 		t.Fatalf("ensure poster: %v", err)
 	}
@@ -3303,6 +8562,100 @@ func TestListUnassembledArticleHeadersPrefersNearCompleteMainPayloadMatches(t *t
 	}
 }
 
+func TestClaimAssemblyQueueBatchSelectsStructuredLaneAFromQueueKeys(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.assemble.claim-lane-a.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	posterName := fmt.Sprintf("poster-claim-lane-a-%d@example.com", time.Now().UnixNano())
+	posterID, err := ensureTestPoster(t, store, ctx, posterName)
+	if err != nil {
+		t.Fatalf("ensure poster: %v", err)
+	}
+
+	t.Cleanup(func() {
+		cleanupCtx := context.Background()
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM binary_parts WHERE binary_id IN (SELECT id FROM binaries WHERE newsgroup_id = $1)`, newsgroupID); err != nil {
+			t.Fatalf("cleanup binary parts: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM binaries WHERE newsgroup_id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup binaries: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM article_headers WHERE newsgroup_id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup article headers: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM posters WHERE id = $1`, posterID); err != nil {
+			t.Fatalf("cleanup poster: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM newsgroups WHERE id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup newsgroup: %v", err)
+		}
+	})
+
+	fileName := "claim.lane.a.part01.rar"
+	family := fmt.Sprintf("claim-lane-a-%d", time.Now().UnixNano())
+	if _, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		PosterID:          posterID,
+		SourceReleaseKey:  family,
+		ReleaseFamilyKey:  family,
+		FileFamilyKey:     family + "::file",
+		FamilyKind:        "archive_stem",
+		BaseStem:          "claim.lane.a",
+		IsMainPayload:     true,
+		ReleaseKey:        family,
+		ReleaseName:       "Claim Lane A",
+		BinaryKey:         family + "::binary",
+		BinaryName:        fileName,
+		FileName:          fileName,
+		FileIndex:         1,
+		ExpectedFileCount: 2,
+		TotalParts:        20,
+		MatchConfidence:   0.95,
+		MatchStatus:       "matched",
+	}); err != nil {
+		t.Fatalf("upsert seed binary: %v", err)
+	}
+
+	baseTime := time.Date(2026, 4, 21, 12, 0, 0, 0, time.UTC)
+	if _, err := store.InsertArticleHeaders(ctx, 1, newsgroupID, []ArticleHeader{{
+		ArticleNumber: 501,
+		MessageID:     fmt.Sprintf("<claim-lane-a-%d@test>", time.Now().UnixNano()),
+		Subject:       `Claim Lane A [1/2] - "claim.lane.a.part01.rar" yEnc (11/20)`,
+		Poster:        posterName,
+		DateUTC:       &baseTime,
+		Bytes:         2048,
+		Lines:         20,
+	}}); err != nil {
+		t.Fatalf("insert article header: %v", err)
+	}
+
+	got, err := store.ClaimAssemblyQueueBatch(ctx, AssemblyClaimRequest{
+		Limit:         1,
+		Owner:         "test-claim-lane-a",
+		LeaseDuration: time.Minute,
+		Lane:          AssemblyClaimLaneA,
+	})
+	if err != nil {
+		t.Fatalf("claim assembly queue batch: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 claimed header, got %d", len(got))
+	}
+	if got[0].FileName != fileName {
+		t.Fatalf("expected claimed file %q, got %q", fileName, got[0].FileName)
+	}
+	if !got[0].StructuredIdentityBinaryMatched {
+		t.Fatalf("expected structured Lane A match, got %+v", got[0])
+	}
+}
+
 func TestListBinaryInspectionCandidatesInspectArchiveDedupesArchiveFamilies(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
@@ -3314,7 +8667,7 @@ func TestListBinaryInspectionCandidatesInspectArchiveDedupesArchiveFamilies(t *t
 	}
 
 	posterName := fmt.Sprintf("poster-archive-%d@example.com", time.Now().UnixNano())
-	posterID, err := store.EnsurePoster(ctx, posterName)
+	posterID, err := ensureTestPoster(t, store, ctx, posterName)
 	if err != nil {
 		t.Fatalf("ensure poster: %v", err)
 	}
@@ -3414,6 +8767,103 @@ func TestListBinaryInspectionCandidatesInspectArchiveDedupesArchiveFamilies(t *t
 	}
 }
 
+func TestListBinaryInspectionCandidatesInspectArchiveAllowsPayloadCompleteWithMissingSidecars(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.inspect.archive.payloadcomplete.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+	posterName := fmt.Sprintf("poster-archive-payloadcomplete-%d@example.com", time.Now().UnixNano())
+	posterID, err := ensureTestPoster(t, store, ctx, posterName)
+	if err != nil {
+		t.Fatalf("ensure poster: %v", err)
+	}
+
+	baseKey := fmt.Sprintf("archive-payloadcomplete-%d", time.Now().UnixNano())
+	now := time.Now().UTC()
+	releaseID, err := store.UpsertRelease(ctx, ReleaseRecord{
+		ProviderID:              1,
+		SourceReleaseKey:        baseKey,
+		ReleaseFamilyKey:        baseKey,
+		ReleaseKey:              baseKey,
+		GroupName:               groupName,
+		Title:                   "Payload Complete Missing Sidecars",
+		SourceTitle:             "Payload.Complete.Missing.Sidecars",
+		SearchTitle:             "payload complete missing sidecars",
+		Category:                "usenet",
+		Classification:          "video_archive",
+		Poster:                  posterName,
+		FileCount:               5,
+		ExpectedFileCount:       6,
+		CompletionPct:           83.33,
+		MatchConfidence:         0.95,
+		IdentityStatus:          "identified",
+		ArchiveCount:            1,
+		AvailabilityScore:       83.33,
+		AvailabilityTier:        "partial",
+		MediaQualityScore:       0,
+		MediaQualityTier:        "",
+		IdentityConfidenceScore: 90,
+		MetadataUpdatedAt:       &now,
+	})
+	if err != nil {
+		t.Fatalf("upsert release: %v", err)
+	}
+
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		PosterID:          posterID,
+		SourceReleaseKey:  baseKey,
+		ReleaseFamilyKey:  baseKey,
+		FileFamilyKey:     baseKey + "::archive",
+		FamilyKind:        "archive_stem",
+		BaseStem:          "payload.complete",
+		IsMainPayload:     true,
+		ReleaseKey:        baseKey,
+		ReleaseName:       "Payload Complete Missing Sidecars",
+		BinaryKey:         baseKey + "::part01",
+		BinaryName:        "payload.complete.part01.rar",
+		FileName:          "payload.complete.part01.rar",
+		FileIndex:         1,
+		ExpectedFileCount: 5,
+		TotalParts:        3,
+		MatchConfidence:   0.95,
+		MatchStatus:       "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE binary_observation_stats
+		SET observed_parts = total_parts, total_bytes = 716800, updated_at = NOW()
+		WHERE binary_id = $1`, binaryID); err != nil {
+		t.Fatalf("mark binary payload complete: %v", err)
+	}
+	if err := store.ReplaceReleaseFiles(ctx, releaseID, []ReleaseFileRecord{{
+		BinaryID:  binaryID,
+		FileName:  "payload.complete.part01.rar",
+		SizeBytes: 716800,
+		FileIndex: 1,
+	}}); err != nil {
+		t.Fatalf("replace release files: %v", err)
+	}
+
+	candidates, err := store.ListBinaryInspectionCandidates(ctx, "inspect_archive", 20)
+	if err != nil {
+		t.Fatalf("list inspect archive candidates: %v", err)
+	}
+	for _, candidate := range candidates {
+		if candidate.BinaryID == binaryID {
+			return
+		}
+	}
+	t.Fatalf("expected inspect_archive candidate for payload-complete release below 100%% overall completion")
+}
+
 func TestListBinaryInspectionCandidatesInspectArchiveDoesNotFallThroughToLaterRARVolumes(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
@@ -3425,7 +8875,7 @@ func TestListBinaryInspectionCandidatesInspectArchiveDoesNotFallThroughToLaterRA
 	}
 
 	posterName := fmt.Sprintf("poster-archive-nofallthrough-%d@example.com", time.Now().UnixNano())
-	posterID, err := store.EnsurePoster(ctx, posterName)
+	posterID, err := ensureTestPoster(t, store, ctx, posterName)
 	if err != nil {
 		t.Fatalf("ensure poster: %v", err)
 	}
@@ -3539,7 +8989,7 @@ func TestListBinaryInspectionCandidatesInspectPAR2PrefersManifestOverVolumes(t *
 	if err != nil {
 		t.Fatalf("ensure newsgroup: %v", err)
 	}
-	posterID, err := store.EnsurePoster(ctx, fmt.Sprintf("poster-par2-manifest-%d@example.com", time.Now().UnixNano()))
+	posterID, err := ensureTestPoster(t, store, ctx, fmt.Sprintf("poster-par2-manifest-%d@example.com", time.Now().UnixNano()))
 	if err != nil {
 		t.Fatalf("ensure poster: %v", err)
 	}
@@ -3602,6 +9052,108 @@ func TestListBinaryInspectionCandidatesInspectPAR2PrefersManifestOverVolumes(t *
 	}
 }
 
+func TestListBinaryInspectionCandidatesInspectPAR2PrioritizesReleaseLinkedCompleteSets(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.inspect.par2.priority.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+	posterID, err := ensureTestPoster(t, store, ctx, fmt.Sprintf("poster-par2-priority-%d@example.com", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatalf("ensure poster: %v", err)
+	}
+
+	now := time.Now().UTC()
+	newPartialID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:       1,
+		NewsgroupID:      newsgroupID,
+		PosterID:         posterID,
+		SourceReleaseKey: "new-partial-par2",
+		ReleaseFamilyKey: "new-partial-par2",
+		FileFamilyKey:    "new-partial-par2::par2",
+		FamilyKind:       "par2",
+		BaseStem:         "newer",
+		IsAuxiliary:      true,
+		ReleaseKey:       "new-partial-par2",
+		ReleaseName:      "Newer Partial PAR2",
+		BinaryKey:        "new-partial-par2::manifest",
+		BinaryName:       "newer.par2",
+		FileName:         "newer.par2",
+		TotalParts:       200,
+		PostedAt:         &now,
+		MatchConfidence:  0.95,
+		MatchStatus:      "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert newer partial par2: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `UPDATE binaries SET observed_parts = 1 WHERE id = $1`, newPartialID); err != nil {
+		t.Fatalf("seed newer observed_parts: %v", err)
+	}
+
+	olderCompleteAt := now.Add(-time.Hour)
+	completeID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:       1,
+		NewsgroupID:      newsgroupID,
+		PosterID:         posterID,
+		SourceReleaseKey: "linked-complete-par2",
+		ReleaseFamilyKey: "linked-complete-par2",
+		FileFamilyKey:    "linked-complete-par2::par2",
+		FamilyKind:       "par2",
+		BaseStem:         "older",
+		IsAuxiliary:      true,
+		ReleaseKey:       "linked-complete-par2",
+		ReleaseName:      "Linked Complete PAR2",
+		BinaryKey:        "linked-complete-par2::volume",
+		BinaryName:       "older.vol00+01.par2",
+		FileName:         "older.vol00+01.par2",
+		TotalParts:       1,
+		PostedAt:         &olderCompleteAt,
+		MatchConfidence:  0.95,
+		MatchStatus:      "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert older complete par2: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `UPDATE binaries SET observed_parts = 1 WHERE id = $1`, completeID); err != nil {
+		t.Fatalf("seed complete observed_parts: %v", err)
+	}
+	releaseID := fmt.Sprintf("par2-priority-release-%d", time.Now().UnixNano())
+	if _, err := store.UpsertRelease(ctx, ReleaseRecord{
+		ReleaseID:        releaseID,
+		ProviderID:       1,
+		Title:            "Linked Complete PAR2",
+		SourceTitle:      "Linked Complete PAR2",
+		ReleaseFamilyKey: "linked-complete-par2",
+		FileCount:        1,
+		CompletionPct:    100,
+	}); err != nil {
+		t.Fatalf("upsert release: %v", err)
+	}
+	if err := store.ReplaceReleaseFiles(ctx, releaseID, []ReleaseFileRecord{{
+		BinaryID:  completeID,
+		FileName:  "older.vol00+01.par2",
+		SizeBytes: 1024,
+		IsPars:    true,
+	}}); err != nil {
+		t.Fatalf("replace release files: %v", err)
+	}
+
+	candidates, err := store.ListBinaryInspectionCandidates(ctx, "inspect_par2", 2)
+	if err != nil {
+		t.Fatalf("list inspect par2 candidates: %v", err)
+	}
+	if len(candidates) == 0 {
+		t.Fatalf("expected inspect_par2 candidates")
+	}
+	if candidates[0].FileName != "older.vol00+01.par2" {
+		t.Fatalf("expected release-linked complete par2 first, got %+v", candidates[0])
+	}
+}
+
 func TestListBinaryInspectionCandidatesInspectArchiveSkipsCompletedProbeErrorDetailsUntilSourceChanges(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
@@ -3613,7 +9165,7 @@ func TestListBinaryInspectionCandidatesInspectArchiveSkipsCompletedProbeErrorDet
 	}
 
 	posterName := fmt.Sprintf("poster-archive-retry-%d@example.com", time.Now().UnixNano())
-	posterID, err := store.EnsurePoster(ctx, posterName)
+	posterID, err := ensureTestPoster(t, store, ctx, posterName)
 	if err != nil {
 		t.Fatalf("ensure poster: %v", err)
 	}
@@ -3714,7 +9266,7 @@ func TestListBinaryInspectionCandidatesInspectArchiveRetriesCompletedProbeErrorR
 	if err != nil {
 		t.Fatalf("ensure newsgroup: %v", err)
 	}
-	posterID, err := store.EnsurePoster(ctx, fmt.Sprintf("poster-archive-retryrow-%d@example.com", time.Now().UnixNano()))
+	posterID, err := ensureTestPoster(t, store, ctx, fmt.Sprintf("poster-archive-retryrow-%d@example.com", time.Now().UnixNano()))
 	if err != nil {
 		t.Fatalf("ensure poster: %v", err)
 	}
@@ -3819,7 +9371,7 @@ func TestListBinaryInspectionCandidatesInspectArchiveRetriesCompletedMissingArti
 	if err != nil {
 		t.Fatalf("ensure newsgroup: %v", err)
 	}
-	posterID, err := store.EnsurePoster(ctx, fmt.Sprintf("poster-archive-missingarticles-%d@example.com", time.Now().UnixNano()))
+	posterID, err := ensureTestPoster(t, store, ctx, fmt.Sprintf("poster-archive-missingarticles-%d@example.com", time.Now().UnixNano()))
 	if err != nil {
 		t.Fatalf("ensure poster: %v", err)
 	}
@@ -3916,6 +9468,112 @@ func TestListBinaryInspectionCandidatesInspectArchiveRetriesCompletedMissingArti
 	}
 }
 
+func TestListBinaryInspectionCandidatesInspectArchiveRetriesCompletedMetadataOnlyWithoutEntries(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.inspect.archive.metadataonly.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+	posterID, err := ensureTestPoster(t, store, ctx, fmt.Sprintf("poster-archive-metadataonly-%d@example.com", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatalf("ensure poster: %v", err)
+	}
+
+	baseKey := fmt.Sprintf("archive-metadataonly-%d", time.Now().UnixNano())
+	now := time.Now().UTC()
+	releaseID, err := store.UpsertRelease(ctx, ReleaseRecord{
+		ProviderID:              1,
+		SourceReleaseKey:        baseKey,
+		ReleaseFamilyKey:        baseKey,
+		ReleaseKey:              baseKey,
+		GroupName:               groupName,
+		Title:                   "Archive Metadata Only Retry Test",
+		SourceTitle:             "Archive.Metadata.Only.Retry.Test",
+		SearchTitle:             "archive metadata only retry test",
+		Category:                "usenet",
+		Classification:          "video_archive",
+		Poster:                  "poster-a",
+		FileCount:               1,
+		ExpectedFileCount:       1,
+		CompletionPct:           100,
+		MatchConfidence:         0.95,
+		IdentityStatus:          "identified",
+		ArchiveCount:            1,
+		AvailabilityScore:       100,
+		AvailabilityTier:        "excellent",
+		MediaQualityScore:       90,
+		MediaQualityTier:        "premium",
+		IdentityConfidenceScore: 90,
+		MetadataUpdatedAt:       &now,
+	})
+	if err != nil {
+		t.Fatalf("upsert release: %v", err)
+	}
+
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		PosterID:          posterID,
+		SourceReleaseKey:  baseKey,
+		ReleaseFamilyKey:  baseKey,
+		FileFamilyKey:     baseKey + "::archive",
+		FamilyKind:        "archive_stem",
+		BaseStem:          "archive.metadata.only",
+		IsMainPayload:     true,
+		ReleaseKey:        baseKey,
+		ReleaseName:       "Archive Metadata Only Retry Test",
+		BinaryKey:         baseKey + "::binary",
+		BinaryName:        "archive.metadata.only.7z.001",
+		FileName:          "archive.metadata.only.7z.001",
+		FileIndex:         1,
+		ExpectedFileCount: 1,
+		TotalParts:        1,
+		MatchConfidence:   0.95,
+		MatchStatus:       "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+
+	if err := store.ReplaceReleaseFiles(ctx, releaseID, []ReleaseFileRecord{{
+		BinaryID:  binaryID,
+		FileName:  "archive.metadata.only.7z.001",
+		SizeBytes: 716800,
+		FileIndex: 1,
+	}}); err != nil {
+		t.Fatalf("replace release files: %v", err)
+	}
+
+	if err := store.CompleteBinaryInspection(ctx, BinaryInspectionRecord{
+		StageName:       "inspect_archive",
+		BinaryID:        binaryID,
+		ReleaseID:       releaseID,
+		Status:          "completed",
+		Summary:         map[string]any{"probe_strategy": "metadata_only", "archive_entries": []any{}},
+		SourceUpdatedAt: &now,
+	}); err != nil {
+		t.Fatalf("complete archive inspection: %v", err)
+	}
+
+	candidates, err := store.ListBinaryInspectionCandidates(ctx, "inspect_archive", 20)
+	if err != nil {
+		t.Fatalf("list inspect archive candidates: %v", err)
+	}
+	found := false
+	for _, candidate := range candidates {
+		if candidate.BinaryID == binaryID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected metadata-only archive candidate without entries to be retried")
+	}
+}
+
 func TestCompleteBinaryInspectionCoercesRecoverableProbeErrorToFailed(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
@@ -3925,7 +9583,7 @@ func TestCompleteBinaryInspectionCoercesRecoverableProbeErrorToFailed(t *testing
 	if err != nil {
 		t.Fatalf("ensure newsgroup: %v", err)
 	}
-	posterID, err := store.EnsurePoster(ctx, fmt.Sprintf("poster-archive-recoverable-%d@example.com", time.Now().UnixNano()))
+	posterID, err := ensureTestPoster(t, store, ctx, fmt.Sprintf("poster-archive-recoverable-%d@example.com", time.Now().UnixNano()))
 	if err != nil {
 		t.Fatalf("ensure poster: %v", err)
 	}
@@ -4033,7 +9691,7 @@ func TestListBinaryInspectionCandidatesInspectMediaRerunsAfterArchiveInspectionR
 	}
 
 	posterName := fmt.Sprintf("poster-media-retry-%d@example.com", time.Now().UnixNano())
-	posterID, err := store.EnsurePoster(ctx, posterName)
+	posterID, err := ensureTestPoster(t, store, ctx, posterName)
 	if err != nil {
 		t.Fatalf("ensure poster: %v", err)
 	}
@@ -4149,6 +9807,394 @@ func TestListBinaryInspectionCandidatesInspectMediaRerunsAfterArchiveInspectionR
 	}
 }
 
+func TestListBinaryInspectionCandidatesInspectMediaAllowsPayloadCompleteWithMissingSidecars(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.inspect.media.payloadcomplete.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+	posterName := fmt.Sprintf("poster-media-payloadcomplete-%d@example.com", time.Now().UnixNano())
+	posterID, err := ensureTestPoster(t, store, ctx, posterName)
+	if err != nil {
+		t.Fatalf("ensure poster: %v", err)
+	}
+
+	baseKey := fmt.Sprintf("media-payloadcomplete-%d", time.Now().UnixNano())
+	now := time.Now().UTC()
+	releaseID, err := store.UpsertRelease(ctx, ReleaseRecord{
+		ProviderID:              1,
+		SourceReleaseKey:        baseKey,
+		ReleaseFamilyKey:        baseKey,
+		ReleaseKey:              baseKey,
+		GroupName:               groupName,
+		Title:                   "Media Payload Complete Missing Sidecars",
+		SourceTitle:             "Media.Payload.Complete.Missing.Sidecars",
+		SearchTitle:             "media payload complete missing sidecars",
+		Category:                "usenet",
+		Classification:          "video",
+		Poster:                  posterName,
+		FileCount:               5,
+		ExpectedFileCount:       6,
+		CompletionPct:           83.33,
+		MatchConfidence:         0.95,
+		IdentityStatus:          "identified",
+		VideoCount:              1,
+		AvailabilityScore:       83.33,
+		AvailabilityTier:        "partial",
+		MediaQualityScore:       0,
+		MediaQualityTier:        "",
+		IdentityConfidenceScore: 90,
+		MetadataUpdatedAt:       &now,
+	})
+	if err != nil {
+		t.Fatalf("upsert release: %v", err)
+	}
+
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		PosterID:          posterID,
+		SourceReleaseKey:  baseKey,
+		ReleaseFamilyKey:  baseKey,
+		FileFamilyKey:     baseKey + "::media",
+		FamilyKind:        "readable_title",
+		BaseStem:          "media payload complete missing sidecars",
+		IsMainPayload:     true,
+		ReleaseKey:        baseKey,
+		ReleaseName:       "Media Payload Complete Missing Sidecars",
+		BinaryKey:         baseKey + "::mkv",
+		BinaryName:        "media.payload.complete.missing.sidecars.mkv",
+		FileName:          "media.payload.complete.missing.sidecars.mkv",
+		FileIndex:         1,
+		ExpectedFileCount: 5,
+		TotalParts:        4,
+		MatchConfidence:   0.95,
+		MatchStatus:       "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE binary_observation_stats
+		SET observed_parts = total_parts, total_bytes = 1048576, updated_at = NOW()
+		WHERE binary_id = $1`, binaryID); err != nil {
+		t.Fatalf("mark media binary payload complete: %v", err)
+	}
+	if err := store.ReplaceReleaseFiles(ctx, releaseID, []ReleaseFileRecord{{
+		BinaryID:  binaryID,
+		FileName:  "media.payload.complete.missing.sidecars.mkv",
+		SizeBytes: 1048576,
+		FileIndex: 1,
+	}}); err != nil {
+		t.Fatalf("replace release files: %v", err)
+	}
+
+	candidates, err := store.ListBinaryInspectionCandidates(ctx, "inspect_media", 20)
+	if err != nil {
+		t.Fatalf("list inspect media candidates: %v", err)
+	}
+	for _, candidate := range candidates {
+		if candidate.BinaryID == binaryID {
+			return
+		}
+	}
+	t.Fatalf("expected inspect_media candidate for payload-complete release below 100%% overall completion")
+}
+
+func TestListReleaseNZBGenerateCandidatesAllowsDirectMediaWithoutArchiveInspection(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	releaseID, binaryID := seedNZBGenerateCandidateRelease(t, store, ctx, "direct-media", "Example.Movie.2026.mkv", 0, "video")
+	if _, err := store.DB().ExecContext(ctx, `UPDATE releases SET completion_pct = 98 WHERE release_id = $1`, releaseID); err != nil {
+		t.Fatalf("mark release overall incomplete: %v", err)
+	}
+	if err := store.CompleteBinaryInspection(ctx, BinaryInspectionRecord{
+		StageName: "inspect_media",
+		BinaryID:  binaryID,
+		ReleaseID: releaseID,
+		Status:    "completed",
+		Summary: map[string]any{
+			"runtime_seconds":               5400,
+			"video_codec":                   "h264",
+			"media_title_extractor_version": "v2",
+		},
+	}); err != nil {
+		t.Fatalf("complete media inspection: %v", err)
+	}
+
+	candidates, err := store.ListReleaseNZBGenerateCandidates(ctx, 10, DefaultReleaseReadyPolicy())
+	if err != nil {
+		t.Fatalf("list nzb generate candidates: %v", err)
+	}
+	if !containsNZBGenerateCandidate(candidates, releaseID) {
+		t.Fatalf("expected direct media release to be eligible without archive inspection, got %+v", candidates)
+	}
+}
+
+func TestListReleaseNZBGenerateCandidatesRejectsOpaqueDirectMediaTitle(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	releaseID, binaryID := seedNZBGenerateCandidateRelease(t, store, ctx, "opaque-direct-media", "tVXofScxpPrnpZg9WDP3g2uxRzTFfwbK.mkv", 0, "video")
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE releases
+		SET title = 'tVXofScxpPrnpZg9WDP3g2uxRzTFfwbK vol01+02',
+		    source_title = 'tVXofScxpPrnpZg9WDP3g2uxRzTFfwbK.vol01+02',
+		    deobfuscated_title = '',
+		    matched_media_title = '',
+		    original_media_title = '',
+		    title_source = 'source',
+		    title_confidence = 0.30,
+		    search_title = 'tvxofscxpprnpzg9wdp3g2uxrztffwbk vol01 02'
+		WHERE release_id = $1`, releaseID); err != nil {
+		t.Fatalf("mark release title opaque: %v", err)
+	}
+	if err := store.CompleteBinaryInspection(ctx, BinaryInspectionRecord{
+		StageName: "inspect_media",
+		BinaryID:  binaryID,
+		ReleaseID: releaseID,
+		Status:    "completed",
+		Summary: map[string]any{
+			"runtime_seconds":               1397,
+			"resolution":                    "720p",
+			"video_codec":                   "h264",
+			"audio_codec":                   "eac3",
+			"media_title_extractor_version": "v2",
+		},
+	}); err != nil {
+		t.Fatalf("complete media inspection: %v", err)
+	}
+
+	candidates, err := store.ListReleaseNZBGenerateCandidates(ctx, 10, DefaultReleaseReadyPolicy())
+	if err != nil {
+		t.Fatalf("list nzb generate candidates: %v", err)
+	}
+	if containsNZBGenerateCandidate(candidates, releaseID) {
+		t.Fatalf("opaque direct media release should not be NZB eligible, got %+v", candidates)
+	}
+}
+
+func TestListReleaseNZBGenerateCandidatesRequiresArchiveAndMediaForArchivePayload(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	releaseID, binaryID := seedNZBGenerateCandidateRelease(t, store, ctx, "archive-media", "Example.Movie.2026.rar", 1, "video_archive")
+	if err := store.CompleteBinaryInspection(ctx, BinaryInspectionRecord{
+		StageName: "inspect_archive",
+		BinaryID:  binaryID,
+		ReleaseID: releaseID,
+		Status:    "completed",
+		Summary: map[string]any{
+			"archive_entries": []any{"Example.Movie.2026/Example.Movie.2026.mkv"},
+		},
+	}); err != nil {
+		t.Fatalf("complete archive inspection: %v", err)
+	}
+
+	candidates, err := store.ListReleaseNZBGenerateCandidates(ctx, 10, DefaultReleaseReadyPolicy())
+	if err != nil {
+		t.Fatalf("list nzb generate candidates after archive inspection: %v", err)
+	}
+	if containsNZBGenerateCandidate(candidates, releaseID) {
+		t.Fatalf("archive payload should wait for media inspection, got %+v", candidates)
+	}
+
+	if err := store.CompleteBinaryInspection(ctx, BinaryInspectionRecord{
+		StageName: "inspect_media",
+		BinaryID:  binaryID,
+		ReleaseID: releaseID,
+		Status:    "completed",
+		Summary: map[string]any{
+			"runtime_seconds":               5400,
+			"video_codec":                   "h264",
+			"media_title_extractor_version": "v2",
+		},
+	}); err != nil {
+		t.Fatalf("complete media inspection: %v", err)
+	}
+
+	candidates, err = store.ListReleaseNZBGenerateCandidates(ctx, 10, DefaultReleaseReadyPolicy())
+	if err != nil {
+		t.Fatalf("list nzb generate candidates after media inspection: %v", err)
+	}
+	if !containsNZBGenerateCandidate(candidates, releaseID) {
+		t.Fatalf("expected archive payload to be eligible after archive and media inspections, got %+v", candidates)
+	}
+}
+
+func TestListBinaryInspectionCandidatesInspectMediaRerunsLegacyTitleExtractorSummary(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	releaseID, binaryID := seedNZBGenerateCandidateRelease(t, store, ctx, "legacy-media-title", "Legacy.Title.2026.mkv", 0, "video")
+	if err := store.CompleteBinaryInspection(ctx, BinaryInspectionRecord{
+		StageName: "inspect_media",
+		BinaryID:  binaryID,
+		ReleaseID: releaseID,
+		Status:    "completed",
+		Summary: map[string]any{
+			"runtime_seconds": 5400,
+			"video_codec":     "h264",
+		},
+	}); err != nil {
+		t.Fatalf("complete legacy media inspection: %v", err)
+	}
+
+	candidates, err := store.ListBinaryInspectionCandidates(ctx, "inspect_media", 20)
+	if err != nil {
+		t.Fatalf("list inspect media candidates: %v", err)
+	}
+	if !containsInspectionCandidate(candidates, binaryID) {
+		t.Fatalf("expected legacy inspect_media summary to rerun for title extractor refresh")
+	}
+
+	if err := store.CompleteBinaryInspection(ctx, BinaryInspectionRecord{
+		StageName: "inspect_media",
+		BinaryID:  binaryID,
+		ReleaseID: releaseID,
+		Status:    "completed",
+		Summary: map[string]any{
+			"runtime_seconds":               5400,
+			"video_codec":                   "h264",
+			"media_title_extractor_version": "v2",
+		},
+	}); err != nil {
+		t.Fatalf("complete refreshed media inspection: %v", err)
+	}
+
+	candidates, err = store.ListBinaryInspectionCandidates(ctx, "inspect_media", 20)
+	if err != nil {
+		t.Fatalf("list inspect media candidates after refresh: %v", err)
+	}
+	if containsInspectionCandidate(candidates, binaryID) {
+		t.Fatalf("did not expect v2 inspect_media summary to rerun again")
+	}
+}
+
+func seedNZBGenerateCandidateRelease(t *testing.T, store *Store, ctx context.Context, suffix, fileName string, archiveCount int, classification string) (string, int64) {
+	t.Helper()
+
+	now := time.Now().UTC()
+	groupName := fmt.Sprintf("alt.test.nzb.generate.%s.%d", suffix, now.UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+	posterName := fmt.Sprintf("poster-nzb-%s-%d@example.com", suffix, now.UnixNano())
+	posterID, err := ensureTestPoster(t, store, ctx, posterName)
+	if err != nil {
+		t.Fatalf("ensure poster: %v", err)
+	}
+
+	baseKey := fmt.Sprintf("nzb-generate-%s-%d", suffix, now.UnixNano())
+	releaseID, err := store.UpsertRelease(ctx, ReleaseRecord{
+		ProviderID:               1,
+		SourceReleaseKey:         baseKey,
+		ReleaseFamilyKey:         baseKey,
+		ReleaseKey:               baseKey,
+		GroupName:                groupName,
+		Title:                    strings.TrimSuffix(fileName, ".mkv"),
+		SourceTitle:              fileName,
+		DeobfuscatedTitle:        strings.TrimSuffix(fileName, ".mkv"),
+		TitleSource:              "source",
+		TitleConfidence:          0.95,
+		SearchTitle:              strings.ToLower(strings.ReplaceAll(fileName, ".", " ")),
+		Category:                 "usenet",
+		Classification:           classification,
+		Poster:                   posterName,
+		SizeBytes:                1000,
+		PostedAt:                 &now,
+		FileCount:                1,
+		ExpectedFileCount:        1,
+		ExpectedArchiveFileCount: archiveCount,
+		CompletionPct:            100,
+		MatchConfidence:          0.95,
+		IdentityStatus:           "identified",
+		PasswordState:            "none",
+		ArchiveCount:             archiveCount,
+		VideoCount:               1,
+		AvailabilityScore:        100,
+		AvailabilityTier:         "excellent",
+		MediaQualityScore:        80,
+		MediaQualityTier:         "good",
+		IdentityConfidenceScore:  95,
+		RuntimeSeconds:           5400,
+		PrimaryResolution:        "1080p",
+		PrimaryVideoCodec:        "h264",
+		PrimaryAudioCodec:        "aac",
+		MetadataUpdatedAt:        &now,
+	})
+	if err != nil {
+		t.Fatalf("upsert release: %v", err)
+	}
+
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		PosterID:          posterID,
+		SourceReleaseKey:  baseKey,
+		ReleaseFamilyKey:  baseKey,
+		FileFamilyKey:     baseKey + "::file",
+		FamilyKind:        "readable_title",
+		BaseStem:          strings.TrimSuffix(fileName, ".mkv"),
+		IsMainPayload:     true,
+		ReleaseKey:        baseKey,
+		ReleaseName:       strings.TrimSuffix(fileName, ".mkv"),
+		BinaryKey:         baseKey + "::binary",
+		BinaryName:        fileName,
+		FileName:          fileName,
+		FileIndex:         1,
+		ExpectedFileCount: 1,
+		TotalParts:        1,
+		PostedAt:          &now,
+		MatchConfidence:   0.95,
+		MatchStatus:       "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE binary_observation_stats
+		SET observed_parts = GREATEST(total_parts, 1),
+		    total_bytes = 1000,
+		    updated_at = NOW()
+		WHERE binary_id = $1`, binaryID); err != nil {
+		t.Fatalf("mark binary observation complete: %v", err)
+	}
+	if err := store.ReplaceReleaseFiles(ctx, releaseID, []ReleaseFileRecord{{
+		BinaryID:  binaryID,
+		FileName:  fileName,
+		SizeBytes: 1000,
+		FileIndex: 1,
+		PostedAt:  &now,
+	}}); err != nil {
+		t.Fatalf("replace release files: %v", err)
+	}
+	return releaseID, binaryID
+}
+
+func containsNZBGenerateCandidate(candidates []ReleaseNZBGenerateCandidate, releaseID string) bool {
+	for _, candidate := range candidates {
+		if candidate.ReleaseID == releaseID {
+			return true
+		}
+	}
+	return false
+}
+
+func containsInspectionCandidate(candidates []BinaryInspectionCandidate, binaryID int64) bool {
+	for _, candidate := range candidates {
+		if candidate.BinaryID == binaryID {
+			return true
+		}
+	}
+	return false
+}
+
 func TestListBinaryInspectionCandidatesInspectPAR2RerunsWhenTargetsMissing(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
@@ -4158,7 +10204,7 @@ func TestListBinaryInspectionCandidatesInspectPAR2RerunsWhenTargetsMissing(t *te
 	if err != nil {
 		t.Fatalf("ensure newsgroup: %v", err)
 	}
-	posterID, err := store.EnsurePoster(ctx, fmt.Sprintf("poster-par2-retry-%d@example.com", time.Now().UnixNano()))
+	posterID, err := ensureTestPoster(t, store, ctx, fmt.Sprintf("poster-par2-retry-%d@example.com", time.Now().UnixNano()))
 	if err != nil {
 		t.Fatalf("ensure poster: %v", err)
 	}
@@ -4220,12 +10266,436 @@ func TestListBinaryInspectionCandidatesInspectPAR2RerunsWhenTargetsMissing(t *te
 	found := false
 	for _, candidate := range candidates {
 		if candidate.BinaryID == binaryID {
+			if candidate.ProviderID != 1 {
+				t.Fatalf("expected inspect_par2 provider_id=1, got %+v", candidate)
+			}
 			found = true
 			break
 		}
 	}
 	if !found {
 		t.Fatalf("expected inspect_par2 candidate to rerun when targets are missing")
+	}
+}
+
+func TestListBinaryInspectionCandidatesInspectPAR2SkipsCompletedMissingArticleProbe(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.inspect.par2.missingarticle.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+	posterID, err := ensureTestPoster(t, store, ctx, fmt.Sprintf("poster-par2-missingarticle-%d@example.com", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatalf("ensure poster: %v", err)
+	}
+
+	baseKey := fmt.Sprintf("par2-missingarticle-%d", time.Now().UnixNano())
+	now := time.Now().UTC()
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		PosterID:          posterID,
+		SourceReleaseKey:  baseKey,
+		ReleaseFamilyKey:  baseKey,
+		FileFamilyKey:     baseKey + "::par2",
+		FamilyKind:        "par2",
+		BaseStem:          "example",
+		IsAuxiliary:       true,
+		IsMainPayload:     false,
+		ReleaseKey:        baseKey,
+		ReleaseName:       "Example PAR2 Missing Article",
+		BinaryKey:         baseKey + "::binary",
+		BinaryName:        "example.par2",
+		FileName:          "example.par2",
+		FileIndex:         1,
+		ExpectedFileCount: 1,
+		TotalParts:        1,
+		PostedAt:          &now,
+		MatchConfidence:   0.95,
+		MatchStatus:       "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `UPDATE binaries SET observed_parts = 1 WHERE id = $1`, binaryID); err != nil {
+		t.Fatalf("seed observed_parts: %v", err)
+	}
+
+	if err := store.ReplaceBinaryPAR2Sets(ctx, binaryID, []BinaryPAR2SetRecord{{
+		BinaryID:    binaryID,
+		SetName:     "example.par2",
+		BaseName:    "example.par2",
+		SignatureOK: true,
+	}}); err != nil {
+		t.Fatalf("seed par2 set: %v", err)
+	}
+
+	if err := store.CompleteBinaryInspection(ctx, BinaryInspectionRecord{
+		StageName:       "inspect_par2",
+		BinaryID:        binaryID,
+		Status:          "completed",
+		Summary:         map[string]any{"has_par2": true, "probe_skip_reason": "article_not_found", "probe_error_detail": "fetch article <abc@example>: article not found (430)"},
+		SourceUpdatedAt: &now,
+	}); err != nil {
+		t.Fatalf("complete par2 inspection: %v", err)
+	}
+
+	candidates, err := store.ListBinaryInspectionCandidates(ctx, "inspect_par2", 20)
+	if err != nil {
+		t.Fatalf("list inspect par2 candidates: %v", err)
+	}
+	for _, candidate := range candidates {
+		if candidate.BinaryID == binaryID {
+			t.Fatalf("did not expect completed missing-article probe to rerun, got %+v", candidate)
+		}
+	}
+}
+
+func TestListBinaryInspectionCandidatesInspectPAR2SkipsCompletedZeroTargetVolumeSets(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.inspect.par2.zero-targets.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+	posterID, err := ensureTestPoster(t, store, ctx, fmt.Sprintf("poster-par2-zero-targets-%d@example.com", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatalf("ensure poster: %v", err)
+	}
+
+	baseKey := fmt.Sprintf("par2-zero-targets-%d", time.Now().UnixNano())
+	now := time.Now().UTC()
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		PosterID:          posterID,
+		SourceReleaseKey:  baseKey,
+		ReleaseFamilyKey:  baseKey,
+		FileFamilyKey:     baseKey + "::par2",
+		FamilyKind:        "par2",
+		BaseStem:          "example",
+		IsAuxiliary:       true,
+		IsMainPayload:     false,
+		ReleaseKey:        baseKey,
+		ReleaseName:       "Example PAR2 Zero Targets",
+		BinaryKey:         baseKey + "::binary",
+		BinaryName:        "example.vol00+01.par2",
+		FileName:          "example.vol00+01.par2",
+		FileIndex:         1,
+		ExpectedFileCount: 1,
+		TotalParts:        1,
+		PostedAt:          &now,
+		MatchConfidence:   0.95,
+		MatchStatus:       "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `UPDATE binaries SET observed_parts = 1 WHERE id = $1`, binaryID); err != nil {
+		t.Fatalf("seed observed_parts: %v", err)
+	}
+	siblingID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		PosterID:          posterID,
+		SourceReleaseKey:  baseKey,
+		ReleaseFamilyKey:  baseKey,
+		FileFamilyKey:     baseKey + "::par2",
+		FamilyKind:        "par2",
+		BaseStem:          "example",
+		IsAuxiliary:       true,
+		IsMainPayload:     false,
+		ReleaseKey:        baseKey,
+		ReleaseName:       "Example PAR2 Zero Targets",
+		BinaryKey:         baseKey + "::sibling",
+		BinaryName:        "example.vol02+03.par2",
+		FileName:          "example.vol02+03.par2",
+		FileIndex:         2,
+		ExpectedFileCount: 1,
+		TotalParts:        1,
+		PostedAt:          &now,
+		MatchConfidence:   0.95,
+		MatchStatus:       "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert sibling par2 volume: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `UPDATE binaries SET observed_parts = 1 WHERE id = $1`, siblingID); err != nil {
+		t.Fatalf("seed sibling observed_parts: %v", err)
+	}
+
+	if err := store.ReplaceBinaryPAR2Sets(ctx, binaryID, []BinaryPAR2SetRecord{{
+		BinaryID:     binaryID,
+		SetName:      "example.vol00+01.par2",
+		BaseName:     "example.par2",
+		IsVolume:     true,
+		VolumeNumber: 0,
+		SignatureOK:  true,
+	}}); err != nil {
+		t.Fatalf("seed par2 set: %v", err)
+	}
+
+	if err := store.CompleteBinaryInspection(ctx, BinaryInspectionRecord{
+		StageName:       "inspect_par2",
+		BinaryID:        binaryID,
+		Status:          "completed",
+		Summary:         map[string]any{"has_par2": true, "target_count": 0},
+		SourceUpdatedAt: &now,
+	}); err != nil {
+		t.Fatalf("complete par2 inspection: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE binary_identity_current
+		SET updated_at = NOW() + INTERVAL '1 minute'
+		WHERE binary_id = $1`, binaryID); err != nil {
+		t.Fatalf("advance par2 volume source timestamp: %v", err)
+	}
+
+	candidates, err := store.ListBinaryInspectionCandidates(ctx, "inspect_par2", 20)
+	if err != nil {
+		t.Fatalf("list inspect par2 candidates: %v", err)
+	}
+	for _, candidate := range candidates {
+		if candidate.BinaryID == binaryID || candidate.BinaryID == siblingID {
+			t.Fatalf("did not expect completed zero-target volume candidate to rerun, got %+v", candidate)
+		}
+	}
+}
+
+func TestListBinaryInspectionCandidatesInspectDiscoveryIncludesStandaloneOpaqueBinary(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.inspect.discovery.standalone.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+	posterID, err := ensureTestPoster(t, store, ctx, fmt.Sprintf("poster-discovery-%d@example.com", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatalf("ensure poster: %v", err)
+	}
+
+	baseKey := fmt.Sprintf("discovery-standalone-%d", time.Now().UnixNano())
+	now := time.Now().UTC()
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:       1,
+		NewsgroupID:      newsgroupID,
+		PosterID:         posterID,
+		SourceReleaseKey: baseKey,
+		ReleaseFamilyKey: baseKey,
+		FileFamilyKey:    baseKey + "::file",
+		FamilyKind:       "opaque_set",
+		BaseStem:         baseKey,
+		IsMainPayload:    true,
+		IsAuxiliary:      false,
+		ReleaseKey:       baseKey,
+		ReleaseName:      "Standalone Discovery",
+		BinaryKey:        baseKey + "::binary",
+		BinaryName:       "standalone-discovery.bin",
+		FileName:         "standalone-discovery.bin",
+		FileIndex:        1,
+		TotalParts:       1,
+		PostedAt:         &now,
+		MatchConfidence:  0.82,
+		MatchStatus:      "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+
+	candidates, err := store.ListBinaryInspectionCandidates(ctx, "inspect_discovery", 20)
+	if err != nil {
+		t.Fatalf("list inspect discovery candidates: %v", err)
+	}
+
+	found := false
+	for _, candidate := range candidates {
+		if candidate.BinaryID != binaryID {
+			continue
+		}
+		found = true
+		if candidate.ReleaseID != "" {
+			t.Fatalf("expected standalone discovery candidate to have empty release id, got %+v", candidate)
+		}
+		if candidate.FileName != "standalone-discovery.bin" {
+			t.Fatalf("expected standalone file name, got %+v", candidate)
+		}
+	}
+	if !found {
+		t.Fatalf("expected standalone opaque binary to be discoverable, got %d candidates", len(candidates))
+	}
+}
+
+func TestListBinaryInspectionCandidatesInspectMediaToleratesScalarArchiveEntries(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	token := fmt.Sprintf("inspectmediascalar%d", time.Now().UnixNano())
+	releaseID, record := seedVisibilityTestRelease(t, store, token, nil)
+	newsgroupID, err := store.EnsureNewsgroup(ctx, record.GroupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+	posterID, err := ensureTestPoster(t, store, ctx, fmt.Sprintf("poster-media-scalar-%d@example.com", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatalf("ensure poster: %v", err)
+	}
+	baseKey := fmt.Sprintf("inspect-media-scalar-%d", time.Now().UnixNano())
+
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		PosterID:          posterID,
+		SourceReleaseKey:  baseKey,
+		ReleaseFamilyKey:  baseKey,
+		FileFamilyKey:     baseKey + "::archive",
+		FamilyKind:        "archive_stem",
+		BaseStem:          "media.scalar",
+		IsMainPayload:     true,
+		ReleaseKey:        baseKey,
+		ReleaseName:       "Media Scalar Summary Test",
+		BinaryKey:         baseKey + "::binary",
+		BinaryName:        "media.scalar.7z.001",
+		FileName:          "media.scalar.7z.001",
+		FileIndex:         1,
+		ExpectedFileCount: 1,
+		TotalParts:        1,
+		PostedAt:          record.PostedAt,
+		MatchConfidence:   0.95,
+		MatchStatus:       "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+
+	if err := store.ReplaceReleaseFiles(ctx, releaseID, []ReleaseFileRecord{{
+		BinaryID:  binaryID,
+		FileName:  "media.scalar.7z.001",
+		SizeBytes: 716800,
+		FileIndex: 1,
+		PostedAt:  record.PostedAt,
+	}}); err != nil {
+		t.Fatalf("replace release files: %v", err)
+	}
+
+	if err := store.CompleteBinaryInspection(ctx, BinaryInspectionRecord{
+		StageName: "inspect_archive",
+		BinaryID:  binaryID,
+		ReleaseID: releaseID,
+		Status:    "completed",
+		Summary:   map[string]any{"archive_entries": "not-an-array"},
+	}); err != nil {
+		t.Fatalf("complete archive inspection: %v", err)
+	}
+
+	candidates, err := store.ListBinaryInspectionCandidates(ctx, "inspect_media", 20)
+	if err != nil {
+		t.Fatalf("list inspect media candidates with scalar archive_entries: %v", err)
+	}
+	for _, candidate := range candidates {
+		if candidate.BinaryID == binaryID {
+			t.Fatalf("did not expect archive-only media candidate when archive_entries is malformed scalar: %+v", candidate)
+		}
+	}
+}
+
+func TestListBinaryInspectionCandidatesInspectPAR2SkipsVolumesWhenManifestAlreadyHasTargets(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.inspect.par2.targets.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+	posterID, err := ensureTestPoster(t, store, ctx, fmt.Sprintf("poster-par2-targets-%d@example.com", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatalf("ensure poster: %v", err)
+	}
+
+	baseKey := fmt.Sprintf("par2-targets-%d", time.Now().UnixNano())
+	now := time.Now().UTC()
+	files := []string{
+		"example.par2",
+		"example.vol00+01.par2",
+		"example.vol02+03.par2",
+	}
+	ids := make([]int64, 0, len(files))
+	for idx, name := range files {
+		binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+			ProviderID:        1,
+			NewsgroupID:       newsgroupID,
+			PosterID:          posterID,
+			SourceReleaseKey:  baseKey,
+			ReleaseFamilyKey:  baseKey,
+			FileFamilyKey:     baseKey + "::par2",
+			FamilyKind:        "par2",
+			BaseStem:          "example",
+			IsAuxiliary:       true,
+			IsMainPayload:     false,
+			ReleaseKey:        baseKey,
+			ReleaseName:       "Example PAR2 Targets",
+			BinaryKey:         fmt.Sprintf("%s::%d", baseKey, idx+1),
+			BinaryName:        name,
+			FileName:          name,
+			FileIndex:         idx + 1,
+			ExpectedFileCount: len(files),
+			TotalParts:        1,
+			PostedAt:          &now,
+			MatchConfidence:   0.95,
+			MatchStatus:       "matched",
+		})
+		if err != nil {
+			t.Fatalf("upsert binary %s: %v", name, err)
+		}
+		if _, err := store.DB().ExecContext(ctx, `UPDATE binaries SET observed_parts = 1 WHERE id = $1`, binaryID); err != nil {
+			t.Fatalf("seed observed_parts for %s: %v", name, err)
+		}
+		ids = append(ids, binaryID)
+	}
+
+	manifestID := ids[0]
+	if err := store.ReplaceBinaryPAR2Sets(ctx, manifestID, []BinaryPAR2SetRecord{{
+		BinaryID:    manifestID,
+		SetName:     "example.par2",
+		BaseName:    "example.par2",
+		SignatureOK: true,
+	}}); err != nil {
+		t.Fatalf("seed manifest par2 set: %v", err)
+	}
+	if err := store.ReplaceBinaryPAR2Targets(ctx, manifestID, []BinaryPAR2TargetRecord{{
+		BinaryID: manifestID,
+		FileName: "target.part01.rar",
+		FileSize: 123456,
+	}}); err != nil {
+		t.Fatalf("seed manifest par2 targets: %v", err)
+	}
+	if err := store.CompleteBinaryInspection(ctx, BinaryInspectionRecord{
+		StageName:       "inspect_par2",
+		BinaryID:        manifestID,
+		Status:          "completed",
+		Summary:         map[string]any{"has_par2": true, "target_count": 1},
+		SourceUpdatedAt: &now,
+	}); err != nil {
+		t.Fatalf("complete manifest par2 inspection: %v", err)
+	}
+
+	candidates, err := store.ListBinaryInspectionCandidates(ctx, "inspect_par2", 20)
+	if err != nil {
+		t.Fatalf("list inspect par2 candidates: %v", err)
+	}
+
+	for _, candidate := range candidates {
+		if candidate.GroupName != baseKey {
+			continue
+		}
+		t.Fatalf("expected no inspect_par2 rerun for manifest-covered set, got %+v", candidate)
 	}
 }
 
@@ -4248,7 +10718,7 @@ func TestRefreshIndexerDashboardStatsPersistsCachedCounts(t *testing.T) {
 		t.Fatalf("ensure newsgroup: %v", err)
 	}
 	posterName := fmt.Sprintf("poster-dashboard-stats-%d@example.com", time.Now().UnixNano())
-	posterID, err := store.EnsurePoster(ctx, posterName)
+	posterID, err := ensureTestPoster(t, store, ctx, posterName)
 	if err != nil {
 		t.Fatalf("ensure poster: %v", err)
 	}
@@ -4316,20 +10786,22 @@ func TestRefreshIndexerDashboardStatsPersistsCachedCounts(t *testing.T) {
 		t.Fatalf("replace release files: %v", err)
 	}
 	if _, err := store.DB().ExecContext(ctx, `
-		INSERT INTO release_family_readiness_summaries (
+		INSERT INTO release_ready_candidates (
 			provider_id, newsgroup_id, key_kind, family_key,
 			source_release_key, release_key, release_name,
-			binary_count, complete_binary_count, complete_main_payload_binary_count, incomplete_binary_count,
-			expected_file_count, has_expected_file_count, total_bytes, earliest_posted_at,
-			readiness_bucket, expected_file_coverage_pct, updated_at, processed_at
+			binary_count, complete_binary_count, complete_main_payload_binary_count,
+			expected_file_count, expected_archive_file_count,
+			has_expected_file_count, has_expected_archive_file_count,
+			expected_file_coverage_pct, archive_file_coverage_pct,
+			total_bytes, earliest_posted_at, ready_reason, updated_at
 		)
-		VALUES ($1, $2, 'release_key', $3, '', '', '', 0, 0, 0, 0, 0, false, 0, NULL, 'stale_cleanup_only', 0, NOW(), TIMESTAMPTZ 'epoch')
+		VALUES ($1, $2, 'release_family', $3, $3, $3, $4, 1, 1, 1, 1, 0, true, false, 100, 0, 734003200, NOW(), 'actionable', NOW())
 		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
 		SET updated_at = NOW(),
-		    processed_at = NULL`,
-		1, newsgroupID, baseKey,
+		    ready_reason = 'actionable'`,
+		1, newsgroupID, baseKey, "Dashboard Stats Test",
 	); err != nil {
-		t.Fatalf("insert pending release summary family: %v", err)
+		t.Fatalf("insert ready release candidate: %v", err)
 	}
 
 	after, err := store.RefreshIndexerDashboardStats(ctx)
@@ -4341,13 +10813,13 @@ func TestRefreshIndexerDashboardStatsPersistsCachedCounts(t *testing.T) {
 		afterByKey[item.Key] = item
 	}
 
-	mediaBefore := beforeByKey["pending_media_inspection_binaries"].Value
-	mediaAfter, ok := afterByKey["pending_media_inspection_binaries"]
+	mediaBefore := beforeByKey["pending_inspect_media_binaries"].Value
+	mediaAfter, ok := afterByKey["pending_inspect_media_binaries"]
 	if !ok {
-		t.Fatalf("missing pending_media_inspection_binaries stat")
+		t.Fatalf("missing pending_inspect_media_binaries stat")
 	}
 	if !mediaAfter.Available || mediaAfter.UpdatedAt == nil {
-		t.Fatalf("expected pending_media_inspection_binaries to be cached, got %#v", mediaAfter)
+		t.Fatalf("expected pending_inspect_media_binaries to be cached, got %#v", mediaAfter)
 	}
 	if mediaAfter.Value < mediaBefore+1 {
 		t.Fatalf("expected media backlog to increase by at least 1, before=%d after=%d", mediaBefore, mediaAfter.Value)
@@ -4361,45 +10833,352 @@ func TestRefreshIndexerDashboardStatsPersistsCachedCounts(t *testing.T) {
 	if !releaseAfter.Available || releaseAfter.UpdatedAt == nil {
 		t.Fatalf("expected pending_release_candidate_families to be cached, got %#v", releaseAfter)
 	}
+	if !releaseAfter.Exact {
+		t.Fatalf("expected pending_release_candidate_families to remain exact")
+	}
 	if releaseAfter.Value < releaseBefore+1 {
 		t.Fatalf("expected release backlog to increase by at least 1, before=%d after=%d", releaseBefore, releaseAfter.Value)
 	}
-
-	payloadRowsBefore := beforeByKey["payload_rows"].Value
-	payloadRowsAfter, ok := afterByKey["payload_rows"]
+	releaseSummaryRefreshBefore := beforeByKey["pending_release_summary_refresh_summaries"].Value
+	releaseSummaryRefreshAfter, ok := afterByKey["pending_release_summary_refresh_summaries"]
 	if !ok {
-		t.Fatalf("missing payload_rows stat")
+		t.Fatalf("missing pending_release_summary_refresh_summaries stat")
 	}
-	if !payloadRowsAfter.Available || payloadRowsAfter.UpdatedAt == nil {
-		t.Fatalf("expected payload_rows to be cached, got %#v", payloadRowsAfter)
+	if !releaseSummaryRefreshAfter.Available || releaseSummaryRefreshAfter.UpdatedAt == nil {
+		t.Fatalf("expected pending_release_summary_refresh_summaries to be cached, got %#v", releaseSummaryRefreshAfter)
 	}
-	if payloadRowsAfter.Value < payloadRowsBefore+1 {
-		t.Fatalf("expected payload row count to increase by at least 1, before=%d after=%d", payloadRowsBefore, payloadRowsAfter.Value)
+	if !releaseSummaryRefreshAfter.Exact {
+		t.Fatalf("expected pending_release_summary_refresh_summaries to remain exact")
 	}
-
-	groupingRowsAfter, ok := afterByKey["grouping_evidence_rows"]
-	if !ok || !groupingRowsAfter.Available {
-		t.Fatalf("expected grouping_evidence_rows stat, got %#v", groupingRowsAfter)
-	}
-	groupingBytesAfter, ok := afterByKey["grouping_evidence_bytes"]
-	if !ok || !groupingBytesAfter.Available || groupingBytesAfter.Value <= 0 {
-		t.Fatalf("expected grouping_evidence_bytes stat, got %#v", groupingBytesAfter)
+	if releaseSummaryRefreshAfter.Value < releaseSummaryRefreshBefore+1 {
+		t.Fatalf("expected release summary refresh backlog to increase by at least 1, before=%d after=%d", releaseSummaryRefreshBefore, releaseSummaryRefreshAfter.Value)
 	}
 
-	readinessRowsAfter, ok := afterByKey["readiness_rows"]
-	if !ok || !readinessRowsAfter.Available {
-		t.Fatalf("expected readiness_rows stat, got %#v", readinessRowsAfter)
-	}
-	readinessBytesAfter, ok := afterByKey["readiness_bytes"]
-	if !ok || !readinessBytesAfter.Available || readinessBytesAfter.Value <= 0 {
-		t.Fatalf("expected readiness_bytes stat, got %#v", readinessBytesAfter)
-	}
-
-	for _, key := range []string{"payload_dead_tuples", "grouping_evidence_dead_tuples", "readiness_dead_tuples"} {
+	for _, key := range []string{
+		"unassembled_headers",
+		"pending_release_summary_refresh_summaries",
+		"pending_release_candidate_families",
+		"pending_yenc_recovery_binaries",
+		"pending_inspect_discovery_binaries",
+		"pending_inspect_par2_binaries",
+		"pending_inspect_nfo_binaries",
+		"pending_inspect_archive_binaries",
+		"pending_inspect_password_binaries",
+		"pending_inspect_media_binaries",
+	} {
 		stat, ok := afterByKey[key]
 		if !ok || !stat.Available || stat.UpdatedAt == nil {
 			t.Fatalf("expected %s stat to be cached, got %#v", key, stat)
 		}
+	}
+	for _, key := range []string{
+		"unassembled_headers",
+		"pending_release_summary_refresh_summaries",
+		"pending_yenc_recovery_binaries",
+		"pending_inspect_discovery_binaries",
+		"pending_inspect_par2_binaries",
+		"pending_inspect_nfo_binaries",
+		"pending_inspect_archive_binaries",
+		"pending_inspect_password_binaries",
+		"pending_inspect_media_binaries",
+	} {
+		if stat := afterByKey[key]; !stat.Exact {
+			t.Fatalf("expected %s to be marked as exact, got %#v", key, stat)
+		}
+	}
+
+	for _, key := range []string{
+		"payload_rows",
+		"payload_bytes",
+		"payload_dead_tuples",
+		"grouping_evidence_rows",
+		"grouping_evidence_bytes",
+		"grouping_evidence_dead_tuples",
+		"readiness_rows",
+		"readiness_bytes",
+		"readiness_dead_tuples",
+	} {
+		if stat, ok := afterByKey[key]; ok {
+			t.Fatalf("did not expect storage diagnostic stat %s in dashboard backlog, got %#v", key, stat)
+		}
+	}
+}
+
+func TestGetIndexerStageThroughputIncludesScrapeBurstMetrics(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	startedAt := time.Now().UTC().Add(-30 * time.Minute)
+	finishedAt := startedAt.Add(2 * time.Minute)
+	metrics := `{"articles_inserted":12000,"workers_used":8,"groups_scheduled":8,"ranges_fetched":8}`
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO indexer_stage_runs (
+			stage_name,
+			trigger_kind,
+			status,
+			claimed_by,
+			started_at,
+			heartbeat_at,
+			finished_at,
+			error_text,
+			metrics_json
+		) VALUES (
+			'scrape_latest',
+			'scheduled',
+			'completed',
+			'test-owner',
+			$1,
+			$1,
+			$2,
+			'',
+			$3::jsonb
+		)`,
+		startedAt,
+		finishedAt,
+		metrics,
+	); err != nil {
+		t.Fatalf("insert scrape stage run: %v", err)
+	}
+
+	throughput, err := store.GetIndexerStageThroughput(ctx)
+	if err != nil {
+		t.Fatalf("get indexer stage throughput: %v", err)
+	}
+
+	var scrapeLatest *IndexerStageThroughputItem
+	for i := range throughput.Items {
+		if throughput.Items[i].StageName == "scrape_latest" {
+			scrapeLatest = &throughput.Items[i]
+			break
+		}
+	}
+	if scrapeLatest == nil {
+		t.Fatal("expected scrape_latest throughput item")
+	}
+	if len(scrapeLatest.Windows) == 0 {
+		t.Fatal("expected scrape_latest throughput windows")
+	}
+	window := scrapeLatest.Windows[0]
+	if window.MaxWorkersUsed != 8 || window.MaxGroupsScheduled != 8 || window.MaxRangesFetched != 8 {
+		t.Fatalf("expected scrape burst maxima to round-trip, got %+v", window)
+	}
+	if window.AvgWorkersUsed != 8 || window.AvgGroupsScheduled != 8 || window.AvgRangesFetched != 8 {
+		t.Fatalf("expected scrape burst averages to round-trip, got %+v", window)
+	}
+}
+
+func TestGetIndexerOverviewCountsArchivedNZBsSeparatelyFromLiveReadyNZBs(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	token := fmt.Sprintf("overviewarchived%d", time.Now().UnixNano())
+	releaseID, record := seedVisibilityTestRelease(t, store, token, nil)
+	if err := store.ReplaceReleaseFiles(ctx, releaseID, []ReleaseFileRecord{
+		{
+			FileName:  fmt.Sprintf("%s.mkv", token),
+			SizeBytes: 1024,
+			FileIndex: 1,
+			PostedAt:  record.PostedAt,
+		},
+	}); err != nil {
+		t.Fatalf("replace release files: %v", err)
+	}
+	groupID, err := store.EnsureNewsgroup(ctx, fmt.Sprintf("alt.test.overview.archived.%d", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+	if err := store.ReplaceReleaseNewsgroups(ctx, releaseID, []int64{groupID}); err != nil {
+		t.Fatalf("replace release newsgroups: %v", err)
+	}
+	if err := store.UpsertNZBCache(ctx, releaseID, "ready", "hash-"+token, ""); err != nil {
+		t.Fatalf("upsert nzb cache: %v", err)
+	}
+	if err := store.MarkReleaseArchiveStored(ctx, ReleaseArchiveStoredRecord{
+		ReleaseID:         releaseID,
+		ArchiveStore:      "indexer_archive",
+		ObjectStoreKind:   "fs",
+		ObjectKey:         fmt.Sprintf("releases/1/%s/test.nzb", releaseID),
+		ContentHashSHA256: fmt.Sprintf("hash-%s", token),
+		ObjectSizeBytes:   1024,
+		ContentEncoding:   "identity",
+		SourceModule:      "usenet_index",
+	}); err != nil {
+		t.Fatalf("mark release archive stored: %v", err)
+	}
+
+	overview, err := store.GetIndexerOverview(ctx)
+	if err != nil {
+		t.Fatalf("get indexer overview: %v", err)
+	}
+	if overview.ArchivedNZBCount < 1 {
+		t.Fatalf("expected archived nzb count to include seeded release, got %+v", overview)
+	}
+
+	if _, err := store.PurgeArchivedReleaseSources(ctx, releaseID); err != nil {
+		t.Fatalf("purge archived release sources: %v", err)
+	}
+
+	overview, err = store.GetIndexerOverview(ctx)
+	if err != nil {
+		t.Fatalf("get indexer overview after purge: %v", err)
+	}
+	if overview.ArchivedNZBCount < 1 {
+		t.Fatalf("expected archived nzb count to persist after purge, got %+v", overview)
+	}
+}
+
+func TestCatalogReleaseFileReadsTolerateNullBinaryID(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	token := fmt.Sprintf("nullbinary%d", time.Now().UnixNano())
+	releaseID, record := seedVisibilityTestRelease(t, store, token, nil)
+	if err := store.ReplaceReleaseFiles(ctx, releaseID, []ReleaseFileRecord{
+		{
+			FileName:  fmt.Sprintf("%s.mkv", token),
+			SizeBytes: 1024,
+			FileIndex: 1,
+			PostedAt:  record.PostedAt,
+		},
+	}); err != nil {
+		t.Fatalf("replace release files: %v", err)
+	}
+
+	var fileID int64
+	if err := store.DB().QueryRowContext(ctx, `SELECT id FROM release_catalog_files WHERE release_id = $1 LIMIT 1`, releaseID).Scan(&fileID); err != nil {
+		t.Fatalf("lookup release catalog file id: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE release_files
+		SET binary_id = NULL
+		WHERE release_id = $1`, releaseID,
+	); err != nil {
+		t.Fatalf("null release file binary id: %v", err)
+	}
+
+	files, err := store.ListCatalogReleaseFiles(ctx, releaseID)
+	if err != nil {
+		t.Fatalf("list catalog release files: %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(files))
+	}
+	if files[0].BinaryID != 0 {
+		t.Fatalf("expected zero binary id after null scan, got %d", files[0].BinaryID)
+	}
+
+	articles, err := store.ListCatalogReleaseFileArticles(ctx, fileID)
+	if err != nil {
+		t.Fatalf("list catalog release file articles: %v", err)
+	}
+	if len(articles) != 0 {
+		t.Fatalf("expected 0 articles for null binary id, got %d", len(articles))
+	}
+}
+
+func TestCompleteBinaryInspectionToleratesDeletedBinaryWithExistingRow(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:       1,
+		NewsgroupID:      1,
+		SourceReleaseKey: "finish-stale-source",
+		ReleaseFamilyKey: "finish-stale-family",
+		ReleaseKey:       "finish-stale-family",
+		ReleaseName:      "Finish Stale Family",
+		BinaryKey:        "finish-stale-binary",
+		BinaryName:       "finish-stale-binary",
+		FileName:         "finish-stale.mkv",
+		FileIndex:        1,
+		TotalParts:       2,
+		MatchConfidence:  0.9,
+		MatchStatus:      "identified",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+
+	if err := store.StartBinaryInspection(ctx, "inspect_media", binaryID, "", nil); err != nil {
+		t.Fatalf("start binary inspection: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `DELETE FROM binaries WHERE id = $1`, binaryID); err != nil {
+		t.Fatalf("delete binary: %v", err)
+	}
+
+	if err := store.CompleteBinaryInspection(ctx, BinaryInspectionRecord{
+		StageName: "inspect_media",
+		BinaryID:  binaryID,
+		Status:    "completed",
+		Summary: map[string]any{
+			"probe_mode": "heuristic",
+		},
+	}); err != nil {
+		t.Fatalf("complete binary inspection after delete: %v", err)
+	}
+
+	var status string
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT status
+		FROM binary_inspections
+		WHERE stage_name = 'inspect_media' AND binary_id = $1`, binaryID).Scan(&status); err != nil {
+		t.Fatalf("read completed inspection row: %v", err)
+	}
+	if status != "completed" {
+		t.Fatalf("expected completed inspection status, got %q", status)
+	}
+}
+
+func TestReplaceInspectionArtifactsToleratesDeletedBinary(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:       1,
+		NewsgroupID:      1,
+		SourceReleaseKey: "artifact-stale-source",
+		ReleaseFamilyKey: "artifact-stale-family",
+		ReleaseKey:       "artifact-stale-family",
+		ReleaseName:      "Artifact Stale Family",
+		BinaryKey:        "artifact-stale-binary",
+		BinaryName:       "artifact-stale-binary",
+		FileName:         "artifact-stale.mkv",
+		FileIndex:        1,
+		TotalParts:       2,
+		MatchConfidence:  0.9,
+		MatchStatus:      "identified",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `DELETE FROM binaries WHERE id = $1`, binaryID); err != nil {
+		t.Fatalf("delete binary: %v", err)
+	}
+
+	if err := store.ReplaceBinaryInspectionArtifacts(ctx, "inspect_media", binaryID, []BinaryInspectionArtifactRecord{{
+		ArtifactRole: "preview",
+		ArtifactName: "screen0001.jpg",
+		ArtifactPath: "Screens/screen0001.jpg",
+		MIMEType:     "image/jpeg",
+		SourceKind:   "archive_image",
+	}}); err != nil {
+		t.Fatalf("replace binary inspection artifacts after delete: %v", err)
+	}
+
+	if err := store.ReplaceBinaryMediaStreams(ctx, binaryID, []BinaryMediaStreamRecord{{
+		StreamIndex: 0,
+		StreamType:  "video",
+		CodecName:   "h264",
+	}}); err != nil {
+		t.Fatalf("replace binary media streams after delete: %v", err)
+	}
+
+	if err := store.ReplaceBinaryArchiveEntries(ctx, binaryID, []BinaryArchiveEntryRecord{{
+		EntryName: "Screens/screen0001.jpg",
+		MediaType: "image/jpeg",
+	}}); err != nil {
+		t.Fatalf("replace binary archive entries after delete: %v", err)
 	}
 }
 
@@ -4437,6 +11216,30 @@ func TestListReleaseTitleCandidatesIncludesArchiveMediaEntries(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("complete archive inspection: %v", err)
 	}
+	if err := store.CompleteBinaryInspection(ctx, BinaryInspectionRecord{
+		StageName: "inspect_media",
+		BinaryID:  binaryID,
+		ReleaseID: "release-1",
+		Status:    "completed",
+		Summary: map[string]any{
+			"media_title": "Show Name S01E01",
+		},
+	}); err != nil {
+		t.Fatalf("complete media inspection: %v", err)
+	}
+	if err := store.ReplaceBinaryArchiveEntries(ctx, binaryID, []BinaryArchiveEntryRecord{{
+		BinaryID:  binaryID,
+		ReleaseID: "release-1",
+		EntryName: "Show.Name.S01E01.1080p.WEB.H264-GROUP/Show.Name.S01E01.1080p.WEB.H264-GROUP.mkv",
+		MediaType: "video",
+	}, {
+		BinaryID:  binaryID,
+		ReleaseID: "release-1",
+		EntryName: "Software.Release/Setup.exe",
+		MediaType: "application/octet-stream",
+	}}); err != nil {
+		t.Fatalf("replace archive entries: %v", err)
+	}
 
 	candidates, err := store.ListReleaseTitleCandidates(ctx, []int64{binaryID})
 	if err != nil {
@@ -4452,6 +11255,26 @@ func TestListReleaseTitleCandidatesIncludesArchiveMediaEntries(t *testing.T) {
 	if !found {
 		t.Fatalf("expected archive media entry candidate, got %#v", candidates)
 	}
+	found = false
+	for _, candidate := range candidates {
+		if candidate.Source == "media_title" && candidate.Value == "Show Name S01E01" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected media title candidate, got %#v", candidates)
+	}
+	found = false
+	for _, candidate := range candidates {
+		if candidate.Source == "archive_software_entry" && strings.HasSuffix(candidate.Value, "Setup.exe") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected archive software evidence candidate, got %#v", candidates)
+	}
 }
 
 func TestReplaceReleaseFilesEvictsStaleCrossReleaseBinaryLinks(t *testing.T) {
@@ -4465,7 +11288,7 @@ func TestReplaceReleaseFilesEvictsStaleCrossReleaseBinaryLinks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ensure newsgroup: %v", err)
 	}
-	posterID, err := store.EnsurePoster(ctx, fmt.Sprintf("poster-releasefiles-%d@example.com", now.UnixNano()))
+	posterID, err := ensureTestPoster(t, store, ctx, fmt.Sprintf("poster-releasefiles-%d@example.com", now.UnixNano()))
 	if err != nil {
 		t.Fatalf("ensure poster: %v", err)
 	}
@@ -4623,6 +11446,158 @@ func TestRunIndexerMaintenancePurgesOrphanReleases(t *testing.T) {
 	}
 }
 
+func TestDeleteAuxiliaryOnlySiblingReleasesKeepsPrimaryRelease(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.aux.sibling.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+	posterID, err := ensureTestPoster(t, store, ctx, fmt.Sprintf("poster-aux-sibling-%d@example.com", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatalf("ensure poster: %v", err)
+	}
+
+	now := time.Now().UTC()
+	mainReleaseID, err := store.UpsertRelease(ctx, ReleaseRecord{
+		ProviderID:        1,
+		ReleaseKey:        fmt.Sprintf("main-release-%d", now.UnixNano()),
+		GroupName:         groupName,
+		Title:             "Main Release Test",
+		SourceTitle:       "Main.Release.Test",
+		TitleSource:       "source",
+		SearchTitle:       "main release test",
+		Category:          "usenet",
+		Classification:    "archive",
+		Poster:            "poster-main",
+		PostedAt:          &now,
+		FileCount:         2,
+		ExpectedFileCount: 2,
+		CompletionPct:     100,
+		MatchConfidence:   0.9,
+		IdentityStatus:    "identified",
+		AvailabilityScore: 100,
+		AvailabilityTier:  "excellent",
+		MetadataUpdatedAt: &now,
+	})
+	if err != nil {
+		t.Fatalf("upsert main release: %v", err)
+	}
+	auxReleaseID, err := store.UpsertRelease(ctx, ReleaseRecord{
+		ProviderID:        1,
+		ReleaseKey:        fmt.Sprintf("aux-release-%d", now.UnixNano()),
+		GroupName:         groupName + ".aux",
+		Title:             "Aux Release Test",
+		SourceTitle:       "Aux.Release.Test",
+		TitleSource:       "source",
+		SearchTitle:       "aux release test",
+		Category:          "usenet",
+		Classification:    "archive",
+		Poster:            "poster-aux",
+		PostedAt:          &now,
+		FileCount:         1,
+		ExpectedFileCount: 2,
+		CompletionPct:     100,
+		MatchConfidence:   0.9,
+		IdentityStatus:    "identified",
+		AvailabilityScore: 100,
+		AvailabilityTier:  "excellent",
+		MetadataUpdatedAt: &now,
+	})
+	if err != nil {
+		t.Fatalf("upsert aux release: %v", err)
+	}
+
+	mainBinaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		PosterID:          posterID,
+		SourceReleaseKey:  "example release 2026",
+		ReleaseFamilyKey:  "example release 2026",
+		FileFamilyKey:     "example release 2026",
+		FamilyKind:        "readable_title",
+		BaseStem:          "example release 2026",
+		IsMainPayload:     true,
+		ReleaseKey:        "example release 2026",
+		ReleaseName:       "Example.Release.2026",
+		BinaryKey:         "example release 2026::main",
+		BinaryName:        "Example.Release.2026.part1.rar",
+		FileName:          "Example.Release.2026.part1.rar",
+		FileIndex:         1,
+		ExpectedFileCount: 2,
+		TotalParts:        1,
+		MatchConfidence:   0.95,
+		MatchStatus:       "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert main binary: %v", err)
+	}
+	auxBinaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		PosterID:          posterID,
+		SourceReleaseKey:  "example release 2026",
+		ReleaseFamilyKey:  "example release 2026 par2",
+		FileFamilyKey:     "example release 2026 par2",
+		FamilyKind:        "readable_title",
+		BaseStem:          "example release 2026",
+		IsAuxiliary:       true,
+		IsMainPayload:     false,
+		ReleaseKey:        "example release 2026 par2",
+		ReleaseName:       "Example.Release.2026",
+		BinaryKey:         "example release 2026::par2",
+		BinaryName:        "Example.Release.2026.par2",
+		FileName:          "Example.Release.2026.par2",
+		FileIndex:         1,
+		ExpectedFileCount: 2,
+		TotalParts:        1,
+		MatchConfidence:   0.95,
+		MatchStatus:       "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert aux binary: %v", err)
+	}
+
+	if err := store.ReplaceReleaseFiles(ctx, mainReleaseID, []ReleaseFileRecord{{
+		BinaryID:  mainBinaryID,
+		FileName:  "Example.Release.2026.part1.rar",
+		SizeBytes: 1000,
+		FileIndex: 1,
+	}}); err != nil {
+		t.Fatalf("replace main release files: %v", err)
+	}
+	if err := store.ReplaceReleaseFiles(ctx, auxReleaseID, []ReleaseFileRecord{{
+		BinaryID:  auxBinaryID,
+		FileName:  "Example.Release.2026.par2",
+		SizeBytes: 100,
+		FileIndex: 1,
+		IsPars:    true,
+	}}); err != nil {
+		t.Fatalf("replace aux release files: %v", err)
+	}
+
+	if err := store.DeleteAuxiliaryOnlySiblingReleases(ctx, 1, newsgroupID, "example release 2026", []string{mainReleaseID}); err != nil {
+		t.Fatalf("delete auxiliary-only sibling releases: %v", err)
+	}
+
+	var mainCount int
+	if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM releases WHERE release_id = $1`, mainReleaseID).Scan(&mainCount); err != nil {
+		t.Fatalf("count main release: %v", err)
+	}
+	if mainCount != 1 {
+		t.Fatalf("expected main release to remain, got %d rows", mainCount)
+	}
+	var auxCount int
+	if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM releases WHERE release_id = $1`, auxReleaseID).Scan(&auxCount); err != nil {
+		t.Fatalf("count aux release: %v", err)
+	}
+	if auxCount != 0 {
+		t.Fatalf("expected auxiliary-only sibling release to be deleted, got %d rows", auxCount)
+	}
+}
+
 func TestRunIndexerMaintenancePurgesArticleHeaderPayloadsByStagedRetention(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
@@ -4776,6 +11751,20 @@ func TestRunIndexerMaintenancePurgesNonPendingReadinessResidue(t *testing.T) {
 	); err != nil {
 		t.Fatalf("insert readiness rows: %v", err)
 	}
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO release_family_readiness_acks (
+			provider_id, newsgroup_id, key_kind, family_key, processed_at, updated_at
+		)
+		VALUES
+			(1, $1, 'release_family', 'drop-weak-family', NOW() - INTERVAL '25 hours', NOW()),
+			(1, $1, 'release_family', 'keep-weak-family', NOW() - INTERVAL '25 hours', NOW()),
+			(1, $1, 'release_family', 'drop-fragment-family', NOW() - INTERVAL '25 hours', NOW()),
+			(1, $1, 'release_family', 'drop-stale-family', NOW() - INTERVAL '25 hours', NOW()),
+			(1, $1, 'base_stem', 'drop-base-stem', NOW() - INTERVAL '7 hours', NOW())`,
+		newsgroupID,
+	); err != nil {
+		t.Fatalf("insert readiness acks: %v", err)
+	}
 
 	out, err := store.RunIndexerMaintenance(ctx)
 	if err != nil {
@@ -4818,6 +11807,83 @@ func TestRunIndexerMaintenancePurgesNonPendingReadinessResidue(t *testing.T) {
 		if remaining[i] != want[i] {
 			t.Fatalf("unexpected remaining readiness row at %d: got=%q want=%q", i, remaining[i], want[i])
 		}
+	}
+}
+
+func TestRunIndexerMaintenanceDefersReadinessCleanupWhenRefreshBacklogExists(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.maintenance.refreshbacklog.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO release_family_readiness_summaries (
+			provider_id, newsgroup_id, key_kind, family_key,
+			source_release_key, release_key, release_name,
+			binary_count, complete_binary_count, complete_main_payload_binary_count, incomplete_binary_count,
+			expected_file_count, has_expected_file_count, total_bytes, earliest_posted_at,
+			dominant_family_kind, dominant_file_name, dominant_match_confidence,
+			readiness_bucket, expected_file_coverage_pct, updated_at, processed_at
+		)
+		VALUES
+			(1, $1, 'release_family', 'queued-family', '', '', '', 1, 1, 1, 0, 0, false, 100, NOW() - INTERVAL '25 hours', 'contextual_obfuscated', 'queued-family.bin', 0.70, 'weak_single_binary', 0, NOW() - INTERVAL '25 hours', NOW() - INTERVAL '25 hours')`,
+		newsgroupID,
+	); err != nil {
+		t.Fatalf("insert readiness row: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO release_family_readiness_acks (
+			provider_id, newsgroup_id, key_kind, family_key, processed_at, updated_at
+		)
+		VALUES
+			(1, $1, 'release_family', 'queued-family', NOW() - INTERVAL '25 hours', NOW())`,
+		newsgroupID,
+	); err != nil {
+		t.Fatalf("insert readiness ack: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO release_family_summary_refresh_queue (
+			provider_id, newsgroup_id, key_kind, family_key, queued_at
+		)
+		VALUES (1, $1, 'release_family', 'queued-family', NOW())`,
+		newsgroupID,
+	); err != nil {
+		t.Fatalf("insert refresh queue row: %v", err)
+	}
+
+	out, err := store.RunIndexerMaintenance(ctx)
+	if err != nil {
+		t.Fatalf("run indexer maintenance: %v", err)
+	}
+	if out == nil {
+		t.Fatalf("expected maintenance result")
+	}
+	if !out.SkippedReadinessCleanup {
+		t.Fatalf("expected readiness cleanup to be skipped, got %+v", out)
+	}
+	if out.RefreshQueueBacklog != 1 {
+		t.Fatalf("expected refresh queue backlog 1, got %+v", out)
+	}
+	if out.PurgedReadinessSummaries != 0 {
+		t.Fatalf("expected no readiness summaries purged when refresh backlog exists, got %+v", out)
+	}
+
+	var remaining int
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM release_family_readiness_summaries
+		WHERE newsgroup_id = $1
+		  AND family_key = 'queued-family'`,
+		newsgroupID,
+	).Scan(&remaining); err != nil {
+		t.Fatalf("count remaining readiness row: %v", err)
+	}
+	if remaining != 1 {
+		t.Fatalf("expected queued readiness row to remain, got %d", remaining)
 	}
 }
 
@@ -4896,11 +11962,33 @@ func TestRunIndexerMaintenancePurgesLegacyStableGroupingEvidence(t *testing.T) {
 		t.Fatalf("clear stable inline summary: %v", err)
 	}
 	if _, err := store.DB().ExecContext(ctx, `
-		UPDATE binary_grouping_evidence
-		SET updated_at = NOW() - INTERVAL '25 hours'
-		WHERE binary_id IN ($1, $2)`, stableBinaryID, weakBinaryID,
+		INSERT INTO binary_grouping_evidence (
+			binary_id,
+			evidence_source,
+			evidence_version,
+			payload_json,
+			updated_at
+		)
+		VALUES
+			(
+				$1,
+				'matcher',
+				'v1',
+				'{"summary":{"kind":"readable_title","status":"matched","fallback_used":false}}'::jsonb,
+				NOW() - INTERVAL '25 hours'
+			),
+			(
+				$2,
+				'matcher',
+				'v1',
+				'{"summary":{"kind":"contextual_obfuscated","status":"probable","fallback_used":true},"fallback":{"used":true}}'::jsonb,
+				NOW() - INTERVAL '25 hours'
+			)
+		ON CONFLICT (binary_id) DO UPDATE
+		SET payload_json = EXCLUDED.payload_json,
+		    updated_at = EXCLUDED.updated_at`, stableBinaryID, weakBinaryID,
 	); err != nil {
-		t.Fatalf("age grouping evidence rows: %v", err)
+		t.Fatalf("seed legacy grouping evidence rows: %v", err)
 	}
 
 	out, err := store.RunIndexerMaintenance(ctx)
@@ -4914,16 +12002,16 @@ func TestRunIndexerMaintenancePurgesLegacyStableGroupingEvidence(t *testing.T) {
 		t.Fatalf("expected 1 purged grouping evidence row, got %+v", out)
 	}
 
-	var stableInline []byte
+	var stableSummaryKind string
 	if err := store.DB().QueryRowContext(ctx, `
-		SELECT grouping_evidence_json
+		SELECT grouping_summary_kind
 		FROM binaries
 		WHERE id = $1`, stableBinaryID,
-	).Scan(&stableInline); err != nil {
-		t.Fatalf("query stable inline evidence: %v", err)
+	).Scan(&stableSummaryKind); err != nil {
+		t.Fatalf("query stable scalar evidence: %v", err)
 	}
-	if !strings.Contains(string(stableInline), "\"readable_title\"") {
-		t.Fatalf("expected stable inline summary to be backfilled, got %s", string(stableInline))
+	if stableSummaryKind != "readable_title" {
+		t.Fatalf("expected stable scalar summary to be backfilled, got %q", stableSummaryKind)
 	}
 
 	var stableSideCount int
@@ -4957,7 +12045,7 @@ func TestListPublicIndexerReleasesReturnsStableVisibleContract(t *testing.T) {
 
 	token := fmt.Sprintf("publicvisible%d", time.Now().UnixNano())
 	releaseID, record := seedVisibilityTestRelease(t, store, token, func(in *ReleaseRecord) {
-		in.PasswordState = "passworded_known"
+		in.PasswordState = "password_known"
 	})
 
 	if err := store.ReplaceReleaseFiles(ctx, releaseID, []ReleaseFileRecord{
@@ -4988,7 +12076,7 @@ func TestListPublicIndexerReleasesReturnsStableVisibleContract(t *testing.T) {
 	if items[0].ReleaseID != releaseID {
 		t.Fatalf("expected release %s, got %+v", releaseID, items[0])
 	}
-	if items[0].PasswordState != "passworded_known" {
+	if items[0].PasswordState != "password_known" {
 		t.Fatalf("expected stable password state, got %+v", items[0])
 	}
 
@@ -5007,6 +12095,532 @@ func TestListPublicIndexerReleasesReturnsStableVisibleContract(t *testing.T) {
 	}
 	if detail.Files[0].FileName == "" || detail.Files[0].SizeBytes <= 0 {
 		t.Fatalf("expected stable file summary payload, got %+v", detail.Files[0])
+	}
+}
+
+func TestPublicIndexerReleaseDetailUsesPermanentCatalogFilesAfterPurge(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	token := fmt.Sprintf("archivedetail%d", time.Now().UnixNano())
+	releaseID, record := seedVisibilityTestRelease(t, store, token, func(in *ReleaseRecord) {
+		in.RuntimeSeconds = 3600
+		in.PrimaryResolution = "1080p"
+		in.PrimaryVideoCodec = "x265"
+		in.PrimaryAudioCodec = "dts"
+		in.SubtitleLanguages = []string{"en", "es"}
+		in.PasswordState = "password_known"
+	})
+
+	if err := store.ReplaceReleaseFiles(ctx, releaseID, []ReleaseFileRecord{
+		{
+			FileName:  fmt.Sprintf("%s.mkv", token),
+			SizeBytes: 1_400_000_000,
+			FileIndex: 1,
+			PostedAt:  record.PostedAt,
+		},
+		{
+			FileName:  fmt.Sprintf("%s.par2", token),
+			SizeBytes: 128_000,
+			FileIndex: 2,
+			IsPars:    true,
+			PostedAt:  record.PostedAt,
+		},
+	}); err != nil {
+		t.Fatalf("replace release files: %v", err)
+	}
+
+	groupID, err := store.EnsureNewsgroup(ctx, fmt.Sprintf("alt.test.archive.detail.%d", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+	if err := store.ReplaceReleaseNewsgroups(ctx, releaseID, []int64{groupID}); err != nil {
+		t.Fatalf("replace release newsgroups: %v", err)
+	}
+	if err := store.UpsertNZBCache(ctx, releaseID, "ready", "hash-"+token, ""); err != nil {
+		t.Fatalf("upsert nzb cache: %v", err)
+	}
+
+	if err := store.MarkReleaseArchiveStored(ctx, ReleaseArchiveStoredRecord{
+		ReleaseID:         releaseID,
+		ArchiveStore:      "indexer_archive",
+		ObjectStoreKind:   "fs",
+		ObjectKey:         fmt.Sprintf("releases/1/%s/test.nzb", releaseID),
+		ContentHashSHA256: fmt.Sprintf("hash-%s", token),
+		ObjectSizeBytes:   2048,
+		ContentEncoding:   "identity",
+		SourceModule:      "usenet_index",
+	}); err != nil {
+		t.Fatalf("mark release archive stored: %v", err)
+	}
+
+	if _, err := store.PurgeArchivedReleaseSources(ctx, releaseID); err != nil {
+		t.Fatalf("purge archived release sources: %v", err)
+	}
+
+	for _, table := range []string{"release_files", "release_newsgroups", "nzb_cache", "release_archive_lineage_binaries", "release_archive_lineage_article_headers"} {
+		var count int
+		query := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE release_id = $1", table)
+		if err := store.DB().QueryRowContext(ctx, query, releaseID).Scan(&count); err != nil {
+			t.Fatalf("count %s rows: %v", table, err)
+		}
+		if count != 0 {
+			t.Fatalf("expected %s rows to be purged, got %d", table, count)
+		}
+	}
+
+	detail, err := store.GetPublicIndexerReleaseDetail(ctx, releaseID)
+	if err != nil {
+		t.Fatalf("get archived public detail: %v", err)
+	}
+	if detail == nil {
+		t.Fatalf("expected archived detail for %s", releaseID)
+	}
+	if len(detail.Files) != 2 {
+		t.Fatalf("expected 2 archived catalog files, got %d", len(detail.Files))
+	}
+	if detail.Files[0].FileName != fmt.Sprintf("%s.mkv", token) {
+		t.Fatalf("unexpected first archived file: %+v", detail.Files[0])
+	}
+	if detail.Media.RuntimeSeconds != 3600 || detail.Media.PrimaryVideoCodec != "x265" {
+		t.Fatalf("expected archived media snapshot to survive purge, got %+v", detail.Media)
+	}
+	if len(detail.Media.SubtitleLanguages) != 2 {
+		t.Fatalf("expected subtitle snapshot to survive purge, got %+v", detail.Media.SubtitleLanguages)
+	}
+	if detail.Release.PasswordState != "password_known" {
+		t.Fatalf("expected stable archived password state, got %+v", detail.Release)
+	}
+
+	var catalogCount int
+	if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM release_catalog_files WHERE release_id = $1`, releaseID).Scan(&catalogCount); err != nil {
+		t.Fatalf("count release catalog files: %v", err)
+	}
+	if catalogCount != 2 {
+		t.Fatalf("expected 2 retained release catalog files, got %d", catalogCount)
+	}
+}
+
+func TestIndexerReleaseDetailUsesPermanentCatalogFilesAfterPurge(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	token := fmt.Sprintf("admincatalog%d", time.Now().UnixNano())
+	releaseID, record := seedVisibilityTestRelease(t, store, token, func(in *ReleaseRecord) {
+		in.RuntimeSeconds = 1800
+	})
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE releases
+		SET external_year = 2024,
+		    external_media_type = 'tv'
+		WHERE release_id = $1`, releaseID); err != nil {
+		t.Fatalf("seed external release metadata: %v", err)
+	}
+
+	if err := store.ReplaceReleaseFiles(ctx, releaseID, []ReleaseFileRecord{
+		{
+			FileName:  fmt.Sprintf("%s.mkv", token),
+			SizeBytes: 900_000_000,
+			FileIndex: 1,
+			Subject:   "subject-one",
+			Poster:    "poster-one",
+			PostedAt:  record.PostedAt,
+		},
+		{
+			FileName:  fmt.Sprintf("%s.sfv", token),
+			SizeBytes: 1024,
+			FileIndex: 2,
+			Subject:   "subject-two",
+			Poster:    "poster-two",
+			PostedAt:  record.PostedAt,
+		},
+	}); err != nil {
+		t.Fatalf("replace release files: %v", err)
+	}
+
+	groupID, err := store.EnsureNewsgroup(ctx, fmt.Sprintf("alt.test.admin.catalog.%d", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+	if err := store.ReplaceReleaseNewsgroups(ctx, releaseID, []int64{groupID}); err != nil {
+		t.Fatalf("replace release newsgroups: %v", err)
+	}
+	if err := store.UpsertNZBCache(ctx, releaseID, "ready", "hash-"+token, ""); err != nil {
+		t.Fatalf("upsert nzb cache: %v", err)
+	}
+	if err := store.MarkReleaseArchiveStored(ctx, ReleaseArchiveStoredRecord{
+		ReleaseID:         releaseID,
+		ArchiveStore:      "indexer_archive",
+		ObjectStoreKind:   "fs",
+		ObjectKey:         fmt.Sprintf("releases/1/%s/test.nzb", releaseID),
+		ContentHashSHA256: fmt.Sprintf("hash-%s", token),
+		ObjectSizeBytes:   4096,
+		ContentEncoding:   "identity",
+		SourceModule:      "usenet_index",
+	}); err != nil {
+		t.Fatalf("mark release archive stored: %v", err)
+	}
+	if _, err := store.PurgeArchivedReleaseSources(ctx, releaseID); err != nil {
+		t.Fatalf("purge archived release sources: %v", err)
+	}
+
+	detail, err := store.GetIndexerReleaseDetail(ctx, releaseID)
+	if err != nil {
+		t.Fatalf("get indexer release detail: %v", err)
+	}
+	if detail == nil {
+		t.Fatalf("expected detail for %s", releaseID)
+	}
+	if detail.Release.RuntimeSeconds != 1800 || detail.Release.ExternalYear != 2024 || detail.Release.ExternalMediaType != "tv" {
+		t.Fatalf("expected retained release metadata, got %+v", detail.Release)
+	}
+	if len(detail.Files) != 2 {
+		t.Fatalf("expected 2 retained file summaries, got %d", len(detail.Files))
+	}
+	if detail.Files[0].FileID != 0 || detail.Files[0].BinaryID != 0 {
+		t.Fatalf("expected purged retained file summary to have no live file/binary ids, got %+v", detail.Files[0])
+	}
+	if detail.Files[0].Subject == "" || detail.Files[0].Poster == "" {
+		t.Fatalf("expected retained file subject/poster metadata, got %+v", detail.Files[0])
+	}
+}
+
+func TestCatalogOnlyLiveReleaseIsNotPublicVisible(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	token := fmt.Sprintf("catalogonly%d", time.Now().UnixNano())
+	releaseID, record := seedVisibilityTestRelease(t, store, token, nil)
+	if err := store.ReplaceReleaseFiles(ctx, releaseID, []ReleaseFileRecord{{
+		FileName:  fmt.Sprintf("%s.mkv", token),
+		SizeBytes: 900_000_000,
+		FileIndex: 1,
+		Subject:   "subject-one",
+		Poster:    "poster-one",
+		PostedAt:  record.PostedAt,
+	}}); err != nil {
+		t.Fatalf("replace release files: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `DELETE FROM release_files WHERE release_id = $1`, releaseID); err != nil {
+		t.Fatalf("delete live release files: %v", err)
+	}
+
+	adminDetail, err := store.GetIndexerReleaseDetail(ctx, releaseID)
+	if err != nil {
+		t.Fatalf("get admin release detail: %v", err)
+	}
+	if adminDetail == nil {
+		t.Fatalf("expected admin detail for %s", releaseID)
+	}
+	if len(adminDetail.Files) != 1 {
+		t.Fatalf("expected retained catalog file summary, got %d", len(adminDetail.Files))
+	}
+	if adminDetail.Release.PublicVisible {
+		t.Fatalf("catalog-only live release should not be public visible")
+	}
+
+	publicDetail, err := store.GetPublicIndexerReleaseDetail(ctx, releaseID)
+	if err != nil {
+		t.Fatalf("get public release detail: %v", err)
+	}
+	if publicDetail != nil {
+		t.Fatalf("expected catalog-only live release to be hidden from public detail")
+	}
+}
+
+func TestClaimReleasePurgeCandidatesRequiresDurableCatalogAndCompletedMediaInspect(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	token := fmt.Sprintf("purgeclaim%d", time.Now().UnixNano())
+	releaseID, record := seedVisibilityTestRelease(t, store, token, nil)
+	if err := store.ReplaceReleaseFiles(ctx, releaseID, []ReleaseFileRecord{{
+		BinaryID:  777001,
+		FileName:  fmt.Sprintf("%s.mkv", token),
+		SizeBytes: 1_024,
+		FileIndex: 1,
+		PostedAt:  record.PostedAt,
+	}}); err != nil {
+		t.Fatalf("replace release files: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO binaries (
+			id, provider_id, newsgroup_id, source_release_key, release_family_key, release_key,
+			family_kind, base_stem, is_auxiliary, release_name, binary_name, file_name,
+			posted_at, total_parts, observed_parts, total_bytes, match_confidence, match_status,
+			created_at, updated_at
+		) VALUES (
+			$1, 1, 1, $2, $2, $2,
+			'release_family', $2, FALSE, $2, $2, $2,
+			NOW(), 1, 1, 1024, 1.0, 'exact',
+			NOW(), NOW()
+		)
+		ON CONFLICT (id) DO NOTHING`, int64(777001), token,
+	); err != nil {
+		t.Fatalf("seed binary: %v", err)
+	}
+	if err := store.MarkReleaseArchiveStored(ctx, ReleaseArchiveStoredRecord{
+		ReleaseID:         releaseID,
+		ArchiveStore:      "indexer_archive",
+		ObjectStoreKind:   "fs",
+		ObjectKey:         fmt.Sprintf("releases/1/%s/test.nzb", releaseID),
+		ContentHashSHA256: fmt.Sprintf("hash-%s", token),
+		ObjectSizeBytes:   2048,
+		ContentEncoding:   "identity",
+		SourceModule:      "usenet_index",
+	}); err != nil {
+		t.Fatalf("mark release archive stored: %v", err)
+	}
+
+	candidates, err := store.ClaimReleasePurgeCandidates(ctx, 10, DefaultReleaseReadyPolicy())
+	if err != nil {
+		t.Fatalf("claim purge candidates without inspection: %v", err)
+	}
+	if len(candidates) != 0 {
+		t.Fatalf("expected no purge candidates before inspect_media completion, got %+v", candidates)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO binary_inspections (stage_name, binary_id, release_id, status, finished_at, created_at, updated_at)
+		VALUES ('inspect_media', $1, $2, 'completed', NOW(), NOW(), NOW())`,
+		int64(777001), releaseID,
+	); err != nil {
+		t.Fatalf("seed media inspection: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `DELETE FROM release_catalog_files WHERE release_id = $1`, releaseID); err != nil {
+		t.Fatalf("delete release catalog files: %v", err)
+	}
+
+	candidates, err = store.ClaimReleasePurgeCandidates(ctx, 10, DefaultReleaseReadyPolicy())
+	if err != nil {
+		t.Fatalf("claim purge candidates without catalog files: %v", err)
+	}
+	if len(candidates) != 0 {
+		t.Fatalf("expected no purge candidates without durable catalog files, got %+v", candidates)
+	}
+}
+
+func TestPurgeArchivedReleaseSourcesPreservesSharedBinaryLineage(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	token := fmt.Sprintf("sharedpurge%d", time.Now().UnixNano())
+	releaseOne, recordOne := seedVisibilityTestRelease(t, store, token+"a", nil)
+	releaseTwo, recordTwo := seedVisibilityTestRelease(t, store, token+"b", nil)
+
+	const sharedBinaryID int64 = 888001
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO binaries (
+			id, provider_id, newsgroup_id, source_release_key, release_family_key, release_key,
+			family_kind, base_stem, is_auxiliary, release_name, binary_name, file_name,
+			posted_at, total_parts, observed_parts, total_bytes, match_confidence, match_status,
+			created_at, updated_at
+		) VALUES (
+			$1, 1, 1, $2, $2, $2,
+			'release_family', $2, FALSE, $2, $2, $2,
+			NOW(), 1, 1, 4096, 1.0, 'exact',
+			NOW(), NOW()
+		)
+		ON CONFLICT (id) DO NOTHING`, sharedBinaryID, token,
+	); err != nil {
+		t.Fatalf("seed shared binary: %v", err)
+	}
+
+	for _, item := range []struct {
+		releaseID string
+		postedAt  *time.Time
+	}{
+		{releaseID: releaseOne, postedAt: recordOne.PostedAt},
+		{releaseID: releaseTwo, postedAt: recordTwo.PostedAt},
+	} {
+		if err := store.ReplaceReleaseFiles(ctx, item.releaseID, []ReleaseFileRecord{{
+			BinaryID:  sharedBinaryID,
+			FileName:  fmt.Sprintf("%s.mkv", token),
+			SizeBytes: 4_096,
+			FileIndex: 1,
+			PostedAt:  item.postedAt,
+		}}); err != nil {
+			t.Fatalf("replace release files %s: %v", item.releaseID, err)
+		}
+		if _, err := store.DB().ExecContext(ctx, `
+			INSERT INTO binary_inspections (stage_name, binary_id, release_id, status, finished_at, created_at, updated_at)
+			VALUES ('inspect_media', $1, $2, 'completed', NOW(), NOW(), NOW())
+			ON CONFLICT DO NOTHING`, sharedBinaryID, item.releaseID,
+		); err != nil {
+			t.Fatalf("seed media inspection %s: %v", item.releaseID, err)
+		}
+	}
+
+	if err := store.MarkReleaseArchiveStored(ctx, ReleaseArchiveStoredRecord{
+		ReleaseID:         releaseOne,
+		ArchiveStore:      "indexer_archive",
+		ObjectStoreKind:   "fs",
+		ObjectKey:         fmt.Sprintf("releases/1/%s/test.nzb", releaseOne),
+		ContentHashSHA256: fmt.Sprintf("hash-%s-a", token),
+		ObjectSizeBytes:   2048,
+		ContentEncoding:   "identity",
+		SourceModule:      "usenet_index",
+	}); err != nil {
+		t.Fatalf("mark release one archive stored: %v", err)
+	}
+
+	result, err := store.PurgeArchivedReleaseSources(ctx, releaseOne)
+	if err != nil {
+		t.Fatalf("purge archived release one: %v", err)
+	}
+	if result.SkippedSharedBinaryRows != 1 {
+		t.Fatalf("expected 1 skipped shared binary row, got %+v", result)
+	}
+	if result.DeletedRowsByTable["binaries"] != 0 {
+		t.Fatalf("expected shared binary to be preserved, got %+v", result.DeletedRowsByTable)
+	}
+
+	var binaryCount int
+	if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM binaries WHERE id = $1`, sharedBinaryID).Scan(&binaryCount); err != nil {
+		t.Fatalf("count shared binary: %v", err)
+	}
+	if binaryCount != 1 {
+		t.Fatalf("expected shared binary to remain, got %d", binaryCount)
+	}
+
+	var releaseTwoFiles int
+	if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM release_files WHERE release_id = $1`, releaseTwo).Scan(&releaseTwoFiles); err != nil {
+		t.Fatalf("count release two files: %v", err)
+	}
+	if releaseTwoFiles != 1 {
+		t.Fatalf("expected other active release to retain live file linkage, got %d", releaseTwoFiles)
+	}
+
+	detail, err := store.GetPublicIndexerReleaseDetail(ctx, releaseOne)
+	if err != nil {
+		t.Fatalf("get purged release one detail: %v", err)
+	}
+	if detail == nil || len(detail.Files) != 1 {
+		t.Fatalf("expected durable purged detail for release one, got %+v", detail)
+	}
+}
+
+func TestPurgeArchivedReleaseSourcesDeletesSupersededYEncSources(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	token := fmt.Sprintf("supersededpurge%d", time.Now().UnixNano())
+	releaseID, record := seedVisibilityTestRelease(t, store, token, nil)
+	newsgroupID, err := store.EnsureNewsgroup(ctx, fmt.Sprintf("alt.test.superseded-purge.%d", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	makeBinary := func(suffix string) int64 {
+		binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+			ProviderID:       1,
+			NewsgroupID:      newsgroupID,
+			ReleaseFamilyKey: token,
+			FileFamilyKey:    token + "::" + suffix,
+			FamilyKind:       "opaque_set",
+			BaseStem:         token,
+			IsMainPayload:    true,
+			ReleaseKey:       token,
+			ReleaseName:      token,
+			BinaryKey:        token + "::" + suffix,
+			BinaryName:       token + "." + suffix + ".rar",
+			FileName:         token + "." + suffix + ".rar",
+			TotalParts:       1,
+			MatchConfidence:  0.95,
+			MatchStatus:      "matched",
+			IdentityStrength: "strong",
+		})
+		if err != nil {
+			t.Fatalf("upsert binary %s: %v", suffix, err)
+		}
+		return binaryID
+	}
+	targetBinaryID := makeBinary("target")
+	sourceBinaryID := makeBinary("source")
+
+	if err := store.ReplaceReleaseFiles(ctx, releaseID, []ReleaseFileRecord{{
+		BinaryID:  targetBinaryID,
+		FileName:  token + ".target.rar",
+		SizeBytes: 4096,
+		FileIndex: 1,
+		PostedAt:  record.PostedAt,
+	}}); err != nil {
+		t.Fatalf("replace release files: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO binary_inspections (stage_name, binary_id, release_id, status, finished_at, created_at, updated_at)
+		VALUES ('inspect_media', $1, $2, 'completed', NOW(), NOW(), NOW())
+		ON CONFLICT DO NOTHING`,
+		targetBinaryID,
+		releaseID,
+	); err != nil {
+		t.Fatalf("seed media inspection: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO binary_superseded_sources (
+			source_binary_id,
+			target_binary_id,
+			provider_id,
+			newsgroup_id,
+			release_family_key,
+			source_binary_key,
+			target_binary_key
+		)
+		VALUES ($1,$2,1,$3,$4,$5,$6)`,
+		sourceBinaryID,
+		targetBinaryID,
+		newsgroupID,
+		token,
+		token+"::source",
+		token+"::target",
+	); err != nil {
+		t.Fatalf("seed superseded source mapping: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE binary_lifecycle
+		SET lifecycle_status = 'superseded', updated_at = NOW()
+		WHERE binary_id = $1`,
+		sourceBinaryID,
+	); err != nil {
+		t.Fatalf("mark source superseded: %v", err)
+	}
+
+	if err := store.MarkReleaseArchiveStored(ctx, ReleaseArchiveStoredRecord{
+		ReleaseID:         releaseID,
+		ArchiveStore:      "indexer_archive",
+		ObjectStoreKind:   "fs",
+		ObjectKey:         fmt.Sprintf("releases/1/%s/test.nzb", releaseID),
+		ContentHashSHA256: fmt.Sprintf("hash-%s", token),
+		ObjectSizeBytes:   2048,
+		ContentEncoding:   "identity",
+		SourceModule:      "usenet_index",
+	}); err != nil {
+		t.Fatalf("mark release archive stored: %v", err)
+	}
+
+	result, err := store.PurgeArchivedReleaseSources(ctx, releaseID)
+	if err != nil {
+		t.Fatalf("purge archived release sources: %v", err)
+	}
+	if result.DeletedRowsByTable["binary_superseded_sources"] != 1 {
+		t.Fatalf("expected one superseded source mapping purged, got %+v", result.DeletedRowsByTable)
+	}
+	if result.DeletedRowsByTable["binary_core"] != 2 {
+		t.Fatalf("expected target and superseded source binary_core rows purged, got %+v", result.DeletedRowsByTable)
+	}
+
+	var remaining int
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM binary_core
+		WHERE binary_id IN ($1, $2)`,
+		targetBinaryID,
+		sourceBinaryID,
+	).Scan(&remaining); err != nil {
+		t.Fatalf("count purged binaries: %v", err)
+	}
+	if remaining != 0 {
+		t.Fatalf("expected target and superseded source binaries purged, got %d", remaining)
 	}
 }
 
@@ -5091,7 +12705,7 @@ func TestPublicIndexerReleaseVisibilityRequiresReadyReleaseHeuristics(t *testing
 	}
 }
 
-func TestPublicIndexerReleaseVisibilityHidesUncategorizedRelease(t *testing.T) {
+func TestPublicIndexerReleaseVisibilityAllowsUncategorizedReleaseWhenOtherwiseReady(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
 
@@ -5105,16 +12719,19 @@ func TestPublicIndexerReleaseVisibilityHidesUncategorizedRelease(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list public uncategorized releases: %v", err)
 	}
-	if total != 0 || len(items) != 0 {
-		t.Fatalf("expected uncategorized release to be hidden, got total=%d items=%d", total, len(items))
+	if total != 1 || len(items) != 1 {
+		t.Fatalf("expected uncategorized release to be visible, got total=%d items=%d", total, len(items))
+	}
+	if items[0].ReleaseID != releaseID {
+		t.Fatalf("expected release %s, got %+v", releaseID, items[0])
 	}
 
 	detail, err := store.GetPublicIndexerReleaseDetail(ctx, releaseID)
 	if err != nil {
 		t.Fatalf("get public uncategorized detail: %v", err)
 	}
-	if detail != nil {
-		t.Fatalf("expected uncategorized detail to be hidden, got %+v", detail)
+	if detail == nil {
+		t.Fatalf("expected uncategorized detail to be visible")
 	}
 }
 
@@ -5202,6 +12819,132 @@ func TestPublicIndexerReleaseVisibilitySuppressesUnreadableMiscRows(t *testing.T
 	}
 }
 
+func TestPublicIndexerReleaseVisibilitySuppressesProbableOpaquePartRows(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	token := fmt.Sprintf("probableopaque%d", time.Now().UnixNano())
+	releaseID, _ := seedVisibilityTestRelease(t, store, token, func(in *ReleaseRecord) {
+		in.Title = "etaXMJOIXr7TY6ZRru6mio0bN part3"
+		in.SourceTitle = in.Title
+		in.SearchTitle = strings.ToLower(in.Title)
+		in.CategoryID = newsnab.OtherMisc
+		in.Category = newsnab.DisplayName(newsnab.OtherMisc)
+		in.Classification = "archive"
+		in.IdentityStatus = "probable"
+		in.MatchConfidence = 0.898
+		in.HasPAR2 = false
+		in.HasNFO = false
+	})
+
+	items, total, err := store.ListPublicIndexerReleases(ctx, PublicIndexerReleaseListParams{Query: "etaXMJOIXr7TY6ZRru6mio0bN", Limit: 50})
+	if err != nil {
+		t.Fatalf("list public probable opaque releases: %v", err)
+	}
+	if total != 0 || len(items) != 0 {
+		t.Fatalf("expected probable opaque part release to be hidden, got total=%d items=%d", total, len(items))
+	}
+
+	detail, err := store.GetPublicIndexerReleaseDetail(ctx, releaseID)
+	if err != nil {
+		t.Fatalf("get public probable opaque detail: %v", err)
+	}
+	if detail != nil {
+		t.Fatalf("expected probable opaque detail to be hidden, got %+v", detail)
+	}
+}
+
+func TestPublicIndexerReleaseVisibilitySuppressesOpaqueTitleWithoutEvidence(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	opaqueTitle := "3FH1KXkb5pFCQcpBSJpyiJg7Nom"
+	releaseID, _ := seedVisibilityTestRelease(t, store, opaqueTitle, func(in *ReleaseRecord) {
+		in.Title = opaqueTitle
+		in.SourceTitle = opaqueTitle
+		in.SearchTitle = strings.ToLower(opaqueTitle)
+		in.DeobfuscatedTitle = ""
+		in.MatchedMediaTitle = ""
+		in.RuntimeSeconds = 0
+		in.PrimaryResolution = ""
+		in.PrimaryVideoCodec = ""
+		in.PrimaryAudioCodec = ""
+		in.HasNFO = false
+		in.HasPAR2 = true
+		in.IdentityStatus = "probable"
+	})
+
+	items, total, err := store.ListPublicIndexerReleases(ctx, PublicIndexerReleaseListParams{Query: opaqueTitle, Limit: 50})
+	if err != nil {
+		t.Fatalf("list public opaque releases: %v", err)
+	}
+	if total != 0 || len(items) != 0 {
+		t.Fatalf("expected opaque no-evidence release to be hidden, got total=%d items=%d", total, len(items))
+	}
+
+	detail, err := store.GetPublicIndexerReleaseDetail(ctx, releaseID)
+	if err != nil {
+		t.Fatalf("get public opaque detail: %v", err)
+	}
+	if detail != nil {
+		t.Fatalf("expected opaque no-evidence detail to be hidden, got %+v", detail)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE releases
+		SET deobfuscated_title = 'Clear.Title.2026.1080p.WEB-DL-GRP',
+		    title = 'Clear.Title.2026.1080p.WEB-DL-GRP',
+		    search_title = 'clear title 2026 1080p web dl grp'
+		WHERE release_id = $1`, releaseID); err != nil {
+		t.Fatalf("add deobfuscated title evidence: %v", err)
+	}
+
+	detail, err = store.GetPublicIndexerReleaseDetail(ctx, releaseID)
+	if err != nil {
+		t.Fatalf("get public clear detail: %v", err)
+	}
+	if detail == nil {
+		t.Fatalf("expected clear deobfuscated release detail to be visible")
+	}
+}
+
+func TestPublicIndexerReleaseVisibilitySuppressesPasswordedUnknownRows(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	token := fmt.Sprintf("passwordunknown%d", time.Now().UnixNano())
+	releaseID, _ := seedVisibilityTestRelease(t, store, token, func(in *ReleaseRecord) {
+		in.Title = "Useful App Suite 2026 x64 Incl Keygen"
+		in.SourceTitle = in.Title
+		in.SearchTitle = strings.ToLower(in.Title)
+		in.CategoryID = newsnab.OtherMisc
+		in.Category = newsnab.DisplayName(newsnab.OtherMisc)
+		in.Classification = "archive"
+		in.IdentityStatus = "identified"
+		in.MatchConfidence = 0.96
+		in.Passworded = true
+		in.PasswordedUnknown = true
+		in.PasswordState = "password_unknown"
+		in.Encrypted = true
+	})
+
+	items, total, err := store.ListPublicIndexerReleases(ctx, PublicIndexerReleaseListParams{Query: "Useful App Suite", Limit: 50})
+	if err != nil {
+		t.Fatalf("list public passworded unknown releases: %v", err)
+	}
+	if total != 0 || len(items) != 0 {
+		t.Fatalf("expected password_unknown release to be hidden, got total=%d items=%d", total, len(items))
+	}
+
+	detail, err := store.GetPublicIndexerReleaseDetail(ctx, releaseID)
+	if err != nil {
+		t.Fatalf("get public passworded unknown detail: %v", err)
+	}
+	if detail != nil {
+		t.Fatalf("expected password_unknown detail to be hidden, got %+v", detail)
+	}
+}
+
 func TestPublicIndexerReleaseVisibilitySuppressesSeedRowsFromSearchAndDetail(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
@@ -5262,6 +13005,54 @@ func TestPublicIndexerReleaseVisibilitySuppressesPlaceholderTitles(t *testing.T)
 	}
 }
 
+func TestPublicIndexerReleaseVisibilitySuppressesOpaqueTitlesWithMediaEvidence(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	token := fmt.Sprintf("opaquepublic%d", time.Now().UnixNano())
+	releaseID, _ := seedVisibilityTestRelease(t, store, token, func(in *ReleaseRecord) {
+		in.Title = "tVXofScxpPrnpZg9WDP3g2uxRzTFfwbK vol01+02"
+		in.SourceTitle = "tVXofScxpPrnpZg9WDP3g2uxRzTFfwbK.vol01+02"
+		in.DeobfuscatedTitle = ""
+		in.MatchedMediaTitle = ""
+		in.TitleSource = "source"
+		in.TitleConfidence = 0.30
+		in.SearchTitle = "tvxofscxpprnpzg9wdp3g2uxrztffwbk vol01 02"
+		in.ArchiveCount = 0
+		in.ExpectedArchiveFileCount = 0
+		in.RuntimeSeconds = 1397
+		in.PrimaryResolution = "720p"
+		in.PrimaryVideoCodec = "h264"
+		in.PrimaryAudioCodec = "eac3"
+	})
+	if err := store.ReplaceReleaseFiles(ctx, releaseID, []ReleaseFileRecord{{
+		FileName:  "tVXofScxpPrnpZg9WDP3g2uxRzTFfwbK.mkv",
+		SizeBytes: 553127684,
+		FileIndex: 1,
+		PostedAt:  ptrTime(time.Now().UTC()),
+	}}); err != nil {
+		t.Fatalf("replace opaque release files: %v", err)
+	}
+
+	items, total, err := store.ListPublicIndexerReleases(ctx, PublicIndexerReleaseListParams{Limit: 50, Offset: 0})
+	if err != nil {
+		t.Fatalf("list public opaque-title releases: %v", err)
+	}
+	for _, item := range items {
+		if item.ReleaseID == releaseID {
+			t.Fatalf("opaque-title release should be hidden, got total=%d item=%+v", total, item)
+		}
+	}
+
+	detail, err := store.GetPublicIndexerReleaseDetail(ctx, releaseID)
+	if err != nil {
+		t.Fatalf("get public opaque-title detail: %v", err)
+	}
+	if detail != nil {
+		t.Fatalf("expected opaque-title detail to be hidden, got %+v", detail)
+	}
+}
+
 func TestPublicIndexerReleaseSummarySuppressesUnstablePasswordState(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
@@ -5294,6 +13085,43 @@ func TestPublicIndexerReleaseSummarySuppressesUnstablePasswordState(t *testing.T
 	}
 	if detail.Release.PasswordState != "" {
 		t.Fatalf("expected detail password state to be suppressed, got %+v", detail.Release)
+	}
+}
+
+func TestPublicIndexerReleaseDetailIncludesPreviewMetadata(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	token := fmt.Sprintf("publicpreview%d", time.Now().UnixNano())
+	releaseID, _ := seedVisibilityTestRelease(t, store, token, nil)
+
+	if _, err := store.db.ExecContext(ctx, `
+		INSERT INTO release_archive_state (
+			release_id,
+			archive_status,
+			preview_object_key,
+			preview_content_type,
+			preview_source_kind,
+			preview_updated_at,
+			updated_at
+		) VALUES ($1, 'purge_pending', 'releases/1/`+token+`/preview.jpg', 'image/jpeg', 'archive_image', NOW(), NOW())
+		ON CONFLICT (release_id) DO UPDATE
+		SET preview_object_key = EXCLUDED.preview_object_key,
+		    preview_content_type = EXCLUDED.preview_content_type,
+		    preview_source_kind = EXCLUDED.preview_source_kind,
+		    preview_updated_at = EXCLUDED.preview_updated_at,
+		    updated_at = NOW()`,
+		releaseID,
+	); err != nil {
+		t.Fatalf("seed release archive preview state: %v", err)
+	}
+
+	detail, err := store.GetPublicIndexerReleaseDetail(ctx, releaseID)
+	if err != nil {
+		t.Fatalf("get public release detail: %v", err)
+	}
+	if detail == nil {
+		t.Fatalf("expected detail for %s", releaseID)
 	}
 }
 
@@ -5352,36 +13180,37 @@ func seedVisibilityTestRelease(t *testing.T, store *Store, token string, mutate 
 
 	now := time.Now().UTC()
 	record := ReleaseRecord{
-		ProviderID:              1,
-		ReleaseKey:              fmt.Sprintf("public-release-key-%s", token),
-		GroupName:               fmt.Sprintf("alt.binaries.public.%s", token),
-		Title:                   fmt.Sprintf("Public Visible %s 2026 1080p BluRay x265-GRP", token),
-		SourceTitle:             fmt.Sprintf("Public.Visible.%s.2026.1080p.BluRay.x265-GRP", token),
-		SearchTitle:             strings.ToLower(fmt.Sprintf("public visible %s 2026 1080p bluray x265 grp", token)),
-		CategoryID:              newsnab.MoviesHD,
-		Category:                newsnab.DisplayName(newsnab.MoviesHD),
-		Classification:          "video",
-		Poster:                  "poster-public",
-		SizeBytes:               1_500_000_000,
-		PostedAt:                &now,
-		FileCount:               2,
-		ExpectedFileCount:       2,
-		ParFileCount:            1,
-		CompletionPct:           100,
-		MatchConfidence:         0.95,
-		IdentityStatus:          "identified",
-		PasswordState:           "unknown",
-		HasPAR2:                 true,
-		HasNFO:                  true,
-		ArchiveCount:            1,
-		VideoCount:              1,
-		AudioCount:              1,
-		AvailabilityScore:       100,
-		AvailabilityTier:        "excellent",
-		MediaQualityScore:       90,
-		MediaQualityTier:        "premium",
-		IdentityConfidenceScore: 90,
-		MetadataUpdatedAt:       &now,
+		ProviderID:               1,
+		ReleaseKey:               fmt.Sprintf("public-release-key-%s", token),
+		GroupName:                fmt.Sprintf("alt.binaries.public.%s", token),
+		Title:                    fmt.Sprintf("Public Visible %s 2026 1080p BluRay x265-GRP", token),
+		SourceTitle:              fmt.Sprintf("Public.Visible.%s.2026.1080p.BluRay.x265-GRP", token),
+		SearchTitle:              strings.ToLower(fmt.Sprintf("public visible %s 2026 1080p bluray x265 grp", token)),
+		CategoryID:               newsnab.MoviesHD,
+		Category:                 newsnab.DisplayName(newsnab.MoviesHD),
+		Classification:           "video",
+		Poster:                   "poster-public",
+		SizeBytes:                1_500_000_000,
+		PostedAt:                 &now,
+		FileCount:                2,
+		ExpectedFileCount:        2,
+		ExpectedArchiveFileCount: 1,
+		ParFileCount:             1,
+		CompletionPct:            100,
+		MatchConfidence:          0.95,
+		IdentityStatus:           "identified",
+		PasswordState:            "unknown",
+		HasPAR2:                  true,
+		HasNFO:                   true,
+		ArchiveCount:             1,
+		VideoCount:               1,
+		AudioCount:               1,
+		AvailabilityScore:        100,
+		AvailabilityTier:         "excellent",
+		MediaQualityScore:        90,
+		MediaQualityTier:         "premium",
+		IdentityConfidenceScore:  90,
+		MetadataUpdatedAt:        &now,
 	}
 	if mutate != nil {
 		mutate(&record)
@@ -5393,6 +13222,58 @@ func seedVisibilityTestRelease(t *testing.T, store *Store, token string, mutate 
 	}
 
 	return releaseID, record
+}
+
+func TestPublicIndexerReleaseVisibilityRequiresExpectedArchiveCountForArchivePayload(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	token := fmt.Sprintf("archiveexpected%d", time.Now().UnixNano())
+	releaseID, record := seedVisibilityTestRelease(t, store, token, func(in *ReleaseRecord) {
+		in.ExpectedArchiveFileCount = 0
+		in.ArchiveCount = 1
+	})
+
+	if err := store.ReplaceReleaseFiles(ctx, releaseID, []ReleaseFileRecord{
+		{
+			FileName:  fmt.Sprintf("%s.part01.rar", token),
+			SizeBytes: 700,
+			FileIndex: 1,
+			PostedAt:  record.PostedAt,
+		},
+		{
+			FileName:  fmt.Sprintf("%s.par2", token),
+			SizeBytes: 128,
+			FileIndex: 2,
+			IsPars:    true,
+			PostedAt:  record.PostedAt,
+		},
+	}); err != nil {
+		t.Fatalf("replace release files: %v", err)
+	}
+
+	items, total, err := store.ListPublicIndexerReleases(ctx, PublicIndexerReleaseListParams{Query: token, Limit: 50, Offset: 0})
+	if err != nil {
+		t.Fatalf("list public indexer releases: %v", err)
+	}
+	if total != 0 || len(items) != 0 {
+		t.Fatalf("expected archive release without expected archive count to be hidden, got total=%d items=%d", total, len(items))
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE releases
+		SET expected_archive_file_count = 1
+		WHERE release_id = $1`, releaseID); err != nil {
+		t.Fatalf("set expected archive count: %v", err)
+	}
+
+	items, total, err = store.ListPublicIndexerReleases(ctx, PublicIndexerReleaseListParams{Query: token, Limit: 50, Offset: 0})
+	if err != nil {
+		t.Fatalf("list public indexer releases after expected count: %v", err)
+	}
+	if total != 1 || len(items) != 1 {
+		t.Fatalf("expected archive release with expected archive count to be visible, got total=%d items=%d", total, len(items))
+	}
 }
 
 func seedTestRelease(t *testing.T, store *Store, suffix string) string {

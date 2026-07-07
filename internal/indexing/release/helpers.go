@@ -53,9 +53,12 @@ var (
 	splitSevenZipRE      = regexp.MustCompile(`(?i)\.7z\.\d{3}$`)
 	splitZipRE           = regexp.MustCompile(`(?i)\.zip\.\d{3}$`)
 	parVolumeRE          = regexp.MustCompile(`(?i)\.vol\d+\+\d+\.par2$`)
+	bareParVolumeRE      = regexp.MustCompile(`(?i)\.vol\d+\+\d+$`)
 	numericNoiseOnlyRE   = regexp.MustCompile(`^[a-f0-9]{8,}$`)
 	longOpaqueTokenRE    = regexp.MustCompile(`(?i)^[a-z0-9]{12,}$`)
 	numberedNoiseTitleRE = regexp.MustCompile(`^\d{5,}\s+[a-z](?:\s+[a-z]{2,4})?$`)
+	xxxKeywordRE         = regexp.MustCompile(`(?i)\b(xxx|porn|nsfw|onlyfans|brazzers|playboy|erotica|adultdvd|adulttime|fakehub|vixen|blacked|deeper)\b`)
+	softwarePayloadRE    = regexp.MustCompile(`(?i)\.(exe|msi|msix|appx|dmg|pkg|deb|rpm)$`)
 )
 
 func clusterBinaries(candidate pgindex.ReleaseCandidate, binaries []pgindex.BinarySummary) []releaseCluster {
@@ -283,12 +286,13 @@ func buildReleaseRecord(candidate pgindex.ReleaseCandidate, cluster releaseClust
 	primaryAudioCodec := detectPrimaryAudioCodec(cluster.Binaries)
 	availabilityScore := computeAvailabilityScore(cluster)
 	mediaQualityScore := computeMediaQualityScore(primaryResolution, primaryVideoCodec, cluster.Binaries)
+	releaseFileBinaries := selectReleaseFileBinaries(cluster.Binaries)
+	hasPAR2, hasNFO, archiveCount, videoCount, audioCount, samplePresent := summarizeFiles(releaseFileBinaries)
+	classification := classifyCluster(releaseFileBinaries, archiveCount, videoCount, audioCount, inspectCandidates)
 	passworded := false
 	passwordedKnown := false
 	passwordedUnknown := false
-	passwordState := derivePasswordState(passworded, passwordedKnown, passwordedUnknown)
-	hasPAR2, hasNFO, archiveCount, videoCount, audioCount, samplePresent := summarizeFiles(cluster.Binaries)
-	classification := classifyCluster(cluster.Binaries, archiveCount, videoCount, audioCount)
+	passwordState := deriveInitialReleasePasswordState(classification, archiveCount)
 	subtitles := detectSubtitleLanguages(cluster.Binaries)
 	postedAt := earliestPostedAt(candidate.PostedAt, cluster.Binaries)
 	now := time.Now().UTC()
@@ -301,6 +305,7 @@ func buildReleaseRecord(candidate pgindex.ReleaseCandidate, cluster releaseClust
 		DeobfuscatedTitle: titleInfo.DeobfuscatedTitle,
 		MatchedMediaTitle: titleInfo.MatchedMediaTitle,
 		TitleSource:       titleInfo.TitleSource,
+		Poster:            dominantPoster(cluster.Binaries),
 	})
 
 	return pgindex.ReleaseRecord{
@@ -320,13 +325,13 @@ func buildReleaseRecord(candidate pgindex.ReleaseCandidate, cluster releaseClust
 		Category:                 category.Name,
 		Classification:           classification,
 		Poster:                   dominantPoster(cluster.Binaries),
-		SizeBytes:                totalBytes(cluster.Binaries),
+		SizeBytes:                totalBytes(releaseFileBinaries),
 		PostedAt:                 postedAt,
-		FileCount:                clusterObservedFileCount(cluster.Binaries),
-		ExpectedFileCount:        clusterExpectedFileCount(cluster.Binaries),
-		ExpectedArchiveFileCount: clusterExpectedArchiveFileCount(cluster.Binaries),
-		ParFileCount:             countPARFiles(cluster.Binaries),
-		CompletionPct:            clusterCompletionPct(cluster.Binaries),
+		FileCount:                clusterObservedFileCount(releaseFileBinaries),
+		ExpectedFileCount:        clusterExpectedFileCount(releaseFileBinaries),
+		ExpectedArchiveFileCount: clusterExpectedArchiveFileCount(releaseFileBinaries),
+		ParFileCount:             countPARFiles(releaseFileBinaries),
+		CompletionPct:            clusterCompletionPct(releaseFileBinaries),
 		MatchConfidence:          clamp01(cluster.MatchConfidence),
 		IdentityStatus:           identityStatus,
 		Passworded:               passworded,
@@ -364,6 +369,103 @@ func binaryIDsForCluster(binaries []pgindex.BinarySummary) []int64 {
 		out = append(out, binary.BinaryID)
 	}
 	return out
+}
+
+func binaryIDsForClusters(clusters []releaseCluster) []int64 {
+	if len(clusters) == 0 {
+		return nil
+	}
+	out := make([]int64, 0)
+	seen := make(map[int64]struct{})
+	for _, cluster := range clusters {
+		for _, binary := range cluster.Binaries {
+			if binary.BinaryID <= 0 {
+				continue
+			}
+			if _, ok := seen[binary.BinaryID]; ok {
+				continue
+			}
+			seen[binary.BinaryID] = struct{}{}
+			out = append(out, binary.BinaryID)
+		}
+	}
+	return out
+}
+
+func titleCandidatesByBinaryID(candidates []pgindex.ReleaseTitleCandidate) map[int64][]pgindex.ReleaseTitleCandidate {
+	if len(candidates) == 0 {
+		return nil
+	}
+	out := make(map[int64][]pgindex.ReleaseTitleCandidate, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.BinaryID <= 0 {
+			continue
+		}
+		out[candidate.BinaryID] = append(out[candidate.BinaryID], candidate)
+	}
+	return out
+}
+
+func titleCandidatesForCluster(binaries []pgindex.BinarySummary, byBinaryID map[int64][]pgindex.ReleaseTitleCandidate) []pgindex.ReleaseTitleCandidate {
+	if len(binaries) == 0 || len(byBinaryID) == 0 {
+		return nil
+	}
+	out := make([]pgindex.ReleaseTitleCandidate, 0, len(binaries))
+	seen := make(map[int64]struct{}, len(binaries))
+	for _, binary := range binaries {
+		if binary.BinaryID <= 0 {
+			continue
+		}
+		if _, ok := seen[binary.BinaryID]; ok {
+			continue
+		}
+		seen[binary.BinaryID] = struct{}{}
+		out = append(out, byBinaryID[binary.BinaryID]...)
+	}
+	return out
+}
+
+func newsgroupIDsForCluster(binaries []pgindex.BinarySummary) []int64 {
+	if len(binaries) == 0 {
+		return nil
+	}
+	out := make([]int64, 0, len(binaries))
+	seen := make(map[int64]struct{}, len(binaries))
+	for _, binary := range binaries {
+		if binary.NewsgroupID <= 0 {
+			continue
+		}
+		if _, ok := seen[binary.NewsgroupID]; ok {
+			continue
+		}
+		seen[binary.NewsgroupID] = struct{}{}
+		out = append(out, binary.NewsgroupID)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i] < out[j]
+	})
+	return out
+}
+
+func selectReleaseFileBinaries(binaries []pgindex.BinarySummary) []pgindex.BinarySummary {
+	selected := make([]pgindex.BinarySummary, 0, len(binaries))
+	byName := make(map[string]int, len(binaries))
+	for _, binary := range binaries {
+		fileName := pickFileName(binary)
+		key := strings.ToLower(strings.TrimSpace(fileName))
+		if key == "" {
+			key = fmt.Sprintf("binary-%d", binary.BinaryID)
+		}
+		if existingIdx, ok := byName[key]; ok {
+			if prefersBinaryForReleaseFile(binary, selected[existingIdx]) {
+				selected[existingIdx] = binary
+			}
+			continue
+		}
+		byName[key] = len(selected)
+		selected = append(selected, binary)
+	}
+	return selected
 }
 
 func deriveGroupName(candidate pgindex.ReleaseCandidate, binaries []pgindex.BinarySummary) string {
@@ -470,11 +572,11 @@ func clusterTimeBucket(binaries []pgindex.BinarySummary) string {
 func representativeTitle(candidate pgindex.ReleaseCandidate, binaries []pgindex.BinarySummary) string {
 	title := strings.TrimSpace(candidate.ReleaseName)
 	if title != "" {
-		return title
+		return cleanRepresentativeTitle(title)
 	}
 	for _, binary := range binaries {
 		if value := strings.TrimSpace(binary.ReleaseName); value != "" {
-			return value
+			return cleanRepresentativeTitle(value)
 		}
 	}
 	if stem := representativeStem(binaries); stem != "" {
@@ -588,6 +690,8 @@ func normalizeStem(name string) string {
 	switch {
 	case parVolumeRE.MatchString(lower):
 		lower = parVolumeRE.ReplaceAllString(lower, "")
+	case bareParVolumeRE.MatchString(lower):
+		lower = bareParVolumeRE.ReplaceAllString(lower, "")
 	case strings.HasSuffix(lower, ".par2"):
 		lower = strings.TrimSuffix(lower, ".par2")
 	case rarPartRE.MatchString(lower):
@@ -598,6 +702,22 @@ func normalizeStem(name string) string {
 	lower = separatorRE.ReplaceAllString(lower, " ")
 	lower = multiSpaceRE.ReplaceAllString(lower, " ")
 	return strings.TrimSpace(lower)
+}
+
+func cleanRepresentativeTitle(title string) string {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return ""
+	}
+	if parVolumeRE.MatchString(title) || bareParVolumeRE.MatchString(title) {
+		stem := parVolumeRE.ReplaceAllString(title, "")
+		stem = bareParVolumeRE.ReplaceAllString(stem, "")
+		stem = strings.TrimSpace(stem)
+		if stem != "" && looksReadableReleaseTitle(stem) {
+			return humanizeTitle(stem)
+		}
+	}
+	return title
 }
 
 func stemsRelated(a, b string) bool {
@@ -822,9 +942,17 @@ func hasArchiveOrMediaMix(binaries []pgindex.BinarySummary) bool {
 func clusterCompletionPct(binaries []pgindex.BinarySummary) float64 {
 	totalObservedParts := 0
 	totalExpectedParts := 0
+	hasUnknownPayloadParts := false
 	for _, binary := range binaries {
+		if binary.ObservedParts > 0 && binary.TotalParts <= 0 && (binary.IsMainPayload || !binary.IsAuxiliary) {
+			hasUnknownPayloadParts = true
+			continue
+		}
 		totalObservedParts += binary.ObservedParts
 		totalExpectedParts += max(binary.TotalParts, binary.ObservedParts)
+	}
+	if hasUnknownPayloadParts {
+		return 0
 	}
 
 	partPct := 100.0
@@ -887,6 +1015,19 @@ func countMainPayloadBinaries(binaries []pgindex.BinarySummary) int {
 	return count
 }
 
+func countCompleteMainPayloadBinaries(binaries []pgindex.BinarySummary) int {
+	count := 0
+	for _, binary := range binaries {
+		if binary.IsAuxiliary && !binary.IsMainPayload {
+			continue
+		}
+		if binary.TotalParts > 0 && binary.ObservedParts >= binary.TotalParts {
+			count++
+		}
+	}
+	return count
+}
+
 func clusterIsContextualObfuscated(binaries []pgindex.BinarySummary) bool {
 	mainPayloadCount := 0
 	contextualCount := 0
@@ -905,6 +1046,9 @@ func clusterIsContextualObfuscated(binaries []pgindex.BinarySummary) bool {
 func allowsStandaloneBinaryRelease(binaries []pgindex.BinarySummary, record pgindex.ReleaseRecord) bool {
 	main := dominantMainPayloadBinary(binaries)
 	if main == nil {
+		return false
+	}
+	if !mainPayloadHasAuthoritativeMultipartEvidence(*main) {
 		return false
 	}
 
@@ -971,6 +1115,54 @@ func clusterHasUsableFileIdentity(binaries []pgindex.BinarySummary, record pgind
 		}
 	}
 
+	return false
+}
+
+func allowsSingleCompletePayloadWithAuxiliaryEvidence(binaries []pgindex.BinarySummary) bool {
+	main := dominantMainPayloadBinary(binaries)
+	if main == nil || !mainPayloadHasAuthoritativeMultipartEvidence(*main) {
+		return false
+	}
+	mainName := strings.ToLower(strings.TrimSpace(pickFileName(*main)))
+	if mainName == "" || isParFile(mainName) || isArchiveFile(mainName) || splitSevenZipRE.MatchString(mainName) || splitZipRE.MatchString(mainName) || rarPartRE.MatchString(mainName) {
+		return false
+	}
+	return hasPARRelation(binaries) || hasAuxiliarySidecar(binaries)
+}
+
+func mainPayloadHasAuthoritativeMultipartEvidence(binary pgindex.BinarySummary) bool {
+	if binary.IsAuxiliary && !binary.IsMainPayload {
+		return false
+	}
+	return binary.TotalParts > 1 && binary.ObservedParts >= binary.TotalParts
+}
+
+func clusterHasSplitArchivePayload(binaries []pgindex.BinarySummary) bool {
+	for _, binary := range binaries {
+		if binary.IsAuxiliary && !binary.IsMainPayload {
+			continue
+		}
+		name := strings.ToLower(strings.TrimSpace(pickFileName(binary)))
+		if name == "" {
+			continue
+		}
+		if splitSevenZipRE.MatchString(name) || splitZipRE.MatchString(name) || rarPartRE.MatchString(name) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasAuxiliarySidecar(binaries []pgindex.BinarySummary) bool {
+	for _, binary := range binaries {
+		if binary.IsAuxiliary && !binary.IsMainPayload {
+			return true
+		}
+		name := strings.ToLower(strings.TrimSpace(pickFileName(binary)))
+		if isParFile(name) || isAuxiliaryFile(name) {
+			return true
+		}
+	}
 	return false
 }
 
@@ -1160,8 +1352,13 @@ func summarizeFiles(binaries []pgindex.BinarySummary) (hasPAR2, hasNFO bool, arc
 	return hasPAR2, hasNFO, len(archiveFamilies), videoCount, audioCount, samplePresent
 }
 
-func classifyCluster(binaries []pgindex.BinarySummary, archiveCount, videoCount, audioCount int) string {
+func classifyCluster(binaries []pgindex.BinarySummary, archiveCount, videoCount, audioCount int, inspectCandidates []pgindex.ReleaseTitleCandidate) string {
+	if clusterLooksXXX(binaries) {
+		return "xxx"
+	}
 	switch {
+	case archiveCount > 0 && hasSoftwarePayloadEvidence(binaries, inspectCandidates):
+		return "software_archive"
 	case videoCount > 0 && archiveCount > 0:
 		return "video_archive"
 	case videoCount > 0:
@@ -1175,6 +1372,38 @@ func classifyCluster(binaries []pgindex.BinarySummary, archiveCount, videoCount,
 	default:
 		return "misc"
 	}
+}
+
+func hasSoftwarePayloadEvidence(binaries []pgindex.BinarySummary, inspectCandidates []pgindex.ReleaseTitleCandidate) bool {
+	for _, candidate := range inspectCandidates {
+		if strings.TrimSpace(candidate.Source) != "archive_software_entry" {
+			continue
+		}
+		if softwarePayloadRE.MatchString(strings.ToLower(strings.TrimSpace(candidate.Value))) {
+			return true
+		}
+	}
+	for _, binary := range binaries {
+		if softwarePayloadRE.MatchString(strings.ToLower(strings.TrimSpace(pickFileName(binary)))) {
+			return true
+		}
+	}
+	return false
+}
+
+func clusterLooksXXX(binaries []pgindex.BinarySummary) bool {
+	for _, binary := range binaries {
+		text := strings.Join([]string{
+			strings.TrimSpace(binary.ReleaseName),
+			strings.TrimSpace(binary.FileName),
+			strings.TrimSpace(binary.BinaryName),
+			strings.TrimSpace(binary.Poster),
+		}, " ")
+		if xxxKeywordRE.MatchString(text) {
+			return true
+		}
+	}
+	return false
 }
 
 func detectPrimaryResolution(binaries []pgindex.BinarySummary) (string, []string) {
@@ -1248,14 +1477,23 @@ func detectSubtitleLanguages(binaries []pgindex.BinarySummary) []string {
 func derivePasswordState(passworded, known, unknown bool) string {
 	switch {
 	case known:
-		return "passworded_known"
-	case unknown:
-		return "passworded_unknown"
-	case passworded:
-		return "passworded"
+		return "password_known"
+	case unknown || passworded:
+		return "password_unknown"
 	default:
 		return "unknown"
 	}
+}
+
+func deriveInitialReleasePasswordState(classification string, archiveCount int) string {
+	switch strings.TrimSpace(classification) {
+	case "archive", "video_archive":
+		return "unknown"
+	}
+	if archiveCount > 0 {
+		return "unknown"
+	}
+	return "not_passworded"
 }
 
 func resolveReleaseTitle(sourceTitle string, binaries []pgindex.BinarySummary, inspectCandidates []pgindex.ReleaseTitleCandidate) resolvedReleaseTitle {
@@ -1281,12 +1519,13 @@ func resolveReleaseTitle(sourceTitle string, binaries []pgindex.BinarySummary, i
 		result.TitleSource = "deobfuscated"
 		result.TitleConfidence = 0.68
 	case sourceTitle != "":
-		result.Title = sourceDisplay
-		result.TitleSource = "source"
-		if looksReadableReleaseTitle(result.Title) {
+		if looksReadableReleaseTitle(sourceDisplay) {
+			result.Title = sourceDisplay
+			result.TitleSource = "source"
 			result.DeobfuscatedTitle = releaseTitleStyle(sourceTitle)
 			result.TitleConfidence = 0.55
 		} else {
+			result.TitleSource = "source_obfuscated"
 			result.TitleConfidence = 0.30
 		}
 	default:
@@ -1321,15 +1560,23 @@ func chooseBestLocalTitleCandidate(sourceTitle string, binaries []pgindex.Binary
 		if fileName == "" || strings.Contains(strings.ToLower(fileName), "sample") {
 			continue
 		}
-		if !isVideoFile(fileName) && !isAudioFile(fileName) {
+		if isVideoFile(fileName) || isAudioFile(fileName) {
+			if releaseTitle, displayTitle, ok := normalizePathTitleCandidate(fileName); ok {
+				candidates = append(candidates, localTitleCandidate{
+					ReleaseTitle: releaseTitle,
+					DisplayTitle: displayTitle,
+					Source:       "media_filename",
+					Confidence:   0.88,
+				})
+			}
 			continue
 		}
-		if releaseTitle, displayTitle, ok := normalizePathTitleCandidate(fileName); ok {
+		if releaseTitle, displayTitle, ok := normalizePackageTitleCandidate(fileName); ok {
 			candidates = append(candidates, localTitleCandidate{
 				ReleaseTitle: releaseTitle,
 				DisplayTitle: displayTitle,
-				Source:       "media_filename",
-				Confidence:   0.88,
+				Source:       "package_filename",
+				Confidence:   0.90,
 			})
 		}
 	}
@@ -1405,6 +1652,52 @@ func normalizePathTitleCandidate(value string) (string, string, bool) {
 	return releaseTitleStyle(stem), title, true
 }
 
+func normalizePackageTitleCandidate(value string) (string, string, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", "", false
+	}
+	base := filepath.Base(strings.ReplaceAll(value, "\\", "/"))
+	lower := strings.ToLower(base)
+	if !isArchiveFile(base) && !strings.HasSuffix(lower, ".nzb") {
+		return "", "", false
+	}
+	if rarPartRE.MatchString(lower) || splitSevenZipRE.MatchString(lower) || splitZipRE.MatchString(lower) {
+		return "", "", false
+	}
+	stem := trimPackageTitleSuffix(base)
+	if stem == "" {
+		return "", "", false
+	}
+	title := displayTitleStyle(stem)
+	if !looksReadableReleaseTitle(title) {
+		return "", "", false
+	}
+	return releaseTitleStyle(stem), title, true
+}
+
+func trimPackageTitleSuffix(base string) string {
+	base = strings.TrimSpace(base)
+	if base == "" {
+		return ""
+	}
+	switch {
+	case parVolumeRE.MatchString(base):
+		base = parVolumeRE.ReplaceAllString(base, "")
+	case bareParVolumeRE.MatchString(base):
+		base = bareParVolumeRE.ReplaceAllString(base, "")
+	case rarPartRE.MatchString(base):
+		base = rarPartRE.ReplaceAllString(base, "")
+	case splitSevenZipRE.MatchString(base):
+		base = splitSevenZipRE.ReplaceAllString(base, "")
+	case splitZipRE.MatchString(base):
+		base = splitZipRE.ReplaceAllString(base, "")
+	default:
+		base = strings.TrimSuffix(base, filepath.Ext(base))
+	}
+	return strings.Trim(base, " ._-")
+}
+
 func mediaTitleStem(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -1442,10 +1735,23 @@ func shouldAdoptLocalTitleCandidate(sourceTitle string, candidate localTitleCand
 	if candidate.ReleaseTitle == "" || candidate.DisplayTitle == "" {
 		return false
 	}
+	sourceTitle = strings.TrimSpace(sourceTitle)
+	if sourceTitle != "" && looksReadableReleaseTitle(sourceTitle) && !looksObfuscatedReleaseTitle(sourceTitle) && !looksWeakSourceTitle(sourceTitle) && !titlesLookRelated(candidate.DisplayTitle, sourceTitle) {
+		return false
+	}
 	if candidate.Confidence >= 0.82 {
 		return true
 	}
-	return candidate.Confidence >= 0.70 && (strings.TrimSpace(sourceTitle) == "" || looksObfuscatedReleaseTitle(sourceTitle) || !looksReadableReleaseTitle(sourceTitle))
+	return candidate.Confidence >= 0.70 && (sourceTitle == "" || looksObfuscatedReleaseTitle(sourceTitle) || !looksReadableReleaseTitle(sourceTitle))
+}
+
+func looksWeakSourceTitle(title string) bool {
+	switch normalizeSearchTitle(title) {
+	case "vip", "vip only", "private", "private release", "exclusive", "unknown":
+		return true
+	default:
+		return false
+	}
 }
 
 func titleCandidateLooksCloserToSource(candidateTitle, sourceTitle, currentBest string) bool {
@@ -1640,6 +1946,7 @@ func isAudioFile(fileName string) bool {
 func isAuxiliaryFile(fileName string) bool {
 	lower := strings.ToLower(strings.TrimSpace(fileName))
 	return isParFile(lower) ||
+		strings.HasSuffix(lower, ".nzb") ||
 		strings.HasSuffix(lower, ".nfo") ||
 		strings.HasSuffix(lower, ".sfv") ||
 		strings.HasSuffix(lower, ".srr")

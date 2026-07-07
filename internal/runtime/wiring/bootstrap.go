@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"path/filepath"
+	"strings"
 
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/infra/config"
@@ -82,6 +84,13 @@ func BootstrapStores(appCtx *app.Context) error {
 	appCtx.BlobStore = payloadStore
 	appCtx.PayloadCacheStore = payloadStore
 
+	indexerArchiveStore, err := newIndexerArchiveStore(cfg)
+	if err != nil {
+		closeCreated()
+		return fmt.Errorf("failed to initialize indexer archive store: %w", err)
+	}
+	appCtx.IndexerArchiveStore = indexerArchiveStore
+
 	if modules.UsenetIndexer.Enabled && cfg.Store.PGDSN != "" {
 		pgStore, err := pgindex.NewStore(cfg.Store.PGDSN)
 		if err != nil {
@@ -108,8 +117,28 @@ func newPayloadCacheStore(cfg *config.Config, jobStore app.JobStore) (app.Payloa
 			}
 		}
 
-		return blobstore.NewFSBlobStore(cfg.Store.BlobDir, cacheIndexer)
+		return blobstore.NewFSBlobStore(aggregatorCacheRootDir(cfg), cacheIndexer)
 	}
 
 	return blobstore.NewEphemeralBlobStore(), nil
+}
+
+func newIndexerArchiveStore(cfg *config.Config) (app.BlobStore, error) {
+	return blobstore.NewFSBlobStore(indexerArchiveRootDir(cfg), noopBlobCacheIndexer{})
+}
+
+func aggregatorCacheRootDir(cfg *config.Config) string {
+	return blobStoreRoot(cfg)
+}
+
+func indexerArchiveRootDir(cfg *config.Config) string {
+	return filepath.Join(blobStoreRoot(cfg), "indexer-archive")
+}
+
+func blobStoreRoot(cfg *config.Config) string {
+	root := "./data/blobs"
+	if cfg != nil && strings.TrimSpace(cfg.Store.BlobDir) != "" {
+		root = cfg.Store.BlobDir
+	}
+	return root
 }

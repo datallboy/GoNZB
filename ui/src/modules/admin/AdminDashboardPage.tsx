@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { getAdminBackfillProgress, getAdminDashboardStats, getAdminOverview, getAdminStageThroughput, refreshAdminDashboardStats } from '../../shared/api/admin'
-import type { IndexerBackfillProgress, IndexerDashboardStat, IndexerDashboardStats, IndexerOverview, IndexerStageThroughput } from '../../shared/types'
+import { getAdminBackfillProgress, getAdminDashboardStats, getAdminNNTPStats, getAdminOverview, getAdminStageThroughput, getAdminStorageStatus, openAdminOverviewStream, refreshAdminDashboardStats } from '../../shared/api/admin'
+import type { IndexerBackfillProgress, IndexerDashboardStat, IndexerDashboardStats, IndexerNNTPStats, IndexerOverview, IndexerOverviewStreamSnapshot, IndexerStorageStatus, IndexerStageThroughput } from '../../shared/types'
 
 function formatTimestamp(value?: string) {
   if (!value) {
@@ -42,39 +42,115 @@ function formatDuration(ms: number) {
   return `${formatRate(minutes)}m`
 }
 
-function statFootnote(stat: IndexerDashboardStat) {
+function formatBytes(value: number) {
+  if (!Number.isFinite(value) || value <= 0) {
+    return '0 B'
+  }
+  if (value >= 1024 ** 3) {
+    return `${(value / 1024 ** 3).toFixed(1)} GB`
+  }
+  if (value >= 1024 ** 2) {
+    return `${(value / 1024 ** 2).toFixed(1)} MB`
+  }
+  if (value >= 1024) {
+    return `${(value / 1024).toFixed(1)} KB`
+  }
+  return `${value.toLocaleString()} B`
+}
+
+function isScrapeThroughputWindow(window: IndexerStageThroughput['items'][number]['windows'][number]) {
+  return (window.max_workers_used ?? 0) > 0 || (window.max_groups_scheduled ?? 0) > 0 || (window.max_ranges_fetched ?? 0) > 0
+}
+
+function statFreshness(stat: IndexerDashboardStat) {
   if (stat.last_error) {
     const attemptedAt = formatTimestamp(stat.refresh_attempted_at)
-    const snapshotAt = formatTimestamp(stat.updated_at)
-    if (snapshotAt) {
-      return `Refresh failed${attemptedAt ? ` at ${attemptedAt}` : ''}. Showing last good snapshot from ${snapshotAt}.`
-    }
-    return `Refresh failed${attemptedAt ? ` at ${attemptedAt}` : ''}. No cached snapshot yet.`
+    return `Refresh failed${attemptedAt ? ` at ${attemptedAt}` : ''}`
   }
   const updatedAt = formatTimestamp(stat.updated_at)
-  if (updatedAt) {
-    return `As of ${updatedAt}${stat.exact ? ' · exact count' : ''}`
-  }
-  return 'Uses the last persisted snapshot.'
+  return updatedAt ? `Updated ${updatedAt}` : 'Waiting for first snapshot'
 }
 
 function formatStatValue(stat: IndexerDashboardStat) {
   if (!stat.available) {
     return 'Not Cached'
   }
+  const suffix = stat.capped ? '+' : ''
   if (stat.key.endsWith('_bytes')) {
     const value = stat.value
     if (value >= 1024 ** 3) {
-      return `${(value / 1024 ** 3).toFixed(1)} GB`
+      return `${(value / 1024 ** 3).toFixed(1)} GB${suffix}`
     }
     if (value >= 1024 ** 2) {
-      return `${(value / 1024 ** 2).toFixed(1)} MB`
+      return `${(value / 1024 ** 2).toFixed(1)} MB${suffix}`
     }
     if (value >= 1024) {
-      return `${(value / 1024).toFixed(1)} KB`
+      return `${(value / 1024).toFixed(1)} KB${suffix}`
     }
   }
-  return stat.value.toLocaleString()
+  return `${stat.value.toLocaleString()}${suffix}`
+}
+
+function isInspectBacklogStat(stat: IndexerDashboardStat) {
+  return stat.key.startsWith('pending_inspect_')
+}
+
+function backlogCommand(stat: IndexerDashboardStat) {
+  switch (stat.key) {
+    case 'unassembled_headers':
+      return 'indexer assemble lane-a / lane-b'
+    case 'pending_release_summary_refresh_summaries':
+      return 'indexer release refresh-summaries'
+    case 'pending_release_candidate_families':
+      return 'indexer release'
+    case 'generate_nzb_pending_releases':
+      return 'indexer release generate-nzb'
+    case 'archive_pending_releases':
+      return 'indexer release archive-nzb'
+    case 'archived_waiting_for_purge_releases':
+      return 'indexer release purge-archived-sources'
+    case 'pending_yenc_recovery_binaries':
+      return 'indexer recover-yenc'
+    case 'pending_inspect_discovery_binaries':
+      return 'indexer inspect discovery'
+    case 'pending_inspect_par2_binaries':
+      return 'indexer inspect par2'
+    case 'pending_inspect_nfo_binaries':
+      return 'indexer inspect nfo'
+    case 'pending_inspect_archive_binaries':
+      return 'indexer inspect archive'
+    case 'pending_inspect_password_binaries':
+      return 'indexer inspect password'
+    case 'pending_inspect_media_binaries':
+      return 'indexer inspect media'
+    default:
+      return null
+  }
+}
+
+function backlogCard(stat: IndexerDashboardStat) {
+  const command = backlogCommand(stat)
+  return (
+    <div className="stat-card backlog-stat-card" key={stat.key}>
+      <div className="backlog-stat-card__header">
+        <span>{stat.label}</span>
+        <small>{stat.exact ? 'exact' : stat.capped ? 'capped estimate' : 'estimate'}</small>
+      </div>
+      <strong>{formatStatValue(stat)}</strong>
+      {command ? <code>{command}</code> : null}
+      <small>{statFreshness(stat)}</small>
+      {stat.last_error ? <small className="backlog-stat-card__error">{stat.last_error}</small> : null}
+    </div>
+  )
+}
+
+function LoadingBlock({ label }: { label: string }) {
+  return (
+    <div className="loading-panel" role="status" aria-live="polite">
+      <span className="loading-spinner" aria-hidden="true" />
+      <span>{label}</span>
+    </div>
+  )
 }
 
 export function AdminDashboardPage() {
@@ -82,25 +158,202 @@ export function AdminDashboardPage() {
   const [stats, setStats] = useState<IndexerDashboardStats | null>(null)
   const [backfill, setBackfill] = useState<IndexerBackfillProgress | null>(null)
   const [throughput, setThroughput] = useState<IndexerStageThroughput | null>(null)
+  const [nntpStats, setNNTPStats] = useState<IndexerNNTPStats | null>(null)
+  const [storageStatus, setStorageStatus] = useState<IndexerStorageStatus | null>(null)
+  const [overviewLoading, setOverviewLoading] = useState(true)
   const [statsLoading, setStatsLoading] = useState(false)
+  const [backfillLoading, setBackfillLoading] = useState(false)
+  const [throughputLoading, setThroughputLoading] = useState(false)
+  const [nntpLoading, setNNTPLoading] = useState(false)
+  const [storageLoading, setStorageLoading] = useState(false)
   const [statsError, setStatsError] = useState<string | null>(null)
   const [backfillError, setBackfillError] = useState<string | null>(null)
   const [throughputError, setThroughputError] = useState<string | null>(null)
+  const [nntpError, setNNTPError] = useState<string | null>(null)
+  const [storageError, setStorageError] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
+    let cancelled = false
+    let streamConnected = false
+    let source: EventSource | null = null
+
+    function applyStreamSnapshot(snapshot: IndexerOverviewStreamSnapshot) {
+      if (cancelled) {
+        return
+      }
+      if (snapshot.nntp) {
+        setNNTPStats(snapshot.nntp)
+        setNNTPError(null)
+        setNNTPLoading(false)
+      }
+      if (snapshot.throughput) {
+        setThroughput(snapshot.throughput)
+        setThroughputError(null)
+        setThroughputLoading(false)
+      }
+    }
+
+    function loadNNTPStats(showLoading = false) {
+      if (streamConnected) {
+        return
+      }
+      if (showLoading) {
+        setNNTPLoading(true)
+      }
+
+      void getAdminNNTPStats()
+        .then((value) => {
+          if (!cancelled) {
+            setNNTPStats(value)
+            setNNTPError(null)
+          }
+        })
+        .catch((err) => {
+          if (!cancelled) {
+            setNNTPError(
+              err instanceof Error
+                ? err.message
+                : 'Failed to load NNTP stats'
+            )
+          }
+        })
+        .finally(() => {
+          if (showLoading && !cancelled) {
+            setNNTPLoading(false)
+          }
+        })
+    }
+
     void getAdminOverview()
-      .then(setOverview)
-      .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load overview'))
-    void getAdminDashboardStats()
-      .then(setStats)
-      .catch((err) => setStatsError(err instanceof Error ? err.message : 'Failed to load dashboard stats'))
-    void getAdminBackfillProgress()
-      .then(setBackfill)
-      .catch((err) => setBackfillError(err instanceof Error ? err.message : 'Failed to load backfill progress'))
-    void getAdminStageThroughput()
-      .then(setThroughput)
-      .catch((err) => setThroughputError(err instanceof Error ? err.message : 'Failed to load stage throughput'))
+      .then((value) => {
+        if (!cancelled) {
+          setOverview(value)
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setError(
+            err instanceof Error
+              ? err.message
+              : 'Failed to load overview'
+          )
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setOverviewLoading(false)
+        }
+      })
+
+    const timer = window.setTimeout(() => {
+      if (cancelled) {
+        return
+      }
+
+      setStatsLoading(true)
+      void getAdminDashboardStats()
+        .then((value) => {
+          if (!cancelled) {
+            setStats(value)
+          }
+        })
+        .catch((err) => {
+          if (!cancelled) {
+            setStatsError(
+              err instanceof Error
+                ? err.message
+                : 'Failed to load dashboard stats'
+            )
+          }
+        })
+        .finally(() => {
+          if (!cancelled) {
+            setStatsLoading(false)
+          }
+        })
+
+      setThroughputLoading(true)
+      void getAdminStageThroughput()
+        .then((value) => {
+          if (!cancelled && !streamConnected) {
+            setThroughput(value)
+          }
+        })
+        .catch((err) => {
+          if (!cancelled && !streamConnected) {
+            setThroughputError(
+              err instanceof Error
+                ? err.message
+                : 'Failed to load stage throughput'
+            )
+          }
+        })
+        .finally(() => {
+          if (!cancelled && !streamConnected) {
+            setThroughputLoading(false)
+          }
+        })
+
+      loadNNTPStats(true)
+
+      setStorageLoading(true)
+      void getAdminStorageStatus()
+        .then((value) => {
+          if (!cancelled) {
+            setStorageStatus(value)
+            setStorageError(null)
+          }
+        })
+        .catch((err) => {
+          if (!cancelled) {
+            setStorageError(err instanceof Error ? err.message : 'Failed to load storage status')
+          }
+        })
+        .finally(() => {
+          if (!cancelled) {
+            setStorageLoading(false)
+          }
+        })
+
+      setBackfillLoading(true)
+      void getAdminBackfillProgress()
+        .then((value) => {
+          if (!cancelled) {
+            setBackfill(value)
+          }
+        })
+        .catch((err) => {
+          if (!cancelled) {
+            setBackfillError(
+              err instanceof Error
+                ? err.message
+                : 'Failed to load backfill progress'
+            )
+          }
+        })
+        .finally(() => {
+          if (!cancelled) {
+            setBackfillLoading(false)
+          }
+        })
+
+      source = openAdminOverviewStream((snapshot) => {
+        streamConnected = true
+        applyStreamSnapshot(snapshot)
+      })
+      source.onerror = () => {
+        if (!cancelled && !streamConnected) {
+          setNNTPError('Live dashboard stream disconnected; falling back to snapshots.')
+        }
+      }
+    }, 0)
+
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+      source?.close()
+    }
   }, [])
 
   function refreshStats() {
@@ -112,22 +365,18 @@ export function AdminDashboardPage() {
       .finally(() => setStatsLoading(false))
   }
 
-  if (error) {
-    return <div className="banner error">{error}</div>
-  }
-  if (!overview) {
-    return <div className="banner">Loading indexer overview...</div>
-  }
-
   const cards = [
-    ['Releases', overview.release_count],
-    ['Files', overview.file_count],
-    ['Ready Releases', overview.ready_release_count],
-    ['Cached NZBs', overview.ready_nzb_count],
-    ['Running Stages', overview.running_stage_count],
-    ['Paused Stages', overview.paused_stage_count],
-    ['Failed Runs', overview.failed_run_count],
+    ['Releases', overview?.release_count],
+    ['Files', overview?.file_count],
+    ['Ready Releases', overview?.ready_release_count],
+    ['Archived NZBs', overview?.archived_nzb_count],
+    ['Running Stages', overview?.running_stage_count],
+    ['Paused Stages', overview?.paused_stage_count],
+    ['Failed Runs', overview?.failed_run_count],
   ]
+  const backlogStats = stats?.items ?? []
+  const commandBacklogStats = backlogStats.filter((stat) => !isInspectBacklogStat(stat))
+  const inspectBacklogStats = backlogStats.filter(isInspectBacklogStat)
 
   return (
     <div className="page-section stack">
@@ -145,38 +394,218 @@ export function AdminDashboardPage() {
           </Link>
         </div>
       </div>
-      <div className="hero-stat-grid">
-        {cards.map(([label, value]) => (
-          <div className="stat-card" key={label}>
-            <span>{label}</span>
-            <strong>{value}</strong>
+      {error ? <div className="banner error">{error}</div> : null}
+      {overviewLoading && !overview ? (
+        <LoadingBlock label="Loading overview cards..." />
+      ) : (
+        <div className="hero-stat-grid">
+          {cards.map(([label, value]) => (
+            <div className="stat-card" key={label}>
+              <span>{label}</span>
+              <strong>{typeof value === 'number' ? value.toLocaleString() : 'Unavailable'}</strong>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="page-card stack">
+        <div>
+          <h2 className="section-title">PostgreSQL Storage Guard</h2>
+          <p className="muted-copy">
+            Runtime view of the data volume checked before growth-heavy indexer stages run.
+          </p>
+        </div>
+        {storageError ? <div className="banner error">{storageError}</div> : null}
+        {storageLoading && !storageStatus ? (
+          <LoadingBlock label="Loading storage guard..." />
+        ) : (
+          <div className="hero-stat-grid">
+            <div className="stat-card">
+              <span>State</span>
+              <strong>{storageStatus ? (storageStatus.blocked ? 'Blocked' : 'Allowed') : 'Unavailable'}</strong>
+              {storageStatus?.reason ? <small>{storageStatus.reason}</small> : null}
+            </div>
+            <div className="stat-card">
+              <span>Free Space</span>
+              <strong>{storageStatus ? formatBytes(storageStatus.filesystem_free_bytes) : 'Unavailable'}</strong>
+              {storageStatus ? <small>{storageStatus.filesystem_free_percent.toFixed(1)}%</small> : null}
+            </div>
+            <div className="stat-card">
+              <span>Threshold</span>
+              <strong>{storageStatus ? `${storageStatus.min_free_percent.toFixed(1)}%` : 'Unavailable'}</strong>
+              {storageStatus ? <small>{formatBytes(storageStatus.min_free_bytes)}</small> : null}
+            </div>
+            <div className="stat-card">
+              <span>Path</span>
+              <strong>{storageStatus?.filesystem_visible ? 'Visible' : 'Not Visible'}</strong>
+              {storageStatus ? <small>{storageStatus.visibility_source}: {storageStatus.data_directory || 'unavailable'}</small> : null}
+            </div>
+            <div className="stat-card">
+              <span>Database Size</span>
+              <strong>{storageStatus ? formatBytes(storageStatus.database_bytes) : 'Unavailable'}</strong>
+            </div>
           </div>
-        ))}
+        )}
       </div>
 
       <div className="page-card stack">
         <div className="toolbar-row">
           <div>
-            <h2 className="section-title">Cached Backlog Stats</h2>
+            <h2 className="section-title">Operational Backlog</h2>
             <p className="muted-copy">
-              Heavy counts stay decoupled from stage runs and normal dashboard loads. Refresh them explicitly when you need a current snapshot.
+              Queue-focused snapshots for the stages operators tune most often. The dashboard reads cached values; manual refresh recomputes the cache immediately.
             </p>
           </div>
           <button className="secondary-button" type="button" onClick={refreshStats} disabled={statsLoading}>
-            {statsLoading ? 'Refreshing...' : 'Refresh All Stats'}
+            {statsLoading ? (stats ? 'Refreshing...' : 'Loading...') : 'Refresh Cache Now'}
           </button>
         </div>
         {statsError ? <div className="banner error">{statsError}</div> : null}
-        <div className="hero-stat-grid">
-          {(stats?.items ?? []).map((stat) => (
-            <div className="stat-card" key={stat.key}>
-              <span>{stat.label}</span>
-              <strong>{formatStatValue(stat)}</strong>
-              <small>{statFootnote(stat)}</small>
-              {stat.last_error ? <small>{stat.last_error}</small> : null}
+        {statsLoading && !stats ? (
+          <LoadingBlock label="Loading backlog snapshot..." />
+        ) : (
+          <>
+            <div className="hero-stat-grid">{commandBacklogStats.map(backlogCard)}</div>
+            <div>
+              <h3 className="section-title">Inspection Backlog</h3>
+              <div className="hero-stat-grid">{inspectBacklogStats.map(backlogCard)}</div>
             </div>
-          ))}
+          </>
+        )}
+      </div>
+
+      <div className="page-card stack">
+        <div>
+          <h2 className="section-title">NNTP Capacity</h2>
+          <p className="muted-copy">
+            Live indexer transport pressure. Waiting requests mean indexer work is queued behind the configured NNTP connection limit.
+          </p>
         </div>
+        {nntpError ? <div className="banner error">{nntpError}</div> : null}
+        {nntpLoading && !nntpStats ? (
+          <LoadingBlock label="Loading NNTP capacity..." />
+        ) : (
+          <>
+            <div className="hero-stat-grid">
+              <div className="stat-card">
+                <span>Policy</span>
+                <strong>{nntpStats?.policy ?? 'Unavailable'}</strong>
+              </div>
+              <div className="stat-card">
+                <span>Active Connections</span>
+                <strong>
+                  {nntpStats ? `${nntpStats.active.toLocaleString()} / ${nntpStats.capacity.toLocaleString()}` : 'Unavailable'}
+                </strong>
+              </div>
+              <div className="stat-card">
+                <span>Waiting Requests</span>
+                <strong>{nntpStats ? nntpStats.waiting.toLocaleString() : 'Unavailable'}</strong>
+              </div>
+              <div className="stat-card">
+                <span>Max Wait</span>
+                <strong>{nntpStats ? formatDuration(nntpStats.wait_max_ms) : 'Unavailable'}</strong>
+              </div>
+              <div className="stat-card">
+                <span>Missing Articles</span>
+                <strong>{nntpStats ? nntpStats.article_not_found.toLocaleString() : 'Unavailable'}</strong>
+              </div>
+              <div className="stat-card">
+                <span>NNTP Errors</span>
+                <strong>{nntpStats ? nntpStats.operation_errors.toLocaleString() : 'Unavailable'}</strong>
+              </div>
+            </div>
+            <div className="table-shell">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Stage Demand</th>
+                    <th>Active</th>
+                    <th>Waiting</th>
+                    <th>Requests</th>
+                    <th>Max Wait</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(nntpStats?.scopes ?? []).map((scope) => (
+                    <tr key={scope.scope}>
+                      <td>
+                        <strong>{scope.scope}</strong>
+                      </td>
+                      <td>{scope.active.toLocaleString()}</td>
+                      <td>{scope.waiting.toLocaleString()}</td>
+                      <td>
+                        <strong>{(scope.fetches + scope.fetch_body_prefix + scope.group_stats + scope.xover).toLocaleString()}</strong>
+                        <div className="muted-copy">
+                          fetch {scope.fetches.toLocaleString()} · prefix {scope.fetch_body_prefix.toLocaleString()} · xover {scope.xover.toLocaleString()}
+                        </div>
+                      </td>
+                      <td>{formatDuration(scope.wait_max_ms)}</td>
+                    </tr>
+                  ))}
+                  {!nntpLoading && !nntpError && (nntpStats?.scopes.length ?? 0) === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="muted-copy">
+                        No stage-level NNTP demand has been recorded yet.
+                      </td>
+                    </tr>
+                  ) : null}
+                </tbody>
+              </table>
+            </div>
+            <div className="table-shell">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Provider</th>
+                    <th>Connections</th>
+                    <th>Pool</th>
+                    <th>Retries</th>
+                    <th>Errors</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(nntpStats?.providers ?? []).map((provider) => (
+                    <tr key={provider.id}>
+                      <td>
+                        <strong>{provider.label || provider.id}</strong>
+                        <div className="muted-copy">Priority {provider.priority}</div>
+                      </td>
+                      <td>
+                        <strong>{provider.active.toLocaleString()} / {provider.capacity.toLocaleString()}</strong>
+                        <div className="muted-copy">active / capacity</div>
+                      </td>
+                      <td>
+                        <strong>{provider.idle.toLocaleString()}</strong>
+                        <div className="muted-copy">
+                          {provider.dials.toLocaleString()} dials · {provider.pool_reuses.toLocaleString()} reuses
+                        </div>
+                      </td>
+                      <td>
+                        <strong>{(provider.fetch_retries + provider.group_stats_retries + provider.xover_retries).toLocaleString()}</strong>
+                        <div className="muted-copy">
+                          fetch {provider.fetch_retries.toLocaleString()} · xover {provider.xover_retries.toLocaleString()}
+                        </div>
+                      </td>
+                      <td>
+                        <strong>{provider.recoverable_errors.toLocaleString()}</strong>
+                        <div className="muted-copy">
+                          {provider.dial_failures.toLocaleString()} dial failures · {provider.pool_discard_error.toLocaleString()} discarded
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                  {!nntpLoading && !nntpError && (nntpStats?.providers.length ?? 0) === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="muted-copy">
+                        No indexer NNTP manager is currently configured.
+                      </td>
+                    </tr>
+                  ) : null}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
       </div>
 
       <div className="page-card stack">
@@ -198,6 +627,13 @@ export function AdminDashboardPage() {
               </tr>
             </thead>
             <tbody>
+              {throughputLoading && !throughput ? (
+                <tr>
+                  <td colSpan={4}>
+                    <LoadingBlock label="Loading stage throughput..." />
+                  </td>
+                </tr>
+              ) : null}
               {(throughput?.items ?? []).map((item) => (
                 <tr key={item.stage_name}>
                   <td>
@@ -210,13 +646,28 @@ export function AdminDashboardPage() {
                         <strong>{window.items_processed.toLocaleString()}</strong> {item.item_label}
                       </div>
                       <div className="muted-copy">{formatRate(window.items_per_second)}/sec</div>
+                      {isScrapeThroughputWindow(window) ? (
+                        <div className="muted-copy">
+                          Workers avg {formatRate(window.avg_workers_used ?? 0)} · max {(window.max_workers_used ?? 0).toLocaleString()}
+                        </div>
+                      ) : null}
+                      {isScrapeThroughputWindow(window) ? (
+                        <div className="muted-copy">
+                          Groups avg {formatRate(window.avg_groups_scheduled ?? 0)} · max {(window.max_groups_scheduled ?? 0).toLocaleString()}
+                        </div>
+                      ) : null}
+                      {isScrapeThroughputWindow(window) ? (
+                        <div className="muted-copy">
+                          Ranges avg {formatRate(window.avg_ranges_fetched ?? 0)} · max {(window.max_ranges_fetched ?? 0).toLocaleString()}
+                        </div>
+                      ) : null}
                       <div className="muted-copy">{window.completed_runs} completed · {window.failed_runs} failed</div>
                       <div className="muted-copy">Avg run {formatDuration(window.avg_run_duration_ms)}</div>
                     </td>
                   ))}
                 </tr>
               ))}
-              {!throughputError && (throughput?.items.length ?? 0) === 0 ? (
+              {!throughputLoading && !throughputError && (throughput?.items.length ?? 0) === 0 ? (
                 <tr>
                   <td colSpan={4} className="muted-copy">
                     No recent stage throughput data yet.
@@ -250,6 +701,13 @@ export function AdminDashboardPage() {
               </tr>
             </thead>
             <tbody>
+              {backfillLoading && !backfill ? (
+                <tr>
+                  <td colSpan={7}>
+                    <LoadingBlock label="Loading backfill progress..." />
+                  </td>
+                </tr>
+              ) : null}
               {(backfill?.items ?? []).map((item) => (
                 <tr key={item.group_name}>
                   <td>
@@ -271,7 +729,7 @@ export function AdminDashboardPage() {
                   <td>{item.latest_article_number > 0 ? item.latest_article_number.toLocaleString() : 'Not observed'}</td>
                 </tr>
               ))}
-              {!backfillError && (backfill?.items.length ?? 0) === 0 ? (
+              {!backfillLoading && !backfillError && (backfill?.items.length ?? 0) === 0 ? (
                 <tr>
                   <td colSpan={7} className="muted-copy">
                     No backfill checkpoint data yet.

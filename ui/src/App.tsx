@@ -1,12 +1,19 @@
 import { Route, Routes } from 'react-router-dom'
 import { LoginPage } from './modules/auth/LoginPage'
 import { SetupPage } from './modules/auth/SetupPage'
+import { AdminAttentionPage } from './modules/admin/AdminAttentionPage'
+import { AdminArticleCohortsPage } from './modules/admin/AdminArticleCohortsPage'
 import { AdminDashboardPage } from './modules/admin/AdminDashboardPage'
+import { AdminBinaryDetailPage } from './modules/admin/AdminBinaryDetailPage'
+import { AdminBinariesPage } from './modules/admin/AdminBinariesPage'
+import { AdminIndexerWorkPage } from './modules/admin/AdminIndexerWorkPage'
+import { AdminMaintenancePage } from './modules/admin/AdminMaintenancePage'
 import { AdminReleaseDetailPage } from './modules/admin/AdminReleaseDetailPage'
 import { AdminReleasesPage } from './modules/admin/AdminReleasesPage'
 import { AdminRolesPage } from './modules/admin/AdminRolesPage'
 import { AdminRunDetailPage } from './modules/admin/AdminRunDetailPage'
 import { AdminRunsPage } from './modules/admin/AdminRunsPage'
+import { AdminScrapePage } from './modules/admin/AdminScrapePage'
 import { AdminSettingsPage } from './modules/admin/AdminSettingsPage'
 import { AdminStagesPage } from './modules/admin/AdminStagesPage'
 import { AdminUserDetailPage } from './modules/admin/AdminUserDetailPage'
@@ -70,6 +77,14 @@ export default function App() {
             }
           />
           <Route
+            path="indexer/attention"
+            element={
+              <RequireAuth permission="indexer.runtime.read">
+                <AdminAttentionPage />
+              </RequireAuth>
+            }
+          />
+          <Route
             path="indexer/releases"
             element={
               <RequireAuth permission="indexer.runtime.read">
@@ -86,10 +101,50 @@ export default function App() {
             }
           />
           <Route
+            path="indexer/binaries"
+            element={
+              <RequireAuth permission="indexer.runtime.read">
+                <AdminBinariesPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="indexer/binaries/:id"
+            element={
+              <RequireAuth permission="indexer.runtime.read">
+                <AdminBinaryDetailPage />
+              </RequireAuth>
+            }
+          />
+          <Route
             path="indexer/stages"
             element={
               <RequireAuth permission="indexer.runtime.read">
                 <AdminStagesPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="indexer/work"
+            element={
+              <RequireAuth permission="indexer.runtime.read">
+                <AdminIndexerWorkPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="indexer/cohorts"
+            element={
+              <RequireAuth permission="indexer.runtime.read">
+                <AdminArticleCohortsPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="indexer/maintenance"
+            element={
+              <RequireAuth permission="indexer.runtime.read">
+                <AdminMaintenancePage />
               </RequireAuth>
             }
           />
@@ -106,6 +161,14 @@ export default function App() {
             element={
               <RequireAuth permission="indexer.runtime.read">
                 <AdminRunDetailPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="indexer/scrape"
+            element={
+              <RequireAuth permission="indexer.runtime.read">
+                <AdminScrapePage />
               </RequireAuth>
             }
           />

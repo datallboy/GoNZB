@@ -5,30 +5,33 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/indexing/supervisor"
 )
 
 type Service struct {
 	supervisor              *supervisor.Supervisor
-	assembleLaneA           func(ctx context.Context) error
-	assembleLaneB           func(ctx context.Context) error
+	assemble                func(ctx context.Context) error
 	recoverYEnc             func(ctx context.Context) error
 	releaseReform           func(ctx context.Context) error
+	releaseReformReleases   func(ctx context.Context, releaseIDs []string) error
 	enrichPredbSceneName    func(ctx context.Context) error
 	enrichPredbMetadataOnly func(ctx context.Context) error
 	enrichPredbSyncFeed     func(ctx context.Context) error
 	enrichPredbSyncBackfill func(ctx context.Context) error
+	nntpStats               func() app.NNTPRuntimeStats
 }
 
 type Options struct {
 	ReleaseReform           func(ctx context.Context) error
-	AssembleLaneA           func(ctx context.Context) error
-	AssembleLaneB           func(ctx context.Context) error
+	ReleaseReformReleases   func(ctx context.Context, releaseIDs []string) error
+	Assemble                func(ctx context.Context) error
 	RecoverYEnc             func(ctx context.Context) error
 	EnrichPredbSceneName    func(ctx context.Context) error
 	EnrichPredbMetadataOnly func(ctx context.Context) error
 	EnrichPredbSyncFeed     func(ctx context.Context) error
 	EnrichPredbSyncBackfill func(ctx context.Context) error
+	NNTPStats               func() app.NNTPRuntimeStats
 }
 
 func NewService(supervisorSvc *supervisor.Supervisor, opts ...Options) *Service {
@@ -38,15 +41,27 @@ func NewService(supervisorSvc *supervisor.Supervisor, opts ...Options) *Service 
 	}
 	return &Service{
 		supervisor:              supervisorSvc,
-		assembleLaneA:           cfg.AssembleLaneA,
-		assembleLaneB:           cfg.AssembleLaneB,
+		assemble:                cfg.Assemble,
 		recoverYEnc:             cfg.RecoverYEnc,
 		releaseReform:           cfg.ReleaseReform,
+		releaseReformReleases:   cfg.ReleaseReformReleases,
 		enrichPredbSceneName:    cfg.EnrichPredbSceneName,
 		enrichPredbMetadataOnly: cfg.EnrichPredbMetadataOnly,
 		enrichPredbSyncFeed:     cfg.EnrichPredbSyncFeed,
 		enrichPredbSyncBackfill: cfg.EnrichPredbSyncBackfill,
+		nntpStats:               cfg.NNTPStats,
 	}
+}
+
+func (s *Service) NNTPStats(ctx context.Context) (*app.NNTPRuntimeStats, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if s == nil || s.nntpStats == nil {
+		return nil, fmt.Errorf("indexer nntp manager is not configured")
+	}
+	stats := s.nntpStats()
+	return &stats, nil
 }
 
 // backward-compatible alias to latest mode.
@@ -77,12 +92,35 @@ func (s *Service) RunPipelineOnce(ctx context.Context) error {
 		ctx,
 		supervisor.StageScrapeLatest,
 		supervisor.StageAssemble,
+		supervisor.StageReleaseSummaryRefresh,
 		supervisor.StageRelease,
+		supervisor.StageReleaseGenerateNZB,
+		supervisor.StageReleaseArchiveNZB,
+		supervisor.StageInspectDiscoveryReadyRefresh,
+		supervisor.StageInspectPAR2ReadyRefresh,
+		supervisor.StageInspectArchiveReadyRefresh,
+		supervisor.StageInspectMediaReadyRefresh,
 	)
 }
 
 func (s *Service) ReleaseOnce(ctx context.Context) error {
 	return s.runStageOnce(ctx, supervisor.StageRelease)
+}
+
+func (s *Service) ReleaseSummaryRefreshOnce(ctx context.Context) error {
+	return s.runStageOnce(ctx, supervisor.StageReleaseSummaryRefresh)
+}
+
+func (s *Service) ReleaseArchiveNZBOnce(ctx context.Context) error {
+	return s.runStageOnce(ctx, supervisor.StageReleaseArchiveNZB)
+}
+
+func (s *Service) ReleaseGenerateNZBOnce(ctx context.Context) error {
+	return s.runStageOnce(ctx, supervisor.StageReleaseGenerateNZB)
+}
+
+func (s *Service) ReleasePurgeArchivedSourcesOnce(ctx context.Context) error {
+	return s.runStageOnce(ctx, supervisor.StageReleasePurgeArchivedSources)
 }
 
 func (s *Service) ReformReleasesOnce(ctx context.Context) error {
@@ -92,34 +130,31 @@ func (s *Service) ReformReleasesOnce(ctx context.Context) error {
 	return s.releaseReform(ctx)
 }
 
+func (s *Service) ReformSelectedReleasesOnce(ctx context.Context, releaseIDs []string) error {
+	if s.releaseReformReleases == nil {
+		return fmt.Errorf("targeted release reform service is not configured")
+	}
+	return s.releaseReformReleases(ctx, releaseIDs)
+}
+
 func (s *Service) AssembleOnce(ctx context.Context) error {
-	return s.runStageOnce(ctx, supervisor.StageAssemble)
-}
-
-func (s *Service) AssembleLaneAOnce(ctx context.Context) error {
-	if s.assembleLaneA == nil {
-		return fmt.Errorf("assemble lane A service is not configured")
+	if s.assemble == nil {
+		return fmt.Errorf("assemble service is not configured")
 	}
-	return s.assembleLaneA(ctx)
-}
-
-func (s *Service) AssembleLaneBOnce(ctx context.Context) error {
-	if s.assembleLaneB == nil {
-		return fmt.Errorf("assemble lane B service is not configured")
-	}
-	return s.assembleLaneB(ctx)
+	return s.assemble(ctx)
 }
 
 func (s *Service) RecoverYEncOnce(ctx context.Context) error {
-	if s.recoverYEnc == nil {
-		return fmt.Errorf("recover_yenc service is not configured")
-	}
-	return s.recoverYEnc(ctx)
+	return s.runStageOnce(ctx, supervisor.StageRecoverYEnc)
 }
 
 func (s *Service) InspectOnce(ctx context.Context) error {
 	return s.runStagesOnce(
 		ctx,
+		supervisor.StageInspectDiscoveryReadyRefresh,
+		supervisor.StageInspectPAR2ReadyRefresh,
+		supervisor.StageInspectArchiveReadyRefresh,
+		supervisor.StageInspectMediaReadyRefresh,
 		supervisor.StageInspectDiscovery,
 		supervisor.StageInspectPAR2,
 		supervisor.StageInspectNFO,

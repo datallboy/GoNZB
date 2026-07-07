@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -61,6 +63,9 @@ func TestRunOnceCapturesPAR2SetAndOnlySetsHasPAR2(t *testing.T) {
 	if repo.par2Targets[0].FileName != "target.part01.rar" || repo.par2Targets[0].FileSize != 123456 {
 		t.Fatalf("unexpected par2 target %+v", repo.par2Targets[0])
 	}
+	if repo.par2Targets[0].ReleaseID != "rel-par2" {
+		t.Fatalf("expected par2 target release id rel-par2, got %+v", repo.par2Targets[0])
+	}
 	if len(repo.coverageRows) != 1 || repo.coverageRows[0].FileName != "target.part01.rar" {
 		t.Fatalf("expected par2 target coverage rows, got %+v", repo.coverageRows)
 	}
@@ -91,6 +96,12 @@ func TestRunOnceCapturesPAR2SetAndOnlySetsHasPAR2(t *testing.T) {
 	update := repo.releaseUpdates[0]
 	if update.HasNFO != nil || update.Encrypted != nil || update.Passworded != nil || update.VideoCount != nil {
 		t.Fatalf("expected par2 stage to avoid unrelated fields, got %+v", update)
+	}
+	if update.ExpectedFileCount == nil || *update.ExpectedFileCount != 1 {
+		t.Fatalf("expected total PAR2 target count update 1, got %+v", update)
+	}
+	if update.ExpectedArchiveFileCount == nil || *update.ExpectedArchiveFileCount != 1 {
+		t.Fatalf("expected archive PAR2 target count update 1, got %+v", update)
 	}
 }
 
@@ -133,7 +144,7 @@ func TestRunOnceInspectsStandalonePAR2BinaryBeforeReleaseFormation(t *testing.T)
 	}
 }
 
-func TestRunOnceFallsBackToFullManifestMaterializationForPlainPAR2(t *testing.T) {
+func TestRunOnceParsesPlainPAR2FromContiguousPrefixSample(t *testing.T) {
 	now := time.Now().UTC()
 	full := buildPAR2Sample("target.part01.rar", 123456)
 	split := len(full) / 2
@@ -173,10 +184,10 @@ func TestRunOnceFallsBackToFullManifestMaterializationForPlainPAR2(t *testing.T)
 	}
 
 	if len(repo.par2Targets) != 1 {
-		t.Fatalf("expected one par2 target after full manifest fallback, got %+v", repo.par2Targets)
+		t.Fatalf("expected one par2 target after prefix sample, got %+v", repo.par2Targets)
 	}
-	if got := repo.completed[0].Summary["full_manifest_fallback"]; got != true {
-		t.Fatalf("expected full_manifest_fallback=true, got %+v", repo.completed[0].Summary)
+	if got := repo.completed[0].Summary["full_manifest_fallback"]; got != false {
+		t.Fatalf("expected full_manifest_fallback=false, got %+v", repo.completed[0].Summary)
 	}
 }
 
@@ -221,6 +232,98 @@ func TestRunOnceCompletesDeterministicPAR2SampleFailuresWithoutRetryChurn(t *tes
 	}
 }
 
+func TestPAR2RunBudgetIsBounded(t *testing.T) {
+	cases := []struct {
+		name        string
+		toolTimeout time.Duration
+		want        time.Duration
+	}{
+		{name: "default", toolTimeout: 0, want: 2 * time.Minute},
+		{name: "small timeout has floor", toolTimeout: time.Second, want: 30 * time.Second},
+		{name: "normal timeout multiplies", toolTimeout: 20 * time.Second, want: 80 * time.Second},
+		{name: "large timeout has ceiling", toolTimeout: 10 * time.Minute, want: 2 * time.Minute},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := par2RunBudget(inspectpkg.Options{ToolTimeout: tc.toolTimeout}); got != tc.want {
+				t.Fatalf("expected run budget %s, got %s", tc.want, got)
+			}
+		})
+	}
+}
+
+func TestPAR2WorkerCountAllowsTwentyWorkers(t *testing.T) {
+	if got := par2WorkerCount(inspectpkg.Options{Concurrency: 20}, 1000); got != 20 {
+		t.Fatalf("expected 20 workers, got %d", got)
+	}
+	if got := par2WorkerCount(inspectpkg.Options{Concurrency: 40}, 1000); got != 32 {
+		t.Fatalf("expected safety cap of 32 workers, got %d", got)
+	}
+}
+
+func TestPAR2ProbeSkipReasonClassifiesOperationalCauses(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{
+			name: "article missing on provider",
+			err:  errors.New("fetch article <abc@example>: article not found (430)"),
+			want: "article_not_found",
+		},
+		{
+			name: "binary missing",
+			err:  errors.New("binary 123 not found"),
+			want: "binary_not_found",
+		},
+		{
+			name: "yenc header decode",
+			err:  errors.New("decode article <abc@example> header: invalid yenc header"),
+			want: "yenc_header_decode_failed",
+		},
+		{
+			name: "yenc body decode",
+			err:  errors.New("decode article <abc@example> body: invalid escape"),
+			want: "yenc_body_decode_failed",
+		},
+		{
+			name: "yenc verify checksum",
+			err:  errors.New("decode article <abc@example> verify: checksum mismatch"),
+			want: "article_checksum_mismatch",
+		},
+		{
+			name: "unsupported standalone",
+			err:  errors.New("standalone binary materialization is not supported"),
+			want: "standalone_materialization_unsupported",
+		},
+		{
+			name: "unknown prefix failure",
+			err:  errors.New("fetch article <abc@example>: malformed response"),
+			want: "prefix_sample_failed",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := par2ProbeSkipReason(tc.err); got != tc.want {
+				t.Fatalf("expected %q, got %q", tc.want, got)
+			}
+		})
+	}
+}
+
+func TestTrimPAR2ProbeErrorDetailBoundsLogPayload(t *testing.T) {
+	detail := trimPAR2ProbeErrorDetail(errors.New(strings.Repeat("x", 300)))
+	if len(detail) > 243 {
+		t.Fatalf("expected bounded detail, got length %d", len(detail))
+	}
+	if !strings.HasSuffix(detail, "...") {
+		t.Fatalf("expected ellipsis suffix, got %q", detail)
+	}
+}
+
 func TestParseTargetFilesRejectsImplausibleNamesAndSizes(t *testing.T) {
 	sample := append(buildPAR2Sample("valid.part01.rar", 1234), buildPAR2Sample("\x7f\x12\x15\x1e", 1234)...)
 	sample = append(sample, buildPAR2Sample("absurd.part02.rar", 1<<60)...)
@@ -235,17 +338,17 @@ func TestParseTargetFilesRejectsImplausibleNamesAndSizes(t *testing.T) {
 }
 
 type fakePAR2Repository struct {
-	candidates     []pgindex.BinaryInspectionCandidate
-	files          []pgindex.CatalogReleaseFile
+	candidates         []pgindex.BinaryInspectionCandidate
+	files              []pgindex.CatalogReleaseFile
 	standaloneArticles []pgindex.CatalogArticleRef
-	completed      []pgindex.BinaryInspectionRecord
-	failed         []pgindex.BinaryInspectionRecord
-	artifacts      []pgindex.BinaryInspectionArtifactRecord
-	par2Sets       []pgindex.BinaryPAR2SetRecord
-	par2Targets    []pgindex.BinaryPAR2TargetRecord
-	coverageRows   []pgindex.BinaryPAR2TargetRecord
-	releaseUpdates []pgindex.ReleaseInspectionUpdate
-	standaloneFile *pgindex.CatalogReleaseFile
+	completed          []pgindex.BinaryInspectionRecord
+	failed             []pgindex.BinaryInspectionRecord
+	artifacts          []pgindex.BinaryInspectionArtifactRecord
+	par2Sets           []pgindex.BinaryPAR2SetRecord
+	par2Targets        []pgindex.BinaryPAR2TargetRecord
+	coverageRows       []pgindex.BinaryPAR2TargetRecord
+	releaseUpdates     []pgindex.ReleaseInspectionUpdate
+	standaloneFile     *pgindex.CatalogReleaseFile
 }
 
 func (f *fakePAR2Repository) ListBinaryInspectionCandidates(context.Context, string, int) ([]pgindex.BinaryInspectionCandidate, error) {
@@ -289,6 +392,37 @@ func (f *fakePAR2Repository) ApplyBinaryPAR2TargetCoverage(_ context.Context, _ 
 func (f *fakePAR2Repository) ApplyReleaseInspectionUpdate(_ context.Context, in pgindex.ReleaseInspectionUpdate) error {
 	f.releaseUpdates = append(f.releaseUpdates, in)
 	return nil
+}
+
+func (f *fakePAR2Repository) ApplyPAR2InspectionBatch(_ context.Context, rows []pgindex.PAR2InspectionBatchRecord) (*pgindex.PAR2InspectionBatchResult, error) {
+	out := &pgindex.PAR2InspectionBatchResult{}
+	for _, row := range rows {
+		f.artifacts = append(f.artifacts, row.ArtifactRows...)
+		f.par2Sets = append(f.par2Sets, row.PAR2SetRows...)
+		f.par2Targets = append(f.par2Targets, row.PAR2TargetRows...)
+		f.coverageRows = append(f.coverageRows, row.PAR2TargetRows...)
+		summary := map[string]any{}
+		for k, v := range row.Summary {
+			summary[k] = v
+		}
+		if len(row.PAR2TargetRows) > 0 {
+			summary["main_target_count"] = len(row.PAR2TargetRows)
+			summary["target_coverage_updates"] = 3
+		}
+		f.completed = append(f.completed, pgindex.BinaryInspectionRecord{
+			StageName:         row.StageName,
+			BinaryID:          row.BinaryID,
+			ReleaseID:         row.ReleaseID,
+			Status:            "completed",
+			MaterializedBytes: row.MaterializedBytes,
+			ToolProvenance:    row.ToolProvenance,
+			Summary:           summary,
+			SourceUpdatedAt:   row.SourceUpdatedAt,
+		})
+		out.FlushedCandidates++
+		out.RowsWritten += int64(len(row.ArtifactRows) + len(row.PAR2SetRows) + len(row.PAR2TargetRows) + 1)
+	}
+	return out, nil
 }
 
 func (f *fakePAR2Repository) ListCatalogReleaseFiles(context.Context, string) ([]pgindex.CatalogReleaseFile, error) {

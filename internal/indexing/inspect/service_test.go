@@ -142,6 +142,46 @@ func TestWorkspaceManagerAutoBackendFallsBackToDiskWhenMemoryRootUnavailable(t *
 	}
 }
 
+func TestCleanupStaleWorkspaceRootsPurgesOldDirsAcrossRoots(t *testing.T) {
+	diskRoot := t.TempDir()
+	memRoot := t.TempDir()
+	oldDisk := filepath.Join(diskRoot, "inspect_archive", "old")
+	oldMem := filepath.Join(memRoot, "inspect_media", "old")
+	newDisk := filepath.Join(diskRoot, "inspect_archive", "new")
+	for _, dir := range []string{oldDisk, oldMem, newDisk} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	oldTime := time.Now().Add(-WorkspaceStaleTTL - time.Hour)
+	if err := os.Chtimes(oldDisk, oldTime, oldTime); err != nil {
+		t.Fatalf("chtimes old disk: %v", err)
+	}
+	if err := os.Chtimes(oldMem, oldTime, oldTime); err != nil {
+		t.Fatalf("chtimes old mem: %v", err)
+	}
+
+	cleaned, err := CleanupStaleWorkspaceRoots(context.Background(), Options{
+		WorkDir:       diskRoot,
+		MemoryWorkDir: memRoot,
+	})
+	if err != nil {
+		t.Fatalf("cleanup stale workspace roots: %v", err)
+	}
+	if cleaned != 2 {
+		t.Fatalf("expected 2 cleaned workspaces, got %d", cleaned)
+	}
+	if _, err := os.Stat(oldDisk); !os.IsNotExist(err) {
+		t.Fatalf("expected old disk workspace removed, stat err=%v", err)
+	}
+	if _, err := os.Stat(oldMem); !os.IsNotExist(err) {
+		t.Fatalf("expected old mem workspace removed, stat err=%v", err)
+	}
+	if _, err := os.Stat(newDisk); err != nil {
+		t.Fatalf("expected new disk workspace to remain: %v", err)
+	}
+}
+
 func TestExtractPasswordCandidatesFindsStructuredHints(t *testing.T) {
 	got := ExtractPasswordCandidates(
 		"Some.Release password:open-sesame",
@@ -157,11 +197,20 @@ func TestExtractPasswordCandidatesFindsStructuredHints(t *testing.T) {
 
 func TestIsArchiveFileRecognizesSplitArchives(t *testing.T) {
 	tests := map[string]bool{
-		"example.7z.001":     true,
-		"example.zip.001":    true,
-		"example.part01.rar": true,
-		"example.r00":        true,
-		"example.par2":       false,
+		"example.7z.001":      true,
+		"example.zip.001":     true,
+		"example.part1.rar":   true,
+		"example.part01.rar":  true,
+		"example.part001.rar": true,
+		"example.r00":         true,
+		"example.tar":         true,
+		"example.tgz":         true,
+		"example.tar.gz":      true,
+		"example.tar.xz":      true,
+		"example.txz":         true,
+		"example.tar.zst":     true,
+		"example.tzst":        true,
+		"example.par2":        false,
 	}
 
 	for fileName, want := range tests {
@@ -173,17 +222,40 @@ func TestIsArchiveFileRecognizesSplitArchives(t *testing.T) {
 
 func TestIsArchiveRepresentativeUsesFirstSplitVolume(t *testing.T) {
 	tests := map[string]bool{
-		"example.7z.001":     true,
-		"example.7z.002":     false,
-		"example.part01.rar": true,
-		"example.part02.rar": false,
-		"example.rar":        true,
-		"example.r00":        false,
+		"example.7z.001":      true,
+		"example.7z.002":      false,
+		"example.part1.rar":   true,
+		"example.part01.rar":  true,
+		"example.part001.rar": true,
+		"example.part02.rar":  false,
+		"example.rar":         true,
+		"example.r00":         false,
+		"example.tar":         true,
+		"example.tar.gz":      true,
+		"example.tar.zst":     true,
 	}
 
 	for fileName, want := range tests {
 		if got := IsArchiveRepresentative(fileName); got != want {
 			t.Fatalf("expected IsArchiveRepresentative(%q)=%v, got %v", fileName, want, got)
+		}
+	}
+}
+
+func TestArchiveFamilyKeyPreservesTarCompoundExtensions(t *testing.T) {
+	tests := map[string]string{
+		"Example.TAR":     "example.tar",
+		"Example.tar.gz":  "example.tar.gz",
+		"Example.tgz":     "example.tgz",
+		"Example.tar.xz":  "example.tar.xz",
+		"Example.txz":     "example.txz",
+		"Example.tar.zst": "example.tar.zst",
+		"Example.tzst":    "example.tzst",
+	}
+
+	for fileName, want := range tests {
+		if got := ArchiveFamilyKey(fileName); got != want {
+			t.Fatalf("expected ArchiveFamilyKey(%q)=%q, got %q", fileName, want, got)
 		}
 	}
 }

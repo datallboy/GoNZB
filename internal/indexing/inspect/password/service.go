@@ -20,7 +20,7 @@ type logger interface {
 }
 
 type repository interface {
-	ListBinaryInspectionCandidates(ctx context.Context, stageName string, limit int) ([]pgindex.BinaryInspectionCandidate, error)
+	ListBinaryInspectionCandidatesWithOptions(ctx context.Context, stageName string, limit int, opts pgindex.BinaryInspectionCandidateOptions) ([]pgindex.BinaryInspectionCandidate, error)
 	ListPasswordVerificationCandidates(ctx context.Context, limit int) ([]pgindex.PasswordVerificationCandidate, error)
 	StartBinaryInspection(ctx context.Context, stageName string, binaryID int64, releaseID string, sourceUpdatedAt *time.Time) error
 	CompleteBinaryInspection(ctx context.Context, in pgindex.BinaryInspectionRecord) error
@@ -57,7 +57,9 @@ func (s *Service) RunOnce(ctx context.Context) error {
 }
 
 func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error) {
-	candidates, err := s.repo.ListBinaryInspectionCandidates(ctx, string(supervisor.StageInspectPassword), s.opts.CandidateBatchSize)
+	candidates, err := s.repo.ListBinaryInspectionCandidatesWithOptions(ctx, string(supervisor.StageInspectPassword), s.opts.CandidateBatchSize, pgindex.BinaryInspectionCandidateOptions{
+		RequireExpectedFileCount: s.opts.RequireExpectedFileCount,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("list inspect_password candidates: %w", err)
 	}
@@ -198,9 +200,9 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 	passworded := true
 	passwordedKnown := verified
 	passwordedUnknown := !verified
-	passwordState := "passworded_unknown"
+	passwordState := "password_unknown"
 	if verified {
-		passwordState = "passworded_known"
+		passwordState = "password_known"
 	}
 
 	summary := map[string]any{
@@ -225,7 +227,7 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		return err
 	}
 
-	return s.repo.ApplyReleaseInspectionUpdate(ctx, pgindex.ReleaseInspectionUpdate{
+	if err := s.repo.ApplyReleaseInspectionUpdate(ctx, pgindex.ReleaseInspectionUpdate{
 		ReleaseID:           candidate.ReleaseID,
 		Passworded:          &passworded,
 		PasswordedKnown:     &passwordedKnown,
@@ -233,7 +235,16 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		PasswordState:       passwordState,
 		PreferredPasswordID: preferredPasswordID,
 		MetadataUpdatedAt:   ptrTime(time.Now().UTC()),
-	})
+	}); err != nil {
+		if pgindex.IsReleaseNotFound(err) {
+			if s != nil && s.log != nil {
+				s.log.Warn("inspect_password: skipped stale release rollup binary_id=%d release_id=%s", candidate.BinaryID, candidate.ReleaseID)
+			}
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 func passwordVerified(output []byte, err error) bool {

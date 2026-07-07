@@ -49,10 +49,14 @@ func ShouldAdoptInspectionTitle(sourceTitle string, candidate InspectionTitle) b
 	if candidate.ReleaseTitle == "" || candidate.DisplayTitle == "" {
 		return false
 	}
+	sourceTitle = strings.TrimSpace(sourceTitle)
+	if sourceTitle != "" && looksReadableTitle(sourceTitle) && !looksObfuscatedTitle(sourceTitle) && !titlesLookRelated(candidate.DisplayTitle, sourceTitle) {
+		return false
+	}
 	if candidate.Confidence >= 0.82 {
 		return true
 	}
-	return candidate.Confidence >= 0.70 && (strings.TrimSpace(sourceTitle) == "" || looksObfuscatedTitle(sourceTitle) || !looksReadableTitle(sourceTitle))
+	return candidate.Confidence >= 0.70 && (sourceTitle == "" || looksObfuscatedTitle(sourceTitle) || !looksReadableTitle(sourceTitle))
 }
 
 func NormalizeSearchTitle(v string) string {
@@ -76,6 +80,17 @@ func DisplayTitleStyle(v string) string {
 
 func normalizeInspectionTitleCandidate(candidate InspectionCandidate) (InspectionTitle, bool) {
 	switch strings.TrimSpace(candidate.Source) {
+	case "media_title":
+		releaseTitle, displayTitle, ok := normalizePlainTitleCandidate(candidate.Value)
+		if !ok {
+			return InspectionTitle{}, false
+		}
+		return InspectionTitle{
+			ReleaseTitle: releaseTitle,
+			DisplayTitle: displayTitle,
+			Source:       "media_title",
+			Confidence:   clampConfidence(candidate.Confidence),
+		}, true
 	case "archive_entry":
 		releaseTitle, displayTitle, ok := normalizePathTitleCandidate(candidate.Value)
 		if !ok {
@@ -101,6 +116,18 @@ func normalizeInspectionTitleCandidate(candidate InspectionCandidate) (Inspectio
 	default:
 		return InspectionTitle{}, false
 	}
+}
+
+func normalizePlainTitleCandidate(value string) (string, string, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 180 {
+		return "", "", false
+	}
+	display := DisplayTitleStyle(value)
+	if !looksReadableTitle(display) {
+		return "", "", false
+	}
+	return releaseTitleStyle(display), display, true
 }
 
 func normalizePathTitleCandidate(value string) (string, string, bool) {

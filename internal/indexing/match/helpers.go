@@ -20,8 +20,9 @@ type structuredData struct {
 }
 
 type counterPair struct {
-	Part  int
-	Total int
+	Part      int
+	Total     int
+	Delimiter byte
 }
 
 type matchState struct {
@@ -32,6 +33,7 @@ type matchState struct {
 	normalizedSubject   string
 	quotedFilename      string
 	structured          structuredData
+	subjectMultipart    bool
 	fileIndex           int
 	expectedFileCount   int
 	partNumber          int
@@ -46,7 +48,7 @@ type matchState struct {
 
 var (
 	quotedFilenameRE = regexp.MustCompile(`"([^"]+)"`)
-	partMarkerRE     = regexp.MustCompile(`(?i)(?:\(|\[)\s*(\d{1,5})\s*/\s*(\d{1,5})\s*(?:\)|\])`)
+	partMarkerRE     = regexp.MustCompile(`(?i)([\(\[])\s*(\d{1,5})\s*/\s*(\d{1,5})\s*[\)\]]`)
 	partLooseRE      = regexp.MustCompile(`(?i)\b(\d{1,5})\s*/\s*(\d{1,5})\b`)
 	yencTailRE       = regexp.MustCompile(`(?i)\s+yenc.*$`)
 	yencNameRE       = regexp.MustCompile(`(?i)\bname\s*[:=]\s*(?:"([^"]+)"|([^\s]+))`)
@@ -98,6 +100,7 @@ func newMatchState(candidate Candidate, opts Options) *matchState {
 	if fileIndex <= 0 {
 		fileIndex = inferArchiveVolumeIndex(firstNonEmpty(structured.Name, extractQuotedFilename(clean)))
 	}
+	subjectMultipart := subjectMultipartComplete(clean, structured, fileIndex, expectedFileCount, partNumber, totalParts)
 
 	return &matchState{
 		candidate:          candidate,
@@ -107,6 +110,7 @@ func newMatchState(candidate Candidate, opts Options) *matchState {
 		normalizedSubject:  normalizeKey(clean),
 		quotedFilename:     extractQuotedFilename(clean),
 		structured:         structured,
+		subjectMultipart:   subjectMultipart,
 		fileIndex:          fileIndex,
 		expectedFileCount:  expectedFileCount,
 		partNumber:         maxInt(partNumber, 1),
@@ -348,8 +352,15 @@ func (s *matchState) finalize(opts Options) Result {
 	if explicitFileName == "" && s.fileIndex > 0 && s.expectedFileCount > 0 {
 		fileKey = normalizeKey("file " + strconv.Itoa(s.fileIndex) + " of " + strconv.Itoa(s.expectedFileCount))
 	}
-	fileSetKey := s.fileSetKey(releaseFamilyKey, subjectSetToken)
+	fileSetKey := ""
 	identityStrength, identityReason := identityClassification(familyKind, subjectSetKind, baseStem, explicitFileName, s.confidence)
+	if shouldDeferPromotableFamilyIdentity(familyKind, subjectSetKind, explicitFileName, identityStrength) {
+		releaseFamilyKey = ""
+		fileSetKey = ""
+		baseStem = ""
+	} else {
+		fileSetKey = s.fileSetKey(releaseFamilyKey, subjectSetToken)
+	}
 
 	status := "low_confidence"
 	if s.confidence >= opts.HighConfidenceThreshold {
@@ -371,6 +382,7 @@ func (s *matchState) finalize(opts Options) Result {
 		"identity_reason":       identityReason,
 		"subject_set_token":     subjectSetToken,
 		"subject_set_kind":      subjectSetKind,
+		"subject_multipart":     s.subjectMultipart,
 		"family_kind":           familyKind,
 		"base_stem":             baseStem,
 		"short_circuited_after": s.shortCircuitedAfter,
@@ -400,7 +412,7 @@ func (s *matchState) finalize(opts Options) Result {
 		IsAuxiliary:       isAuxiliary,
 		IsMainPayload:     isMainPayload,
 		ReleaseName:       releaseName,
-		ReleaseKey:        releaseFamilyKey,
+		ReleaseKey:        firstNonEmpty(releaseFamilyKey, sourceReleaseKey),
 		BinaryName:        fileName,
 		BinaryKey:         sourceReleaseKey + "::" + fileKey,
 		FileName:          fileName,
@@ -415,12 +427,55 @@ func (s *matchState) finalize(opts Options) Result {
 	}
 }
 
+func shouldDeferPromotableFamilyIdentity(familyKind, subjectSetKind, explicitFileName, identityStrength string) bool {
+	switch familyKind {
+	case "contextual_obfuscated", "numeric_obfuscated_set", "opaque_set":
+	default:
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(identityStrength)) {
+	case "weak", "provisional":
+	default:
+		return false
+	}
+	if subjectSetKind == "readable_title" {
+		return false
+	}
+	return !hasPromotableFileIdentity(explicitFileName)
+}
+
+func hasPromotableFileIdentity(fileName string) bool {
+	lower := strings.ToLower(strings.TrimSpace(fileName))
+	if lower == "" {
+		return false
+	}
+	switch {
+	case splitArchiveRE.MatchString(lower):
+		return true
+	case rarFamilyRE.MatchString(lower):
+		return true
+	case strings.HasSuffix(lower, ".rar"):
+		return true
+	case parFileRE.MatchString(lower):
+		return true
+	}
+	switch strings.ToLower(filepath.Ext(lower)) {
+	case ".mkv", ".mp4", ".avi", ".ts", ".mp3", ".flac", ".m4a", ".zip", ".7z":
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *matchState) sourceReleaseKey(releaseName, explicitFileName string) string {
 	releaseKey := ""
 	if key := s.smallIndexedArchiveStemReleaseKey(explicitFileName); key != "" {
 		releaseKey = key
 	}
-	if s.shouldPreferContextualReleaseKey(releaseName, explicitFileName) {
+	if s.shouldPreferSubjectMultipartReleaseKey(explicitFileName) {
+		releaseKey = canonicalReleaseKey(firstNonEmpty(releaseName, explicitFileName))
+	}
+	if releaseKey == "" && s.shouldPreferContextualReleaseKey(releaseName, explicitFileName) {
 		if releaseKey == "" {
 			releaseKey = canonicalReleaseKey(s.releaseContextSeed())
 		}
@@ -435,6 +490,11 @@ func (s *matchState) sourceReleaseKey(releaseName, explicitFileName string) stri
 }
 
 func (s *matchState) releaseFamilyKey(releaseName, explicitFileName, subjectSetToken, subjectSetKind string) (string, string, string) {
+	if s.shouldPreferSubjectMultipartReleaseKey(explicitFileName) {
+		if key := canonicalReleaseKey(firstNonEmpty(releaseName, explicitFileName)); key != "" {
+			return key, "subject_multipart_obfuscated", archiveFamilyBaseStem(explicitFileName)
+		}
+	}
 	if subjectSetKind == "readable_title" {
 		return subjectSetToken, "readable_title", archiveFamilyBaseStem(explicitFileName)
 	}
@@ -520,6 +580,8 @@ func identityClassification(familyKind, subjectSetKind, baseStem, explicitFileNa
 	switch familyKind {
 	case "archive_stem":
 		return "strong", "archive_stem"
+	case "subject_multipart_obfuscated":
+		return "probable", "subject_multipart_obfuscated"
 	case "readable_title":
 		if archiveFamilyBaseStem(explicitFileName) != "" || baseStem != "" {
 			return "strong", "readable_archive_filename"
@@ -587,6 +649,9 @@ func (s *matchState) smallIndexedArchiveStemReleaseKey(explicitFileName string) 
 }
 
 func (s *matchState) shouldPreferContextualReleaseKey(releaseName, explicitFileName string) bool {
+	if s.shouldPreferSubjectMultipartReleaseKey(explicitFileName) {
+		return false
+	}
 	if s.structured.Total > 1 && isOpaqueReleaseIdentityCandidate(releaseName, explicitFileName) {
 		return true
 	}
@@ -613,6 +678,42 @@ func (s *matchState) shouldPreferContextualReleaseKey(releaseName, explicitFileN
 		}
 	}
 	return true
+}
+
+func (s *matchState) shouldPreferSubjectMultipartReleaseKey(explicitFileName string) bool {
+	if !s.subjectMultipart {
+		return false
+	}
+	explicitFileName = sanitizeFileName(explicitFileName)
+	if explicitFileName == "" {
+		return false
+	}
+	lower := strings.ToLower(explicitFileName)
+	if splitArchiveRE.MatchString(lower) || rarFamilyRE.MatchString(lower) || strings.HasSuffix(lower, ".rar") || parFileRE.MatchString(lower) {
+		return false
+	}
+	if s.fileIndex <= 0 || s.expectedFileCount <= 0 || s.partNumber <= 0 || s.totalParts <= 1 {
+		return false
+	}
+	return true
+}
+
+func subjectMultipartComplete(subject string, structured structuredData, fileIndex, fileTotal, partNumber, totalParts int) bool {
+	if extractQuotedFilename(subject) == "" && strings.TrimSpace(structured.Name) == "" {
+		return false
+	}
+	if fileIndex <= 0 || fileTotal <= 0 || partNumber <= 0 || totalParts <= 0 {
+		return false
+	}
+	if strings.Contains(strings.ToLower(subject), "yenc") {
+		return true
+	}
+	return hasLeadingBracketFileCounter(subject) && bestParenthesizedCounterTotal(subject) > 0
+}
+
+func bestParenthesizedCounterTotal(subject string) int {
+	_, total := bestParenthesizedCounter(subject)
+	return total
 }
 
 func isOpaqueReleaseIdentityCandidate(values ...string) bool {
@@ -766,27 +867,50 @@ func parseCounterPairs(subject string) []counterPair {
 
 	seen := make(map[string]struct{})
 	out := make([]counterPair, 0, 4)
-	for _, re := range []*regexp.Regexp{partMarkerRE, partLooseRE} {
-		matches := re.FindAllStringSubmatch(subject, -1)
-		for _, m := range matches {
-			if len(m) != 3 {
-				continue
-			}
-			part, err1 := strconv.Atoi(m[1])
-			total, err2 := strconv.Atoi(m[2])
-			if err1 != nil || err2 != nil || part <= 0 || total <= 0 {
-				continue
-			}
-			if part > total {
-				total = part
-			}
-			key := fmt.Sprintf("%d/%d", part, total)
-			if _, ok := seen[key]; ok {
-				continue
-			}
-			seen[key] = struct{}{}
-			out = append(out, counterPair{Part: part, Total: total})
+	matches := partMarkerRE.FindAllStringSubmatch(subject, -1)
+	for _, m := range matches {
+		if len(m) != 4 {
+			continue
 		}
+		part, err1 := strconv.Atoi(m[2])
+		total, err2 := strconv.Atoi(m[3])
+		if err1 != nil || err2 != nil || part <= 0 || total <= 0 {
+			continue
+		}
+		if part > total {
+			total = part
+		}
+		delimiter := byte(0)
+		if m[1] != "" {
+			delimiter = m[1][0]
+		}
+		key := fmt.Sprintf("%d/%d/%c", part, total, delimiter)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, counterPair{Part: part, Total: total, Delimiter: delimiter})
+	}
+
+	matches = partLooseRE.FindAllStringSubmatch(subject, -1)
+	for _, m := range matches {
+		if len(m) != 3 {
+			continue
+		}
+		part, err1 := strconv.Atoi(m[1])
+		total, err2 := strconv.Atoi(m[2])
+		if err1 != nil || err2 != nil || part <= 0 || total <= 0 {
+			continue
+		}
+		if part > total {
+			total = part
+		}
+		key := fmt.Sprintf("%d/%d/%c", part, total, byte(0))
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, counterPair{Part: part, Total: total})
 	}
 
 	return out
@@ -795,6 +919,12 @@ func parseCounterPairs(subject string) []counterPair {
 func parsePartInfo(subject string) (int, int) {
 	if part, total := bestCounterAfterYEnc(subject); total > 0 {
 		return part, total
+	}
+	if part, total := bestParenthesizedCounter(subject); total > 0 {
+		return part, total
+	}
+	if hasLeadingBracketFileCounter(subject) {
+		return 0, 0
 	}
 
 	return bestCounterPair(subject)
@@ -847,6 +977,9 @@ func parseFileInfo(subject string, articlePart, articleTotal int) (int, int) {
 	if part, total := bestCounterBeforeYEnc(subject); total > 0 {
 		return part, total
 	}
+	if part, total := bestBracketCounter(subject); total > 0 {
+		return part, total
+	}
 
 	best := counterPair{}
 	for _, pair := range parseCounterPairs(subject) {
@@ -861,6 +994,41 @@ func parseFileInfo(subject string, articlePart, articleTotal int) (int, int) {
 		return 0, 0
 	}
 	return best.Part, best.Total
+}
+
+func bestParenthesizedCounter(subject string) (int, int) {
+	best := counterPair{}
+	for _, pair := range parseCounterPairs(subject) {
+		if pair.Delimiter != '(' {
+			continue
+		}
+		if best.Total == 0 || pair.Total > best.Total || (pair.Total == best.Total && pair.Part > best.Part) {
+			best = pair
+		}
+	}
+	return best.Part, best.Total
+}
+
+func bestBracketCounter(subject string) (int, int) {
+	best := counterPair{}
+	for _, pair := range parseCounterPairs(subject) {
+		if pair.Delimiter != '[' {
+			continue
+		}
+		if best.Total == 0 || pair.Total > best.Total || (pair.Total == best.Total && pair.Part > best.Part) {
+			best = pair
+		}
+	}
+	return best.Part, best.Total
+}
+
+func hasLeadingBracketFileCounter(subject string) bool {
+	subject = strings.TrimSpace(subject)
+	if subject == "" {
+		return false
+	}
+	match := partMarkerRE.FindStringSubmatch(subject)
+	return len(match) == 4 && strings.HasPrefix(strings.TrimSpace(match[0]), "[")
 }
 
 func bestCounterPair(subject string) (int, int) {

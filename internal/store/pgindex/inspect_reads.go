@@ -17,7 +17,7 @@ type IndexerOverview struct {
 	BinaryCount           int64 `json:"binary_count"`
 	FileCount             int64 `json:"file_count"`
 	InspectionCount       int64 `json:"inspection_count"`
-	ReadyNZBCount         int64 `json:"ready_nzb_count"`
+	ArchivedNZBCount      int64 `json:"archived_nzb_count"`
 	ReadyReleaseCount     int64 `json:"ready_release_count"`
 	CompletedReleaseCount int64 `json:"completed_release_count"`
 	EncryptedReleaseCount int64 `json:"encrypted_release_count"`
@@ -38,6 +38,7 @@ type IndexerDashboardStat struct {
 	Value              int64      `json:"value"`
 	Available          bool       `json:"available"`
 	Exact              bool       `json:"exact"`
+	Capped             bool       `json:"capped"`
 	UpdatedAt          *time.Time `json:"updated_at,omitempty"`
 	RefreshAttemptedAt *time.Time `json:"refresh_attempted_at,omitempty"`
 	LastError          string     `json:"last_error,omitempty"`
@@ -66,14 +67,20 @@ type IndexerBackfillProgress struct {
 }
 
 type IndexerStageThroughputWindow struct {
-	WindowHours      int     `json:"window_hours"`
-	CompletedRuns    int     `json:"completed_runs"`
-	FailedRuns       int     `json:"failed_runs"`
-	ItemsProcessed   int64   `json:"items_processed"`
-	ItemsPerSecond   float64 `json:"items_per_second"`
-	ItemsPerMinute   float64 `json:"items_per_minute"`
-	ItemsPerHour     float64 `json:"items_per_hour"`
-	AvgRunDurationMS float64 `json:"avg_run_duration_ms"`
+	WindowHours        int     `json:"window_hours"`
+	CompletedRuns      int     `json:"completed_runs"`
+	FailedRuns         int     `json:"failed_runs"`
+	ItemsProcessed     int64   `json:"items_processed"`
+	ItemsPerSecond     float64 `json:"items_per_second"`
+	ItemsPerMinute     float64 `json:"items_per_minute"`
+	ItemsPerHour       float64 `json:"items_per_hour"`
+	AvgRunDurationMS   float64 `json:"avg_run_duration_ms"`
+	AvgWorkersUsed     float64 `json:"avg_workers_used,omitempty"`
+	MaxWorkersUsed     int     `json:"max_workers_used,omitempty"`
+	AvgGroupsScheduled float64 `json:"avg_groups_scheduled,omitempty"`
+	MaxGroupsScheduled int     `json:"max_groups_scheduled,omitempty"`
+	AvgRangesFetched   float64 `json:"avg_ranges_fetched,omitempty"`
+	MaxRangesFetched   int     `json:"max_ranges_fetched,omitempty"`
 }
 
 type IndexerStageThroughputItem struct {
@@ -89,91 +96,168 @@ type IndexerStageThroughput struct {
 }
 
 type IndexerReleaseSummary struct {
-	ReleaseID               string     `json:"release_id"`
-	GUID                    string     `json:"guid"`
-	ProviderID              int64      `json:"provider_id"`
-	ReleaseKey              string     `json:"release_key"`
-	GroupName               string     `json:"group_name"`
-	Title                   string     `json:"title"`
-	SourceTitle             string     `json:"source_title"`
-	DeobfuscatedTitle       string     `json:"deobfuscated_title"`
-	MatchedMediaTitle       string     `json:"matched_media_title"`
-	OriginalMediaTitle      string     `json:"original_media_title"`
-	TMDBID                  int64      `json:"tmdb_id"`
-	TVDBID                  int64      `json:"tvdb_id"`
-	ExternalMediaType       string     `json:"external_media_type"`
-	ExternalYear            int        `json:"external_year"`
-	SeasonNumber            int        `json:"season_number"`
-	EpisodeNumber           int        `json:"episode_number"`
-	SeasonEpisodeSource     string     `json:"season_episode_source"`
-	SeasonEpisodeConfidence float64    `json:"season_episode_confidence"`
-	TitleSource             string     `json:"title_source"`
-	TitleConfidence         float64    `json:"title_confidence"`
-	CategoryID              int        `json:"category_id"`
-	Category                string     `json:"category"`
-	Classification          string     `json:"classification"`
-	Poster                  string     `json:"poster"`
-	SizeBytes               int64      `json:"size_bytes"`
-	PostedAt                *time.Time `json:"posted_at,omitempty"`
-	FileCount               int        `json:"file_count"`
-	ExpectedFileCount       int        `json:"expected_file_count"`
-	ParFileCount            int        `json:"par_file_count"`
-	CompletionPct           float64    `json:"completion_pct"`
-	MatchConfidence         float64    `json:"match_confidence"`
-	IdentityStatus          string     `json:"identity_status"`
-	Passworded              bool       `json:"passworded"`
-	PasswordedKnown         bool       `json:"passworded_known"`
-	PasswordedUnknown       bool       `json:"passworded_unknown"`
-	PasswordState           string     `json:"password_state"`
-	PreferredPasswordID     int64      `json:"preferred_password_id"`
-	Encrypted               bool       `json:"encrypted"`
-	HasPAR2                 bool       `json:"has_par2"`
-	HasNFO                  bool       `json:"has_nfo"`
-	ArchiveCount            int        `json:"archive_count"`
-	VideoCount              int        `json:"video_count"`
-	AudioCount              int        `json:"audio_count"`
-	SamplePresent           bool       `json:"sample_present"`
-	AvailabilityScore       float64    `json:"availability_score"`
-	AvailabilityTier        string     `json:"availability_tier"`
-	MediaQualityScore       float64    `json:"media_quality_score"`
-	MediaQualityTier        string     `json:"media_quality_tier"`
-	IdentityConfidenceScore float64    `json:"identity_confidence_score"`
-	RuntimeSeconds          int        `json:"runtime_seconds"`
-	PrimaryResolution       string     `json:"primary_resolution"`
-	PrimaryVideoCodec       string     `json:"primary_video_codec"`
-	PrimaryAudioCodec       string     `json:"primary_audio_codec"`
-	SubtitleLanguages       []string   `json:"subtitle_languages"`
-	MediaTags               []string   `json:"media_tags"`
-	MetadataUpdatedAt       *time.Time `json:"metadata_updated_at,omitempty"`
-	NZBGenerationStatus     string     `json:"nzb_generation_status"`
-	Hidden                  bool       `json:"hidden"`
-	PublicVisible           bool       `json:"public_visible"`
-	PasswordCandidateCount  int        `json:"password_candidate_count"`
+	ReleaseID                string     `json:"release_id"`
+	GUID                     string     `json:"guid"`
+	ProviderID               int64      `json:"provider_id"`
+	ReleaseKey               string     `json:"release_key"`
+	GroupName                string     `json:"group_name"`
+	Title                    string     `json:"title"`
+	SourceTitle              string     `json:"source_title"`
+	DeobfuscatedTitle        string     `json:"deobfuscated_title"`
+	MatchedMediaTitle        string     `json:"matched_media_title"`
+	OriginalMediaTitle       string     `json:"original_media_title"`
+	TMDBID                   int64      `json:"tmdb_id"`
+	TVDBID                   int64      `json:"tvdb_id"`
+	ExternalMediaType        string     `json:"external_media_type"`
+	ExternalYear             int        `json:"external_year"`
+	SeasonNumber             int        `json:"season_number"`
+	EpisodeNumber            int        `json:"episode_number"`
+	SeasonEpisodeSource      string     `json:"season_episode_source"`
+	SeasonEpisodeConfidence  float64    `json:"season_episode_confidence"`
+	TitleSource              string     `json:"title_source"`
+	TitleConfidence          float64    `json:"title_confidence"`
+	CategoryID               int        `json:"category_id"`
+	Category                 string     `json:"category"`
+	Classification           string     `json:"classification"`
+	Poster                   string     `json:"poster"`
+	SizeBytes                int64      `json:"size_bytes"`
+	PostedAt                 *time.Time `json:"posted_at,omitempty"`
+	FileCount                int        `json:"file_count"`
+	ExpectedFileCount        int        `json:"expected_file_count"`
+	ExpectedArchiveFileCount int        `json:"expected_archive_file_count"`
+	ParFileCount             int        `json:"par_file_count"`
+	CompletionPct            float64    `json:"completion_pct"`
+	MatchConfidence          float64    `json:"match_confidence"`
+	IdentityStatus           string     `json:"identity_status"`
+	Passworded               bool       `json:"passworded"`
+	PasswordedKnown          bool       `json:"passworded_known"`
+	PasswordedUnknown        bool       `json:"passworded_unknown"`
+	PasswordState            string     `json:"password_state"`
+	PreferredPasswordID      int64      `json:"preferred_password_id"`
+	Encrypted                bool       `json:"encrypted"`
+	HasPAR2                  bool       `json:"has_par2"`
+	HasNFO                   bool       `json:"has_nfo"`
+	ArchiveCount             int        `json:"archive_count"`
+	VideoCount               int        `json:"video_count"`
+	AudioCount               int        `json:"audio_count"`
+	SamplePresent            bool       `json:"sample_present"`
+	AvailabilityScore        float64    `json:"availability_score"`
+	AvailabilityTier         string     `json:"availability_tier"`
+	MediaQualityScore        float64    `json:"media_quality_score"`
+	MediaQualityTier         string     `json:"media_quality_tier"`
+	IdentityConfidenceScore  float64    `json:"identity_confidence_score"`
+	RuntimeSeconds           int        `json:"runtime_seconds"`
+	PrimaryResolution        string     `json:"primary_resolution"`
+	PrimaryVideoCodec        string     `json:"primary_video_codec"`
+	PrimaryAudioCodec        string     `json:"primary_audio_codec"`
+	SubtitleLanguages        []string   `json:"subtitle_languages"`
+	MediaTags                []string   `json:"media_tags"`
+	MetadataUpdatedAt        *time.Time `json:"metadata_updated_at,omitempty"`
+	NZBGenerationStatus      string     `json:"nzb_generation_status"`
+	Hidden                   bool       `json:"hidden"`
+	PublicVisible            bool       `json:"public_visible"`
+	PasswordCandidateCount   int        `json:"password_candidate_count"`
+	PayloadCompletionState   string     `json:"payload_completion_state"`
+}
+
+type IndexerAdminAttentionItem struct {
+	ReleaseID              string     `json:"release_id"`
+	Title                  string     `json:"title"`
+	GroupName              string     `json:"group_name"`
+	Category               string     `json:"category"`
+	Classification         string     `json:"classification"`
+	IdentityStatus         string     `json:"identity_status"`
+	TitleSource            string     `json:"title_source"`
+	PayloadCompletionState string     `json:"payload_completion_state"`
+	SizeBytes              int64      `json:"size_bytes"`
+	PostedAt               *time.Time `json:"posted_at,omitempty"`
+	UpdatedAt              time.Time  `json:"updated_at"`
+	PublicVisible          bool       `json:"public_visible"`
+	HasSFV                 bool       `json:"has_sfv"`
+	HasPAR2                bool       `json:"has_par2"`
+	HasNFO                 bool       `json:"has_nfo"`
+	PredbCandidateCount    int        `json:"predb_candidate_count"`
+	UnchosenPredbCount     int        `json:"unchosen_predb_count"`
+	InspectionFailureCount int        `json:"inspection_failure_count"`
+	LatestInspectionError  string     `json:"latest_inspection_error"`
+	Priority               int        `json:"priority"`
+	Reasons                []string   `json:"reasons"`
+}
+
+type IndexerAdminAttentionParams struct {
+	Reason string
+	Limit  int
+	Offset int
+}
+
+type IndexerArticleCohortParams struct {
+	Kind   string
+	Status string
+	Limit  int
+	Offset int
+}
+
+type IndexerArticleCohortItem struct {
+	SourcePostedAt        time.Time  `json:"source_posted_at"`
+	CohortKey             string     `json:"cohort_key"`
+	ProviderID            int64      `json:"provider_id"`
+	NewsgroupID           int64      `json:"newsgroup_id"`
+	NewsgroupName         string     `json:"newsgroup_name"`
+	CohortKind            string     `json:"cohort_kind"`
+	PriorityRank          int        `json:"priority_rank"`
+	AdmissionReason       string     `json:"admission_reason"`
+	Score                 float64    `json:"score"`
+	Status                string     `json:"status"`
+	BucketStart           time.Time  `json:"bucket_start"`
+	BucketEnd             time.Time  `json:"bucket_end"`
+	ArticleCount          int        `json:"article_count"`
+	UnassembledCount      int        `json:"unassembled_count"`
+	SingletonCount        int        `json:"singleton_count"`
+	YEncReadyCount        int        `json:"yenc_ready_count"`
+	YEncRunningCount      int        `json:"yenc_running_count"`
+	YEncDoneCount         int        `json:"yenc_done_count"`
+	YEncRecoveredCount    int        `json:"yenc_recovered_count"`
+	YEncNoIdentityCount   int        `json:"yenc_no_identity_count"`
+	AssemblyQueueReady    int        `json:"assembly_queue_ready"`
+	RecoveryQueueReady    int        `json:"recovery_queue_ready"`
+	RecoveryQueueAdmitted int        `json:"recovery_queue_admitted"`
+	SubjectFileName       string     `json:"subject_file_name"`
+	SubjectFileIndex      int        `json:"subject_file_index"`
+	SubjectFileTotal      int        `json:"subject_file_total"`
+	YEncTotalParts        int        `json:"yenc_total_parts"`
+	YEncFileSize          int64      `json:"yenc_file_size"`
+	FirstArticleNumber    int64      `json:"first_article_number"`
+	LastArticleNumber     int64      `json:"last_article_number"`
+	LastScheduledAt       *time.Time `json:"last_scheduled_at,omitempty"`
+	CooldownUntil         *time.Time `json:"cooldown_until,omitempty"`
+	UpdatedAt             time.Time  `json:"updated_at"`
 }
 
 type AdminIndexerReleaseListParams struct {
-	Query              string
-	Newsgroup          string
-	Limit              int
-	Offset             int
-	Sort               string
-	CategoryID         int
-	Classification     string
-	ExternalMediaType  string
-	IdentityStatus     string
-	PasswordState      string
-	MediaQualityTier   string
-	Hidden             string
-	PublicState        string
-	Inspected          string
-	Enriched           string
-	Uncategorized      string
-	PasswordCandidates string
-	MetadataMismatch   string
-	LowConfidence      string
-	CompletionState    string
-	HasNFO             *bool
-	HasPAR2            *bool
+	Query                    string
+	Newsgroup                string
+	Limit                    int
+	Offset                   int
+	Sort                     string
+	CategoryID               int
+	Classification           string
+	ExternalMediaType        string
+	IdentityStatus           string
+	PasswordState            string
+	MediaQualityTier         string
+	Hidden                   string
+	PublicState              string
+	Inspected                string
+	Enriched                 string
+	Uncategorized            string
+	PasswordCandidates       string
+	MetadataMismatch         string
+	LowConfidence            string
+	CompletionState          string
+	PayloadCompletionInclude string
+	PayloadCompletionExclude string
+	HasNFO                   *bool
+	HasPAR2                  *bool
 }
 
 type IndexerReleaseFileSummary struct {
@@ -279,12 +363,36 @@ type IndexerPAR2SetSummary struct {
 }
 
 type IndexerBinaryPartSummary struct {
-	ArticleHeaderID int64  `json:"article_header_id"`
-	MessageID       string `json:"message_id"`
-	PartNumber      int    `json:"part_number"`
-	TotalParts      int    `json:"total_parts"`
-	SegmentBytes    int64  `json:"segment_bytes"`
-	FileName        string `json:"file_name"`
+	ArticleHeaderID     int64      `json:"article_header_id"`
+	ProviderID          int64      `json:"provider_id"`
+	NewsgroupID         int64      `json:"newsgroup_id"`
+	GroupName           string     `json:"group_name"`
+	ArticleNumber       int64      `json:"article_number"`
+	MessageID           string     `json:"message_id"`
+	Subject             string     `json:"subject"`
+	Poster              string     `json:"poster"`
+	DateUTC             *time.Time `json:"date_utc,omitempty"`
+	PartNumber          int        `json:"part_number"`
+	TotalParts          int        `json:"total_parts"`
+	SegmentBytes        int64      `json:"segment_bytes"`
+	FileName            string     `json:"file_name"`
+	ArticleBytes        int64      `json:"article_bytes"`
+	ArticleLines        int64      `json:"article_lines"`
+	SubjectFileName     string     `json:"subject_file_name"`
+	SubjectFileIndex    int        `json:"subject_file_index"`
+	SubjectFileTotal    int        `json:"subject_file_total"`
+	YEncPartNumber      int        `json:"yenc_part_number"`
+	YEncTotalParts      int        `json:"yenc_total_parts"`
+	YEncFileSize        int64      `json:"yenc_file_size"`
+	RecoveredPartNumber int        `json:"recovered_part_number"`
+	RecoveredTotalParts int        `json:"recovered_total_parts"`
+	RecoveredFileSize   int64      `json:"recovered_file_size"`
+	YEncRecoveryStatus  string     `json:"yenc_recovery_status"`
+	YEncRecoveryReadyAt *time.Time `json:"yenc_recovery_ready_at,omitempty"`
+	YEncRecoveryError   string     `json:"yenc_recovery_error,omitempty"`
+	RecoveredKind       string     `json:"recovered_kind"`
+	RecoveredSource     string     `json:"recovered_source"`
+	RecoveredFileName   string     `json:"recovered_file_name"`
 }
 
 type IndexerFileArticleSummary struct {
@@ -297,6 +405,7 @@ type IndexerReleaseDetail struct {
 	Release            IndexerReleaseSummary             `json:"release"`
 	Newsgroups         []string                          `json:"newsgroups"`
 	Files              []IndexerReleaseFileSummary       `json:"files"`
+	Diagnostics        ReleaseDetailDiagnostics          `json:"diagnostics"`
 	PasswordCandidates []IndexerPasswordCandidateSummary `json:"password_candidates"`
 	Inspections        []IndexerInspectionSummary        `json:"inspections"`
 	PredbMatches       []IndexerPredbMatchSummary        `json:"predb_matches"`
@@ -305,19 +414,30 @@ type IndexerReleaseDetail struct {
 }
 
 type IndexerPredbMatchSummary struct {
-	EntryID    int64           `json:"entry_id"`
-	Title      string          `json:"title"`
-	Category   string          `json:"category"`
-	Source     string          `json:"source"`
-	Team       string          `json:"team"`
-	Genre      string          `json:"genre"`
-	URL        string          `json:"url"`
-	SizeKB     float64         `json:"size_kb"`
-	FileCount  int             `json:"file_count"`
-	PostedAt   *time.Time      `json:"posted_at,omitempty"`
-	Confidence float64         `json:"confidence"`
-	Chosen     bool            `json:"chosen"`
-	Payload    json.RawMessage `json:"payload_json"`
+	EntryID             int64           `json:"entry_id"`
+	Title               string          `json:"title"`
+	Category            string          `json:"category"`
+	Source              string          `json:"source"`
+	Team                string          `json:"team"`
+	Genre               string          `json:"genre"`
+	URL                 string          `json:"url"`
+	SizeKB              float64         `json:"size_kb"`
+	FileCount           int             `json:"file_count"`
+	PostedAt            *time.Time      `json:"posted_at,omitempty"`
+	Confidence          float64         `json:"confidence"`
+	Chosen              bool            `json:"chosen"`
+	PayloadSizeBytes    int64           `json:"payload_size_bytes"`
+	PayloadSizeSource   string          `json:"payload_size_source"`
+	PredbSizeBytes      int64           `json:"predb_size_bytes"`
+	SizeDeltaBytes      int64           `json:"size_delta_bytes"`
+	SizeDeltaPct        float64         `json:"size_delta_pct"`
+	PostedDeltaMinutes  *float64        `json:"posted_delta_minutes,omitempty"`
+	ResolutionMatch     bool            `json:"resolution_match"`
+	VideoCodecMatch     bool            `json:"video_codec_match"`
+	AudioCodecMatch     bool            `json:"audio_codec_match"`
+	AutoApplyEligible   bool            `json:"auto_apply_eligible"`
+	AutoApplySkipReason string          `json:"auto_apply_skip_reason"`
+	Payload             json.RawMessage `json:"payload_json"`
 }
 
 type IndexerExternalMatchSummary struct {
@@ -334,6 +454,9 @@ type IndexerExternalMatchSummary struct {
 
 type IndexerBinaryDetail struct {
 	BinaryID           int64                                    `json:"binary_id"`
+	SupersededByID     int64                                    `json:"superseded_by_id,omitempty"`
+	SupersededReason   string                                   `json:"superseded_reason,omitempty"`
+	SupersededAt       *time.Time                               `json:"superseded_at,omitempty"`
 	ReleaseID          string                                   `json:"release_id"`
 	ReleaseTitle       string                                   `json:"release_title"`
 	GroupName          string                                   `json:"group_name"`
@@ -368,6 +491,44 @@ type IndexerBinaryDetail struct {
 	Parts              []IndexerBinaryPartSummary               `json:"parts"`
 }
 
+type IndexerBinaryListParams struct {
+	Query            string
+	GroupName        string
+	IdentityStrength string
+	ReadinessBucket  string
+	MatchStatus      string
+	ReleaseState     string
+	Sort             string
+	Limit            int
+	Offset           int
+}
+
+type IndexerBinarySummary struct {
+	BinaryID          int64      `json:"binary_id"`
+	ReleaseID         string     `json:"release_id"`
+	ReleaseTitle      string     `json:"release_title"`
+	GroupName         string     `json:"group_name"`
+	ReleaseName       string     `json:"release_name"`
+	BinaryName        string     `json:"binary_name"`
+	FileName          string     `json:"file_name"`
+	FamilyKind        string     `json:"family_kind"`
+	IdentityStrength  string     `json:"identity_strength"`
+	ReadinessBucket   string     `json:"readiness_bucket"`
+	MatchStatus       string     `json:"match_status"`
+	MatchConfidence   float64    `json:"match_confidence"`
+	PostedAt          *time.Time `json:"posted_at,omitempty"`
+	TotalParts        int        `json:"total_parts"`
+	ObservedParts     int        `json:"observed_parts"`
+	CompletionPct     float64    `json:"completion_pct"`
+	TotalBytes        int64      `json:"total_bytes"`
+	RecoveredSource   string     `json:"recovered_source"`
+	RecoveredFileName string     `json:"recovered_file_name"`
+	YEncStatus        string     `json:"yenc_status"`
+	YEncPriorityRank  int        `json:"yenc_priority_rank"`
+	InspectionCount   int        `json:"inspection_count"`
+	UpdatedAt         time.Time  `json:"updated_at"`
+}
+
 type IndexerFileDetail struct {
 	FileID           int64                       `json:"file_id"`
 	ReleaseID        string                      `json:"release_id"`
@@ -395,14 +556,17 @@ func (s *Store) GetIndexerOverview(ctx context.Context) (*IndexerOverview, error
 	row := s.db.QueryRowContext(ctx, `
 		SELECT
 			(SELECT COUNT(*) FROM releases),
-			(SELECT COUNT(*) FROM binaries),
+			(SELECT GREATEST(COALESCE(reltuples, 0), 0)::bigint FROM pg_class WHERE oid = 'binary_core'::regclass),
 			(SELECT COUNT(*) FROM release_files),
 			(SELECT COUNT(*) FROM binary_inspections),
-			(SELECT COUNT(*) FROM nzb_cache WHERE generation_status = 'ready'),
+			(SELECT COUNT(*)
+			 FROM release_archive_state
+			 WHERE object_key <> ''
+			   AND archive_status IN ('purge_pending', 'purged')),
 			(SELECT COUNT(*)
 			 FROM releases r
 			 LEFT JOIN release_overrides ro ON ro.release_id = r.release_id
-			 WHERE `+publicIndexerReleaseVisibilityClause("r")+`),
+			 WHERE `+publicIndexerReleaseVisibilityClause("r", DefaultReleaseReadyPolicy())+`),
 			(SELECT COUNT(*) FROM releases WHERE completion_pct >= 100),
 			(SELECT COUNT(*) FROM releases WHERE encrypted = TRUE),
 			(SELECT COUNT(*) FROM releases WHERE passworded_known = TRUE),
@@ -420,7 +584,7 @@ func (s *Store) GetIndexerOverview(ctx context.Context) (*IndexerOverview, error
 		&item.BinaryCount,
 		&item.FileCount,
 		&item.InspectionCount,
-		&item.ReadyNZBCount,
+		&item.ArchivedNZBCount,
 		&item.ReadyReleaseCount,
 		&item.CompletedReleaseCount,
 		&item.EncryptedReleaseCount,
@@ -444,80 +608,101 @@ type indexerDashboardStatDefinition struct {
 	Label       string
 	Description string
 	Exact       bool
+	Limit       int64
 }
+
+const dashboardStatRefreshTimeout = 45 * time.Second
 
 var indexerDashboardStatDefinitions = []indexerDashboardStatDefinition{
 	{
 		Key:         "unassembled_headers",
-		Label:       "Unassembled Headers",
-		Description: "Article headers still waiting for assemble processing.",
+		Label:       "Unassembled Header Inventory",
+		Description: "Exact count of article headers still waiting in the active assemble queue.",
 		Exact:       true,
 	},
 	{
-		Key:         "pending_media_inspection_binaries",
-		Label:       "Pending Media Inspection",
-		Description: "Binaries that inspect_media would claim if it ran now.",
+		Key:         "pending_release_summary_refresh_summaries",
+		Label:       "Release Summary Refresh Backlog",
+		Description: "Exact count of deferred readiness summaries still waiting for release_summary_refresh processing.",
 		Exact:       true,
 	},
 	{
 		Key:         "pending_release_candidate_families",
-		Label:       "Pending Release Families",
-		Description: "Dirty release families still waiting for release processing.",
+		Label:       "Release Backlog",
+		Description: "Exact count of ready release candidates still waiting for release processing.",
 		Exact:       true,
 	},
 	{
-		Key:         "payload_rows",
-		Label:       "Payload Rows",
-		Description: "Exact row count in article_header_ingest_payloads.",
+		Key:         "generate_nzb_pending_releases",
+		Label:       "Generate NZB Backlog",
+		Description: "Exact count of public-ready releases still waiting for direct archive generation.",
 		Exact:       true,
 	},
 	{
-		Key:         "payload_bytes",
-		Label:       "Payload Table Bytes",
-		Description: "Total on-disk bytes currently used by article_header_ingest_payloads and its indexes.",
+		Key:         "archive_pending_releases",
+		Label:       "Legacy Archive Backlog",
+		Description: "Exact count of legacy nzb_cache-ready releases still waiting for transitional release_archive_nzb processing.",
 		Exact:       true,
 	},
 	{
-		Key:         "payload_dead_tuples",
-		Label:       "Payload Dead Tuples",
-		Description: "Planner-visible dead tuples currently tracked for article_header_ingest_payloads.",
-		Exact:       false,
-	},
-	{
-		Key:         "grouping_evidence_rows",
-		Label:       "Grouping Evidence Rows",
-		Description: "Exact row count in binary_grouping_evidence.",
+		Key:         "archived_waiting_for_purge_releases",
+		Label:       "Purge Backlog",
+		Description: "Exact count of archived releases still waiting for maintenance.release_source_purge processing.",
 		Exact:       true,
 	},
 	{
-		Key:         "grouping_evidence_bytes",
-		Label:       "Grouping Evidence Bytes",
-		Description: "Total on-disk bytes currently used by binary_grouping_evidence and its indexes.",
+		Key:         "purged_archived_releases",
+		Label:       "Purged Archived Releases",
+		Description: "Exact count of archived releases whose heavy source lineage has already been purged.",
 		Exact:       true,
 	},
 	{
-		Key:         "grouping_evidence_dead_tuples",
-		Label:       "Grouping Evidence Dead Tuples",
-		Description: "Planner-visible dead tuples currently tracked for binary_grouping_evidence.",
-		Exact:       false,
-	},
-	{
-		Key:         "readiness_rows",
-		Label:       "Readiness Rows",
-		Description: "Exact row count in release_family_readiness_summaries.",
+		Key:         "blob_backed_archived_releases",
+		Label:       "Blob Archived Releases",
+		Description: "Exact count of releases with durable blob-backed NZB archival metadata.",
 		Exact:       true,
 	},
 	{
-		Key:         "readiness_bytes",
-		Label:       "Readiness Table Bytes",
-		Description: "Total on-disk bytes currently used by release_family_readiness_summaries and its indexes.",
+		Key:         "pending_yenc_recovery_binaries",
+		Label:       "yEnc Recovery Backlog",
+		Description: "Exact count of ready yEnc recovery work items recover_yenc can inspect now.",
 		Exact:       true,
 	},
 	{
-		Key:         "readiness_dead_tuples",
-		Label:       "Readiness Dead Tuples",
-		Description: "Planner-visible dead tuples currently tracked for release_family_readiness_summaries.",
-		Exact:       false,
+		Key:         "pending_inspect_discovery_binaries",
+		Label:       "Discovery Backlog",
+		Description: "Exact count of binaries inspect_discovery can claim now.",
+		Exact:       true,
+	},
+	{
+		Key:         "pending_inspect_par2_binaries",
+		Label:       "PAR2 Inspection Backlog",
+		Description: "Exact count of PAR2 sets inspect_par2 can claim now.",
+		Exact:       true,
+	},
+	{
+		Key:         "pending_inspect_nfo_binaries",
+		Label:       "NFO Inspection Backlog",
+		Description: "Exact count of binaries inspect_nfo can claim now.",
+		Exact:       true,
+	},
+	{
+		Key:         "pending_inspect_archive_binaries",
+		Label:       "Archive Inspection Backlog",
+		Description: "Exact count of archive-family work units inspect_archive can claim now.",
+		Exact:       true,
+	},
+	{
+		Key:         "pending_inspect_password_binaries",
+		Label:       "Password Inspection Backlog",
+		Description: "Exact count of encrypted archive binaries inspect_password can claim now.",
+		Exact:       true,
+	},
+	{
+		Key:         "pending_inspect_media_binaries",
+		Label:       "Media Inspection Backlog",
+		Description: "Exact count of media binaries inspect_media can claim now.",
+		Exact:       true,
 	},
 }
 
@@ -564,6 +749,9 @@ func (s *Store) GetIndexerDashboardStats(ctx context.Context) (*IndexerDashboard
 		}
 		if ok {
 			item.Value = row.value
+			if def.Limit > 0 && row.value >= def.Limit {
+				item.Capped = true
+			}
 			if row.updatedAt.Valid {
 				ts := row.updatedAt.Time.UTC()
 				item.UpdatedAt = &ts
@@ -588,25 +776,31 @@ func (s *Store) GetIndexerDashboardStats(ctx context.Context) (*IndexerDashboard
 
 func (s *Store) GetIndexerBackfillProgress(ctx context.Context) (*IndexerBackfillProgress, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		WITH article_date_bounds AS (
+		WITH latest_cutoff AS (
 			SELECT
-				newsgroup_id,
-				MIN(date_utc) AS oldest_scraped_article_date,
-				MAX(date_utc) AS latest_scraped_article_date
-			FROM article_headers
-			GROUP BY newsgroup_id
+				sc.newsgroup_id,
+				MAX(sc.backfill_until_date) AS configured_cutoff_date
+			FROM scrape_checkpoints sc
+			GROUP BY sc.newsgroup_id
 		),
 		checkpoint_rollup AS (
 			SELECT
 				sc.newsgroup_id,
-				MAX(sc.backfill_until_date) AS configured_cutoff_date,
-				BOOL_OR(sc.backfill_cutoff_reached) AS cutoff_reached,
+				lc.configured_cutoff_date,
+				BOOL_OR(
+					sc.backfill_cutoff_reached = TRUE
+					AND (
+						(lc.configured_cutoff_date IS NULL AND sc.backfill_until_date IS NULL)
+						OR sc.backfill_until_date = lc.configured_cutoff_date
+					)
+				) AS cutoff_reached,
 				MIN(NULLIF(sc.backfill_article_number, 0)) AS backfill_cursor_article_number,
 				MAX(sc.last_article_number) AS latest_article_number,
 				COUNT(DISTINCT sc.provider_id) AS provider_count,
 				MAX(sc.updated_at) AS last_checkpoint_updated_at
 			FROM scrape_checkpoints sc
-			GROUP BY sc.newsgroup_id
+			JOIN latest_cutoff lc ON lc.newsgroup_id = sc.newsgroup_id
+			GROUP BY sc.newsgroup_id, lc.configured_cutoff_date
 		)
 		SELECT
 			ng.group_name,
@@ -614,13 +808,28 @@ func (s *Store) GetIndexerBackfillProgress(ctx context.Context) (*IndexerBackfil
 			cr.cutoff_reached,
 			COALESCE(cr.backfill_cursor_article_number, 0) AS backfill_cursor_article_number,
 			COALESCE(cr.latest_article_number, 0) AS latest_article_number,
-			adb.oldest_scraped_article_date,
-			adb.latest_scraped_article_date,
+			oldest.date_utc AS oldest_scraped_article_date,
+			latest.date_utc AS latest_scraped_article_date,
 			cr.provider_count,
 			cr.last_checkpoint_updated_at
 		FROM checkpoint_rollup cr
 		JOIN newsgroups ng ON ng.id = cr.newsgroup_id
-		LEFT JOIN article_date_bounds adb ON adb.newsgroup_id = cr.newsgroup_id
+		LEFT JOIN LATERAL (
+			SELECT ah.date_utc
+			FROM article_headers ah
+			WHERE ah.newsgroup_id = cr.newsgroup_id
+			  AND ah.date_utc IS NOT NULL
+			ORDER BY ah.date_utc ASC
+			LIMIT 1
+		) oldest ON true
+		LEFT JOIN LATERAL (
+			SELECT ah.date_utc
+			FROM article_headers ah
+			WHERE ah.newsgroup_id = cr.newsgroup_id
+			  AND ah.date_utc IS NOT NULL
+			ORDER BY ah.date_utc DESC
+			LIMIT 1
+		) latest ON true
 		ORDER BY
 			CASE
 				WHEN cr.configured_cutoff_date IS NULL THEN 1
@@ -692,11 +901,24 @@ type stageThroughputDefinition struct {
 var stageThroughputDefinitions = []stageThroughputDefinition{
 	{StageName: "scrape_latest", Label: "Scrape Latest", ItemLabel: "headers"},
 	{StageName: "scrape_backfill", Label: "Scrape Backfill", ItemLabel: "headers"},
+	{StageName: "poster_materialize", Label: "Poster Materialize", ItemLabel: "headers"},
+	{StageName: "crosspost_popularity_refresh", Label: "Crosspost Popularity", ItemLabel: "groups"},
+	{StageName: "article_cohort_schedule", Label: "Article Cohort Schedule", ItemLabel: "cohorts"},
 	{StageName: "assemble", Label: "Assemble", ItemLabel: "headers"},
-	{StageName: "assemble_lane_a", Label: "Assemble Lane A", ItemLabel: "headers"},
-	{StageName: "assemble_lane_b", Label: "Assemble Lane B", ItemLabel: "headers"},
 	{StageName: "recover_yenc", Label: "Recover yEnc", ItemLabel: "binaries"},
+	{StageName: "maintenance.dashboard_stats_refresh", Label: "Dashboard Stats Refresh", ItemLabel: "stats"},
+	{StageName: "maintenance.group_profile_refresh", Label: "Group Profile Refresh", ItemLabel: "groups"},
+	{StageName: "maintenance.partition_retention_drop", Label: "Partition Retention Drop", ItemLabel: "tables"},
+	{StageName: "maintenance.partition_default_rehome", Label: "Partition Default Rehome", ItemLabel: "rows"},
+	{StageName: "release_summary_refresh", Label: "Release Summary Refresh", ItemLabel: "summaries"},
 	{StageName: "release", Label: "Release", ItemLabel: "families"},
+	{StageName: "release_generate_nzb", Label: "Generate NZB", ItemLabel: "releases"},
+	{StageName: "release_archive_nzb", Label: "Archive NZB", ItemLabel: "releases"},
+	{StageName: "maintenance.release_source_purge", Label: "Source Purge", ItemLabel: "releases"},
+	{StageName: "inspect_discovery_ready_refresh", Label: "Inspect Discovery Queue", ItemLabel: "rows"},
+	{StageName: "inspect_par2_ready_refresh", Label: "Inspect PAR2 Queue", ItemLabel: "rows"},
+	{StageName: "inspect_archive_ready_refresh", Label: "Inspect Archive Queue", ItemLabel: "rows"},
+	{StageName: "inspect_media_ready_refresh", Label: "Inspect Media Queue", ItemLabel: "rows"},
 	{StageName: "inspect_discovery", Label: "Inspect Discovery", ItemLabel: "binaries"},
 	{StageName: "inspect_par2", Label: "Inspect PAR2", ItemLabel: "binaries"},
 	{StageName: "inspect_nfo", Label: "Inspect NFO", ItemLabel: "binaries"},
@@ -708,10 +930,16 @@ var stageThroughputDefinitions = []stageThroughputDefinition{
 }
 
 type stageThroughputAccumulator struct {
-	completedRuns   int
-	failedRuns      int
-	itemsProcessed  int64
-	totalDurationMS float64
+	completedRuns        int
+	failedRuns           int
+	itemsProcessed       int64
+	totalDurationMS      float64
+	totalWorkersUsed     int64
+	maxWorkersUsed       int
+	totalGroupsScheduled int64
+	maxGroupsScheduled   int
+	totalRangesFetched   int64
+	maxRangesFetched     int
 }
 
 func (s *Store) GetIndexerStageThroughput(ctx context.Context) (*IndexerStageThroughput, error) {
@@ -772,6 +1000,20 @@ func (s *Store) GetIndexerStageThroughput(ctx context.Context) (*IndexerStageThr
 				if durationMS > 0 {
 					acc.totalDurationMS += durationMS
 				}
+				if scrapeMetrics, ok := stageThroughputScrapeMetrics(stageName, metricsRaw); ok {
+					acc.totalWorkersUsed += int64(scrapeMetrics.workersUsed)
+					if scrapeMetrics.workersUsed > acc.maxWorkersUsed {
+						acc.maxWorkersUsed = scrapeMetrics.workersUsed
+					}
+					acc.totalGroupsScheduled += int64(scrapeMetrics.groupsScheduled)
+					if scrapeMetrics.groupsScheduled > acc.maxGroupsScheduled {
+						acc.maxGroupsScheduled = scrapeMetrics.groupsScheduled
+					}
+					acc.totalRangesFetched += int64(scrapeMetrics.rangesFetched)
+					if scrapeMetrics.rangesFetched > acc.maxRangesFetched {
+						acc.maxRangesFetched = scrapeMetrics.rangesFetched
+					}
+				}
 			case "failed":
 				acc.failedRuns++
 			}
@@ -797,6 +1039,21 @@ func (s *Store) GetIndexerStageThroughput(ctx context.Context) (*IndexerStageThr
 				window.ItemsPerMinute = window.ItemsPerSecond * 60.0
 				window.ItemsPerHour = window.ItemsPerMinute * 60.0
 				window.AvgRunDurationMS = acc.totalDurationMS / float64(maxInt(acc.completedRuns, 1))
+			}
+			if def.StageName == "scrape_latest" || def.StageName == "scrape_backfill" {
+				completedRuns := float64(maxInt(acc.completedRuns, 1))
+				if acc.totalWorkersUsed > 0 {
+					window.AvgWorkersUsed = float64(acc.totalWorkersUsed) / completedRuns
+					window.MaxWorkersUsed = acc.maxWorkersUsed
+				}
+				if acc.totalGroupsScheduled > 0 {
+					window.AvgGroupsScheduled = float64(acc.totalGroupsScheduled) / completedRuns
+					window.MaxGroupsScheduled = acc.maxGroupsScheduled
+				}
+				if acc.totalRangesFetched > 0 {
+					window.AvgRangesFetched = float64(acc.totalRangesFetched) / completedRuns
+					window.MaxRangesFetched = acc.maxRangesFetched
+				}
 			}
 			windowsOut = append(windowsOut, window)
 		}
@@ -830,16 +1087,66 @@ func stageThroughputMetricValue(stageName string, metricsRaw []byte) int64 {
 	return 0
 }
 
+type scrapeThroughputMetrics struct {
+	workersUsed     int
+	groupsScheduled int
+	rangesFetched   int
+}
+
+func stageThroughputScrapeMetrics(stageName string, metricsRaw []byte) (scrapeThroughputMetrics, bool) {
+	if stageName != "scrape_latest" && stageName != "scrape_backfill" {
+		return scrapeThroughputMetrics{}, false
+	}
+	if len(metricsRaw) == 0 {
+		return scrapeThroughputMetrics{}, false
+	}
+	var metrics map[string]any
+	if err := json.Unmarshal(metricsRaw, &metrics); err != nil {
+		return scrapeThroughputMetrics{}, false
+	}
+	var out scrapeThroughputMetrics
+	if value, ok := metricInt64(metrics["workers_used"]); ok && value > 0 {
+		out.workersUsed = int(value)
+	}
+	if value, ok := metricInt64(metrics["groups_scheduled"]); ok && value > 0 {
+		out.groupsScheduled = int(value)
+	}
+	if value, ok := metricInt64(metrics["ranges_fetched"]); ok && value > 0 {
+		out.rangesFetched = int(value)
+	}
+	return out, out.workersUsed > 0 || out.groupsScheduled > 0 || out.rangesFetched > 0
+}
+
 func stageThroughputMetricKeys(stageName string) []string {
 	switch stageName {
 	case "scrape_latest", "scrape_backfill":
 		return []string{"articles_inserted", "article_headers_seen"}
-	case "assemble", "assemble_lane_a", "assemble_lane_b":
+	case "poster_materialize":
+		return []string{"claimed", "refs_upserted", "posters"}
+	case "crosspost_popularity_refresh":
+		return []string{"groups_refreshed", "claimed"}
+	case "assemble":
 		return []string{"processed_headers"}
 	case "recover_yenc":
 		return []string{"recovered", "attempted", "candidates"}
+	case "maintenance.dashboard_stats_refresh":
+		return []string{"available_count", "stat_count"}
+	case "maintenance.group_profile_refresh":
+		return []string{"groups_scored"}
+	case "maintenance.partition_retention_drop":
+		return []string{"native_partitioned_tables", "target_tables"}
+	case "maintenance.partition_default_rehome":
+		return []string{"eligible_default_day_count"}
 	case "release":
 		return []string{"candidate_families_inspected", "candidate_families"}
+	case "release_generate_nzb":
+		return []string{"generated_ready_count", "generate_attempted", "generate_candidates"}
+	case "release_archive_nzb":
+		return []string{"archived_count", "archive_claimed", "archive_candidates"}
+	case "release_purge_archived_sources", "maintenance.release_source_purge":
+		return []string{"purged_count", "purge_candidates"}
+	case "inspect_discovery_ready_refresh", "inspect_par2_ready_refresh", "inspect_archive_ready_refresh", "inspect_media_ready_refresh":
+		return []string{"ready_upserted", "retired", "requeued"}
 	case "inspect_discovery", "inspect_par2", "inspect_nfo", "inspect_archive", "inspect_password", "inspect_media":
 		return []string{"processed_count", "candidate_count"}
 	case "enrich_predb", "enrich_tmdb":
@@ -885,7 +1192,9 @@ func maxInt(value, fallback int) int {
 func (s *Store) RefreshIndexerDashboardStats(ctx context.Context) (*IndexerDashboardStats, error) {
 	for _, def := range indexerDashboardStatDefinitions {
 		now := time.Now().UTC()
-		value, err := s.computeIndexerDashboardStat(ctx, def.Key)
+		statCtx, cancel := context.WithTimeout(ctx, dashboardStatRefreshTimeout)
+		value, err := s.computeIndexerDashboardStat(statCtx, def.Key)
+		cancel()
 		if err != nil {
 			if persistErr := s.persistIndexerDashboardStatFailure(ctx, def.Key, now, err); persistErr != nil {
 				return nil, persistErr
@@ -912,31 +1221,113 @@ func (s *Store) computeIndexerDashboardStat(ctx context.Context, key string) (in
 	switch key {
 	case "unassembled_headers":
 		return s.CountUnassembledArticleHeaders(ctx)
-	case "pending_media_inspection_binaries":
-		return s.CountPendingInspectMediaBinaries(ctx)
 	case "pending_release_candidate_families":
 		return s.CountPendingReleaseCandidateFamilies(ctx)
-	case "payload_rows":
-		return s.countTableRows(ctx, "article_header_ingest_payloads")
-	case "payload_bytes":
-		return s.tableTotalBytes(ctx, "article_header_ingest_payloads")
-	case "payload_dead_tuples":
-		return s.tableDeadTuples(ctx, "article_header_ingest_payloads")
-	case "grouping_evidence_rows":
-		return s.countTableRows(ctx, "binary_grouping_evidence")
-	case "grouping_evidence_bytes":
-		return s.tableTotalBytes(ctx, "binary_grouping_evidence")
-	case "grouping_evidence_dead_tuples":
-		return s.tableDeadTuples(ctx, "binary_grouping_evidence")
-	case "readiness_rows":
-		return s.countTableRows(ctx, "release_family_readiness_summaries")
-	case "readiness_bytes":
-		return s.tableTotalBytes(ctx, "release_family_readiness_summaries")
-	case "readiness_dead_tuples":
-		return s.tableDeadTuples(ctx, "release_family_readiness_summaries")
+	case "generate_nzb_pending_releases":
+		return s.countGenerateNZBBacklog(ctx)
+	case "archive_pending_releases":
+		return s.countArchiveBacklog(ctx)
+	case "archived_waiting_for_purge_releases":
+		return s.countArchiveState(ctx, "purge_pending")
+	case "purged_archived_releases":
+		return s.countArchiveState(ctx, "purged")
+	case "blob_backed_archived_releases":
+		return s.countBlobArchivedReleases(ctx)
+	case "pending_release_summary_refresh_summaries":
+		count, err := s.CountQueuedReleaseFamilySummaries(ctx)
+		return int64(count), err
+	case "pending_yenc_recovery_binaries":
+		return s.CountPendingYEncRecoveryBinaries(ctx)
+	case "pending_inspect_discovery_binaries":
+		return s.CountInspectDiscoveryReadyQueue(ctx)
+	case "pending_inspect_par2_binaries":
+		return s.CountInspectionReadyQueue(ctx, "inspect_par2")
+	case "pending_inspect_nfo_binaries":
+		return s.CountPendingBinaryInspectionBacklog(ctx, "inspect_nfo")
+	case "pending_inspect_archive_binaries":
+		return s.CountInspectionReadyQueue(ctx, "inspect_archive")
+	case "pending_inspect_password_binaries":
+		return s.CountPendingBinaryInspectionBacklog(ctx, "inspect_password")
+	case "pending_inspect_media_binaries":
+		return s.CountInspectionReadyQueue(ctx, "inspect_media")
 	default:
 		return 0, fmt.Errorf("unsupported indexer dashboard stat %q", key)
 	}
+}
+
+func (s *Store) countArchiveBacklog(ctx context.Context) (int64, error) {
+	var count int64
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM releases r
+		JOIN nzb_cache n ON n.release_id = r.release_id
+		LEFT JOIN release_archive_state ras ON ras.release_id = r.release_id
+		WHERE r.source_kind = 'usenet_index'
+		  AND n.generation_status = 'ready'
+		  AND EXISTS (SELECT 1 FROM release_files rf WHERE rf.release_id = r.release_id)
+		  AND EXISTS (SELECT 1 FROM release_newsgroups rng WHERE rng.release_id = r.release_id)
+		  AND COALESCE(ras.archive_status, 'active') IN ('active', 'archive_failed')`).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count archive backlog: %w", err)
+	}
+	return count, nil
+}
+
+func (s *Store) countGenerateNZBBacklog(ctx context.Context) (int64, error) {
+	var count int64
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM releases r
+		LEFT JOIN release_overrides ro ON ro.release_id = r.release_id
+		LEFT JOIN release_archive_state ras ON ras.release_id = r.release_id
+		WHERE r.source_kind = 'usenet_index'
+		  AND EXISTS (SELECT 1 FROM release_files rf WHERE rf.release_id = r.release_id)
+		  AND EXISTS (SELECT 1 FROM release_newsgroups rng WHERE rng.release_id = r.release_id)
+		  AND EXISTS (
+			SELECT 1
+			FROM release_files rf
+			JOIN binary_inspections bai
+			  ON bai.binary_id = rf.binary_id
+			 AND bai.stage_name = 'inspect_archive'
+			 AND bai.status = 'completed'
+			WHERE rf.release_id = r.release_id
+		  )
+		  AND EXISTS (
+			SELECT 1
+			FROM release_files rf
+			JOIN binary_inspections bmi
+			  ON bmi.binary_id = rf.binary_id
+			 AND bmi.stage_name = 'inspect_media'
+			 AND bmi.status = 'completed'
+			WHERE rf.release_id = r.release_id
+		  )
+		  AND COALESCE(ras.archive_status, 'active') IN ('active', 'archive_failed')
+		  AND (`+releaseReadyVisibilityClause("r", DefaultReleaseReadyPolicy())+`)`).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count generate nzb backlog: %w", err)
+	}
+	return count, nil
+}
+
+func (s *Store) countArchiveState(ctx context.Context, state string) (int64, error) {
+	var count int64
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM release_archive_state
+		WHERE archive_status = $1`, strings.TrimSpace(state)).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count archive state %s: %w", state, err)
+	}
+	return count, nil
+}
+
+func (s *Store) countBlobArchivedReleases(ctx context.Context) (int64, error) {
+	var count int64
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM release_archive_state
+		WHERE object_key <> ''
+		  AND archive_status IN ('archived', 'purge_pending', 'purged')`).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count blob archived releases: %w", err)
+	}
+	return count, nil
 }
 
 func (s *Store) countTableRows(ctx context.Context, table string) (int64, error) {
@@ -1025,15 +1416,79 @@ func (s *Store) CountPendingReleaseCandidateFamilies(ctx context.Context) (int64
 	var count int64
 	if err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*)
-		FROM release_family_readiness_summaries
-		WHERE updated_at > COALESCE(processed_at, updated_at)`).Scan(&count); err != nil {
+		FROM release_ready_candidates c
+		LEFT JOIN release_ready_candidate_acks a
+		  ON a.provider_id = c.provider_id
+		 AND a.newsgroup_id = c.newsgroup_id
+		 AND a.key_kind = c.key_kind
+		 AND a.family_key = c.family_key
+		WHERE c.updated_at > COALESCE(a.processed_at, TIMESTAMPTZ 'epoch')`).Scan(&count); err != nil {
 		return 0, fmt.Errorf("count pending release candidate families: %w", err)
 	}
 	return count, nil
 }
 
-func (s *Store) CountPendingInspectMediaBinaries(ctx context.Context) (int64, error) {
-	filter, err := inspectCandidateFilter("inspect_media")
+func (s *Store) CountPendingYEncRecoveryBinaries(ctx context.Context) (int64, error) {
+	var count int64
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM yenc_recovery_work_items
+		WHERE status = 'ready'
+		  AND ready_at <= NOW()
+		  AND BTRIM(COALESCE(message_id, '')) <> ''`).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count pending yenc recovery backlog: %w", err)
+	}
+	return count, nil
+}
+
+func (s *Store) CountBlockingYEncRecoveryBacklog(ctx context.Context) (int64, error) {
+	var count int64
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM yenc_recovery_work_items
+		WHERE status IN ('ready', 'running')
+		  AND BTRIM(COALESCE(message_id, '')) <> ''
+		  AND (
+		    priority_rank = 0
+		    OR current_readiness_bucket IN ('overgrouped_contextual', 'weak_single_binary', 'weak_obfuscated_set')
+		  )
+		  AND (
+		    status = 'running'
+		    OR ready_at <= NOW()
+		  )`).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count blocking yenc recovery backlog: %w", err)
+	}
+	return count, nil
+}
+
+func (s *Store) CountClaimableAssembleBacklog(ctx context.Context) (int64, error) {
+	var count int64
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM article_header_assembly_queue
+		WHERE (
+			claim_until IS NULL
+			OR claim_until < NOW()
+		)`).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count claimable assemble backlog: %w", err)
+	}
+	return count, nil
+}
+
+func (s *Store) CountPendingBinaryInspectionBacklog(ctx context.Context, stageName string) (int64, error) {
+	stageName = strings.TrimSpace(stageName)
+	if stageName == "inspect_par2" {
+		return s.CountPendingPAR2InspectionBacklog(ctx)
+	}
+	count, err := s.countPendingBinaryInspectionBacklog(ctx, stageName)
+	if err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+func (s *Store) countPendingBinaryInspectionBacklog(ctx context.Context, stageName string) (int64, error) {
+	filter, err := inspectCandidateFilter(stageName, false)
 	if err != nil {
 		return 0, err
 	}
@@ -1048,11 +1503,381 @@ func (s *Store) CountPendingInspectMediaBinaries(ctx context.Context) (int64, er
 			bi.status = 'failed' OR
 			(
 				bi.status = 'running' AND
-				bi.inspection_claimed_until IS NOT NULL AND
+				(
+					bi.inspection_claimed_until IS NULL OR
+					bi.inspection_claimed_until < NOW()
+				)
+			) OR
+			b.updated_at > bi.updated_at OR
+			` + errorRerunPredicate
+	filteredPredicate := `
+		  AND NOT EXISTS (
+			SELECT 1
+			FROM binary_inspections cfi
+			WHERE cfi.stage_name = 'inspect_discovery'
+			  AND cfi.source_posted_at = b.source_posted_at
+			  AND cfi.binary_id = b.id
+			  AND cfi.status = 'completed'
+			  AND COALESCE(cfi.summary_json->>'content_filtered', '') = 'true'
+		  )`
+
+	var count int64
+	if stageName == "inspect_discovery" {
+		if err := s.db.QueryRowContext(ctx, `
+			SELECT COUNT(*)
+			FROM binary_identity_current bic
+			JOIN binary_core bc
+			  ON bc.source_posted_at = bic.source_posted_at
+			 AND bc.binary_id = bic.binary_id
+			JOIN binary_observation_stats bos
+			  ON bos.source_posted_at = bic.source_posted_at
+			 AND bos.binary_id = bic.binary_id
+			LEFT JOIN binary_recovery_current brc
+			  ON brc.source_posted_at = bic.source_posted_at
+			 AND brc.binary_id = bic.binary_id
+			LEFT JOIN binary_inspections bi
+			  ON bi.source_posted_at = bic.source_posted_at
+			 AND bi.stage_name = $1
+			 AND bi.binary_id = bic.binary_id
+			WHERE COALESCE(brc.recovered_extension, '') = ''
+			  AND (bic.is_main_payload = TRUE OR bic.is_auxiliary = FALSE)
+			  AND (
+				LOWER(COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '')) LIKE '%.bin' OR
+				COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '') !~ '\.[A-Za-z0-9]{1,8}$'
+			  )
+			  AND (
+				bi.id IS NULL OR
+				bi.status = 'failed' OR
+				(
+					bi.status = 'running' AND
+					(
+						bi.inspection_claimed_until IS NULL OR
+						bi.inspection_claimed_until < NOW()
+					)
+				) OR
+				GREATEST(
+					bc.updated_at,
+					bic.updated_at,
+					bos.updated_at,
+					COALESCE(brc.updated_at, TIMESTAMPTZ 'epoch')
+				) > bi.updated_at OR
+				`+errorRerunPredicate+`
+			  )
+			  AND (
+				bi.inspection_claimed_until IS NULL OR
 				bi.inspection_claimed_until < NOW()
+			  )`, stageName).Scan(&count); err != nil {
+			return 0, fmt.Errorf("count pending %s backlog: %w", stageName, err)
+		}
+		return count, nil
+	}
+
+	if err := s.db.QueryRowContext(ctx, `
+		WITH `+binaryInspectionCandidateStateCTE+`
+		SELECT COUNT(DISTINCT b.id)
+		FROM binary_state b
+		JOIN release_files rf ON rf.binary_id = b.id
+		JOIN releases r ON r.release_id = rf.release_id
+		LEFT JOIN binary_inspections bi
+		  ON bi.source_posted_at = b.source_posted_at
+		 AND bi.stage_name = $1
+		 AND bi.binary_id = b.id
+		LEFT JOIN binary_inspections abi
+		  ON abi.source_posted_at = b.source_posted_at
+		 AND abi.stage_name = 'inspect_archive'
+		 AND abi.binary_id = b.id
+		WHERE `+filter+`
+		  AND (
+			`+rerunPredicate+`
+		  )
+		  AND (
+			bi.inspection_claimed_until IS NULL OR
+			bi.inspection_claimed_until < NOW()
+		  )`+filteredPredicate, stageName).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count pending %s backlog: %w", stageName, err)
+	}
+	return count, nil
+}
+
+func (s *Store) CountPendingPAR2InspectionBacklog(ctx context.Context) (int64, error) {
+	var count int64
+	if err := s.db.QueryRowContext(ctx, `
+		WITH `+binaryInspectionPAR2CandidateStateCTE+`,
+		candidate_rows AS (
+			SELECT
+				b.id,
+				b.release_id,
+				b.updated_at AS source_updated_at,
+				COALESCE(bi.status, '') AS current_status,
+				COALESCE(bi.summary_json, '{}'::jsonb) AS current_summary_json,
+				CASE
+					WHEN LOWER(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), '')) ~ '\.vol[0-9]+(?:\+| )[0-9]+\.par2$'
+					THEN regexp_replace(
+						LOWER(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), '')),
+						'\.vol[0-9]+(?:\+| )[0-9]+\.par2$',
+						'.par2'
+					)
+					ELSE LOWER(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), ''))
+				END AS par2_set_name,
+				CASE
+					WHEN LOWER(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), '')) ~ '\.vol[0-9]+(?:\+| )[0-9]+\.par2$'
+					THEN 1
+					ELSE 0
+				END AS volume_rank,
+				CASE
+					WHEN LOWER(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), '')) ~ '\.vol([0-9]+)(?:\+| )[0-9]+\.par2$'
+					THEN COALESCE(NULLIF(substring(
+						LOWER(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), ''))
+						FROM '\.vol([0-9]+)(?:\+| )[0-9]+\.par2$'
+					), ''), '0')::integer
+					ELSE 0
+				END AS volume_number,
+					EXISTS (
+						SELECT 1
+						FROM binary_par2_targets bpt
+						WHERE bpt.source_posted_at = b.source_posted_at
+						  AND bpt.binary_id = b.id
+					) AS has_targets,
+					(
+						COALESCE(bi.status, '') = 'completed' AND
+						CASE
+							WHEN COALESCE(bi.summary_json->>'target_count', '') ~ '^[0-9]+$'
+							THEN (bi.summary_json->>'target_count')::integer = 0
+							ELSE FALSE
+						END
+					) AS completed_zero_targets,
+					(
+						bi.id IS NULL OR
+						bi.status = 'failed' OR
+					(
+						bi.status = 'running' AND
+						(
+							bi.inspection_claimed_until IS NULL OR
+							bi.inspection_claimed_until < NOW()
+						)
+					) OR
+					b.updated_at > bi.updated_at OR
+					COALESCE(bi.summary_json->>'probe_error', '') <> '' OR
+					COALESCE(bi.summary_json->>'ffprobe_error', '') <> '' OR
+					COALESCE(bi.summary_json->>'extract_error', '') <> '' OR
+					COALESCE(bi.summary_json->>'archive_extract_error', '') <> ''
+				) AS needs_rerun
+			FROM binary_state b
+			LEFT JOIN binary_inspections bi
+			  ON bi.source_posted_at = b.source_posted_at
+			 AND bi.stage_name = 'inspect_par2'
+			 AND bi.binary_id = b.id
+			WHERE b.observed_parts > 0
+			  AND (
+				LOWER(COALESCE(NULLIF(b.file_name, ''), NULLIF(b.binary_name, ''), '')) LIKE '%.par2' OR
+				COALESCE(b.recovered_kind, '') = 'par2' OR
+				COALESCE(b.recovered_extension, '') = '.par2'
+			  )
+			  AND (
+				bi.inspection_claimed_until IS NULL OR
+				bi.inspection_claimed_until < NOW()
+			  )
+		),
+		set_state AS (
+			SELECT
+				par2_set_name,
+				BOOL_OR(volume_rank = 0) AS has_manifest,
+				BOOL_OR(has_targets) AS has_any_targets,
+				BOOL_OR(CASE WHEN volume_rank = 0 THEN needs_rerun ELSE FALSE END) AS manifest_needs_rerun,
+				BOOL_OR(
+					current_status = 'completed' AND
+					(
+						COALESCE(current_summary_json->>'probe_skip_reason', '') = 'article_not_found' OR
+						(
+							COALESCE(current_summary_json->>'probe_skip_reason', '') = 'prefix_sample_failed' AND
+							COALESCE(current_summary_json->>'probe_error_detail', '') ILIKE '%article not found (430)%'
+						)
+					)
+				) AS has_completed_missing_article_probe,
+				BOOL_OR(
+					current_status = 'completed' AND
+					CASE
+						WHEN COALESCE(current_summary_json->>'target_count', '') ~ '^[0-9]+$'
+						THEN (current_summary_json->>'target_count')::integer = 0
+						ELSE FALSE
+					END
+				) AS has_completed_zero_targets
+			FROM candidate_rows
+			GROUP BY par2_set_name
+		),
+		eligible_rows AS (
+			SELECT cr.*
+			FROM candidate_rows cr
+			JOIN set_state ss ON ss.par2_set_name = cr.par2_set_name
+			WHERE cr.release_id <> ''
+			  AND NOT (cr.volume_rank = 1 AND ss.has_completed_zero_targets)
+			  AND (
+				cr.needs_rerun OR
+				(
+					NOT ss.has_any_targets AND
+					NOT ss.has_completed_missing_article_probe AND
+					NOT ss.has_completed_zero_targets
+				)
+			)
+			  AND (
+				NOT ss.has_manifest OR
+				cr.volume_rank = 0 OR
+				(
+					NOT ss.manifest_needs_rerun AND
+					NOT ss.has_any_targets
+				)
+			  )
+		)
+		SELECT COUNT(*)
+		FROM (
+			SELECT DISTINCT ON (par2_set_name) par2_set_name
+			FROM eligible_rows
+			ORDER BY par2_set_name, volume_rank, volume_number, source_updated_at DESC, id DESC
+		) chosen`).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count pending inspect_par2 backlog: %w", err)
+	}
+	return count, nil
+}
+
+func (s *Store) CountPendingInspectArchiveBinaries(ctx context.Context) (int64, error) {
+	filter, err := inspectCandidateFilter("inspect_archive", false)
+	if err != nil {
+		return 0, err
+	}
+
+	errorRerunPredicate := `
+			COALESCE(bi.summary_json->>'probe_error', '') <> '' OR
+			COALESCE(bi.summary_json->>'ffprobe_error', '') <> '' OR
+			COALESCE(bi.summary_json->>'extract_error', '') <> '' OR
+			COALESCE(bi.summary_json->>'archive_extract_error', '') <> ''
+			OR COALESCE(bi.summary_json->>'probe_error_detail', '') ILIKE '%has no articles%'
+			OR (
+				COALESCE(bi.summary_json->>'probe_strategy', '') = 'metadata_only' AND
+				CASE
+					WHEN jsonb_typeof(bi.summary_json->'archive_entries') = 'array' THEN jsonb_array_length(bi.summary_json->'archive_entries')
+					ELSE 0
+				END = 0 AND (
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.7z' OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.7z\.001$' OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.zip' OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.zip\.001$' OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.part0*1\.rar$' OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.r00$' OR
+					(
+						LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.rar' AND
+						LOWER(COALESCE(rf.file_name, b.file_name, '')) !~ '\.part\d+\.rar$' AND
+						LOWER(COALESCE(rf.file_name, b.file_name, '')) !~ '\.r\d{2,3}$'
+					)
+				)
+			)`
+	representativePredicate := `
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.7z\.001$' OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.zip\.001$' OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.part0*1\.rar$' OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.r00$' OR
+					(
+						LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.rar' AND
+						LOWER(COALESCE(rf.file_name, b.file_name, '')) !~ '\.part\d+\.rar$'
+					) OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.7z' OR
+					LOWER(COALESCE(rf.file_name, b.file_name, '')) LIKE '%.zip'`
+
+	var count int64
+	err = s.db.QueryRowContext(ctx, `
+		WITH `+binaryInspectionCandidateStateCTE+`,
+		candidate_keys AS (
+			SELECT
+				r.release_id,
+				CASE
+					WHEN LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.7z\.\d{3}$'
+						THEN REGEXP_REPLACE(LOWER(COALESCE(rf.file_name, b.file_name, '')), '\.7z\.\d{3}$', '.7z')
+					WHEN LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.zip\.\d{3}$'
+						THEN REGEXP_REPLACE(LOWER(COALESCE(rf.file_name, b.file_name, '')), '\.zip\.\d{3}$', '.zip')
+					WHEN LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.part\d+\.rar$'
+						THEN REGEXP_REPLACE(LOWER(COALESCE(rf.file_name, b.file_name, '')), '\.part\d+\.rar$', '.rar')
+					WHEN LOWER(COALESCE(rf.file_name, b.file_name, '')) ~ '\.r\d{2,3}$'
+						THEN REGEXP_REPLACE(LOWER(COALESCE(rf.file_name, b.file_name, '')), '\.r\d{2,3}$', '.rar')
+					ELSE LOWER(COALESCE(rf.file_name, b.file_name, ''))
+				END AS archive_key
+			FROM binary_state b
+			JOIN release_files rf ON rf.binary_id = b.id
+			JOIN releases r ON r.release_id = rf.release_id
+			LEFT JOIN binary_inspections bi
+			  ON bi.source_posted_at = b.source_posted_at
+			 AND bi.stage_name = 'inspect_archive'
+			 AND bi.binary_id = b.id
+			WHERE `+filter+`
+			  AND (`+representativePredicate+`)
+			  AND (
+				bi.id IS NULL OR
+				bi.status = 'failed' OR
+				(
+					bi.status = 'running' AND
+					(
+						bi.inspection_claimed_until IS NULL OR
+						bi.inspection_claimed_until < NOW()
+					)
+				) OR
+				b.updated_at > bi.updated_at OR
+				`+errorRerunPredicate+`
+			  )
+			  AND (
+				bi.inspection_claimed_until IS NULL OR
+				bi.inspection_claimed_until < NOW()
+			  )
+			  AND NOT EXISTS (
+				SELECT 1
+				FROM binary_inspections cfi
+				WHERE cfi.stage_name = 'inspect_discovery'
+				  AND cfi.source_posted_at = b.source_posted_at
+				  AND cfi.binary_id = b.id
+				  AND cfi.status = 'completed'
+				  AND COALESCE(cfi.summary_json->>'content_filtered', '') = 'true'
+			  )
+		)
+		SELECT COUNT(*)
+		FROM (
+			SELECT release_id, archive_key
+			FROM candidate_keys
+			GROUP BY release_id, archive_key
+		) candidates`).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count pending inspect_archive binaries: %w", err)
+	}
+	return count, nil
+}
+
+func (s *Store) CountPendingInspectMediaBinaries(ctx context.Context) (int64, error) {
+	filter, err := inspectCandidateFilter("inspect_media", false)
+	if err != nil {
+		return 0, err
+	}
+
+	errorRerunPredicate := `
+			COALESCE(bi.summary_json->>'probe_error', '') <> '' OR
+			COALESCE(bi.summary_json->>'ffprobe_error', '') <> '' OR
+			COALESCE(bi.summary_json->>'extract_error', '') <> '' OR
+			COALESCE(bi.summary_json->>'archive_extract_error', '') <> ''`
+	rerunPredicate := `
+			bi.id IS NULL OR
+			bi.status = 'failed' OR
+			(
+				bi.status = 'running' AND
+				(
+					bi.inspection_claimed_until IS NULL OR
+					bi.inspection_claimed_until < NOW()
+				)
 			) OR
 			b.updated_at > bi.updated_at OR
 			` + errorRerunPredicate + `
+			OR (
+				bi.status = 'completed' AND
+				COALESCE(bi.summary_json->>'probe_skip_reason', '') = 'ffprobe_failed'
+			)
+			OR (
+				bi.status = 'completed' AND
+				COALESCE(bi.summary_json->>'media_title_extractor_version', '') <> 'v2'
+			)
 			OR (
 				abi.updated_at IS NOT NULL AND (
 					bi.id IS NULL OR
@@ -1062,16 +1887,19 @@ func (s *Store) CountPendingInspectMediaBinaries(ctx context.Context) (int64, er
 
 	var count int64
 	err = s.db.QueryRowContext(ctx, `
+		WITH `+binaryInspectionCandidateStateCTE+`
 		SELECT COUNT(DISTINCT b.id)
-		FROM binaries b
+		FROM binary_state b
 		JOIN release_files rf ON rf.binary_id = b.id
 		JOIN releases r ON r.release_id = rf.release_id
 		LEFT JOIN binary_inspections bi
-			ON bi.stage_name = 'inspect_media'
-			AND bi.binary_id = b.id
+		  ON bi.source_posted_at = b.source_posted_at
+		 AND bi.stage_name = 'inspect_media'
+		 AND bi.binary_id = b.id
 		LEFT JOIN binary_inspections abi
-			ON abi.stage_name = 'inspect_archive'
-			AND abi.binary_id = b.id
+		  ON abi.source_posted_at = b.source_posted_at
+		 AND abi.stage_name = 'inspect_archive'
+		 AND abi.binary_id = b.id
 		WHERE `+filter+`
 		  AND (
 			`+rerunPredicate+`
@@ -1079,6 +1907,15 @@ func (s *Store) CountPendingInspectMediaBinaries(ctx context.Context) (int64, er
 		  AND (
 			bi.inspection_claimed_until IS NULL OR
 			bi.inspection_claimed_until < NOW()
+		  )
+		  AND NOT EXISTS (
+			SELECT 1
+			FROM binary_inspections cfi
+			WHERE cfi.stage_name = 'inspect_discovery'
+			  AND cfi.source_posted_at = b.source_posted_at
+			  AND cfi.binary_id = b.id
+			  AND cfi.status = 'completed'
+			  AND COALESCE(cfi.summary_json->>'content_filtered', '') = 'true'
 		  )`).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("count pending inspect_media binaries: %w", err)
@@ -1090,7 +1927,8 @@ func normalizeAdminReleaseSort(sort string) string {
 	switch strings.TrimSpace(sort) {
 	case "", "posted_desc":
 		return "posted_desc"
-	case "posted_asc", "size_desc", "size_asc", "title_asc", "updated_desc", "quality_desc", "completion_desc":
+	case "posted_asc", "size_desc", "size_asc", "title_asc", "title_desc", "updated_desc", "quality_desc", "quality_asc", "completion_desc",
+		"category_asc", "category_desc", "files_desc", "files_asc", "password_asc", "password_desc", "state_asc", "state_desc":
 		return sort
 	default:
 		return "posted_desc"
@@ -1107,15 +1945,187 @@ func adminReleaseSortClause(sort string) string {
 		return "r.size_bytes ASC, r.posted_at DESC NULLS LAST, r.title"
 	case "title_asc":
 		return "r.title ASC, r.posted_at DESC NULLS LAST"
+	case "title_desc":
+		return "r.title DESC, r.posted_at DESC NULLS LAST"
 	case "updated_desc":
 		return "r.updated_at DESC, r.posted_at DESC NULLS LAST, r.title"
 	case "quality_desc":
 		return "r.media_quality_score DESC, r.posted_at DESC NULLS LAST, r.title"
+	case "quality_asc":
+		return "r.media_quality_score ASC, r.posted_at DESC NULLS LAST, r.title"
 	case "completion_desc":
 		return "r.completion_pct DESC, r.posted_at DESC NULLS LAST, r.title"
+	case "category_asc":
+		return "r.category ASC, r.category_id ASC, r.posted_at DESC NULLS LAST, r.title"
+	case "category_desc":
+		return "r.category DESC, r.category_id DESC, r.posted_at DESC NULLS LAST, r.title"
+	case "files_desc":
+		return "r.file_count DESC, r.posted_at DESC NULLS LAST, r.title"
+	case "files_asc":
+		return "r.file_count ASC, r.posted_at DESC NULLS LAST, r.title"
+	case "password_asc":
+		return "r.password_state ASC, r.posted_at DESC NULLS LAST, r.title"
+	case "password_desc":
+		return "r.password_state DESC, r.posted_at DESC NULLS LAST, r.title"
+	case "state_asc":
+		return "COALESCE(ro.hidden, FALSE) ASC, " + publicIndexerReleaseVisibilityClause("r", DefaultReleaseReadyPolicy()) + " ASC, r.posted_at DESC NULLS LAST, r.title"
+	case "state_desc":
+		return "COALESCE(ro.hidden, FALSE) DESC, " + publicIndexerReleaseVisibilityClause("r", DefaultReleaseReadyPolicy()) + " DESC, r.posted_at DESC NULLS LAST, r.title"
 	default:
 		return "r.posted_at DESC NULLS LAST, r.updated_at DESC, r.title"
 	}
+}
+
+func adminReleasePayloadCompletionStateSQL(alias string) string {
+	payloadFilePredicate := adminReleasePayloadFilePredicateSQL("cf")
+	return fmt.Sprintf(`CASE
+		WHEN %[1]s.archive_count > 0 AND %[1]s.expected_archive_file_count <= 0 THEN 'unknown'
+		WHEN %[1]s.expected_archive_file_count > 0
+		 AND GREATEST(COALESCE(%[1]s.file_count, 0) - COALESCE(%[1]s.par_file_count, 0), 0) >= %[1]s.expected_archive_file_count THEN 'complete'
+			WHEN %[1]s.expected_archive_file_count <= 0
+			 AND %[1]s.archive_count <= 0
+			 AND EXISTS (
+			   SELECT 1
+			   FROM release_catalog_files cf
+			   WHERE cf.release_id = %[1]s.release_id
+			     AND %[2]s
+			     AND cf.total_parts <= 0
+			 ) THEN 'unknown'
+			WHEN %[1]s.expected_archive_file_count <= 0
+			 AND %[1]s.archive_count <= 0
+			 AND EXISTS (
+			   SELECT 1
+			   FROM release_catalog_files cf
+			   WHERE cf.release_id = %[1]s.release_id
+			     AND %[2]s
+			 )
+			 AND NOT EXISTS (
+			   SELECT 1
+			   FROM release_catalog_files cf
+			   WHERE cf.release_id = %[1]s.release_id
+			     AND %[2]s
+			     AND (cf.total_parts <= 0 OR cf.observed_parts < cf.total_parts)
+			 ) THEN 'complete'
+			WHEN %[1]s.expected_archive_file_count <= 0
+			 AND %[1]s.archive_count <= 0
+			 AND NOT EXISTS (
+			   SELECT 1
+			   FROM release_catalog_files cf
+			   WHERE cf.release_id = %[1]s.release_id
+			     AND %[2]s
+			 )
+		 AND %[1]s.completion_pct >= 100 THEN 'complete'
+		ELSE 'incomplete'
+	END`, alias, payloadFilePredicate)
+}
+
+func adminReleasePayloadFilePredicateSQL(alias string) string {
+	return fmt.Sprintf(`%[1]s.is_pars = FALSE
+		AND lower(%[1]s.file_name) !~ '\.(nfo|sfv|srr|srs|nzb)$'`, alias)
+}
+
+func parseAdminFilterValues(raw string, allowed ...string) []string {
+	allowedSet := make(map[string]struct{}, len(allowed))
+	for _, value := range allowed {
+		allowedSet[value] = struct{}{}
+	}
+	seen := make(map[string]struct{}, len(allowed))
+	out := make([]string, 0, len(allowed))
+	for _, part := range strings.Split(raw, ",") {
+		value := strings.ToLower(strings.TrimSpace(part))
+		if _, ok := allowedSet[value]; !ok {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func adminReleaseStatePlaceholders(start, count int) string {
+	parts := make([]string, 0, count)
+	for i := 0; i < count; i++ {
+		parts = append(parts, fmt.Sprintf("$%d", start+i))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func anyStrings(values []string) []any {
+	out := make([]any, 0, len(values))
+	for _, value := range values {
+		out = append(out, value)
+	}
+	return out
+}
+
+func adminReleaseInClause(column string, start int, values []string) (string, []any) {
+	return fmt.Sprintf("%s IN (%s)", column, adminReleaseStatePlaceholders(start, len(values))), anyStrings(values)
+}
+
+func normalizeReleasePasswordState(raw string, passworded, known, unknown bool) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "password_known", "passworded_known":
+		return "password_known"
+	case "password_unknown", "passworded_unknown", "passworded":
+		return "password_unknown"
+	case "not_passworded":
+		return "not_passworded"
+	case "unknown", "not_inspected":
+		return "unknown"
+	}
+	switch {
+	case known:
+		return "password_known"
+	case unknown || passworded:
+		return "password_unknown"
+	default:
+		return "unknown"
+	}
+}
+
+func normalizeReleasePasswordStateValues(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		normalized := normalizeReleasePasswordState(value, false, false, false)
+		if _, ok := seen[normalized]; ok {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		out = append(out, normalized)
+	}
+	return out
+}
+
+func releasePasswordStateSQL(alias string) string {
+	return fmt.Sprintf(`CASE
+		WHEN COALESCE(%[1]s.passworded_known, FALSE)
+		  OR COALESCE(%[1]s.password_state, '') IN ('password_known', 'passworded_known')
+		THEN 'password_known'
+		WHEN COALESCE(%[1]s.passworded_unknown, FALSE)
+		  OR COALESCE(%[1]s.passworded, FALSE)
+		  OR COALESCE(%[1]s.password_state, '') IN ('password_unknown', 'passworded_unknown', 'passworded')
+		THEN 'password_unknown'
+		WHEN COALESCE(%[1]s.password_state, '') = 'not_passworded'
+		THEN 'not_passworded'
+		ELSE 'unknown'
+	END`, alias)
+}
+
+func adminReleaseAnyPredicateClause(values []string, predicates map[string]string) string {
+	clauses := make([]string, 0, len(values))
+	for _, value := range values {
+		if predicate := predicates[value]; predicate != "" {
+			clauses = append(clauses, "("+predicate+")")
+		}
+	}
+	if len(clauses) == 0 {
+		return ""
+	}
+	return "(" + strings.Join(clauses, " OR ") + ")"
 }
 
 func buildAdminIndexerReleaseFilterSQL(params AdminIndexerReleaseListParams) (string, []any) {
@@ -1143,82 +2153,93 @@ func buildAdminIndexerReleaseFilterSQL(params AdminIndexerReleaseListParams) (st
 	if params.CategoryID > 0 {
 		add(fmt.Sprintf("r.category_id = $%d", arg), params.CategoryID)
 	}
-	if v := strings.TrimSpace(params.Classification); v != "" {
-		add(fmt.Sprintf("r.classification = $%d", arg), v)
+	if values := parseAdminFilterValues(params.Classification, "video", "video_archive", "tv", "movie", "audio", "ebook", "archive", "misc"); len(values) > 0 {
+		clause, values := adminReleaseInClause("r.classification", arg, values)
+		add(clause, values...)
 	}
-	if v := strings.TrimSpace(params.ExternalMediaType); v != "" {
-		add(fmt.Sprintf("r.external_media_type = $%d", arg), v)
+	if values := parseAdminFilterValues(params.ExternalMediaType, "movie", "tv", "audio"); len(values) > 0 {
+		clause, values := adminReleaseInClause("r.external_media_type", arg, values)
+		add(clause, values...)
 	}
-	if v := strings.TrimSpace(params.IdentityStatus); v != "" {
-		add(fmt.Sprintf("r.identity_status = $%d", arg), v)
+	if values := parseAdminFilterValues(params.IdentityStatus, "identified", "probable", "unknown"); len(values) > 0 {
+		clause, values := adminReleaseInClause("r.identity_status", arg, values)
+		add(clause, values...)
 	}
-	if v := strings.TrimSpace(params.PasswordState); v != "" {
-		add(fmt.Sprintf("r.password_state = $%d", arg), v)
+	if values := parseAdminFilterValues(params.PasswordState, "not_passworded", "password_known", "password_unknown", "passworded_known", "passworded_unknown", "passworded", "unknown", "not_inspected"); len(values) > 0 {
+		values = normalizeReleasePasswordStateValues(values)
+		clause, values := adminReleaseInClause(releasePasswordStateSQL("r"), arg, values)
+		add(clause, values...)
 	}
-	if v := strings.TrimSpace(params.MediaQualityTier); v != "" {
-		add(fmt.Sprintf("r.media_quality_tier = $%d", arg), v)
+	if values := parseAdminFilterValues(params.MediaQualityTier, "premium", "good", "fair", "unknown"); len(values) > 0 {
+		clause, values := adminReleaseInClause("r.media_quality_tier", arg, values)
+		add(clause, values...)
 	}
-	switch strings.TrimSpace(params.Hidden) {
-	case "hidden":
-		add("COALESCE(ro.hidden, FALSE) = TRUE")
-	case "visible":
-		add("COALESCE(ro.hidden, FALSE) = FALSE")
+	if clause := adminReleaseAnyPredicateClause(parseAdminFilterValues(params.Hidden, "hidden", "visible"), map[string]string{
+		"hidden":  "COALESCE(ro.hidden, FALSE) = TRUE",
+		"visible": "COALESCE(ro.hidden, FALSE) = FALSE",
+	}); clause != "" {
+		add(clause)
 	}
-	switch strings.TrimSpace(params.PublicState) {
-	case "public":
-		add("(" + publicIndexerReleaseVisibilityClause("r") + ")")
-	case "internal_only":
-		add("NOT (" + publicIndexerReleaseVisibilityClause("r") + ") AND COALESCE(ro.hidden, FALSE) = FALSE")
-	case "hidden":
-		add("COALESCE(ro.hidden, FALSE) = TRUE")
+	publicClause := publicIndexerReleaseVisibilityClause("r", DefaultReleaseReadyPolicy())
+	if clause := adminReleaseAnyPredicateClause(parseAdminFilterValues(params.PublicState, "public", "internal_only", "hidden"), map[string]string{
+		"public":        publicClause,
+		"internal_only": "NOT (" + publicClause + ") AND COALESCE(ro.hidden, FALSE) = FALSE",
+		"hidden":        "COALESCE(ro.hidden, FALSE) = TRUE",
+	}); clause != "" {
+		add(clause)
 	}
-	switch strings.TrimSpace(params.Inspected) {
-	case "yes":
-		add("(r.runtime_seconds > 0 OR r.primary_resolution <> '' OR r.primary_video_codec <> '' OR r.primary_audio_codec <> '' OR r.has_nfo = TRUE OR r.has_par2 = TRUE)")
-	case "no":
-		add("(r.runtime_seconds = 0 AND r.primary_resolution = '' AND r.primary_video_codec = '' AND r.primary_audio_codec = '' AND r.has_nfo = FALSE AND r.has_par2 = FALSE)")
+	if clause := adminReleaseAnyPredicateClause(parseAdminFilterValues(params.Inspected, "yes", "no"), map[string]string{
+		"yes": "r.runtime_seconds > 0 OR r.primary_resolution <> '' OR r.primary_video_codec <> '' OR r.primary_audio_codec <> '' OR r.has_nfo = TRUE OR r.has_par2 = TRUE",
+		"no":  "r.runtime_seconds = 0 AND r.primary_resolution = '' AND r.primary_video_codec = '' AND r.primary_audio_codec = '' AND r.has_nfo = FALSE AND r.has_par2 = FALSE",
+	}); clause != "" {
+		add(clause)
 	}
-	switch strings.TrimSpace(params.Enriched) {
-	case "yes":
-		add("(r.tmdb_id > 0 OR r.tvdb_id > 0 OR r.external_media_type <> '' OR r.matched_media_title <> '')")
-	case "no":
-		add("(r.tmdb_id = 0 AND r.tvdb_id = 0 AND r.external_media_type = '' AND r.matched_media_title = '')")
+	if clause := adminReleaseAnyPredicateClause(parseAdminFilterValues(params.Enriched, "yes", "no"), map[string]string{
+		"yes": "r.tmdb_id > 0 OR r.tvdb_id > 0 OR r.external_media_type <> '' OR r.matched_media_title <> ''",
+		"no":  "r.tmdb_id = 0 AND r.tvdb_id = 0 AND r.external_media_type = '' AND r.matched_media_title = ''",
+	}); clause != "" {
+		add(clause)
 	}
-	switch strings.TrimSpace(params.Uncategorized) {
-	case "yes":
-		add(fmt.Sprintf("r.category_id = %d", newsnab.OtherMisc))
-	case "no":
-		add(fmt.Sprintf("r.category_id <> %d", newsnab.OtherMisc))
+	if clause := adminReleaseAnyPredicateClause(parseAdminFilterValues(params.Uncategorized, "yes", "no"), map[string]string{
+		"yes": fmt.Sprintf("r.category_id = %d", newsnab.OtherMisc),
+		"no":  fmt.Sprintf("r.category_id <> %d", newsnab.OtherMisc),
+	}); clause != "" {
+		add(clause)
 	}
-	switch strings.TrimSpace(params.PasswordCandidates) {
-	case "yes":
-		add("EXISTS (SELECT 1 FROM release_password_candidates rpc WHERE rpc.release_id = r.release_id)")
-	case "no":
-		add("NOT EXISTS (SELECT 1 FROM release_password_candidates rpc WHERE rpc.release_id = r.release_id)")
+	if clause := adminReleaseAnyPredicateClause(parseAdminFilterValues(params.PasswordCandidates, "yes", "no"), map[string]string{
+		"yes": "EXISTS (SELECT 1 FROM release_password_candidates rpc WHERE rpc.release_id = r.release_id)",
+		"no":  "NOT EXISTS (SELECT 1 FROM release_password_candidates rpc WHERE rpc.release_id = r.release_id)",
+	}); clause != "" {
+		add(clause)
 	}
-	switch strings.TrimSpace(params.MetadataMismatch) {
-	case "yes":
-		add(`(
+	metadataMismatchClause := `(
 			(r.external_media_type = 'tv' AND r.matched_media_title <> '' AND r.tvdb_id = 0)
 			OR (r.external_media_type <> '' AND r.matched_media_title <> '' AND r.tmdb_id = 0 AND r.tvdb_id = 0)
-		)`)
-	case "no":
-		add(`NOT (
-			(r.external_media_type = 'tv' AND r.matched_media_title <> '' AND r.tvdb_id = 0)
-			OR (r.external_media_type <> '' AND r.matched_media_title <> '' AND r.tmdb_id = 0 AND r.tvdb_id = 0)
-		)`)
+		)`
+	if clause := adminReleaseAnyPredicateClause(parseAdminFilterValues(params.MetadataMismatch, "yes", "no"), map[string]string{
+		"yes": metadataMismatchClause,
+		"no":  "NOT " + metadataMismatchClause,
+	}); clause != "" {
+		add(clause)
 	}
-	switch strings.TrimSpace(params.LowConfidence) {
-	case "yes":
-		add("COALESCE(r.identity_confidence_score, 0) < 0.80")
-	case "no":
-		add("COALESCE(r.identity_confidence_score, 0) >= 0.80")
+	if clause := adminReleaseAnyPredicateClause(parseAdminFilterValues(params.LowConfidence, "yes", "no"), map[string]string{
+		"yes": "COALESCE(r.identity_confidence_score, 0) < 0.80",
+		"no":  "COALESCE(r.identity_confidence_score, 0) >= 0.80",
+	}); clause != "" {
+		add(clause)
 	}
-	switch strings.TrimSpace(params.CompletionState) {
-	case "exact_100":
-		add("r.completion_pct = 100")
-	case "below_100":
-		add("r.completion_pct < 100")
+	if clause := adminReleaseAnyPredicateClause(parseAdminFilterValues(params.CompletionState, "exact_100", "below_100"), map[string]string{
+		"exact_100": "r.completion_pct = 100",
+		"below_100": "r.completion_pct < 100",
+	}); clause != "" {
+		add(clause)
+	}
+	payloadStateSQL := adminReleasePayloadCompletionStateSQL("r")
+	if states := parseAdminFilterValues(params.PayloadCompletionInclude, "complete", "incomplete", "unknown"); len(states) > 0 {
+		add(fmt.Sprintf("(%s) IN (%s)", payloadStateSQL, adminReleaseStatePlaceholders(arg, len(states))), anyStrings(states)...)
+	}
+	if states := parseAdminFilterValues(params.PayloadCompletionExclude, "complete", "incomplete", "unknown"); len(states) > 0 {
+		add(fmt.Sprintf("(%s) NOT IN (%s)", payloadStateSQL, adminReleaseStatePlaceholders(arg, len(states))), anyStrings(states)...)
 	}
 	if params.HasNFO != nil {
 		add(fmt.Sprintf("r.has_nfo = $%d", arg), *params.HasNFO)
@@ -1228,6 +2249,369 @@ func buildAdminIndexerReleaseFilterSQL(params AdminIndexerReleaseListParams) (st
 	}
 
 	return strings.Join(clauses, "\n  AND "), args
+}
+
+func (s *Store) ListIndexerAdminAttention(ctx context.Context, params IndexerAdminAttentionParams) ([]IndexerAdminAttentionItem, int, error) {
+	params.Reason = strings.TrimSpace(params.Reason)
+	if params.Limit <= 0 {
+		params.Limit = 100
+	}
+	if params.Limit > 500 {
+		params.Limit = 500
+	}
+	if params.Offset < 0 {
+		params.Offset = 0
+	}
+
+	reasonFilter := "TRUE"
+	args := []any{}
+	if params.Reason != "" && params.Reason != "all" {
+		reasonFilter = "$1 = ANY(reason_keys)"
+		args = append(args, params.Reason)
+	}
+
+	baseSQL := `
+		WITH attention AS (
+			SELECT
+				r.release_id,
+				r.title,
+				r.group_name,
+				r.category,
+				r.classification,
+				r.identity_status,
+				r.title_source,
+				r.size_bytes,
+				r.posted_at,
+				r.updated_at,
+				` + adminReleasePayloadCompletionStateSQL("r") + ` AS payload_completion_state,
+				CASE WHEN ` + publicIndexerReleaseVisibilityClause("r", DefaultReleaseReadyPolicy()) + ` THEN TRUE ELSE FALSE END AS public_visible,
+				EXISTS (
+					SELECT 1
+					FROM release_catalog_files cf
+					WHERE cf.release_id = r.release_id
+					  AND LOWER(COALESCE(cf.file_name, '')) LIKE '%.sfv'
+				) AS has_sfv,
+				EXISTS (
+					SELECT 1
+					FROM release_catalog_files cf
+					WHERE cf.release_id = r.release_id
+					  AND LOWER(COALESCE(cf.file_name, '')) LIKE '%.par2'
+				) AS has_par2,
+				EXISTS (
+					SELECT 1
+					FROM release_catalog_files cf
+					WHERE cf.release_id = r.release_id
+					  AND LOWER(COALESCE(cf.file_name, '')) LIKE '%.nfo'
+				) AS has_nfo,
+				(
+					SELECT COUNT(*)
+					FROM release_predb_matches rpm
+					WHERE rpm.release_id = r.release_id
+				)::integer AS predb_candidate_count,
+				(
+					SELECT COUNT(*)
+					FROM release_predb_matches rpm
+					WHERE rpm.release_id = r.release_id
+					  AND COALESCE(rpm.chosen, FALSE) = FALSE
+				)::integer AS unchosen_predb_count,
+				(
+					SELECT COUNT(*)
+					FROM binary_inspections bi
+					WHERE bi.release_id = r.release_id
+					  AND bi.status IN ('failed', 'error')
+				)::integer AS inspection_failure_count,
+				COALESCE((
+					SELECT bi.stage_name || ': ' || COALESCE(NULLIF(bi.error_text, ''), bi.status)
+					FROM binary_inspections bi
+					WHERE bi.release_id = r.release_id
+					  AND bi.status IN ('failed', 'error')
+					ORDER BY bi.updated_at DESC
+					LIMIT 1
+				), '') AS latest_inspection_error,
+				LOWER(BTRIM(COALESCE(NULLIF(ro.display_title, ''), r.title, ''))) IN ('', 'unknown-release', 'vip only')
+				  OR COALESCE(r.title_source, '') = 'source_obfuscated'
+				  OR LOWER(BTRIM(COALESCE(NULLIF(ro.display_title, ''), r.title, ''))) ~ '^[a-z0-9]{20,}(\.[a-z0-9]{2,5})?$'
+				  OR LOWER(BTRIM(COALESCE(NULLIF(ro.display_title, ''), r.title, ''))) ~ '^[a-z]{6,}[[:space:]]+[0-9]{6,}[[:space:]]+[0-9]{10,}$'
+				  AS weak_title
+			FROM releases r
+			LEFT JOIN release_overrides ro ON ro.release_id = r.release_id
+		),
+		reasons AS (
+			SELECT
+				attention.*,
+				array_remove(ARRAY[
+					CASE WHEN weak_title THEN 'manual_title_needed' END,
+					CASE WHEN predb_candidate_count > 0 AND identity_status <> 'identified' THEN 'predb_review' END,
+					CASE WHEN (
+						(matched_media_probe.release_id IS NOT NULL OR classification IN ('video', 'video_archive', 'tv', 'movie'))
+						AND (COALESCE(identity_status, '') <> 'identified' OR weak_title)
+					) THEN 'external_metadata_review' END,
+					CASE WHEN has_sfv AND (weak_title OR identity_status <> 'identified') THEN 'sfv_sidecar_review' END,
+					CASE WHEN inspection_failure_count > 0 THEN 'inspection_failed' END,
+					CASE WHEN payload_completion_state = 'complete' AND public_visible = FALSE AND weak_title THEN 'public_blocked_title' END
+				], NULL) AS reason_keys
+			FROM attention
+			LEFT JOIN LATERAL (
+				SELECT attention.release_id
+				WHERE attention.classification IN ('video', 'video_archive', 'tv', 'movie')
+				   OR EXISTS (
+				     SELECT 1
+				     FROM binary_inspections bi
+				     WHERE bi.release_id = attention.release_id
+				       AND bi.stage_name IN ('inspect_media', 'inspect_archive', 'inspect_par2')
+				       AND bi.status = 'complete'
+				   )
+			) matched_media_probe ON TRUE
+		)`
+
+	countArgs := append([]any(nil), args...)
+	var total int
+	if err := s.db.QueryRowContext(ctx, baseSQL+`
+		SELECT COUNT(*)
+		FROM reasons
+		WHERE cardinality(reason_keys) > 0
+		  AND `+reasonFilter, countArgs...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count indexer admin attention: %w", err)
+	}
+
+	queryArgs := append([]any(nil), args...)
+	queryArgs = append(queryArgs, params.Limit, params.Offset)
+	limitPos := len(queryArgs) - 1
+	offsetPos := len(queryArgs)
+	rows, err := s.db.QueryContext(ctx, baseSQL+fmt.Sprintf(`
+		SELECT
+			release_id,
+			title,
+			group_name,
+			category,
+			classification,
+			identity_status,
+			title_source,
+			payload_completion_state,
+			size_bytes,
+			posted_at,
+			updated_at,
+			public_visible,
+			has_sfv,
+			has_par2,
+			has_nfo,
+			predb_candidate_count,
+			unchosen_predb_count,
+			inspection_failure_count,
+			latest_inspection_error,
+			(
+				CASE WHEN 'inspection_failed' = ANY(reason_keys) THEN 100 ELSE 0 END
+				+ CASE WHEN 'manual_title_needed' = ANY(reason_keys) THEN 80 ELSE 0 END
+				+ CASE WHEN 'predb_review' = ANY(reason_keys) THEN 60 ELSE 0 END
+				+ CASE WHEN 'external_metadata_review' = ANY(reason_keys) THEN 40 ELSE 0 END
+				+ CASE WHEN 'sfv_sidecar_review' = ANY(reason_keys) THEN 20 ELSE 0 END
+			)::integer AS priority,
+			array_to_string(reason_keys, '|') AS reasons
+		FROM reasons
+		WHERE cardinality(reason_keys) > 0
+		  AND %s
+		ORDER BY priority DESC, updated_at DESC
+		LIMIT $%d OFFSET $%d`, reasonFilter, limitPos, offsetPos), queryArgs...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list indexer admin attention: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]IndexerAdminAttentionItem, 0, params.Limit)
+	for rows.Next() {
+		var (
+			item      IndexerAdminAttentionItem
+			postedAt  sql.NullTime
+			reasonStr string
+		)
+		if err := rows.Scan(
+			&item.ReleaseID,
+			&item.Title,
+			&item.GroupName,
+			&item.Category,
+			&item.Classification,
+			&item.IdentityStatus,
+			&item.TitleSource,
+			&item.PayloadCompletionState,
+			&item.SizeBytes,
+			&postedAt,
+			&item.UpdatedAt,
+			&item.PublicVisible,
+			&item.HasSFV,
+			&item.HasPAR2,
+			&item.HasNFO,
+			&item.PredbCandidateCount,
+			&item.UnchosenPredbCount,
+			&item.InspectionFailureCount,
+			&item.LatestInspectionError,
+			&item.Priority,
+			&reasonStr,
+		); err != nil {
+			return nil, 0, fmt.Errorf("scan indexer admin attention: %w", err)
+		}
+		if postedAt.Valid {
+			t := postedAt.Time.UTC()
+			item.PostedAt = &t
+		}
+		item.UpdatedAt = item.UpdatedAt.UTC()
+		if reasonStr != "" {
+			item.Reasons = strings.Split(reasonStr, "|")
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("iterate indexer admin attention: %w", err)
+	}
+	return out, total, nil
+}
+
+func (s *Store) ListIndexerArticleCohorts(ctx context.Context, params IndexerArticleCohortParams) ([]IndexerArticleCohortItem, int, error) {
+	if s == nil || s.db == nil {
+		return nil, 0, fmt.Errorf("pgindex store is not initialized")
+	}
+	if params.Limit <= 0 || params.Limit > 500 {
+		params.Limit = 100
+	}
+	if params.Offset < 0 {
+		params.Offset = 0
+	}
+	args := []any{}
+	where := strings.Builder{}
+	where.WriteString("WHERE 1=1")
+	if kind := strings.TrimSpace(params.Kind); kind != "" {
+		args = append(args, kind)
+		fmt.Fprintf(&where, " AND c.cohort_kind = $%d", len(args))
+	}
+	if status := strings.TrimSpace(params.Status); status != "" {
+		args = append(args, status)
+		fmt.Fprintf(&where, " AND c.status = $%d", len(args))
+	}
+	countSQL := `
+		SELECT COUNT(*)
+		FROM article_cohort_candidates c
+		` + where.String()
+	var total int
+	if err := s.db.QueryRowContext(ctx, countSQL, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count article cohorts: %w", err)
+	}
+
+	args = append(args, params.Limit, params.Offset)
+	limitArg := len(args) - 1
+	offsetArg := len(args)
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			c.source_posted_at,
+			c.cohort_key,
+			c.provider_id,
+			c.newsgroup_id,
+			COALESCE(ng.group_name, '') AS newsgroup_name,
+			c.cohort_kind,
+			c.priority_rank,
+			c.admission_reason,
+			c.score,
+			c.status,
+			c.bucket_start,
+			c.bucket_end,
+			c.article_count,
+			c.unassembled_count,
+			c.singleton_count,
+			c.yenc_ready_count,
+			c.yenc_running_count,
+			c.yenc_done_count,
+			c.yenc_recovered_count,
+			c.yenc_no_identity_count,
+			COALESCE(aq.ready_count, 0) AS assembly_queue_ready,
+			COALESCE(yq.ready_count, 0) AS recovery_queue_ready,
+			COALESCE(yq.admitted_count, 0) AS recovery_queue_admitted,
+			c.subject_file_name,
+			c.subject_file_index,
+			c.subject_file_total,
+			c.yenc_total_parts,
+			c.yenc_file_size,
+			c.first_article_number,
+			c.last_article_number,
+			c.last_scheduled_at,
+			c.cooldown_until,
+			c.updated_at
+		FROM article_cohort_candidates c
+		LEFT JOIN newsgroups ng ON ng.id = c.newsgroup_id
+		LEFT JOIN LATERAL (
+			SELECT COUNT(*) FILTER (WHERE status = 'ready')::integer AS ready_count
+			FROM article_cohort_assembly_queue aq
+			WHERE aq.cohort_key = c.cohort_key
+		) aq ON TRUE
+		LEFT JOIN LATERAL (
+			SELECT
+				COUNT(*) FILTER (WHERE status = 'ready')::integer AS ready_count,
+				COUNT(*) FILTER (WHERE status = 'admitted')::integer AS admitted_count
+			FROM article_cohort_yenc_queue yq
+			WHERE yq.cohort_key = c.cohort_key
+		) yq ON TRUE
+		`+where.String()+`
+		ORDER BY c.priority_rank ASC, c.score DESC, c.updated_at DESC, c.source_posted_at DESC, c.cohort_key
+		LIMIT $`+fmt.Sprint(limitArg)+` OFFSET $`+fmt.Sprint(offsetArg),
+		args...,
+	)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list article cohorts: %w", err)
+	}
+	defer rows.Close()
+	items := make([]IndexerArticleCohortItem, 0, params.Limit)
+	for rows.Next() {
+		var item IndexerArticleCohortItem
+		var lastScheduled sql.NullTime
+		var cooldown sql.NullTime
+		if err := rows.Scan(
+			&item.SourcePostedAt,
+			&item.CohortKey,
+			&item.ProviderID,
+			&item.NewsgroupID,
+			&item.NewsgroupName,
+			&item.CohortKind,
+			&item.PriorityRank,
+			&item.AdmissionReason,
+			&item.Score,
+			&item.Status,
+			&item.BucketStart,
+			&item.BucketEnd,
+			&item.ArticleCount,
+			&item.UnassembledCount,
+			&item.SingletonCount,
+			&item.YEncReadyCount,
+			&item.YEncRunningCount,
+			&item.YEncDoneCount,
+			&item.YEncRecoveredCount,
+			&item.YEncNoIdentityCount,
+			&item.AssemblyQueueReady,
+			&item.RecoveryQueueReady,
+			&item.RecoveryQueueAdmitted,
+			&item.SubjectFileName,
+			&item.SubjectFileIndex,
+			&item.SubjectFileTotal,
+			&item.YEncTotalParts,
+			&item.YEncFileSize,
+			&item.FirstArticleNumber,
+			&item.LastArticleNumber,
+			&lastScheduled,
+			&cooldown,
+			&item.UpdatedAt,
+		); err != nil {
+			return nil, 0, fmt.Errorf("scan article cohort: %w", err)
+		}
+		if lastScheduled.Valid {
+			ts := lastScheduled.Time.UTC()
+			item.LastScheduledAt = &ts
+		}
+		if cooldown.Valid {
+			ts := cooldown.Time.UTC()
+			item.CooldownUntil = &ts
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("iterate article cohorts: %w", err)
+	}
+	return items, total, nil
 }
 
 func (s *Store) ListIndexerReleases(ctx context.Context, params AdminIndexerReleaseListParams) ([]IndexerReleaseSummary, int, error) {
@@ -1281,6 +2665,7 @@ func (s *Store) ListIndexerReleases(ctx context.Context, params AdminIndexerRele
 			r.posted_at,
 			r.file_count,
 			r.expected_file_count,
+			r.expected_archive_file_count,
 			r.par_file_count,
 			r.completion_pct,
 			r.match_confidence,
@@ -1309,12 +2694,21 @@ func (s *Store) ListIndexerReleases(ctx context.Context, params AdminIndexerRele
 			r.subtitle_languages_json,
 			r.media_tags_json,
 			r.metadata_updated_at,
-			COALESCE(n.generation_status, 'pending'),
+			CASE
+				WHEN COALESCE(ras.object_key, '') <> ''
+				  AND ras.archive_status IN ('archived', 'purge_pending', 'purged')
+				THEN ras.archive_status
+				WHEN COALESCE(n.generation_status, '') <> ''
+				THEN 'legacy_' || n.generation_status
+				ELSE 'pending'
+			END,
 			COALESCE(ro.hidden, FALSE),
-			CASE WHEN `+publicIndexerReleaseVisibilityClause("r")+` THEN TRUE ELSE FALSE END,
-			(SELECT COUNT(*) FROM release_password_candidates rpc WHERE rpc.release_id = r.release_id)
+			CASE WHEN `+publicIndexerReleaseVisibilityClause("r", DefaultReleaseReadyPolicy())+` THEN TRUE ELSE FALSE END,
+			(SELECT COUNT(*) FROM release_password_candidates rpc WHERE rpc.release_id = r.release_id),
+			`+adminReleasePayloadCompletionStateSQL("r")+`
 		FROM releases r
 		LEFT JOIN release_overrides ro ON ro.release_id = r.release_id
+		LEFT JOIN release_archive_state ras ON ras.release_id = r.release_id
 		LEFT JOIN nzb_cache n ON n.release_id = r.release_id
 		WHERE %s
 		ORDER BY %s
@@ -1381,6 +2775,7 @@ func (s *Store) GetIndexerReleaseDetail(ctx context.Context, releaseID string) (
 			r.posted_at,
 			r.file_count,
 			r.expected_file_count,
+			r.expected_archive_file_count,
 			r.par_file_count,
 			r.completion_pct,
 			r.match_confidence,
@@ -1409,12 +2804,21 @@ func (s *Store) GetIndexerReleaseDetail(ctx context.Context, releaseID string) (
 			r.subtitle_languages_json,
 			r.media_tags_json,
 			r.metadata_updated_at,
-			COALESCE(n.generation_status, 'pending'),
+			CASE
+				WHEN COALESCE(ras.object_key, '') <> ''
+				  AND ras.archive_status IN ('archived', 'purge_pending', 'purged')
+				THEN ras.archive_status
+				WHEN COALESCE(n.generation_status, '') <> ''
+				THEN 'legacy_' || n.generation_status
+				ELSE 'pending'
+			END,
 			COALESCE(ro.hidden, FALSE),
-			CASE WHEN `+publicIndexerReleaseVisibilityClause("r")+` THEN TRUE ELSE FALSE END,
-			(SELECT COUNT(*) FROM release_password_candidates rpc WHERE rpc.release_id = r.release_id)
+			CASE WHEN `+publicIndexerReleaseVisibilityClause("r", DefaultReleaseReadyPolicy())+` THEN TRUE ELSE FALSE END,
+			(SELECT COUNT(*) FROM release_password_candidates rpc WHERE rpc.release_id = r.release_id),
+			`+adminReleasePayloadCompletionStateSQL("r")+`
 		FROM releases r
 		LEFT JOIN release_overrides ro ON ro.release_id = r.release_id
+		LEFT JOIN release_archive_state ras ON ras.release_id = r.release_id
 		LEFT JOIN nzb_cache n ON n.release_id = r.release_id
 		WHERE r.release_id = $1`, releaseID)
 
@@ -1433,26 +2837,26 @@ func (s *Store) GetIndexerReleaseDetail(ctx context.Context, releaseID string) (
 
 	filesRows, err := s.db.QueryContext(ctx, `
 		SELECT
-			rf.id,
+			COALESCE(rf.id, 0),
 			COALESCE(rf.binary_id, 0),
-			rf.file_name,
-			rf.size_bytes,
-			rf.file_index,
-			rf.is_pars,
-			rf.subject,
-			rf.poster,
-			rf.posted_at,
-			COUNT(bp.id) AS article_count,
-			COALESCE(b.total_parts, 0),
-			COALESCE(b.observed_parts, 0),
-			COALESCE(b.match_confidence, 0),
-			COALESCE(b.match_status, '')
-		FROM release_files rf
-		LEFT JOIN binary_parts bp ON bp.binary_id = rf.binary_id
-		LEFT JOIN binaries b ON b.id = rf.binary_id
-		WHERE rf.release_id = $1
-		GROUP BY rf.id, rf.binary_id, rf.file_name, rf.size_bytes, rf.file_index, rf.is_pars, rf.subject, rf.poster, rf.posted_at, b.total_parts, b.observed_parts, b.match_confidence, b.match_status
-		ORDER BY rf.file_index, rf.id`, releaseID)
+			cf.file_name,
+			cf.size_bytes,
+			cf.file_index,
+			cf.is_pars,
+			cf.subject,
+			cf.poster,
+			cf.posted_at,
+			cf.article_count,
+			cf.total_parts,
+			cf.observed_parts,
+			cf.match_confidence,
+			cf.match_status
+		FROM release_catalog_files cf
+		LEFT JOIN release_files rf
+		  ON rf.release_id = cf.release_id
+		 AND rf.file_name = cf.file_name
+		WHERE cf.release_id = $1
+		ORDER BY cf.file_index, cf.id`, releaseID)
 	if err != nil {
 		return nil, fmt.Errorf("list release files for %s: %w", releaseID, err)
 	}
@@ -1498,7 +2902,7 @@ func (s *Store) GetIndexerReleaseDetail(ctx context.Context, releaseID string) (
 	if err != nil {
 		return nil, err
 	}
-	predbMatches, err := s.listIndexerPredbMatches(ctx, releaseID)
+	predbMatches, err := s.listIndexerPredbMatches(ctx, release, releaseID)
 	if err != nil {
 		return nil, err
 	}
@@ -1515,6 +2919,7 @@ func (s *Store) GetIndexerReleaseDetail(ctx context.Context, releaseID string) (
 		Release:            release,
 		Newsgroups:         newsgroups,
 		Files:              files,
+		Diagnostics:        buildReleaseDetailDiagnostics(release, files),
 		PasswordCandidates: passwordCandidates,
 		Inspections:        inspections,
 		PredbMatches:       predbMatches,
@@ -1529,6 +2934,41 @@ func (s *Store) GetIndexerBinaryDetail(ctx context.Context, binaryID int64) (*In
 	}
 
 	row := s.db.QueryRowContext(ctx, `
+		WITH binary_detail_state AS (
+			SELECT
+				bc.binary_id AS id,
+				bc.source_posted_at,
+				bc.provider_id,
+				bc.newsgroup_id,
+				bc.poster_id,
+				bc.binary_key,
+				bic.release_key,
+				bic.release_name,
+				bic.binary_name,
+				bic.file_name,
+				bic.file_index,
+				bic.expected_file_count,
+				bic.match_confidence,
+				bic.match_status,
+				bic.grouping_summary_kind,
+				bic.grouping_summary_status,
+				bic.grouping_summary_fallback_used,
+				bos.posted_at,
+				bos.total_parts,
+				bos.observed_parts,
+				bos.total_bytes,
+				bos.first_article_number,
+				bos.last_article_number,
+				bos.part_source_posted_at_min,
+				bos.part_source_posted_at_max
+			FROM binary_core bc
+			JOIN binary_identity_current bic
+			  ON bic.source_posted_at = bc.source_posted_at
+			 AND bic.binary_id = bc.binary_id
+			JOIN binary_observation_stats bos
+			  ON bos.source_posted_at = bc.source_posted_at
+			 AND bos.binary_id = bc.binary_id
+		)
 		SELECT
 			b.id,
 			COALESCE(r.release_id, ''),
@@ -1542,8 +2982,8 @@ func (s *Store) GetIndexerBinaryDetail(ctx context.Context, binaryID int64) (*In
 			b.file_name,
 			b.provider_id,
 			b.newsgroup_id,
-			COALESCE(p.poster_name, ''),
-			b.posted_at,
+			COALESCE(NULLIF(p.poster_name, ''), raw_meta.poster, ''),
+			COALESCE(b.posted_at, raw_meta.posted_at),
 			b.file_index,
 			b.expected_file_count,
 			b.total_parts,
@@ -1555,19 +2995,62 @@ func (s *Store) GetIndexerBinaryDetail(ctx context.Context, binaryID int64) (*In
 			b.match_status,
 			CASE
 				WHEN bge.binary_id IS NOT NULL THEN COALESCE(bge.payload_json, '{}'::jsonb)
-				ELSE COALESCE(b.grouping_evidence_json, '{}'::jsonb)
+				ELSE jsonb_strip_nulls(jsonb_build_object(
+					'summary', CASE
+						WHEN COALESCE(b.grouping_summary_kind, '') <> ''
+						  OR COALESCE(b.grouping_summary_status, '') <> ''
+						  OR COALESCE(b.grouping_summary_fallback_used, FALSE)
+						THEN jsonb_build_object(
+							'kind', NULLIF(b.grouping_summary_kind, ''),
+							'status', NULLIF(b.grouping_summary_status, ''),
+							'fallback_used', b.grouping_summary_fallback_used
+						)
+						ELSE NULL
+					END
+				))
 			END,
 			COALESCE(r.encrypted, FALSE),
-			COALESCE(r.password_state, '')
-		FROM binaries b
-		LEFT JOIN binary_grouping_evidence bge ON bge.binary_id = b.id
+			COALESCE(r.password_state, ''),
+			COALESCE(sup.target_binary_id, 0),
+			COALESCE(sup.superseded_reason, ''),
+			sup.superseded_at
+		FROM binary_detail_state b
+		LEFT JOIN binary_grouping_evidence bge
+		  ON bge.source_posted_at = b.source_posted_at
+		 AND bge.binary_id = b.id
+		LEFT JOIN binary_superseded_sources sup
+		  ON sup.source_posted_at = b.source_posted_at
+		 AND sup.source_binary_id = b.id
 		LEFT JOIN posters p ON p.id = b.poster_id
 		LEFT JOIN release_files rf ON rf.binary_id = b.id
 		LEFT JOIN releases r ON r.release_id = rf.release_id
+		LEFT JOIN LATERAL (
+			SELECT
+				COALESCE(NULLIF(pp.poster_name, ''), NULLIF(aip.poster, '')) AS poster,
+				MIN(ah.date_utc) AS posted_at
+			FROM binary_parts bp
+			JOIN article_headers ah
+			  ON ah.source_posted_at = bp.source_posted_at
+			 AND ah.id = bp.article_header_id
+			LEFT JOIN article_header_poster_refs apr
+			  ON apr.source_posted_at = ah.source_posted_at
+			 AND apr.article_header_id = ah.id
+			LEFT JOIN posters pp ON pp.id = apr.poster_id
+			LEFT JOIN article_header_ingest_payloads aip
+			  ON aip.source_posted_at = ah.source_posted_at
+			 AND aip.article_header_id = ah.id
+			WHERE bp.source_posted_at >= COALESCE(b.part_source_posted_at_min, b.source_posted_at - INTERVAL '1 day')
+			  AND bp.source_posted_at <= COALESCE(b.part_source_posted_at_max, b.source_posted_at + INTERVAL '1 day')
+			  AND bp.binary_id = b.id
+			GROUP BY COALESCE(NULLIF(pp.poster_name, ''), NULLIF(aip.poster, ''))
+			ORDER BY COUNT(*) DESC, COALESCE(NULLIF(pp.poster_name, ''), NULLIF(aip.poster, ''))
+			LIMIT 1
+		) raw_meta ON TRUE
 		WHERE b.id = $1`, binaryID)
 
 	var item IndexerBinaryDetail
 	var postedAt sql.NullTime
+	var supersededAt sql.NullTime
 	var groupingJSON []byte
 	if err := row.Scan(
 		&item.BinaryID,
@@ -1596,6 +3079,9 @@ func (s *Store) GetIndexerBinaryDetail(ctx context.Context, binaryID int64) (*In
 		&groupingJSON,
 		&item.Encrypted,
 		&item.PasswordState,
+		&item.SupersededByID,
+		&item.SupersededReason,
+		&supersededAt,
 	); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -1605,6 +3091,10 @@ func (s *Store) GetIndexerBinaryDetail(ctx context.Context, binaryID int64) (*In
 	if postedAt.Valid {
 		t := postedAt.Time.UTC()
 		item.PostedAt = &t
+	}
+	if supersededAt.Valid {
+		t := supersededAt.Time.UTC()
+		item.SupersededAt = &t
 	}
 	item.GroupingEvidence = cloneRawJSON(groupingJSON)
 
@@ -1648,39 +3138,558 @@ func (s *Store) GetIndexerBinaryDetail(ctx context.Context, binaryID int64) (*In
 	return &item, nil
 }
 
+func (s *Store) ListIndexerBinaries(ctx context.Context, params IndexerBinaryListParams) ([]IndexerBinarySummary, int, error) {
+	limit := params.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	offset := params.Offset
+	if offset < 0 {
+		offset = 0
+	}
+
+	if isRecentIndexerBinaryFastPath(params) {
+		return s.listRecentIndexerBinariesFast(ctx, limit, offset)
+	}
+	if isWeakUnformedIndexerBinaryFastPath(params) {
+		return s.listWeakUnformedIndexerBinariesFast(ctx, params, limit, offset)
+	}
+
+	where := []string{"1=1"}
+	args := []any{}
+	addArg := func(value any) string {
+		args = append(args, value)
+		return fmt.Sprintf("$%d", len(args))
+	}
+	if q := strings.TrimSpace(params.Query); q != "" {
+		needle := "%" + strings.ToLower(q) + "%"
+		where = append(where, fmt.Sprintf(`(
+			LOWER(COALESCE(bic.binary_name, '')) LIKE %s
+			OR LOWER(COALESCE(bic.file_name, '')) LIKE %s
+			OR LOWER(COALESCE(bic.release_name, '')) LIKE %s
+			OR LOWER(COALESCE(bc.binary_key, '')) LIKE %s
+			OR bc.binary_id::text = %s
+		)`, addArg(needle), addArg(needle), addArg(needle), addArg(needle), addArg(strings.TrimSpace(params.Query))))
+	}
+	if group := strings.TrimSpace(params.GroupName); group != "" {
+		where = append(where, "LOWER(ng.group_name) LIKE "+addArg("%"+strings.ToLower(group)+"%"))
+	}
+	if value := strings.TrimSpace(params.IdentityStrength); value != "" {
+		where = append(where, "LOWER(COALESCE(bic.identity_strength, '')) = "+addArg(strings.ToLower(value)))
+	}
+	if value := strings.TrimSpace(params.ReadinessBucket); value != "" {
+		where = append(where, "LOWER(COALESCE(bic.grouping_summary_status, '')) = "+addArg(strings.ToLower(value)))
+	}
+	if value := strings.TrimSpace(params.MatchStatus); value != "" {
+		where = append(where, "LOWER(COALESCE(bic.match_status, '')) = "+addArg(strings.ToLower(value)))
+	}
+	switch strings.ToLower(strings.TrimSpace(params.ReleaseState)) {
+	case "formed":
+		where = append(where, "rf.release_id IS NOT NULL")
+	case "unformed":
+		where = append(where, "rf.release_id IS NULL")
+	}
+
+	orderBy := "COALESCE(bos.posted_at, bic.updated_at) DESC NULLS LAST, bc.binary_id DESC"
+	switch strings.ToLower(strings.TrimSpace(params.Sort)) {
+	case "updated_asc":
+		orderBy = "GREATEST(bic.updated_at, bos.updated_at) ASC, bc.binary_id ASC"
+	case "updated_desc":
+		orderBy = "GREATEST(bic.updated_at, bos.updated_at) DESC, bc.binary_id DESC"
+	case "completion_asc":
+		orderBy = "completion_pct ASC, bc.binary_id DESC"
+	case "completion_desc":
+		orderBy = "completion_pct DESC, bc.binary_id DESC"
+	case "parts_desc":
+		orderBy = "COALESCE(bos.total_parts, 0) DESC, bc.binary_id DESC"
+	case "parts_asc":
+		orderBy = "COALESCE(bos.total_parts, 0) ASC, bc.binary_id DESC"
+	}
+
+	whereSQL := strings.Join(where, " AND ")
+	countQuery := `
+		SELECT COUNT(*)
+		FROM binary_core bc
+		JOIN binary_identity_current bic
+		  ON bic.source_posted_at = bc.source_posted_at
+		 AND bic.binary_id = bc.binary_id
+		JOIN binary_observation_stats bos
+		  ON bos.source_posted_at = bc.source_posted_at
+		 AND bos.binary_id = bc.binary_id
+		LEFT JOIN newsgroups ng ON ng.id = bc.newsgroup_id
+		LEFT JOIN release_files rf ON rf.binary_id = bc.binary_id
+		WHERE ` + whereSQL
+	var total int
+	if err := s.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count indexer binaries: %w", err)
+	}
+
+	args = append(args, limit, offset)
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			bc.binary_id,
+			COALESCE(rf.release_id, ''),
+			COALESCE(r.title, ''),
+			COALESCE(ng.group_name, ''),
+			COALESCE(bic.release_name, ''),
+			COALESCE(bic.binary_name, ''),
+			COALESCE(bic.file_name, ''),
+			COALESCE(bic.family_kind, ''),
+			COALESCE(bic.identity_strength, ''),
+			COALESCE(bic.grouping_summary_status, ''),
+			COALESCE(bic.match_status, ''),
+			COALESCE(bic.match_confidence, 0),
+			bos.posted_at,
+			COALESCE(bos.total_parts, 0),
+			COALESCE(bos.observed_parts, 0),
+			CASE
+				WHEN COALESCE(bos.total_parts, 0) > 0
+				THEN LEAST(100, (COALESCE(bos.observed_parts, 0)::numeric * 100.0 / bos.total_parts))::float8
+				ELSE 0
+			END AS completion_pct,
+			COALESCE(bos.total_bytes, 0),
+			COALESCE(brc.recovered_source, ''),
+			COALESCE(brc.recovered_file_name, ''),
+			COALESCE(wi.status, ''),
+			COALESCE(wi.priority_rank, 0),
+			COALESCE(ins.inspection_count, 0),
+			GREATEST(bic.updated_at, bos.updated_at)
+		FROM binary_core bc
+		JOIN binary_identity_current bic
+		  ON bic.source_posted_at = bc.source_posted_at
+		 AND bic.binary_id = bc.binary_id
+		JOIN binary_observation_stats bos
+		  ON bos.source_posted_at = bc.source_posted_at
+		 AND bos.binary_id = bc.binary_id
+		LEFT JOIN binary_recovery_current brc
+		  ON brc.source_posted_at = bc.source_posted_at
+		 AND brc.binary_id = bc.binary_id
+		LEFT JOIN newsgroups ng ON ng.id = bc.newsgroup_id
+		LEFT JOIN release_files rf ON rf.binary_id = bc.binary_id
+		LEFT JOIN releases r ON r.release_id = rf.release_id
+		LEFT JOIN LATERAL (
+			SELECT status, priority_rank
+			FROM yenc_recovery_work_items wi
+			WHERE wi.source_posted_at = bc.source_posted_at
+			  AND wi.binary_id = bc.binary_id
+			ORDER BY wi.updated_at DESC
+			LIMIT 1
+		) wi ON TRUE
+		LEFT JOIN LATERAL (
+			SELECT COUNT(*)::int AS inspection_count
+			FROM binary_inspections bi
+			WHERE bi.source_posted_at = bc.source_posted_at
+			  AND bi.binary_id = bc.binary_id
+		) ins ON TRUE
+		WHERE `+whereSQL+`
+		ORDER BY `+orderBy+`
+		LIMIT $`+fmt.Sprint(len(args)-1)+` OFFSET $`+fmt.Sprint(len(args)), args...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list indexer binaries: %w", err)
+	}
+	defer rows.Close()
+
+	items := []IndexerBinarySummary{}
+	for rows.Next() {
+		var item IndexerBinarySummary
+		var postedAt sql.NullTime
+		if err := rows.Scan(
+			&item.BinaryID,
+			&item.ReleaseID,
+			&item.ReleaseTitle,
+			&item.GroupName,
+			&item.ReleaseName,
+			&item.BinaryName,
+			&item.FileName,
+			&item.FamilyKind,
+			&item.IdentityStrength,
+			&item.ReadinessBucket,
+			&item.MatchStatus,
+			&item.MatchConfidence,
+			&postedAt,
+			&item.TotalParts,
+			&item.ObservedParts,
+			&item.CompletionPct,
+			&item.TotalBytes,
+			&item.RecoveredSource,
+			&item.RecoveredFileName,
+			&item.YEncStatus,
+			&item.YEncPriorityRank,
+			&item.InspectionCount,
+			&item.UpdatedAt,
+		); err != nil {
+			return nil, 0, fmt.Errorf("scan indexer binary summary: %w", err)
+		}
+		if postedAt.Valid {
+			t := postedAt.Time.UTC()
+			item.PostedAt = &t
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("iterate indexer binaries: %w", err)
+	}
+	return items, total, nil
+}
+
+func isRecentIndexerBinaryFastPath(params IndexerBinaryListParams) bool {
+	if strings.TrimSpace(params.Query) != "" ||
+		strings.TrimSpace(params.GroupName) != "" ||
+		strings.TrimSpace(params.IdentityStrength) != "" ||
+		strings.TrimSpace(params.ReadinessBucket) != "" ||
+		strings.TrimSpace(params.MatchStatus) != "" ||
+		strings.TrimSpace(params.ReleaseState) != "" {
+		return false
+	}
+	sort := strings.ToLower(strings.TrimSpace(params.Sort))
+	return sort == "" || sort == "updated_desc"
+}
+
+func isWeakUnformedIndexerBinaryFastPath(params IndexerBinaryListParams) bool {
+	if strings.TrimSpace(params.Query) != "" ||
+		strings.TrimSpace(params.GroupName) != "" ||
+		strings.TrimSpace(params.ReadinessBucket) != "" ||
+		strings.TrimSpace(params.MatchStatus) != "" {
+		return false
+	}
+	if strings.ToLower(strings.TrimSpace(params.ReleaseState)) != "unformed" {
+		return false
+	}
+	identityStrength := strings.ToLower(strings.TrimSpace(params.IdentityStrength))
+	if identityStrength != "weak" && identityStrength != "provisional" {
+		return false
+	}
+	sort := strings.ToLower(strings.TrimSpace(params.Sort))
+	return sort == "" || sort == "updated_desc"
+}
+
+func (s *Store) listWeakUnformedIndexerBinariesFast(ctx context.Context, params IndexerBinaryListParams, limit, offset int) ([]IndexerBinarySummary, int, error) {
+	identityStrength := strings.ToLower(strings.TrimSpace(params.IdentityStrength))
+	var total int
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM binary_identity_current bic
+		WHERE LOWER(COALESCE(bic.identity_strength, '')) = $1
+		  AND NOT EXISTS (
+			SELECT 1
+			FROM release_files rf
+			WHERE rf.binary_id = bic.binary_id
+		  )`, identityStrength).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count weak unformed indexer binaries: %w", err)
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		WITH page AS (
+			SELECT
+				bic.binary_id,
+				bic.source_posted_at,
+				COALESCE(bic.release_name, '') AS release_name,
+				COALESCE(bic.binary_name, '') AS binary_name,
+				COALESCE(bic.file_name, '') AS file_name,
+				COALESCE(bic.family_kind, '') AS family_kind,
+				COALESCE(bic.identity_strength, '') AS identity_strength,
+				COALESCE(bic.grouping_summary_status, '') AS grouping_summary_status,
+				COALESCE(bic.match_status, '') AS match_status,
+				COALESCE(bic.match_confidence, 0) AS match_confidence,
+				bic.updated_at
+			FROM binary_identity_current bic
+			WHERE LOWER(COALESCE(bic.identity_strength, '')) = $1
+			  AND NOT EXISTS (
+				SELECT 1
+				FROM release_files rf
+				WHERE rf.binary_id = bic.binary_id
+			  )
+			ORDER BY bic.updated_at DESC, bic.binary_id DESC
+			LIMIT $2 OFFSET $3
+		)
+		SELECT
+			page.binary_id,
+			'' AS release_id,
+			'' AS release_title,
+			COALESCE(ng.group_name, ''),
+			page.release_name,
+			page.binary_name,
+			page.file_name,
+			page.family_kind,
+			page.identity_strength,
+			page.grouping_summary_status,
+			page.match_status,
+			page.match_confidence,
+			bos.posted_at,
+			COALESCE(bos.total_parts, 0),
+			COALESCE(bos.observed_parts, 0),
+			CASE
+				WHEN COALESCE(bos.total_parts, 0) > 0
+				THEN LEAST(100, (COALESCE(bos.observed_parts, 0)::numeric * 100.0 / bos.total_parts))::float8
+				ELSE 0
+			END AS completion_pct,
+			COALESCE(bos.total_bytes, 0),
+			COALESCE(brc.recovered_source, ''),
+			COALESCE(brc.recovered_file_name, ''),
+			COALESCE(wi.status, ''),
+			COALESCE(wi.priority_rank, 0),
+			COALESCE(ins.inspection_count, 0),
+			GREATEST(page.updated_at, COALESCE(bos.updated_at, TIMESTAMPTZ 'epoch')) AS updated_at
+		FROM page
+		JOIN binary_core bc
+		  ON bc.source_posted_at = page.source_posted_at
+		 AND bc.binary_id = page.binary_id
+		JOIN binary_observation_stats bos
+		  ON bos.source_posted_at = page.source_posted_at
+		 AND bos.binary_id = page.binary_id
+		LEFT JOIN binary_recovery_current brc
+		  ON brc.source_posted_at = page.source_posted_at
+		 AND brc.binary_id = page.binary_id
+		LEFT JOIN newsgroups ng ON ng.id = bc.newsgroup_id
+		LEFT JOIN LATERAL (
+			SELECT status, priority_rank
+			FROM yenc_recovery_work_items wi
+			WHERE wi.source_posted_at = page.source_posted_at
+			  AND wi.binary_id = page.binary_id
+			ORDER BY wi.updated_at DESC
+			LIMIT 1
+		) wi ON TRUE
+		LEFT JOIN LATERAL (
+			SELECT COUNT(*)::int AS inspection_count
+			FROM binary_inspections bi
+			WHERE bi.source_posted_at = page.source_posted_at
+			  AND bi.binary_id = page.binary_id
+		) ins ON TRUE
+		ORDER BY page.updated_at DESC, page.binary_id DESC`, identityStrength, limit, offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list weak unformed indexer binaries: %w", err)
+	}
+	defer rows.Close()
+
+	items, err := scanIndexerBinarySummaries(rows)
+	if err != nil {
+		return nil, 0, err
+	}
+	return items, total, nil
+}
+
+func (s *Store) listRecentIndexerBinariesFast(ctx context.Context, limit, offset int) ([]IndexerBinarySummary, int, error) {
+	var total int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM binary_core`).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count recent indexer binaries: %w", err)
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		WITH recent_core AS (
+			SELECT binary_id, source_posted_at, newsgroup_id
+			FROM binary_core
+			ORDER BY binary_id DESC
+			LIMIT $1 OFFSET $2
+		)
+		SELECT
+			bc.binary_id,
+			COALESCE(rf.release_id, ''),
+			COALESCE(r.title, ''),
+			COALESCE(ng.group_name, ''),
+			COALESCE(bic.release_name, ''),
+			COALESCE(bic.binary_name, ''),
+			COALESCE(bic.file_name, ''),
+			COALESCE(bic.family_kind, ''),
+			COALESCE(bic.identity_strength, ''),
+			COALESCE(bic.grouping_summary_status, ''),
+			COALESCE(bic.match_status, ''),
+			COALESCE(bic.match_confidence, 0),
+			bos.posted_at,
+			COALESCE(bos.total_parts, 0),
+			COALESCE(bos.observed_parts, 0),
+			CASE
+				WHEN COALESCE(bos.total_parts, 0) > 0
+				THEN LEAST(100, (COALESCE(bos.observed_parts, 0)::numeric * 100.0 / bos.total_parts))::float8
+				ELSE 0
+			END AS completion_pct,
+			COALESCE(bos.total_bytes, 0),
+			COALESCE(brc.recovered_source, ''),
+			COALESCE(brc.recovered_file_name, ''),
+			COALESCE(wi.status, ''),
+			COALESCE(wi.priority_rank, 0),
+			COALESCE(ins.inspection_count, 0),
+			GREATEST(COALESCE(bic.updated_at, TIMESTAMPTZ 'epoch'), COALESCE(bos.updated_at, TIMESTAMPTZ 'epoch')) AS updated_at
+		FROM recent_core bc
+		JOIN binary_identity_current bic
+		  ON bic.source_posted_at = bc.source_posted_at
+		 AND bic.binary_id = bc.binary_id
+		JOIN binary_observation_stats bos
+		  ON bos.source_posted_at = bc.source_posted_at
+		 AND bos.binary_id = bc.binary_id
+		LEFT JOIN binary_recovery_current brc
+		  ON brc.source_posted_at = bc.source_posted_at
+		 AND brc.binary_id = bc.binary_id
+		LEFT JOIN newsgroups ng ON ng.id = bc.newsgroup_id
+		LEFT JOIN release_files rf ON rf.binary_id = bc.binary_id
+		LEFT JOIN releases r ON r.release_id = rf.release_id
+		LEFT JOIN LATERAL (
+			SELECT status, priority_rank
+			FROM yenc_recovery_work_items wi
+			WHERE wi.source_posted_at = bc.source_posted_at
+			  AND wi.binary_id = bc.binary_id
+			ORDER BY wi.updated_at DESC
+			LIMIT 1
+		) wi ON TRUE
+		LEFT JOIN LATERAL (
+			SELECT COUNT(*)::int AS inspection_count
+			FROM binary_inspections bi
+			WHERE bi.source_posted_at = bc.source_posted_at
+			  AND bi.binary_id = bc.binary_id
+		) ins ON TRUE
+		ORDER BY bc.binary_id DESC`, limit, offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list recent indexer binaries: %w", err)
+	}
+	defer rows.Close()
+
+	items, err := scanIndexerBinarySummaries(rows)
+	if err != nil {
+		return nil, 0, err
+	}
+	return items, total, nil
+}
+
+func scanIndexerBinarySummaries(rows *sql.Rows) ([]IndexerBinarySummary, error) {
+	items := []IndexerBinarySummary{}
+	for rows.Next() {
+		var item IndexerBinarySummary
+		var postedAt sql.NullTime
+		if err := rows.Scan(
+			&item.BinaryID,
+			&item.ReleaseID,
+			&item.ReleaseTitle,
+			&item.GroupName,
+			&item.ReleaseName,
+			&item.BinaryName,
+			&item.FileName,
+			&item.FamilyKind,
+			&item.IdentityStrength,
+			&item.ReadinessBucket,
+			&item.MatchStatus,
+			&item.MatchConfidence,
+			&postedAt,
+			&item.TotalParts,
+			&item.ObservedParts,
+			&item.CompletionPct,
+			&item.TotalBytes,
+			&item.RecoveredSource,
+			&item.RecoveredFileName,
+			&item.YEncStatus,
+			&item.YEncPriorityRank,
+			&item.InspectionCount,
+			&item.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan indexer binary summary: %w", err)
+		}
+		if postedAt.Valid {
+			t := postedAt.Time.UTC()
+			item.PostedAt = &t
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate indexer binary summaries: %w", err)
+	}
+	return items, nil
+}
+
 func (s *Store) GetIndexerFileDetail(ctx context.Context, fileID int64) (*IndexerFileDetail, error) {
 	if fileID <= 0 {
 		return nil, fmt.Errorf("file id is required")
 	}
 
 	row := s.db.QueryRowContext(ctx, `
+		WITH binary_detail_state AS (
+			SELECT
+				bc.binary_id AS id,
+				bc.source_posted_at,
+				bic.match_confidence,
+				bic.match_status,
+				bic.grouping_summary_kind,
+				bic.grouping_summary_status,
+				bic.grouping_summary_fallback_used,
+				bos.total_parts,
+				bos.observed_parts,
+				bos.part_source_posted_at_min,
+				bos.part_source_posted_at_max
+			FROM binary_core bc
+			JOIN binary_identity_current bic
+			  ON bic.source_posted_at = bc.source_posted_at
+			 AND bic.binary_id = bc.binary_id
+			JOIN binary_observation_stats bos
+			  ON bos.source_posted_at = bc.source_posted_at
+			 AND bos.binary_id = bc.binary_id
+		)
 		SELECT
-			rf.id,
-			rf.release_id,
+			cf.id,
+			cf.release_id,
 			COALESCE(r.title, ''),
 			COALESCE(r.group_name, ''),
 			COALESCE(rf.binary_id, 0),
-			rf.file_name,
-			rf.size_bytes,
-			rf.file_index,
-			rf.is_pars,
-			rf.subject,
-			rf.poster,
-			rf.posted_at,
-			COALESCE(b.total_parts, 0),
-			COALESCE(b.observed_parts, 0),
+			cf.file_name,
+			cf.size_bytes,
+			cf.file_index,
+			cf.is_pars,
+			cf.subject,
+			COALESCE(NULLIF(cf.poster, ''), raw_meta.poster, ''),
+			COALESCE(cf.posted_at, raw_meta.posted_at),
+			COALESCE(b.total_parts, cf.total_parts, 0),
+			COALESCE(b.observed_parts, cf.observed_parts, 0),
 			COALESCE(b.match_confidence, 0),
 			COALESCE(b.match_status, ''),
 			CASE
 				WHEN bge.binary_id IS NOT NULL THEN COALESCE(bge.payload_json, '{}'::jsonb)
-				ELSE COALESCE(b.grouping_evidence_json, '{}'::jsonb)
+				ELSE jsonb_strip_nulls(jsonb_build_object(
+					'summary', CASE
+						WHEN COALESCE(b.grouping_summary_kind, '') <> ''
+						  OR COALESCE(b.grouping_summary_status, '') <> ''
+						  OR COALESCE(b.grouping_summary_fallback_used, FALSE)
+						THEN jsonb_build_object(
+							'kind', NULLIF(b.grouping_summary_kind, ''),
+							'status', NULLIF(b.grouping_summary_status, ''),
+							'fallback_used', b.grouping_summary_fallback_used
+						)
+						ELSE NULL
+					END
+				))
 			END,
-			(SELECT COUNT(*) FROM binary_parts WHERE binary_id = rf.binary_id)
-		FROM release_files rf
-		JOIN releases r ON r.release_id = rf.release_id
-		LEFT JOIN binaries b ON b.id = rf.binary_id
-		LEFT JOIN binary_grouping_evidence bge ON bge.binary_id = b.id
-		WHERE rf.id = $1`, fileID)
+			COALESCE(cf.article_count, 0)
+		FROM release_catalog_files cf
+		JOIN releases r ON r.release_id = cf.release_id
+		LEFT JOIN release_files rf
+		  ON rf.release_id = cf.release_id
+		 AND rf.file_index = cf.file_index
+		 AND rf.file_name = cf.file_name
+		LEFT JOIN binary_detail_state b ON b.id = rf.binary_id
+		LEFT JOIN binary_grouping_evidence bge
+		  ON bge.source_posted_at = b.source_posted_at
+		 AND bge.binary_id = b.id
+		LEFT JOIN LATERAL (
+			SELECT
+				COALESCE(NULLIF(p.poster_name, ''), NULLIF(aip.poster, '')) AS poster,
+				MIN(ah.date_utc) AS posted_at
+			FROM binary_parts bp
+			JOIN article_headers ah
+			  ON ah.source_posted_at = bp.source_posted_at
+			 AND ah.id = bp.article_header_id
+			LEFT JOIN article_header_poster_refs apr
+			  ON apr.source_posted_at = ah.source_posted_at
+			 AND apr.article_header_id = ah.id
+			LEFT JOIN posters p ON p.id = apr.poster_id
+			LEFT JOIN article_header_ingest_payloads aip
+			  ON aip.source_posted_at = ah.source_posted_at
+			 AND aip.article_header_id = ah.id
+			WHERE bp.source_posted_at >= COALESCE(b.part_source_posted_at_min, b.source_posted_at - INTERVAL '1 day')
+			  AND bp.source_posted_at <= COALESCE(b.part_source_posted_at_max, b.source_posted_at + INTERVAL '1 day')
+			  AND bp.binary_id = rf.binary_id
+			GROUP BY COALESCE(NULLIF(p.poster_name, ''), NULLIF(aip.poster, ''))
+			ORDER BY COUNT(*) DESC, COALESCE(NULLIF(p.poster_name, ''), NULLIF(aip.poster, ''))
+			LIMIT 1
+		) raw_meta ON TRUE
+		WHERE cf.id = $1`, fileID)
 
 	var item IndexerFileDetail
 	var postedAt sql.NullTime
@@ -1719,6 +3728,12 @@ func (s *Store) GetIndexerFileDetail(ctx context.Context, fileID int64) (*Indexe
 	newsgroups, err := s.ListCatalogReleaseNewsgroups(ctx, item.ReleaseID)
 	if err != nil {
 		return nil, err
+	}
+	if len(newsgroups) == 0 && item.BinaryID > 0 {
+		newsgroups, err = s.ListCatalogBinaryNewsgroups(ctx, item.BinaryID)
+		if err != nil {
+			return nil, err
+		}
 	}
 	item.Newsgroups = newsgroups
 
@@ -1776,6 +3791,7 @@ func scanIndexerReleaseSummary(scanner releaseScanner) (IndexerReleaseSummary, e
 		&postedAt,
 		&item.FileCount,
 		&item.ExpectedFileCount,
+		&item.ExpectedArchiveFileCount,
 		&item.ParFileCount,
 		&item.CompletionPct,
 		&item.MatchConfidence,
@@ -1808,6 +3824,7 @@ func scanIndexerReleaseSummary(scanner releaseScanner) (IndexerReleaseSummary, e
 		&item.Hidden,
 		&item.PublicVisible,
 		&item.PasswordCandidateCount,
+		&item.PayloadCompletionState,
 	); err != nil {
 		return IndexerReleaseSummary{}, err
 	}
@@ -1822,6 +3839,7 @@ func scanIndexerReleaseSummary(scanner releaseScanner) (IndexerReleaseSummary, e
 	}
 	item.SubtitleLanguages = decodeJSONStringSlice(subtitleJSON)
 	item.MediaTags = decodeJSONStringSlice(mediaTagsJSON)
+	item.PasswordState = normalizeReleasePasswordState(item.PasswordState, item.Passworded, item.PasswordedKnown, item.PasswordedUnknown)
 
 	return item, nil
 }

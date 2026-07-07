@@ -26,6 +26,13 @@ type GroupStats struct {
 	Group string
 }
 
+type GroupListing struct {
+	Group  string
+	High   int64
+	Low    int64
+	Status string
+}
+
 // overview header shape for XOVER scraping.
 type OverviewHeader struct {
 	ArticleNumber int64
@@ -90,6 +97,8 @@ type providerStatsSnapshot struct {
 	RecoverableErrors int64
 }
 
+type ProviderStatsSnapshot = providerStatsSnapshot
+
 // Close ensures both layers are shut down.
 func (c *nntpConn) Close() error {
 	if c.tp != nil {
@@ -134,10 +143,13 @@ type Provider interface {
 	Label() string
 	Priority() int
 	MaxConnection() int
+	IdleConnectionCount() int
 	Fetch(ctx context.Context, msgID string, groups []string) (io.Reader, error)
 	FetchBodyPrefix(ctx context.Context, msgID string, groups []string, maxBytes int64) ([]byte, error)
 	GroupStats(ctx context.Context, group string) (GroupStats, error)
+	ListGroups(ctx context.Context, pattern string) ([]GroupListing, error)
 	XOver(ctx context.Context, group string, from, to int64) ([]OverviewHeader, error)
+	StatsSnapshot() ProviderStatsSnapshot
 	TestConnection() error
 	Close() error
 }
@@ -158,6 +170,8 @@ func (p *nntpProvider) Priority() int { return p.conf.Priority }
 
 // Interface implimentation: MaxConnection
 func (p *nntpProvider) MaxConnection() int { return p.conf.MaxConnection }
+
+func (p *nntpProvider) IdleConnectionCount() int { return len(p.pool) }
 
 func (p *nntpProvider) Fetch(ctx context.Context, msgID string, groups []string) (io.Reader, error) {
 	formattedID := strings.TrimSpace(msgID)
@@ -254,6 +268,33 @@ func (p *nntpProvider) GroupStats(ctx context.Context, group string) (GroupStats
 	return GroupStats{}, lastErr
 }
 
+func (p *nntpProvider) ListGroups(ctx context.Context, pattern string) ([]GroupListing, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		conn, err := p.getConn()
+		if err != nil {
+			return nil, err
+		}
+
+		groups, retry, err := p.listGroupsWithConn(conn, strings.TrimSpace(pattern))
+		if err == nil {
+			return groups, nil
+		}
+		lastErr = err
+		if retry && attempt == 0 {
+			p.logRecoverableRetry("list_groups", err, pattern)
+			continue
+		}
+		return nil, err
+	}
+
+	return nil, lastErr
+}
+
 // XOver reads overview rows for [from,to] after GROUP select.
 func (p *nntpProvider) XOver(ctx context.Context, group string, from, to int64) ([]OverviewHeader, error) {
 	if err := ctx.Err(); err != nil {
@@ -295,6 +336,42 @@ func (p *nntpProvider) groupStatsWithConn(conn *nntpConn, group string) (GroupSt
 
 	p.returnConn(conn)
 	return stats, false, nil
+}
+
+func (p *nntpProvider) listGroupsWithConn(conn *nntpConn, pattern string) ([]GroupListing, bool, error) {
+	command := "LIST ACTIVE"
+	if pattern != "" {
+		command += " " + pattern
+	}
+	if _, err := conn.tp.Cmd("%s", command); err != nil {
+		conn.Close()
+		return nil, isRecoverableConnError(err), err
+	}
+
+	code, msg, err := conn.tp.ReadCodeLine(215)
+	if err != nil {
+		conn.Close()
+		return nil, isRecoverableConnError(err), fmt.Errorf("LIST ACTIVE failed (code %d): %s", code, msg)
+	}
+
+	dr := conn.tp.DotReader()
+	sc := bufio.NewScanner(dr)
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+
+	out := make([]GroupListing, 0, 1024)
+	for sc.Scan() {
+		item, ok := parseListActiveLine(sc.Text())
+		if ok {
+			out = append(out, item)
+		}
+	}
+	if err := sc.Err(); err != nil {
+		conn.Close()
+		return nil, isRecoverableConnError(err), fmt.Errorf("read LIST ACTIVE stream: %w", err)
+	}
+
+	p.returnConn(conn)
+	return out, false, nil
 }
 
 func (p *nntpProvider) xoverWithConn(ctx context.Context, conn *nntpConn, group string, from, to int64) ([]OverviewHeader, bool, error) {
@@ -419,6 +496,27 @@ func parseOverviewLine(line string) (OverviewHeader, bool) {
 		Xref:          xref,
 		RawOverview:   raw,
 	}, true
+}
+
+func parseListActiveLine(line string) (GroupListing, bool) {
+	fields := strings.Fields(strings.TrimSpace(line))
+	if len(fields) < 4 {
+		return GroupListing{}, false
+	}
+	high, err := strconv.ParseInt(fields[1], 10, 64)
+	if err != nil {
+		return GroupListing{}, false
+	}
+	low, err := strconv.ParseInt(fields[2], 10, 64)
+	if err != nil {
+		return GroupListing{}, false
+	}
+	return GroupListing{
+		Group:  strings.TrimSpace(fields[0]),
+		High:   high,
+		Low:    low,
+		Status: strings.TrimSpace(fields[3]),
+	}, strings.TrimSpace(fields[0]) != ""
 }
 
 func parseNNTPDate(s string) *time.Time {
@@ -616,8 +714,7 @@ func (p *nntpProvider) fetchBodyPrefixWithConn(ctx context.Context, conn *nntpCo
 		return nil, retry, err
 	}
 
-	limited := io.LimitReader(reader, maxBytes)
-	data, readErr := io.ReadAll(limited)
+	data, readErr := readBodyPrefixUntilYBegin(reader, maxBytes)
 	if closer, ok := reader.(*pooledReader); ok {
 		// Prefix callers intentionally do not drain the dot body. Returning this
 		// connection to the pool would corrupt the next command, so discard it.
@@ -629,6 +726,42 @@ func (p *nntpProvider) fetchBodyPrefixWithConn(ctx context.Context, conn *nntpCo
 		return nil, isRecoverableConnError(readErr), readErr
 	}
 	return data, false, nil
+}
+
+func readBodyPrefixUntilYBegin(reader io.Reader, maxBytes int64) ([]byte, error) {
+	if maxBytes <= 0 {
+		maxBytes = 8192
+	}
+	maxCap := int64(1024)
+	if maxBytes < maxCap {
+		maxCap = maxBytes
+	}
+
+	buffered := bufio.NewReader(reader)
+	data := make([]byte, 0, int(maxCap))
+	for int64(len(data)) < maxBytes {
+		line, err := buffered.ReadString('\n')
+		if len(line) > 0 {
+			remaining := int(maxBytes) - len(data)
+			if remaining > 0 {
+				if len(line) > remaining {
+					data = append(data, line[:remaining]...)
+				} else {
+					data = append(data, line...)
+				}
+			}
+			if strings.HasPrefix(line, "=ybegin") || int64(len(data)) >= maxBytes {
+				return data, nil
+			}
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return data, nil
+			}
+			return data, err
+		}
+	}
+	return data, nil
 }
 
 func isRecoverableConnError(err error) bool {
@@ -834,6 +967,10 @@ func (p *nntpProvider) statsSnapshot() providerStatsSnapshot {
 		XOverRetries:      p.stats.xoverRetries.Load(),
 		RecoverableErrors: p.stats.recoverableErrors.Load(),
 	}
+}
+
+func (p *nntpProvider) StatsSnapshot() ProviderStatsSnapshot {
+	return p.statsSnapshot()
 }
 
 func (p *nntpProvider) authenticate(conn *textproto.Conn) error {

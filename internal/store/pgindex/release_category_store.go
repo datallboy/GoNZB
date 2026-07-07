@@ -10,6 +10,14 @@ import (
 )
 
 func (s *Store) refreshReleaseCategory(ctx context.Context, releaseID string) error {
+	return refreshReleaseCategoryRunner(ctx, s.db, releaseID)
+}
+
+func (s *Store) refreshReleaseCategoryTx(ctx context.Context, tx *sql.Tx, releaseID string) error {
+	return refreshReleaseCategoryRunner(ctx, tx, releaseID)
+}
+
+func refreshReleaseCategoryRunner(ctx context.Context, runner sqlExecQueryRower, releaseID string) error {
 	releaseID = strings.TrimSpace(releaseID)
 	if releaseID == "" {
 		return fmt.Errorf("release id is required")
@@ -20,7 +28,7 @@ func (s *Store) refreshReleaseCategory(ctx context.Context, releaseID string) er
 		chosenCat   sql.NullString
 		chosenGenre sql.NullString
 	)
-	if err := s.db.QueryRowContext(ctx, `
+	if err := runner.QueryRowContext(ctx, `
 		SELECT
 			COALESCE(r.classification, ''),
 			COALESCE(r.external_media_type, ''),
@@ -75,7 +83,7 @@ func (s *Store) refreshReleaseCategory(ctx context.Context, releaseID string) er
 		attrs.PredbGenre = chosenGenre.String
 	}
 	resolved := newsnab.ResolveReleaseCategory(attrs)
-	_, err := s.db.ExecContext(ctx, `
+	_, err := runner.ExecContext(ctx, `
 		UPDATE releases
 		SET category_id = $2,
 		    category = $3,
