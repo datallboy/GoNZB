@@ -106,10 +106,12 @@ Any hot query changed in this sprint must have a focused test and a short
 
 ## Partition And Retention Design
 
-Use daily UTC range partitions keyed by `source_posted_at` only. Do not
-subpartition by provider or newsgroup in this sprint. Provider/newsgroup
-control belongs in indexed predicates, runtime group profiles, deferred ranges,
-and explicit admin purge workflows.
+Use daily UTC range partitions keyed by `source_posted_at` only. Child suffixes
+and partition bounds must both be UTC; PostgreSQL session timezone must not
+shift `*_YYYYMMDD` children to local-midnight ranges. Do not subpartition by
+provider or newsgroup in this sprint. Provider/newsgroup control belongs in
+indexed predicates, runtime group profiles, deferred ranges, and explicit admin
+purge workflows.
 
 Keep durable roots/catalog unpartitioned:
 

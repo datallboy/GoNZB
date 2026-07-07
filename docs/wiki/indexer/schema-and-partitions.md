@@ -3,7 +3,9 @@
 ## Partition Key
 
 High-volume source, work, and projection tables use daily UTC range partitions
-keyed by `source_posted_at`.
+keyed by `source_posted_at`. Child names and bounds must both use UTC days:
+`*_20260326` covers `2026-03-26T00:00:00Z` through
+`2026-03-27T00:00:00Z`, regardless of the PostgreSQL session timezone.
 
 Provider and newsgroup are not partition keys in this sprint. They remain
 indexed predicates, runtime tier/profile dimensions, and explicit admin purge
