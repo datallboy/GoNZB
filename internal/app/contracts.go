@@ -176,7 +176,7 @@ type UsenetIndexStore interface {
 	ListCatalogReleaseNewsgroups(ctx context.Context, releaseID string) ([]string, error)
 	UpsertNZBCache(ctx context.Context, releaseID, generationStatus, hashSHA256, lastError string) error
 	GetReleaseArchiveState(ctx context.Context, releaseID string) (*pgindex.ReleaseArchiveState, error)
-	ClaimReleaseArchiveCandidates(ctx context.Context, limit int) ([]pgindex.ReleaseArchiveCandidate, error)
+	ClaimReleaseArchiveCandidates(ctx context.Context, limit int, policy pgindex.ReleaseReadyPolicy) ([]pgindex.ReleaseArchiveCandidate, error)
 	MarkReleaseArchiveStored(ctx context.Context, in pgindex.ReleaseArchiveStoredRecord) error
 	MarkReleaseArchiveFailed(ctx context.Context, releaseID, errText string) error
 	ClaimReleasePurgeCandidates(ctx context.Context, limit int, policy pgindex.ReleaseReadyPolicy) ([]pgindex.ReleasePurgeCandidate, error)
@@ -202,6 +202,8 @@ type UsenetIndexStore interface {
 	ListIndexerProviderGroupInventoryCandidates(ctx context.Context, query string, patternHints []string) ([]pgindex.IndexerProviderGroupInventoryItem, error)
 	ListIndexerProviderGroupInventoryPage(ctx context.Context, query string, limit, offset int, sortKey, direction string) (pgindex.IndexerProviderGroupInventoryPage, error)
 	GetIndexerStageThroughput(ctx context.Context) (*pgindex.IndexerStageThroughput, error)
+	ListIndexerAdminAttention(ctx context.Context, params pgindex.IndexerAdminAttentionParams) ([]pgindex.IndexerAdminAttentionItem, int, error)
+	ListIndexerArticleCohorts(ctx context.Context, params pgindex.IndexerArticleCohortParams) ([]pgindex.IndexerArticleCohortItem, int, error)
 	ListIndexerReleases(ctx context.Context, params pgindex.AdminIndexerReleaseListParams) ([]pgindex.IndexerReleaseSummary, int, error)
 	GetIndexerReleaseDetail(ctx context.Context, releaseID string) (*pgindex.IndexerReleaseDetail, error)
 	ListPublicIndexerReleases(ctx context.Context, params pgindex.PublicIndexerReleaseListParams) ([]pgindex.PublicIndexerReleaseSummary, int, error)
@@ -226,6 +228,16 @@ type UsenetIndexStore interface {
 	HasBackfillCutoffReachedForGroup(ctx context.Context, newsgroupID int64, untilDate time.Time) (bool, error)
 	SetBackfillCheckpointState(ctx context.Context, providerID, newsgroupID int64, untilDate *time.Time, cutoffReached bool, stoppedReason string) error
 	InsertArticleHeaders(ctx context.Context, providerID, newsgroupID int64, headers []pgindex.ArticleHeader) (int64, error)
+	ObserveScrapeRange(ctx context.Context, providerID, newsgroupID int64, from, to int64, observations []pgindex.ScrapeRangeObservation) error
+	GetYEncRecoveryAdmissionSnapshot(ctx context.Context) (*pgindex.YEncRecoveryAdmissionSnapshot, error)
+	RefreshYEncRecoveryAdmissionSnapshot(ctx context.Context) (*pgindex.YEncRecoveryAdmissionSnapshot, error)
+	ConfigureYEncRecoveryAdmission(ctx context.Context, cfg pgindex.YEncRecoveryAdmissionConfig) error
+	UpsertIndexerGroupProfile(ctx context.Context, providerID, newsgroupID int64, tier, reason string) error
+	RefreshIndexerGroupProfiles(ctx context.Context) (int64, error)
+	UpsertDeferredArticleRange(ctx context.Context, in pgindex.DeferredArticleRangeRecord) error
+	ListIndexerGroupProfiles(ctx context.Context, limit int) ([]pgindex.IndexerGroupProfileSummary, error)
+	ListDeferredArticleRanges(ctx context.Context, state string, limit int) ([]pgindex.DeferredArticleRangeSummary, error)
+	RunArticleCohortScheduler(ctx context.Context, req pgindex.ArticleCohortSchedulerRequest) (*pgindex.ArticleCohortSchedulerResult, error)
 
 	ListUnassembledArticleHeaders(ctx context.Context, limit int) ([]pgindex.AssemblyCandidate, error)
 	ClaimUnassembledArticleHeaders(ctx context.Context, req pgindex.AssemblyClaimRequest) ([]pgindex.AssemblyCandidate, error)
@@ -267,6 +279,14 @@ type UsenetIndexStore interface {
 	RunReleaseSourcePurge(ctx context.Context, limit int, policy pgindex.ReleaseReadyPolicy) (*pgindex.MaintenanceTaskResult, error)
 	DryRunSimpleMaintenanceTask(ctx context.Context, taskKey string, batchSize int) (*pgindex.MaintenanceTaskResult, error)
 	RunSimpleMaintenanceTask(ctx context.Context, taskKey string, batchSize int) (*pgindex.MaintenanceTaskResult, error)
+	DryRunRawStageRetentionTask(ctx context.Context, batchSize int, policy pgindex.RawStageRetentionPolicy) (*pgindex.MaintenanceTaskResult, error)
+	RunRawStageRetentionTask(ctx context.Context, batchSize int, policy pgindex.RawStageRetentionPolicy) (*pgindex.MaintenanceTaskResult, error)
+	DryRunPartitionRetentionTask(ctx context.Context, batchSize int) (*pgindex.MaintenanceTaskResult, error)
+	RunPartitionRetentionTask(ctx context.Context, batchSize int) (*pgindex.MaintenanceTaskResult, error)
+	DryRunPartitionDefaultRehomeTask(ctx context.Context, batchSize int) (*pgindex.MaintenanceTaskResult, error)
+	RunPartitionDefaultRehomeTask(ctx context.Context, batchSize int) (*pgindex.MaintenanceTaskResult, error)
+	ProvisionSourceWorkPartitions(ctx context.Context, daysBefore, daysAhead int) error
+	ListIndexerBinaries(ctx context.Context, params pgindex.IndexerBinaryListParams) ([]pgindex.IndexerBinarySummary, int, error)
 	PurgeArticleHeaderPayloads(ctx context.Context) (int64, error)
 	BackfillIndexerCrosspostGroups(ctx context.Context, batchSize, maxBatches int) (*pgindex.IndexerCrosspostBackfillResult, error)
 	MaterializeArticleHeaderPosters(ctx context.Context, limit int) (*pgindex.IndexerPosterMaterializationResult, error)
@@ -308,6 +328,7 @@ type UsenetIndexStore interface {
 	ReplaceReleaseTMDBMatches(ctx context.Context, releaseID string, rows []pgindex.ReleaseTMDBMatchRecord) error
 	ReplaceReleaseTVDBMatches(ctx context.Context, releaseID string, rows []pgindex.ReleaseTVDBMatchRecord) error
 	ApplyReleasePredbUpdate(ctx context.Context, in pgindex.ReleasePredbUpdate) error
+	ApplyReleaseManualIdentity(ctx context.Context, in pgindex.ReleaseManualIdentityUpdate) error
 	ApplyReleaseEnrichmentUpdate(ctx context.Context, in pgindex.ReleaseEnrichmentUpdate) error
 }
 

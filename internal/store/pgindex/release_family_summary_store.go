@@ -20,12 +20,14 @@ const (
 	releaseReadinessPreferBaseStem           = "prefer_base_stem"
 	releaseReadinessOvergrouped              = "overgrouped_contextual"
 	releaseFamilyDirtyBatchSize              = 10000
-	releaseFamilySummaryRefreshBatch         = 5000
-	releaseFamilySummaryRefreshCap           = 5000
-	releaseFamilySummaryRefreshHotCap        = 1000
-	releaseFamilySummaryRefreshColdCap       = 1000
-	releaseFamilySummaryRefreshQueryBatchCap = 100
+	releaseFamilySummaryRefreshBatch         = 10000
+	releaseFamilySummaryRefreshCap           = 10000
+	releaseFamilySummaryRefreshHotCap        = 10000
+	releaseFamilySummaryRefreshColdCap       = 10000
+	releaseFamilySummaryRefreshQueryBatchCap = 5000
 	releaseFamilySummaryMergeRowsMax         = 2000
+	releaseRecoveredFileSetSyncCap           = 128
+	releaseRecoveredFileSetSyncChunkSize     = 32
 )
 
 type releaseSummaryRefreshMode int
@@ -200,7 +202,8 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 			AND NOT EXISTS (
 				SELECT 1
 				FROM binary_lifecycle bl
-				WHERE bl.binary_id = bc.binary_id
+				WHERE bl.source_posted_at = bc.source_posted_at
+				  AND bl.binary_id = bc.binary_id
 				  AND bl.lifecycle_status = 'superseded'
 			)`
 	if key.KeyKind == "base_stem" {
@@ -213,7 +216,8 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 			AND NOT EXISTS (
 				SELECT 1
 				FROM binary_lifecycle bl
-				WHERE bl.binary_id = bc.binary_id
+				WHERE bl.source_posted_at = bc.source_posted_at
+				  AND bl.binary_id = bc.binary_id
 				  AND bl.lifecycle_status = 'superseded'
 			)`
 	}
@@ -262,8 +266,12 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 			COALESCE(SUM(bos.total_bytes), 0)::BIGINT AS total_bytes,
 			MIN(bos.posted_at) AS earliest_posted_at
 		FROM binary_core bc
-		JOIN binary_identity_current bic ON bic.binary_id = bc.binary_id
-		JOIN binary_observation_stats bos ON bos.binary_id = bc.binary_id
+		JOIN binary_identity_current bic
+		  ON bic.source_posted_at = bc.source_posted_at
+		 AND bic.binary_id = bc.binary_id
+		JOIN binary_observation_stats bos
+		  ON bos.source_posted_at = bc.source_posted_at
+		 AND bos.binary_id = bc.binary_id
 		WHERE ` + whereClause
 	if err := tx.QueryRowContext(ctx, query, key.ProviderID, key.NewsgroupID, key.FamilyKey).Scan(
 		&sourceReleaseKey,
@@ -285,6 +293,7 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 	if binaryCount == 0 {
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO release_family_readiness_summaries (
+				source_posted_at,
 				provider_id,
 				newsgroup_id,
 				key_kind,
@@ -312,8 +321,8 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 				processed_at,
 				updated_at
 			)
-			VALUES ($1,$2,$3,$4,'','','',0,0,0,0,0,0,FALSE,FALSE,0,NULL,'','',0,$5,FALSE,0,0,TIMESTAMPTZ 'epoch',NOW())
-			ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
+			VALUES (NOW(),$1,$2,$3,$4,'','','',0,0,0,0,0,0,FALSE,FALSE,0,NULL,'','',0,$5,FALSE,0,0,TIMESTAMPTZ 'epoch',NOW())
+			ON CONFLICT (source_posted_at, provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
 			SET source_release_key = EXCLUDED.source_release_key,
 			    release_key = EXCLUDED.release_key,
 			    release_name = EXCLUDED.release_name,
@@ -399,8 +408,12 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 			COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), ''),
 			COALESCE(bic.match_confidence, 0)
 		FROM binary_core bc
-		JOIN binary_identity_current bic ON bic.binary_id = bc.binary_id
-		JOIN binary_observation_stats bos ON bos.binary_id = bc.binary_id
+		JOIN binary_identity_current bic
+		  ON bic.source_posted_at = bc.source_posted_at
+		 AND bic.binary_id = bc.binary_id
+		JOIN binary_observation_stats bos
+		  ON bos.source_posted_at = bc.source_posted_at
+		 AND bos.binary_id = bc.binary_id
 		WHERE ` + whereClause + `
 		ORDER BY
 			CASE WHEN (bic.is_main_payload OR NOT bic.is_auxiliary) THEN 0 ELSE 1 END ASC,
@@ -455,6 +468,7 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO release_family_readiness_summaries (
+			source_posted_at,
 			provider_id,
 			newsgroup_id,
 			key_kind,
@@ -482,8 +496,8 @@ func refreshReleaseFamilySummary(ctx context.Context, tx *sql.Tx, key releaseFam
 			processed_at,
 			updated_at
 		)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,FALSE,$22,$23,TIMESTAMPTZ 'epoch',NOW())
-		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
+		VALUES (COALESCE($17::timestamptz, NOW()),$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,FALSE,$22,$23,TIMESTAMPTZ 'epoch',NOW())
+		ON CONFLICT (source_posted_at, provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
 		SET source_release_key = EXCLUDED.source_release_key,
 		    release_key = EXCLUDED.release_key,
 		    release_name = EXCLUDED.release_name,
@@ -647,11 +661,14 @@ func refreshReleaseFamilySummariesBatch(ctx context.Context, tx *sql.Tx, keys []
 				 AND NOT EXISTS (
 					SELECT 1
 					FROM binary_lifecycle bl
-					WHERE bl.binary_id = bic.binary_id
-					  AND bl.lifecycle_status = 'superseded'
+					WHERE bl.source_posted_at = bic.source_posted_at
+			  AND bl.binary_id = bic.binary_id
+			  AND bl.lifecycle_status = 'superseded'
 				 )
 			LEFT JOIN binary_core bc ON bc.binary_id = bic.binary_id
-			LEFT JOIN binary_observation_stats bos ON bos.binary_id = bic.binary_id
+			LEFT JOIN binary_observation_stats bos
+			  ON bos.source_posted_at = bic.source_posted_at
+			 AND bos.binary_id = bic.binary_id
 			GROUP BY r.provider_id, r.newsgroup_id, r.key_kind, r.family_key
 		),
 		dominant AS (
@@ -698,11 +715,14 @@ func refreshReleaseFamilySummariesBatch(ctx context.Context, tx *sql.Tx, keys []
 				 AND NOT EXISTS (
 					SELECT 1
 					FROM binary_lifecycle bl
-					WHERE bl.binary_id = bic.binary_id
-					  AND bl.lifecycle_status = 'superseded'
+					WHERE bl.source_posted_at = bic.source_posted_at
+			  AND bl.binary_id = bic.binary_id
+			  AND bl.lifecycle_status = 'superseded'
 				 )
 				LEFT JOIN binary_core bc ON bc.binary_id = bic.binary_id
-				LEFT JOIN binary_observation_stats bos ON bos.binary_id = bic.binary_id
+				LEFT JOIN binary_observation_stats bos
+				  ON bos.source_posted_at = bic.source_posted_at
+				 AND bos.binary_id = bic.binary_id
 			) ranked
 			WHERE row_num = 1
 		)
@@ -788,6 +808,13 @@ func releaseFamilySummaryBatchValues(keys []releaseFamilySummaryKey) (string, []
 	return strings.Join(values, ","), args
 }
 
+func releaseSummarySourcePostedAt(t sql.NullTime) time.Time {
+	if t.Valid {
+		return t.Time.UTC()
+	}
+	return time.Now().UTC()
+}
+
 func buildReleaseFamilySummaryRefreshRecord(row releaseFamilySummaryRow) []any {
 	readinessBucket := releaseReadinessFragmentOnly
 	if row.BinaryCount == 0 {
@@ -827,6 +854,7 @@ func buildReleaseFamilySummaryRefreshRecord(row releaseFamilySummaryRow) []any {
 	}
 
 	return []any{
+		releaseSummarySourcePostedAt(row.EarliestPostedAt),
 		row.ProviderID,
 		row.NewsgroupID,
 		row.KeyKind,
@@ -901,51 +929,90 @@ func refreshReleaseFamilySummariesBatchCopyChunkWithMetrics(ctx context.Context,
 	values, args := releaseFamilySummaryBatchValues(keys)
 	aggregateStart := time.Now()
 	rows, err := conn.QueryContext(ctx, fmt.Sprintf(`
-		WITH requested(provider_id, newsgroup_id, key_kind, family_key) AS (
+		WITH requested(provider_id, newsgroup_id, key_kind, family_key) AS MATERIALIZED (
 			VALUES %s
+		),
+		matched AS MATERIALIZED (
+			SELECT
+				r.provider_id,
+				r.newsgroup_id,
+				r.key_kind,
+				r.family_key,
+				bic.binary_id,
+				bic.source_posted_at,
+				bic.source_release_key,
+				bic.release_key,
+				bic.release_name,
+				bic.expected_file_count,
+				bic.expected_archive_file_count,
+				bic.is_main_payload,
+				bic.is_auxiliary,
+				bic.family_kind,
+				bic.file_name,
+				bic.binary_name,
+				bic.match_confidence,
+				bc.binary_id AS core_binary_id,
+				bos.observed_parts,
+				bos.total_parts,
+				bos.total_bytes,
+				bos.posted_at
+			FROM requested r
+			LEFT JOIN LATERAL (
+				SELECT bic.*
+				FROM binary_identity_current bic
+				WHERE bic.provider_id = r.provider_id
+				  AND bic.newsgroup_id = r.newsgroup_id
+				  AND bic.release_family_key = r.family_key
+				  AND BTRIM(bic.release_family_key) <> ''
+			) bic ON TRUE
+			LEFT JOIN binary_lifecycle bl
+			  ON bl.source_posted_at = bic.source_posted_at
+			 AND bl.binary_id = bic.binary_id
+			 AND bl.lifecycle_status = 'superseded'
+			LEFT JOIN binary_core bc
+			  ON bc.source_posted_at = bic.source_posted_at
+			 AND bc.binary_id = bic.binary_id
+			LEFT JOIN binary_observation_stats bos
+			  ON bos.source_posted_at = bic.source_posted_at
+			 AND bos.binary_id = bic.binary_id
+			WHERE bic.binary_id IS NULL
+			   OR bl.binary_id IS NULL
 		)
 		SELECT
 			r.provider_id,
 			r.newsgroup_id,
 			r.key_kind,
 			r.family_key,
-			COALESCE(MAX(bic.source_release_key), '') AS source_release_key,
-			COALESCE(MAX(bic.release_key), '') AS release_key,
-			COALESCE(MAX(bic.release_name), '') AS release_name,
-			COUNT(bc.binary_id)::INTEGER AS binary_count,
+			COALESCE(MAX(m.source_release_key), '') AS source_release_key,
+			COALESCE(MAX(m.release_key), '') AS release_key,
+			COALESCE(MAX(m.release_name), '') AS release_name,
+			COUNT(m.core_binary_id)::INTEGER AS binary_count,
 			COALESCE(SUM(
 				CASE
-					WHEN bos.observed_parts = bos.total_parts AND bos.total_parts > 0 THEN 1
+					WHEN m.observed_parts = m.total_parts AND m.total_parts > 0 THEN 1
 					ELSE 0
 				END
 			), 0)::INTEGER AS complete_binary_count,
 			COALESCE(SUM(
 				CASE
-					WHEN (bic.is_main_payload OR NOT bic.is_auxiliary)
-					 AND bos.observed_parts = bos.total_parts
-					 AND bos.total_parts > 0 THEN 1
+					WHEN (m.is_main_payload OR NOT m.is_auxiliary)
+					 AND m.observed_parts = m.total_parts
+					 AND m.total_parts > 0 THEN 1
 					ELSE 0
 				END
 			), 0)::INTEGER AS complete_main_payload_binary_count,
-			COALESCE(MAX(bic.expected_file_count), 0)::INTEGER AS expected_file_count,
-			COALESCE(MAX(bic.expected_archive_file_count), 0)::INTEGER AS expected_archive_file_count,
-			COALESCE(BOOL_OR(bic.expected_file_count > 0), FALSE) AS has_expected_file_count,
-			COALESCE(BOOL_OR(bic.expected_archive_file_count > 0), FALSE) AS has_expected_archive_file_count,
-			COALESCE(SUM(bos.total_bytes), 0)::BIGINT AS total_bytes,
-			MIN(bos.posted_at) AS earliest_posted_at
+			COALESCE(MAX(m.expected_file_count), 0)::INTEGER AS expected_file_count,
+			COALESCE(MAX(m.expected_archive_file_count), 0)::INTEGER AS expected_archive_file_count,
+			COALESCE(BOOL_OR(m.expected_file_count > 0), FALSE) AS has_expected_file_count,
+			COALESCE(BOOL_OR(m.expected_archive_file_count > 0), FALSE) AS has_expected_archive_file_count,
+			COALESCE(SUM(m.total_bytes), 0)::BIGINT AS total_bytes,
+			MIN(m.posted_at) AS earliest_posted_at
 		FROM requested r
-		LEFT JOIN binary_identity_current bic
-		  ON bic.provider_id = r.provider_id
-		 AND bic.newsgroup_id = r.newsgroup_id
-		 AND bic.release_family_key = r.family_key
-		 AND NOT EXISTS (
-			SELECT 1
-			FROM binary_lifecycle bl
-			WHERE bl.binary_id = bic.binary_id
-			  AND bl.lifecycle_status = 'superseded'
-		 )
-		LEFT JOIN binary_core bc ON bc.binary_id = bic.binary_id
-		LEFT JOIN binary_observation_stats bos ON bos.binary_id = bic.binary_id
+		LEFT JOIN matched m
+		  ON m.provider_id = r.provider_id
+		 AND m.newsgroup_id = r.newsgroup_id
+		 AND m.key_kind = r.key_kind
+		 AND m.family_key = r.family_key
 		GROUP BY r.provider_id, r.newsgroup_id, r.key_kind, r.family_key
 		ORDER BY r.provider_id, r.newsgroup_id, r.key_kind, r.family_key`,
 		values), args...)
@@ -995,41 +1062,70 @@ func refreshReleaseFamilySummariesBatchCopyChunkWithMetrics(ctx context.Context,
 
 	dominantStart := time.Now()
 	rows, err = conn.QueryContext(ctx, fmt.Sprintf(`
-		WITH requested(provider_id, newsgroup_id, key_kind, family_key) AS (
+		WITH requested(provider_id, newsgroup_id, key_kind, family_key) AS MATERIALIZED (
 			VALUES %s
+		),
+		matched AS MATERIALIZED (
+			SELECT
+				r.provider_id,
+				r.newsgroup_id,
+				r.key_kind,
+				r.family_key,
+				bic.binary_id,
+				bic.source_posted_at,
+				bic.family_kind,
+				bic.file_name,
+				bic.binary_name,
+				bic.match_confidence,
+				bic.is_main_payload,
+				bic.is_auxiliary,
+				bos.observed_parts,
+				bos.total_parts,
+				bos.total_bytes
+			FROM requested r
+			LEFT JOIN LATERAL (
+				SELECT bic.*
+				FROM binary_identity_current bic
+				WHERE bic.provider_id = r.provider_id
+				  AND bic.newsgroup_id = r.newsgroup_id
+				  AND bic.release_family_key = r.family_key
+				  AND BTRIM(bic.release_family_key) <> ''
+			) bic ON TRUE
+			LEFT JOIN binary_lifecycle bl
+			  ON bl.source_posted_at = bic.source_posted_at
+			 AND bl.binary_id = bic.binary_id
+			 AND bl.lifecycle_status = 'superseded'
+			LEFT JOIN binary_observation_stats bos
+			  ON bos.source_posted_at = bic.source_posted_at
+			 AND bos.binary_id = bic.binary_id
+			WHERE bic.binary_id IS NULL
+			   OR bl.binary_id IS NULL
 		)
 		SELECT DISTINCT ON (r.provider_id, r.newsgroup_id, r.key_kind, r.family_key)
 			r.provider_id,
 			r.newsgroup_id,
 			r.key_kind,
 			r.family_key,
-			COALESCE(bic.family_kind, '') AS dominant_family_kind,
-			COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '') AS dominant_file_name,
-			COALESCE(bic.match_confidence, 0)::DOUBLE PRECISION AS dominant_match_confidence
+			COALESCE(m.family_kind, '') AS dominant_family_kind,
+			COALESCE(NULLIF(m.file_name, ''), NULLIF(m.binary_name, ''), '') AS dominant_file_name,
+			COALESCE(m.match_confidence, 0)::DOUBLE PRECISION AS dominant_match_confidence
 		FROM requested r
-		LEFT JOIN binary_identity_current bic
-		  ON bic.provider_id = r.provider_id
-		 AND bic.newsgroup_id = r.newsgroup_id
-		 AND bic.release_family_key = r.family_key
-		 AND NOT EXISTS (
-			SELECT 1
-			FROM binary_lifecycle bl
-			WHERE bl.binary_id = bic.binary_id
-			  AND bl.lifecycle_status = 'superseded'
-		 )
-		LEFT JOIN binary_core bc ON bc.binary_id = bic.binary_id
-		LEFT JOIN binary_observation_stats bos ON bos.binary_id = bic.binary_id
+		LEFT JOIN matched m
+		  ON m.provider_id = r.provider_id
+		 AND m.newsgroup_id = r.newsgroup_id
+		 AND m.key_kind = r.key_kind
+		 AND m.family_key = r.family_key
 		ORDER BY
 			r.provider_id,
 			r.newsgroup_id,
 			r.key_kind,
 			r.family_key,
-			CASE WHEN (COALESCE(bic.is_main_payload, FALSE) OR NOT COALESCE(bic.is_auxiliary, FALSE)) THEN 0 ELSE 1 END ASC,
-			CASE WHEN COALESCE(bos.total_parts, 0) > 0 AND COALESCE(bos.observed_parts, 0) = COALESCE(bos.total_parts, 0) THEN 0 ELSE 1 END ASC,
-			COALESCE(bos.observed_parts, 0) DESC,
-			COALESCE(bos.total_bytes, 0) DESC,
-			COALESCE(bic.match_confidence, 0) DESC,
-			COALESCE(bc.binary_id, 0) ASC`,
+			CASE WHEN (COALESCE(m.is_main_payload, FALSE) OR NOT COALESCE(m.is_auxiliary, FALSE)) THEN 0 ELSE 1 END ASC,
+			CASE WHEN COALESCE(m.total_parts, 0) > 0 AND COALESCE(m.observed_parts, 0) = COALESCE(m.total_parts, 0) THEN 0 ELSE 1 END ASC,
+			COALESCE(m.observed_parts, 0) DESC,
+			COALESCE(m.total_bytes, 0) DESC,
+			COALESCE(m.match_confidence, 0) DESC,
+			COALESCE(m.binary_id, 0) ASC`,
 		values), args...)
 	if err != nil {
 		return metrics, fmt.Errorf("query release family dominant batch count=%d: %w", len(keys), err)
@@ -1121,53 +1217,91 @@ func refreshBaseStemSummariesBatchCopyChunkWithMetrics(ctx context.Context, conn
 	values, args := releaseFamilySummaryBatchValues(keys)
 	aggregateStart := time.Now()
 	rows, err := conn.QueryContext(ctx, fmt.Sprintf(`
-		WITH requested(provider_id, newsgroup_id, key_kind, family_key) AS (
+		WITH requested(provider_id, newsgroup_id, key_kind, family_key) AS MATERIALIZED (
 			VALUES %s
+		),
+		matched AS MATERIALIZED (
+			SELECT
+				r.provider_id,
+				r.newsgroup_id,
+				r.key_kind,
+				r.family_key,
+				bic.binary_id,
+				bic.source_posted_at,
+				bic.source_release_key,
+				bic.release_key,
+				bic.release_name,
+				bic.expected_file_count,
+				bic.expected_archive_file_count,
+				bic.is_main_payload,
+				bic.is_auxiliary,
+				bic.family_kind,
+				bic.file_name,
+				bic.binary_name,
+				bic.match_confidence,
+				bc.binary_id AS core_binary_id,
+				bos.observed_parts,
+				bos.total_parts,
+				bos.total_bytes,
+				bos.posted_at
+			FROM requested r
+			LEFT JOIN LATERAL (
+				SELECT bic.*
+				FROM binary_identity_current bic
+				WHERE bic.provider_id = r.provider_id
+				  AND bic.newsgroup_id = r.newsgroup_id
+				  AND GREATEST(bic.expected_file_count, bic.expected_archive_file_count) > 1
+				  AND BTRIM(bic.base_stem) <> ''
+				  AND LOWER(BTRIM(bic.base_stem)) = r.family_key
+			) bic ON TRUE
+			LEFT JOIN binary_lifecycle bl
+			  ON bl.source_posted_at = bic.source_posted_at
+			 AND bl.binary_id = bic.binary_id
+			 AND bl.lifecycle_status = 'superseded'
+			LEFT JOIN binary_core bc
+			  ON bc.source_posted_at = bic.source_posted_at
+			 AND bc.binary_id = bic.binary_id
+			LEFT JOIN binary_observation_stats bos
+			  ON bos.source_posted_at = bic.source_posted_at
+			 AND bos.binary_id = bic.binary_id
+			WHERE bic.binary_id IS NULL
+			   OR bl.binary_id IS NULL
 		)
 		SELECT
 			r.provider_id,
 			r.newsgroup_id,
 			r.key_kind,
 			r.family_key,
-			COALESCE(MAX(bic.source_release_key), '') AS source_release_key,
-			COALESCE(MAX(bic.release_key), '') AS release_key,
-			COALESCE(MAX(bic.release_name), '') AS release_name,
-			COUNT(bc.binary_id)::INTEGER AS binary_count,
+			COALESCE(MAX(m.source_release_key), '') AS source_release_key,
+			COALESCE(MAX(m.release_key), '') AS release_key,
+			COALESCE(MAX(m.release_name), '') AS release_name,
+			COUNT(m.core_binary_id)::INTEGER AS binary_count,
 			COALESCE(SUM(
 				CASE
-					WHEN bos.observed_parts = bos.total_parts AND bos.total_parts > 0 THEN 1
+					WHEN m.observed_parts = m.total_parts AND m.total_parts > 0 THEN 1
 					ELSE 0
 				END
 			), 0)::INTEGER AS complete_binary_count,
 			COALESCE(SUM(
 				CASE
-					WHEN (bic.is_main_payload OR NOT bic.is_auxiliary)
-					 AND bos.observed_parts = bos.total_parts
-					 AND bos.total_parts > 0 THEN 1
+					WHEN (m.is_main_payload OR NOT m.is_auxiliary)
+					 AND m.observed_parts = m.total_parts
+					 AND m.total_parts > 0 THEN 1
 					ELSE 0
 				END
 			), 0)::INTEGER AS complete_main_payload_binary_count,
-			COALESCE(MAX(bic.expected_file_count), 0)::INTEGER AS expected_file_count,
-			COALESCE(MAX(bic.expected_archive_file_count), 0)::INTEGER AS expected_archive_file_count,
-			COALESCE(BOOL_OR(bic.expected_file_count > 0), FALSE) AS has_expected_file_count,
-			COALESCE(BOOL_OR(bic.expected_archive_file_count > 0), FALSE) AS has_expected_archive_file_count,
-			COALESCE(SUM(bos.total_bytes), 0)::BIGINT AS total_bytes,
-			MIN(bos.posted_at) AS earliest_posted_at
+			COALESCE(MAX(m.expected_file_count), 0)::INTEGER AS expected_file_count,
+			COALESCE(MAX(m.expected_archive_file_count), 0)::INTEGER AS expected_archive_file_count,
+			COALESCE(BOOL_OR(m.expected_file_count > 0), FALSE) AS has_expected_file_count,
+			COALESCE(BOOL_OR(m.expected_archive_file_count > 0), FALSE) AS has_expected_archive_file_count,
+			COALESCE(SUM(m.total_bytes), 0)::BIGINT AS total_bytes,
+			MIN(m.posted_at) AS earliest_posted_at
 		FROM requested r
-		LEFT JOIN binary_identity_current bic
-		  ON bic.provider_id = r.provider_id
-		 AND bic.newsgroup_id = r.newsgroup_id
-		 AND GREATEST(bic.expected_file_count, bic.expected_archive_file_count) > 1
-		 AND BTRIM(bic.base_stem) <> ''
-		 AND LOWER(BTRIM(bic.base_stem)) = r.family_key
-		 AND NOT EXISTS (
-			SELECT 1
-			FROM binary_lifecycle bl
-			WHERE bl.binary_id = bic.binary_id
-			  AND bl.lifecycle_status = 'superseded'
-		 )
-		LEFT JOIN binary_core bc ON bc.binary_id = bic.binary_id
-		LEFT JOIN binary_observation_stats bos ON bos.binary_id = bic.binary_id
+		LEFT JOIN matched m
+		  ON m.provider_id = r.provider_id
+		 AND m.newsgroup_id = r.newsgroup_id
+		 AND m.key_kind = r.key_kind
+		 AND m.family_key = r.family_key
 		GROUP BY r.provider_id, r.newsgroup_id, r.key_kind, r.family_key
 		ORDER BY r.provider_id, r.newsgroup_id, r.key_kind, r.family_key`,
 		values), args...)
@@ -1217,43 +1351,71 @@ func refreshBaseStemSummariesBatchCopyChunkWithMetrics(ctx context.Context, conn
 
 	dominantStart := time.Now()
 	rows, err = conn.QueryContext(ctx, fmt.Sprintf(`
-		WITH requested(provider_id, newsgroup_id, key_kind, family_key) AS (
+		WITH requested(provider_id, newsgroup_id, key_kind, family_key) AS MATERIALIZED (
 			VALUES %s
+		),
+		matched AS MATERIALIZED (
+			SELECT
+				r.provider_id,
+				r.newsgroup_id,
+				r.key_kind,
+				r.family_key,
+				bic.binary_id,
+				bic.source_posted_at,
+				bic.family_kind,
+				bic.file_name,
+				bic.binary_name,
+				bic.match_confidence,
+				bic.is_main_payload,
+				bic.is_auxiliary,
+				bos.observed_parts,
+				bos.total_parts,
+				bos.total_bytes
+			FROM requested r
+			LEFT JOIN LATERAL (
+				SELECT bic.*
+				FROM binary_identity_current bic
+				WHERE bic.provider_id = r.provider_id
+				  AND bic.newsgroup_id = r.newsgroup_id
+				  AND GREATEST(bic.expected_file_count, bic.expected_archive_file_count) > 1
+				  AND BTRIM(bic.base_stem) <> ''
+				  AND LOWER(BTRIM(bic.base_stem)) = r.family_key
+			) bic ON TRUE
+			LEFT JOIN binary_lifecycle bl
+			  ON bl.source_posted_at = bic.source_posted_at
+			 AND bl.binary_id = bic.binary_id
+			 AND bl.lifecycle_status = 'superseded'
+			LEFT JOIN binary_observation_stats bos
+			  ON bos.source_posted_at = bic.source_posted_at
+			 AND bos.binary_id = bic.binary_id
+			WHERE bic.binary_id IS NULL
+			   OR bl.binary_id IS NULL
 		)
 		SELECT DISTINCT ON (r.provider_id, r.newsgroup_id, r.key_kind, r.family_key)
 			r.provider_id,
 			r.newsgroup_id,
 			r.key_kind,
 			r.family_key,
-			COALESCE(bic.family_kind, '') AS dominant_family_kind,
-			COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '') AS dominant_file_name,
-			COALESCE(bic.match_confidence, 0)::DOUBLE PRECISION AS dominant_match_confidence
+			COALESCE(m.family_kind, '') AS dominant_family_kind,
+			COALESCE(NULLIF(m.file_name, ''), NULLIF(m.binary_name, ''), '') AS dominant_file_name,
+			COALESCE(m.match_confidence, 0)::DOUBLE PRECISION AS dominant_match_confidence
 		FROM requested r
-		LEFT JOIN binary_identity_current bic
-		  ON bic.provider_id = r.provider_id
-		 AND bic.newsgroup_id = r.newsgroup_id
-		 AND GREATEST(bic.expected_file_count, bic.expected_archive_file_count) > 1
-		 AND BTRIM(bic.base_stem) <> ''
-		 AND LOWER(BTRIM(bic.base_stem)) = r.family_key
-		 AND NOT EXISTS (
-			SELECT 1
-			FROM binary_lifecycle bl
-			WHERE bl.binary_id = bic.binary_id
-			  AND bl.lifecycle_status = 'superseded'
-		 )
-		LEFT JOIN binary_core bc ON bc.binary_id = bic.binary_id
-		LEFT JOIN binary_observation_stats bos ON bos.binary_id = bic.binary_id
+		LEFT JOIN matched m
+		  ON m.provider_id = r.provider_id
+		 AND m.newsgroup_id = r.newsgroup_id
+		 AND m.key_kind = r.key_kind
+		 AND m.family_key = r.family_key
 		ORDER BY
 			r.provider_id,
 			r.newsgroup_id,
 			r.key_kind,
 			r.family_key,
-			CASE WHEN (COALESCE(bic.is_main_payload, FALSE) OR NOT COALESCE(bic.is_auxiliary, FALSE)) THEN 0 ELSE 1 END ASC,
-			CASE WHEN COALESCE(bos.total_parts, 0) > 0 AND COALESCE(bos.observed_parts, 0) = COALESCE(bos.total_parts, 0) THEN 0 ELSE 1 END ASC,
-			COALESCE(bos.observed_parts, 0) DESC,
-			COALESCE(bos.total_bytes, 0) DESC,
-			COALESCE(bic.match_confidence, 0) DESC,
-			COALESCE(bc.binary_id, 0) ASC`,
+			CASE WHEN (COALESCE(m.is_main_payload, FALSE) OR NOT COALESCE(m.is_auxiliary, FALSE)) THEN 0 ELSE 1 END ASC,
+			CASE WHEN COALESCE(m.total_parts, 0) > 0 AND COALESCE(m.observed_parts, 0) = COALESCE(m.total_parts, 0) THEN 0 ELSE 1 END ASC,
+			COALESCE(m.observed_parts, 0) DESC,
+			COALESCE(m.total_bytes, 0) DESC,
+			COALESCE(m.match_confidence, 0) DESC,
+			COALESCE(m.binary_id, 0) ASC`,
 		values), args...)
 	if err != nil {
 		return metrics, fmt.Errorf("query base stem dominant batch count=%d: %w", len(keys), err)
@@ -1319,7 +1481,8 @@ func refreshReleaseFamilySummaryConn(ctx context.Context, conn *sql.Conn, key re
 			AND NOT EXISTS (
 				SELECT 1
 				FROM binary_lifecycle bl
-				WHERE bl.binary_id = bc.binary_id
+				WHERE bl.source_posted_at = bc.source_posted_at
+				  AND bl.binary_id = bc.binary_id
 				  AND bl.lifecycle_status = 'superseded'
 			)`
 	if key.KeyKind == "base_stem" {
@@ -1332,7 +1495,8 @@ func refreshReleaseFamilySummaryConn(ctx context.Context, conn *sql.Conn, key re
 			AND NOT EXISTS (
 				SELECT 1
 				FROM binary_lifecycle bl
-				WHERE bl.binary_id = bc.binary_id
+				WHERE bl.source_posted_at = bc.source_posted_at
+				  AND bl.binary_id = bc.binary_id
 				  AND bl.lifecycle_status = 'superseded'
 			)`
 	}
@@ -1362,8 +1526,12 @@ func refreshReleaseFamilySummaryConn(ctx context.Context, conn *sql.Conn, key re
 			COALESCE(SUM(bos.total_bytes), 0)::BIGINT AS total_bytes,
 			MIN(bos.posted_at) AS earliest_posted_at
 		FROM binary_core bc
-		JOIN binary_identity_current bic ON bic.binary_id = bc.binary_id
-		JOIN binary_observation_stats bos ON bos.binary_id = bc.binary_id
+		JOIN binary_identity_current bic
+		  ON bic.source_posted_at = bc.source_posted_at
+		 AND bic.binary_id = bc.binary_id
+		JOIN binary_observation_stats bos
+		  ON bos.source_posted_at = bc.source_posted_at
+		 AND bos.binary_id = bc.binary_id
 		WHERE ` + whereClause
 	if err := conn.QueryRowContext(ctx, query, key.ProviderID, key.NewsgroupID, key.FamilyKey).Scan(
 		&row.SourceReleaseKey,
@@ -1392,8 +1560,12 @@ func refreshReleaseFamilySummaryConn(ctx context.Context, conn *sql.Conn, key re
 			COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), ''),
 			COALESCE(bic.match_confidence, 0)
 		FROM binary_core bc
-		JOIN binary_identity_current bic ON bic.binary_id = bc.binary_id
-		JOIN binary_observation_stats bos ON bos.binary_id = bc.binary_id
+		JOIN binary_identity_current bic
+		  ON bic.source_posted_at = bc.source_posted_at
+		 AND bic.binary_id = bc.binary_id
+		JOIN binary_observation_stats bos
+		  ON bos.source_posted_at = bc.source_posted_at
+		 AND bos.binary_id = bc.binary_id
 		WHERE ` + whereClause + `
 		ORDER BY
 			CASE WHEN (bic.is_main_payload OR NOT bic.is_auxiliary) THEN 0 ELSE 1 END ASC,
@@ -1431,12 +1603,12 @@ func mergeReleaseFamilySummaryRows(ctx context.Context, runner sqlExecQueryer, s
 		}
 		batch := summaries[start:end]
 		values := make([]string, 0, len(batch))
-		args := make([]any, 0, len(batch)*24)
+		args := make([]any, 0, len(batch)*25)
 		for i, row := range batch {
 			record := buildReleaseFamilySummaryRefreshRecord(row)
-			base := i*24 + 1
-			placeholders := make([]string, 0, 24)
-			for offset := range 24 {
+			base := i*25 + 1
+			placeholders := make([]string, 0, 25)
+			for offset := range 25 {
 				placeholders = append(placeholders, fmt.Sprintf("$%d", base+offset))
 			}
 			values = append(values, "("+strings.Join(placeholders, ",")+",TIMESTAMPTZ 'epoch',NOW())")
@@ -1445,6 +1617,7 @@ func mergeReleaseFamilySummaryRows(ctx context.Context, runner sqlExecQueryer, s
 
 		if _, err := runner.ExecContext(ctx, fmt.Sprintf(`
 		INSERT INTO release_family_readiness_summaries (
+			source_posted_at,
 			provider_id,
 			newsgroup_id,
 			key_kind,
@@ -1473,7 +1646,7 @@ func mergeReleaseFamilySummaryRows(ctx context.Context, runner sqlExecQueryer, s
 			updated_at
 		)
 		VALUES %s
-		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
+		ON CONFLICT (source_posted_at, provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
 		SET source_release_key = EXCLUDED.source_release_key,
 		    release_key = EXCLUDED.release_key,
 		    release_name = EXCLUDED.release_name,
@@ -1618,6 +1791,7 @@ func finalizeReleaseCandidateMaterializationWithoutRecoveredFileSets(ctx context
 			VALUES %s
 		)
 		INSERT INTO release_ready_candidates (
+			source_posted_at,
 			provider_id,
 			newsgroup_id,
 			key_kind,
@@ -1640,6 +1814,7 @@ func finalizeReleaseCandidateMaterializationWithoutRecoveredFileSets(ctx context
 			updated_at
 		)
 		SELECT
+			s.source_posted_at,
 			s.provider_id,
 			s.newsgroup_id,
 			s.key_kind,
@@ -1667,7 +1842,7 @@ func finalizeReleaseCandidateMaterializationWithoutRecoveredFileSets(ctx context
 		 AND s.key_kind = r.key_kind
 		 AND s.family_key = r.family_key
 		WHERE COALESCE(s.readiness_bucket, '') = %s
-		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
+		ON CONFLICT (source_posted_at, provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
 		SET source_release_key = EXCLUDED.source_release_key,
 		    release_key = EXCLUDED.release_key,
 		    release_name = EXCLUDED.release_name,
@@ -1721,6 +1896,7 @@ func syncReadyReleaseCandidateForSummaryState(ctx context.Context, runner sqlExe
 
 	if _, err := runner.ExecContext(ctx, `
 		INSERT INTO release_ready_candidates (
+			source_posted_at,
 			provider_id,
 			newsgroup_id,
 			key_kind,
@@ -1742,8 +1918,8 @@ func syncReadyReleaseCandidateForSummaryState(ctx context.Context, runner sqlExe
 			ready_reason,
 			updated_at
 		)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
-		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
+		VALUES (COALESCE($18::timestamptz, NOW()),$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+		ON CONFLICT (source_posted_at, provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
 		SET source_release_key = EXCLUDED.source_release_key,
 		    release_key = EXCLUDED.release_key,
 		    release_name = EXCLUDED.release_name,
@@ -1947,7 +2123,9 @@ func loadReleaseFamilyShape(ctx context.Context, runner sqlExecQueryRower, key r
 				'\.(rar|zip|7z|7z\.[0-9]{3}|zip\.[0-9]{3}|r[0-9]{2,3}|part[0-9]+\.rar|mkv|mp4|avi|ts|mp3|flac|m4a|par2)$'
 			), FALSE) AS has_usable_file_identity
 		FROM binary_core bc
-		JOIN binary_identity_current bic ON bic.binary_id = bc.binary_id
+		JOIN binary_identity_current bic
+		  ON bic.source_posted_at = bc.source_posted_at
+		 AND bic.binary_id = bc.binary_id
 		WHERE bc.provider_id = $1
 		  AND bc.newsgroup_id = $2
 		  AND bic.release_family_key = $3
@@ -1955,7 +2133,8 @@ func loadReleaseFamilyShape(ctx context.Context, runner sqlExecQueryRower, key r
 		  AND NOT EXISTS (
 			SELECT 1
 			FROM binary_lifecycle bl
-			WHERE bl.binary_id = bic.binary_id
+			WHERE bl.source_posted_at = bic.source_posted_at
+			  AND bl.binary_id = bic.binary_id
 			  AND bl.lifecycle_status = 'superseded'
 		  )`,
 		key.ProviderID,
@@ -1992,8 +2171,12 @@ func isReleaseCandidateRecoverPending(ctx context.Context, runner sqlExecQueryRo
 		SELECT EXISTS (
 			SELECT 1
 			FROM binary_core bc
-			JOIN binary_identity_current bic ON bic.binary_id = bc.binary_id
-			JOIN binary_recovery_current brc ON brc.binary_id = bc.binary_id
+			JOIN binary_identity_current bic
+			  ON bic.source_posted_at = bc.source_posted_at
+			 AND bic.binary_id = bc.binary_id
+			JOIN binary_recovery_current brc
+			  ON brc.source_posted_at = bc.source_posted_at
+			 AND brc.binary_id = bc.binary_id
 			JOIN LATERAL (
 				SELECT bp.article_header_id
 				FROM binary_parts bp
@@ -2029,45 +2212,102 @@ func refreshRecoveredFileSetCandidatesForSummaryKeys(ctx context.Context, runner
 	values, args := releaseFamilySummaryBatchValues(keys)
 
 	rows, err := runner.QueryContext(ctx, fmt.Sprintf(`
-		WITH requested(provider_id, newsgroup_id, key_kind, family_key) AS (
+		WITH requested_input(provider_id, newsgroup_id, key_kind, family_key) AS MATERIALIZED (
 			VALUES %s
 		),
-		release_family_matches AS (
-			SELECT DISTINCT bic.provider_id, bic.file_set_key
-			FROM requested r
-			JOIN binary_identity_current bic
-			  ON bic.provider_id = r.provider_id
-			 AND bic.newsgroup_id = r.newsgroup_id
-			 AND bic.release_family_key = r.family_key
-			JOIN binary_observation_stats bos ON bos.binary_id = bic.binary_id
-			JOIN binary_recovery_current brc
-			  ON brc.binary_id = bic.binary_id
-			 AND brc.recovered_source = 'yenc_header'
-			WHERE r.key_kind = 'release_family'
-			  AND BTRIM(bic.file_set_key) <> ''
-			  AND bos.posted_at IS NOT NULL
+		requested AS MATERIALIZED (
+			SELECT
+				r.provider_id,
+				r.newsgroup_id,
+				r.key_kind,
+				r.family_key,
+				s.source_posted_at AS source_hint
+			FROM requested_input r
+			JOIN LATERAL (
+				SELECT
+					COALESCE(summary.earliest_posted_at, summary.source_posted_at) AS source_posted_at,
+					summary.binary_count,
+					summary.complete_main_payload_binary_count,
+					summary.recover_pending
+				FROM release_family_readiness_summaries summary
+				WHERE summary.provider_id = r.provider_id
+				  AND summary.newsgroup_id = r.newsgroup_id
+				  AND summary.key_kind = r.key_kind
+				  AND summary.family_key = r.family_key
+				ORDER BY summary.updated_at DESC, summary.source_posted_at DESC
+				LIMIT 1
+			) s ON true
+			WHERE s.binary_count > 1
+			   OR s.complete_main_payload_binary_count > 0
+			   OR s.recover_pending = TRUE
 		),
-		base_stem_matches AS (
+		release_family_matches AS MATERIALIZED (
 			SELECT DISTINCT bic.provider_id, bic.file_set_key
 			FROM requested r
-			JOIN binary_identity_current bic
-			  ON bic.provider_id = r.provider_id
-			 AND bic.newsgroup_id = r.newsgroup_id
-			 AND LOWER(BTRIM(bic.base_stem)) = r.family_key
-			JOIN binary_observation_stats bos ON bos.binary_id = bic.binary_id
-			JOIN binary_recovery_current brc
-			  ON brc.binary_id = bic.binary_id
-			 AND brc.recovered_source = 'yenc_header'
-			WHERE r.key_kind = 'base_stem'
-			  AND GREATEST(bic.expected_file_count, bic.expected_archive_file_count) > 1
-			  AND BTRIM(bic.base_stem) <> ''
-			  AND BTRIM(bic.file_set_key) <> ''
-			  AND bos.posted_at IS NOT NULL
+			JOIN LATERAL (
+				SELECT bic.provider_id, bic.file_set_key, bic.source_posted_at, bic.binary_id
+				FROM binary_identity_current bic
+				WHERE bic.provider_id = r.provider_id
+				  AND bic.newsgroup_id = r.newsgroup_id
+				  AND bic.release_family_key = r.family_key
+				  AND BTRIM(bic.release_family_key) <> ''
+				  AND BTRIM(bic.file_set_key) <> ''
+				  AND bic.source_posted_at >= r.source_hint - INTERVAL '1 day'
+				  AND bic.source_posted_at < r.source_hint + INTERVAL '1 day'
+			) bic ON r.key_kind = 'release_family'
+			WHERE EXISTS (
+				SELECT 1
+				FROM binary_observation_stats bos
+				WHERE bos.source_posted_at = bic.source_posted_at
+				  AND bos.binary_id = bic.binary_id
+				  AND bos.posted_at IS NOT NULL
+			)
+			AND EXISTS (
+				SELECT 1
+				FROM binary_recovery_current brc
+				WHERE brc.source_posted_at = bic.source_posted_at
+				  AND brc.binary_id = bic.binary_id
+				  AND brc.recovered_source = 'yenc_header'
+			)
+			ORDER BY bic.provider_id, bic.file_set_key
+			LIMIT %d
+		),
+		base_stem_matches AS MATERIALIZED (
+			SELECT DISTINCT bic.provider_id, bic.file_set_key
+			FROM requested r
+			JOIN LATERAL (
+				SELECT bic.provider_id, bic.file_set_key, bic.source_posted_at, bic.binary_id
+				FROM binary_identity_current bic
+				WHERE bic.provider_id = r.provider_id
+				  AND bic.newsgroup_id = r.newsgroup_id
+				  AND GREATEST(bic.expected_file_count, bic.expected_archive_file_count) > 1
+				  AND BTRIM(bic.base_stem) <> ''
+				  AND LOWER(BTRIM(bic.base_stem)) = r.family_key
+				  AND BTRIM(bic.file_set_key) <> ''
+				  AND bic.source_posted_at >= r.source_hint - INTERVAL '1 day'
+				  AND bic.source_posted_at < r.source_hint + INTERVAL '1 day'
+			) bic ON r.key_kind = 'base_stem'
+			WHERE EXISTS (
+				SELECT 1
+				FROM binary_observation_stats bos
+				WHERE bos.source_posted_at = bic.source_posted_at
+				  AND bos.binary_id = bic.binary_id
+				  AND bos.posted_at IS NOT NULL
+			)
+			AND EXISTS (
+				SELECT 1
+				FROM binary_recovery_current brc
+				WHERE brc.source_posted_at = bic.source_posted_at
+				  AND brc.binary_id = bic.binary_id
+				  AND brc.recovered_source = 'yenc_header'
+			)
+			ORDER BY bic.provider_id, bic.file_set_key
+			LIMIT %d
 		)
 		SELECT provider_id, file_set_key FROM release_family_matches
 		UNION
 		SELECT provider_id, file_set_key FROM base_stem_matches`,
-		values), args...)
+		values, releaseRecoveredFileSetSyncCap, releaseRecoveredFileSetSyncCap), args...)
 	if err != nil {
 		return fmt.Errorf("list impacted recovered file sets for summary key batch count=%d: %w", len(keys), err)
 	}
@@ -2091,13 +2331,28 @@ func refreshRecoveredFileSetCandidatesForSummaryKeys(ctx context.Context, runner
 	if err := rows.Close(); err != nil {
 		return fmt.Errorf("close impacted recovered file set rows for summary key batch count=%d: %w", len(keys), err)
 	}
+	sort.Slice(fileSetKeys, func(i, j int) bool {
+		if fileSetKeys[i].ProviderID != fileSetKeys[j].ProviderID {
+			return fileSetKeys[i].ProviderID < fileSetKeys[j].ProviderID
+		}
+		return fileSetKeys[i].FileSetKey < fileSetKeys[j].FileSetKey
+	})
+	if len(fileSetKeys) > releaseRecoveredFileSetSyncCap {
+		fileSetKeys = fileSetKeys[:releaseRecoveredFileSetSyncCap]
+	}
 	byProvider := make(map[int64][]string, 1)
 	for _, item := range fileSetKeys {
 		byProvider[item.ProviderID] = append(byProvider[item.ProviderID], item.FileSetKey)
 	}
 	for providerID, providerFileSetKeys := range byProvider {
-		if err := refreshRecoveredFileSetCandidatesBatch(ctx, runner, providerID, providerFileSetKeys); err != nil {
-			return err
+		for start := 0; start < len(providerFileSetKeys); start += releaseRecoveredFileSetSyncChunkSize {
+			end := start + releaseRecoveredFileSetSyncChunkSize
+			if end > len(providerFileSetKeys) {
+				end = len(providerFileSetKeys)
+			}
+			if err := refreshRecoveredFileSetCandidatesBatch(ctx, runner, providerID, providerFileSetKeys[start:end]); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -2157,6 +2412,17 @@ func refreshRecoveredFileSetCandidatesBatch(ctx context.Context, runner sqlExecQ
 		WITH requested(file_set_key) AS (
 			VALUES %s
 		),
+		requested_hints AS MATERIALIZED (
+			SELECT
+				r.file_set_key,
+				MIN(c.source_posted_at) AS min_source_posted_at,
+				MAX(c.source_posted_at) AS max_source_posted_at
+			FROM requested r
+			JOIN release_recovered_file_set_candidates c
+			  ON c.provider_id = $1
+			 AND c.file_set_key = r.file_set_key
+			GROUP BY r.file_set_key
+		),
 		aggregates AS MATERIALIZED (
 			SELECT
 				$1::BIGINT AS provider_id,
@@ -2187,20 +2453,33 @@ func refreshRecoveredFileSetCandidatesBatch(ctx context.Context, runner sqlExecQ
 					WHERE bic.is_main_payload = TRUE OR bic.is_auxiliary = FALSE
 				)::INTEGER AS main_payload_binary_count
 			FROM requested r
+			LEFT JOIN requested_hints h
+			  ON h.file_set_key = r.file_set_key
 			JOIN binary_identity_current bic
 			  ON bic.provider_id = $1
 			 AND bic.file_set_key = r.file_set_key
 			 AND BTRIM(bic.file_set_key) <> ''
+			 AND (
+				h.file_set_key IS NULL OR
+				(
+					bic.source_posted_at >= h.min_source_posted_at - INTERVAL '1 day' AND
+					bic.source_posted_at < h.max_source_posted_at + INTERVAL '1 day'
+				)
+			 )
 			 AND NOT EXISTS (
 				SELECT 1
 				FROM binary_lifecycle bl
-				WHERE bl.binary_id = bic.binary_id
-				  AND bl.lifecycle_status = 'superseded'
+				WHERE bl.source_posted_at = bic.source_posted_at
+			  AND bl.binary_id = bic.binary_id
+			  AND bl.lifecycle_status = 'superseded'
 			 )
 			JOIN binary_core bc ON bc.binary_id = bic.binary_id
-			JOIN binary_observation_stats bos ON bos.binary_id = bic.binary_id
+			JOIN binary_observation_stats bos
+			  ON bos.source_posted_at = bic.source_posted_at
+			 AND bos.binary_id = bic.binary_id
 			JOIN binary_recovery_current brc
-			  ON brc.binary_id = bic.binary_id
+			  ON brc.source_posted_at = bic.source_posted_at
+			 AND brc.binary_id = bic.binary_id
 			 AND brc.recovered_source = 'yenc_header'
 			WHERE bos.posted_at IS NOT NULL
 			GROUP BY r.file_set_key
@@ -2265,6 +2544,7 @@ func refreshRecoveredFileSetCandidatesBatch(ctx context.Context, runner sqlExecQ
 		),
 		upserted_recovered AS (
 			INSERT INTO release_recovered_file_set_candidates (
+			source_posted_at,
 			provider_id,
 			file_set_key,
 			representative_newsgroup_id,
@@ -2286,6 +2566,7 @@ func refreshRecoveredFileSetCandidatesBatch(ctx context.Context, runner sqlExecQ
 			updated_at
 			)
 			SELECT
+				COALESCE(earliest_posted_at, NOW()),
 				provider_id,
 				file_set_key,
 				representative_newsgroup_id,
@@ -2306,7 +2587,7 @@ func refreshRecoveredFileSetCandidatesBatch(ctx context.Context, runner sqlExecQ
 				readiness_bucket,
 				COALESCE(max_updated_at, NOW())
 			FROM valid
-			ON CONFLICT (provider_id, file_set_key) DO UPDATE
+			ON CONFLICT (source_posted_at, provider_id, file_set_key) DO UPDATE
 			SET representative_newsgroup_id = EXCLUDED.representative_newsgroup_id,
 			    source_release_key = EXCLUDED.source_release_key,
 			    release_key = EXCLUDED.release_key,
@@ -2328,6 +2609,7 @@ func refreshRecoveredFileSetCandidatesBatch(ctx context.Context, runner sqlExecQ
 		),
 		upserted_ready AS (
 			INSERT INTO release_ready_candidates (
+			source_posted_at,
 			provider_id,
 			newsgroup_id,
 			key_kind,
@@ -2350,6 +2632,7 @@ func refreshRecoveredFileSetCandidatesBatch(ctx context.Context, runner sqlExecQ
 			updated_at
 			)
 			SELECT
+				COALESCE(earliest_posted_at, NOW()),
 				provider_id,
 				representative_newsgroup_id,
 				$`+fmt.Sprint(keyKindParam)+`,
@@ -2372,7 +2655,7 @@ func refreshRecoveredFileSetCandidatesBatch(ctx context.Context, runner sqlExecQ
 				COALESCE(max_updated_at, NOW())
 			FROM valid
 			WHERE readiness_bucket = $`+fmt.Sprint(actionableParam)+`
-			ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
+			ON CONFLICT (source_posted_at, provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
 			SET source_release_key = EXCLUDED.source_release_key,
 			    release_key = EXCLUDED.release_key,
 			    release_name = EXCLUDED.release_name,
@@ -2439,8 +2722,12 @@ func refreshRecoveredFileSetCandidate(ctx context.Context, runner sqlExecQueryRo
 			)::INTEGER AS main_payload_binary_count
 		FROM binary_identity_current bic
 		JOIN binary_core bc ON bc.binary_id = bic.binary_id
-		JOIN binary_observation_stats bos ON bos.binary_id = bic.binary_id
-		JOIN binary_recovery_current brc ON brc.binary_id = bic.binary_id
+		JOIN binary_observation_stats bos
+		  ON bos.source_posted_at = bic.source_posted_at
+		 AND bos.binary_id = bic.binary_id
+		JOIN binary_recovery_current brc
+		  ON brc.source_posted_at = bic.source_posted_at
+		 AND brc.binary_id = bic.binary_id
 		WHERE bic.provider_id = $1
 		  AND bic.file_set_key = $2
 		  AND COALESCE(brc.recovered_source, '') = 'yenc_header'
@@ -2449,7 +2736,8 @@ func refreshRecoveredFileSetCandidate(ctx context.Context, runner sqlExecQueryRo
 		  AND NOT EXISTS (
 			SELECT 1
 			FROM binary_lifecycle bl
-			WHERE bl.binary_id = bic.binary_id
+			WHERE bl.source_posted_at = bic.source_posted_at
+			  AND bl.binary_id = bic.binary_id
 			  AND bl.lifecycle_status = 'superseded'
 		  )`,
 		providerID,
@@ -2534,6 +2822,7 @@ func upsertRecoveredFileSetCandidateAggregate(ctx context.Context, runner sqlExe
 
 	if _, err := runner.ExecContext(ctx, `
 		INSERT INTO release_recovered_file_set_candidates (
+			source_posted_at,
 			provider_id,
 			file_set_key,
 			representative_newsgroup_id,
@@ -2554,8 +2843,8 @@ func upsertRecoveredFileSetCandidateAggregate(ctx context.Context, runner sqlExe
 			readiness_bucket,
 			updated_at
 		)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
-		ON CONFLICT (provider_id, file_set_key) DO UPDATE
+		VALUES (COALESCE($15::timestamptz, NOW()),$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+		ON CONFLICT (source_posted_at, provider_id, file_set_key) DO UPDATE
 		SET representative_newsgroup_id = EXCLUDED.representative_newsgroup_id,
 		    source_release_key = EXCLUDED.source_release_key,
 		    release_key = EXCLUDED.release_key,
@@ -2613,6 +2902,7 @@ func upsertRecoveredFileSetCandidateAggregate(ctx context.Context, runner sqlExe
 
 	if _, err := runner.ExecContext(ctx, `
 		INSERT INTO release_ready_candidates (
+			source_posted_at,
 			provider_id,
 			newsgroup_id,
 			key_kind,
@@ -2634,8 +2924,8 @@ func upsertRecoveredFileSetCandidateAggregate(ctx context.Context, runner sqlExe
 			ready_reason,
 			updated_at
 		)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
-		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
+		VALUES (COALESCE($18::timestamptz, NOW()),$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+		ON CONFLICT (source_posted_at, provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
 		SET source_release_key = EXCLUDED.source_release_key,
 		    release_key = EXCLUDED.release_key,
 		    release_name = EXCLUDED.release_name,
@@ -2760,7 +3050,8 @@ func markReleaseFamiliesDirtyBatch(ctx context.Context, runner sqlExecQueryer, k
 			family_key,
 			queued_at
 		)
-		VALUES %s`,
+		VALUES %s
+		ON CONFLICT DO NOTHING`,
 			strings.Join(queueValues, ",")), queueArgs...); err != nil {
 			return fmt.Errorf("enqueue release family summary refresh batch count=%d: %w", len(batch), err)
 		}
@@ -2843,13 +3134,15 @@ func (s *Store) backfillReadyReleaseCandidatesFromActionableSummaries(ctx contex
 	_, err := s.db.ExecContext(ctx, `
 		WITH requested AS (
 			SELECT
+				s.source_posted_at,
 				s.provider_id,
 				s.newsgroup_id,
 				s.key_kind,
 				s.family_key
 			FROM release_family_readiness_summaries s
 			LEFT JOIN release_ready_candidates c
-			  ON c.provider_id = s.provider_id
+			  ON c.source_posted_at = s.source_posted_at
+			 AND c.provider_id = s.provider_id
 			 AND c.newsgroup_id = s.newsgroup_id
 			 AND c.key_kind = s.key_kind
 			 AND c.family_key = s.family_key
@@ -2869,6 +3162,7 @@ func (s *Store) backfillReadyReleaseCandidatesFromActionableSummaries(ctx contex
 			LIMIT $2
 		)
 		INSERT INTO release_ready_candidates (
+			source_posted_at,
 			provider_id,
 			newsgroup_id,
 			key_kind,
@@ -2891,6 +3185,7 @@ func (s *Store) backfillReadyReleaseCandidatesFromActionableSummaries(ctx contex
 			updated_at
 		)
 		SELECT
+			s.source_posted_at,
 			s.provider_id,
 			s.newsgroup_id,
 			s.key_kind,
@@ -2913,11 +3208,12 @@ func (s *Store) backfillReadyReleaseCandidatesFromActionableSummaries(ctx contex
 			s.updated_at
 		FROM requested r
 		JOIN release_family_readiness_summaries s
-		  ON s.provider_id = r.provider_id
+		  ON s.source_posted_at = r.source_posted_at
+		 AND s.provider_id = r.provider_id
 		 AND s.newsgroup_id = r.newsgroup_id
 		 AND s.key_kind = r.key_kind
 		 AND s.family_key = r.family_key
-		ON CONFLICT (provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
+		ON CONFLICT (source_posted_at, provider_id, newsgroup_id, key_kind, family_key) DO UPDATE
 		SET source_release_key = EXCLUDED.source_release_key,
 		    release_key = EXCLUDED.release_key,
 		    release_name = EXCLUDED.release_name,

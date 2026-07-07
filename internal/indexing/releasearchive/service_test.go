@@ -52,7 +52,7 @@ type archiveRepoStub struct {
 	failed     map[string]string
 }
 
-func (s *archiveRepoStub) ClaimReleaseArchiveCandidates(context.Context, int) ([]pgindex.ReleaseArchiveCandidate, error) {
+func (s *archiveRepoStub) ClaimReleaseArchiveCandidates(context.Context, int, pgindex.ReleaseReadyPolicy) ([]pgindex.ReleaseArchiveCandidate, error) {
 	return s.candidates, nil
 }
 

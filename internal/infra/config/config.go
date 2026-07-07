@@ -160,6 +160,7 @@ type IndexingReleaseConfig struct {
 	PublicMinIdentityStatus                         string   `mapstructure:"public_min_identity_status" yaml:"public_min_identity_status"`
 	PublicRequireInspection                         *bool    `mapstructure:"public_require_inspection" yaml:"public_require_inspection"`
 	PublicRequireEnrichment                         *bool    `mapstructure:"public_require_enrichment" yaml:"public_require_enrichment"`
+	PublicRequireClearTitle                         *bool    `mapstructure:"public_require_clear_title" yaml:"public_require_clear_title"`
 	PublicRequirePayloadComplete                    *bool    `mapstructure:"public_require_payload_complete" yaml:"public_require_payload_complete"`
 	PublicRequireExpectedFileCountComplete          *bool    `mapstructure:"public_require_expected_file_count_complete" yaml:"public_require_expected_file_count_complete"`
 	PublicRequirePAR2                               *bool    `mapstructure:"public_require_par2" yaml:"public_require_par2"`
@@ -310,7 +311,7 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("indexing.scrape_backfill.concurrency", 1)
 	v.SetDefault("indexing.scrape_backfill.max_batches", 1)
 	v.SetDefault("indexing.scrape_backfill.backoff_seconds", 0)
-	v.SetDefault("indexing.assemble.binary_upsert_db_chunk_size", 250)
+	v.SetDefault("indexing.assemble.binary_upsert_db_chunk_size", 1000)
 	v.SetDefault("indexing.assemble.lane_a_target_pct", 70)
 	v.SetDefault("indexing.assemble.lane_b_min_pct", 30)
 	v.SetDefault("indexing.assemble.lane_a_time_window_minutes", 15)
@@ -328,6 +329,7 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("indexing.release.public_min_identity_status", "probable")
 	v.SetDefault("indexing.release.public_require_inspection", true)
 	v.SetDefault("indexing.release.public_require_enrichment", false)
+	v.SetDefault("indexing.release.public_require_clear_title", true)
 	v.SetDefault("indexing.release.public_require_payload_complete", true)
 	v.SetDefault("indexing.release.public_require_expected_file_count_complete", false)
 	v.SetDefault("indexing.release.public_require_par2", false)

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/datallboy/gonzb/internal/app"
@@ -103,6 +104,78 @@ func (ctrl *IndexerAdminController) GetBackfillProgress(c *echo.Context) error {
 		return jsonError(c, indexerErrorStatus(err), err.Error())
 	}
 	return c.JSON(http.StatusOK, items)
+}
+
+func (ctrl *IndexerAdminController) GetRecoveryCapacity(c *echo.Context) error {
+	if ctrl == nil || ctrl.Service == nil {
+		return jsonError(c, http.StatusServiceUnavailable, "indexer api is unavailable")
+	}
+	setIndexerContractScope(c, indexerContractScopeInternalDebug)
+
+	item, err := ctrl.Service.RecoveryCapacity(c.Request().Context())
+	if err != nil {
+		return jsonError(c, indexerErrorStatus(err), err.Error())
+	}
+	return c.JSON(http.StatusOK, item)
+}
+
+func (ctrl *IndexerAdminController) ListGroupProfiles(c *echo.Context) error {
+	if ctrl == nil || ctrl.Service == nil {
+		return jsonError(c, http.StatusServiceUnavailable, "indexer api is unavailable")
+	}
+	setIndexerContractScope(c, indexerContractScopeInternalDebug)
+
+	limit, _, err := parsePaginationParams(c, defaultPageLimit, maxPageLimit)
+	if err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	items, err := ctrl.Service.GroupProfiles(c.Request().Context(), limit)
+	if err != nil {
+		return jsonError(c, indexerErrorStatus(err), err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
+func (ctrl *IndexerAdminController) ListDeferredArticleRanges(c *echo.Context) error {
+	if ctrl == nil || ctrl.Service == nil {
+		return jsonError(c, http.StatusServiceUnavailable, "indexer api is unavailable")
+	}
+	setIndexerContractScope(c, indexerContractScopeInternalDebug)
+
+	limit, _, err := parsePaginationParams(c, defaultPageLimit, maxPageLimit)
+	if err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	items, err := ctrl.Service.DeferredArticleRanges(c.Request().Context(), queryParamTrimmed(c, "state"), limit)
+	if err != nil {
+		return jsonError(c, indexerErrorStatus(err), err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
+func (ctrl *IndexerAdminController) ListArticleCohorts(c *echo.Context) error {
+	if ctrl == nil || ctrl.Service == nil {
+		return jsonError(c, http.StatusServiceUnavailable, "indexer api is unavailable")
+	}
+	setIndexerContractScope(c, indexerContractScopeInternalDebug)
+	limit := parseIntDefault(queryParamTrimmed(c, "limit"), 100)
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	offset := parseIntDefault(queryParamTrimmed(c, "offset"), 0)
+	if offset < 0 {
+		offset = 0
+	}
+	items, total, err := ctrl.Service.ListArticleCohorts(c.Request().Context(), pgindex.IndexerArticleCohortParams{
+		Kind:   strings.TrimSpace(c.QueryParam("kind")),
+		Status: strings.TrimSpace(c.QueryParam("status")),
+		Limit:  limit,
+		Offset: offset,
+	})
+	if err != nil {
+		return jsonError(c, indexerErrorStatus(err), err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items), "total": total})
 }
 
 func (ctrl *IndexerAdminController) GetStageThroughput(c *echo.Context) error {
@@ -360,6 +433,34 @@ func (ctrl *IndexerAdminController) GetRun(c *echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]any{"run": run})
 }
 
+func (ctrl *IndexerAdminController) ListAttention(c *echo.Context) error {
+	if ctrl == nil || ctrl.Service == nil {
+		return jsonError(c, http.StatusServiceUnavailable, "indexer api is unavailable")
+	}
+	setIndexerContractScope(c, indexerContractScopeInternalDebug)
+
+	limit, offset, err := parsePaginationParams(c, defaultPageLimit, maxPageLimit)
+	if err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	items, total, err := ctrl.Service.ListAdminAttention(c.Request().Context(), pgindex.IndexerAdminAttentionParams{
+		Reason: queryParamTrimmed(c, "reason"),
+		Limit:  limit,
+		Offset: offset,
+	})
+	if err != nil {
+		return jsonError(c, indexerErrorStatus(err), err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{
+		"items":    items,
+		"count":    len(items),
+		"total":    total,
+		"limit":    limit,
+		"offset":   offset,
+		"has_more": offset+len(items) < total,
+	})
+}
+
 func (ctrl *IndexerAdminController) ListReleases(c *echo.Context) error {
 	if ctrl == nil || ctrl.Service == nil {
 		return jsonError(c, http.StatusServiceUnavailable, "indexer api is unavailable")
@@ -424,6 +525,40 @@ func (ctrl *IndexerAdminController) GetRelease(c *echo.Context) error {
 	return c.JSON(http.StatusOK, releaseView)
 }
 
+func (ctrl *IndexerAdminController) ListBinaries(c *echo.Context) error {
+	if ctrl == nil || ctrl.Service == nil {
+		return jsonError(c, http.StatusServiceUnavailable, "indexer api is unavailable")
+	}
+	setIndexerContractScope(c, indexerContractScopeInternalDebug)
+
+	limit, offset, err := parsePaginationParams(c, defaultPageLimit, maxPageLimit)
+	if err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	items, total, err := ctrl.Service.ListBinaries(c.Request().Context(), pgindex.IndexerBinaryListParams{
+		Query:            queryParamTrimmed(c, "q"),
+		GroupName:        queryParamTrimmed(c, "newsgroup"),
+		IdentityStrength: queryParamTrimmed(c, "identity_strength"),
+		ReadinessBucket:  queryParamTrimmed(c, "readiness_bucket"),
+		MatchStatus:      queryParamTrimmed(c, "match_status"),
+		ReleaseState:     queryParamTrimmed(c, "release_state"),
+		Sort:             queryParamTrimmed(c, "sort"),
+		Limit:            limit,
+		Offset:           offset,
+	})
+	if err != nil {
+		return jsonError(c, indexerErrorStatus(err), err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{
+		"items":    items,
+		"count":    len(items),
+		"total":    total,
+		"limit":    limit,
+		"offset":   offset,
+		"has_more": offset+len(items) < total,
+	})
+}
+
 func (ctrl *IndexerAdminController) PatchRelease(c *echo.Context) error {
 	if ctrl == nil || ctrl.Service == nil {
 		return jsonError(c, http.StatusServiceUnavailable, "indexer api is unavailable")
@@ -438,6 +573,22 @@ func (ctrl *IndexerAdminController) PatchRelease(c *echo.Context) error {
 		return jsonError(c, indexerErrorStatus(err), err.Error())
 	}
 	return c.JSON(http.StatusOK, map[string]any{"override": override})
+}
+
+func (ctrl *IndexerAdminController) IdentifyRelease(c *echo.Context) error {
+	if ctrl == nil || ctrl.Service == nil {
+		return jsonError(c, http.StatusServiceUnavailable, "indexer api is unavailable")
+	}
+	setIndexerContractScope(c, indexerContractScopeInternalDebug)
+	var patch indexerReleaseIdentityPatch
+	if err := decodeJSONBody(c, &patch); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	release, err := ctrl.Service.IdentifyRelease(c.Request().Context(), pathParamTrimmed(c, "id"), patch)
+	if err != nil {
+		return jsonError(c, indexerErrorStatus(err), err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"release": release})
 }
 
 func (ctrl *IndexerAdminController) HideRelease(c *echo.Context) error {

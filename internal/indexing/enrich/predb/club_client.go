@@ -180,18 +180,26 @@ func (c *clubClient) toMatch(row clubRow) (Match, bool) {
 		Team:       strings.TrimSpace(row.Team),
 		Genre:      strings.TrimSpace(row.Genre),
 		URL:        strings.TrimSpace(row.URL),
-		SizeKB:     row.Size,
+		SizeKB:     clubSizeKB(row.Size),
 		FileCount:  row.Files,
 		PostedAt:   postedAt,
 		Payload: map[string]any{
-			"team":   strings.TrimSpace(row.Team),
-			"genre":  strings.TrimSpace(row.Genre),
-			"url":    strings.TrimSpace(row.URL),
-			"size":   row.Size,
-			"files":  row.Files,
-			"pre_at": row.PreAt,
+			"team":      strings.TrimSpace(row.Team),
+			"genre":     strings.TrimSpace(row.Genre),
+			"url":       strings.TrimSpace(row.URL),
+			"size":      row.Size,
+			"size_unit": "mb",
+			"files":     row.Files,
+			"pre_at":    row.PreAt,
 		},
 	}, true
+}
+
+func clubSizeKB(sizeMB float64) float64 {
+	if sizeMB <= 0 {
+		return 0
+	}
+	return sizeMB * 1024
 }
 
 func (c *clubClient) toEntry(row clubRow) (pgindex.PredbEntryRecord, bool) {

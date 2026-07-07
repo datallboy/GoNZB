@@ -300,17 +300,29 @@ func scanProviderInventory(ctx context.Context, appCtx *app.Context, runtime *ap
 		}
 		for _, item := range listings {
 			out = append(out, app.IndexingProviderGroupInventoryRuntimeSettings{
-				ProviderID:   strings.TrimSpace(cfg.ID),
-				ProviderName: firstNonBlank(strings.TrimSpace(cfg.Host), strings.TrimSpace(cfg.ID)),
-				GroupName:    strings.TrimSpace(item.Group),
+				ProviderID:   sanitizeProviderInventoryText(cfg.ID),
+				ProviderName: firstNonBlank(sanitizeProviderInventoryText(cfg.Host), sanitizeProviderInventoryText(cfg.ID)),
+				GroupName:    sanitizeProviderInventoryText(item.Group),
 				High:         item.High,
 				Low:          item.Low,
-				Status:       strings.TrimSpace(item.Status),
+				Status:       sanitizeProviderInventoryText(item.Status),
 				ScannedAt:    scannedAt,
 			})
 		}
 	}
 	return out, nil
+}
+
+func sanitizeProviderInventoryText(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	value = strings.ReplaceAll(value, "\x00", "")
+	if value == "" {
+		return ""
+	}
+	return strings.ToValidUTF8(value, "")
 }
 
 type scrapeCrosspostPopularityItem struct {

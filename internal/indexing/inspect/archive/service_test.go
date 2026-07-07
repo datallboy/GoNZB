@@ -74,8 +74,8 @@ func TestRunOnceAppliesArchivePasswordStateWithoutTouchingMediaFields(t *testing
 	if boolValue(update.PasswordedKnown) {
 		t.Fatalf("expected no known password flag, got %+v", update)
 	}
-	if update.PasswordState != "passworded_unknown" {
-		t.Fatalf("expected passworded_unknown state, got %q", update.PasswordState)
+	if update.PasswordState != "password_unknown" {
+		t.Fatalf("expected password_unknown state, got %q", update.PasswordState)
 	}
 	if intValue(update.ArchiveCount) != 1 {
 		t.Fatalf("expected archive_count 1, got %+v", update.ArchiveCount)
@@ -168,8 +168,8 @@ func TestRunOncePersistsPasswordUnknownWhenArchiveProbePromptsForPassword(t *tes
 	if !boolValue(update.Encrypted) || !boolValue(update.Passworded) || !boolValue(update.PasswordedUnknown) {
 		t.Fatalf("expected encrypted unresolved password update, got %+v", update)
 	}
-	if update.PasswordState != "passworded_unknown" {
-		t.Fatalf("expected passworded_unknown state, got %q", update.PasswordState)
+	if update.PasswordState != "password_unknown" {
+		t.Fatalf("expected password_unknown state, got %q", update.PasswordState)
 	}
 }
 

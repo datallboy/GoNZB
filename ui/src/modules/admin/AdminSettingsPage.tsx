@@ -137,7 +137,7 @@ function defaultSettings(): RuntimeSettings {
       source_window: {
         enabled: true,
         window_minutes: 15,
-        backfill_window_days: 7,
+        backfill_window_days: 0,
         max_open_headers: 50000,
         resume_open_headers: 10000,
         max_blocking_yenc: 50000,
@@ -290,7 +290,7 @@ function normalizeSettings(input?: RuntimeSettings): RuntimeSettings {
       source_window: {
         enabled: indexing.source_window?.enabled ?? defaults.indexing!.source_window!.enabled,
         window_minutes: indexing.source_window?.window_minutes ?? defaults.indexing!.source_window!.window_minutes,
-        backfill_window_days: indexing.source_window?.backfill_window_days ?? defaults.indexing!.source_window!.backfill_window_days,
+        backfill_window_days: indexing.source_window?.backfill_window_days ?? 0,
         max_open_headers: indexing.source_window?.max_open_headers ?? defaults.indexing!.source_window!.max_open_headers,
         resume_open_headers: indexing.source_window?.resume_open_headers ?? defaults.indexing!.source_window!.resume_open_headers,
         max_blocking_yenc: indexing.source_window?.max_blocking_yenc ?? defaults.indexing!.source_window!.max_blocking_yenc,
@@ -1118,20 +1118,13 @@ export function AdminSettingsPage() {
 
         <SettingsSection title="Source window guard">
           <div className="banner">
-            Source windows limit new scrape intake while assemble and yEnc recovery catch up. Backfill keeps only recent article windows active; existing old headers are not deleted by this guard.
+            Source windows limit new scrape intake while assemble and yEnc recovery catch up. Backfill history is controlled only by explicit per-group cutoff dates.
           </div>
           <div className="toolbar-grid">
             <CheckboxField
               label="Enable source window guard"
               checked={Boolean(indexing.source_window?.enabled)}
               onChange={(value) => setIndexing({ ...indexing, source_window: { ...indexing.source_window!, enabled: value } })}
-            />
-            <NumberField
-              label="Backfill window days"
-              min={1}
-              value={indexing.source_window?.backfill_window_days ?? 7}
-              helpText="Backfill ignores articles older than this rolling window unless a group has an explicit cutoff."
-              onChange={(value) => setIndexing({ ...indexing, source_window: { ...indexing.source_window!, backfill_window_days: value } })}
             />
             <NumberField
               label="Assembly family window minutes"

@@ -236,6 +236,7 @@ func (s *Store) ListReleaseEnrichmentCandidates(ctx context.Context, stageName s
 	case "enrich_predb", "enrich_predb_scene_name_recovery":
 		where = `(
 			title_source = 'source'
+			OR title_source = 'source_obfuscated'
 			OR title_source = ''
 			OR deobfuscated_title = ''
 			OR LOWER(BTRIM(COALESCE(title, ''))) = 'unknown-release'
@@ -248,6 +249,7 @@ func (s *Store) ListReleaseEnrichmentCandidates(ctx context.Context, stageName s
 	case "enrich_predb_metadata_only_fallback":
 		where = `(
 			title_source = 'source'
+			OR title_source = 'source_obfuscated'
 			OR deobfuscated_title = ''
 		) AND (
 			external_media_type <> ''
@@ -304,11 +306,112 @@ func (s *Store) ListReleaseEnrichmentCandidates(ctx context.Context, stageName s
 			season_number,
 			episode_number,
 			posted_at,
+			size_bytes,
+			payload_size.size_bytes AS payload_size_bytes,
+			payload_size.size_source AS payload_size_source,
 			runtime_seconds,
 			primary_resolution,
 			primary_video_codec,
 			primary_audio_codec
 		FROM releases
+		LEFT JOIN LATERAL (
+			WITH payload_files AS (
+				SELECT
+					rf.binary_id,
+					rf.file_name,
+					rf.size_bytes,
+					LOWER(COALESCE(rf.file_name, '')) AS lower_name
+				FROM release_files rf
+				WHERE rf.release_id = releases.release_id
+				  AND COALESCE(rf.is_pars, FALSE) = FALSE
+				  AND LOWER(COALESCE(rf.file_name, '')) !~ '\.(nfo|sfv|srr|srs|nzb|par2|vol[0-9]+\+[0-9]+\.par2)$'
+			),
+			file_sizes AS (
+				SELECT
+					pf.file_name,
+					pf.lower_name ~ '(\.part0*[0-9]+\.rar|\.r[0-9]{2,3}|\.(7z|zip)\.0*[0-9]+)$' AS is_split_archive,
+					pf.lower_name ~ '(\.part0*[0-9]+\.rar|\.r[0-9]{2,3}|\.rar|\.(7z|zip)(\.[0-9]+)?)$' AS is_archive_payload,
+					COALESCE(par2_size.size_bytes, yenc_size.size_bytes, NULLIF(pf.size_bytes, 0), observed_size.size_bytes, 0) AS size_bytes,
+					CASE
+						WHEN COALESCE(par2_size.size_bytes, 0) > 0 THEN 'par2_target'
+						WHEN COALESCE(yenc_size.size_bytes, 0) > 0 THEN 'yenc_or_subject_size'
+						WHEN COALESCE(pf.size_bytes, 0) > 0 THEN 'release_file_observed'
+						WHEN COALESCE(observed_size.size_bytes, 0) > 0 THEN 'observed_encoded_or_unknown'
+						ELSE ''
+					END AS size_source
+				FROM payload_files pf
+				LEFT JOIN LATERAL (
+					SELECT MAX(bpt.file_size) AS size_bytes
+					FROM binary_par2_targets bpt
+					WHERE bpt.release_id = releases.release_id
+					  AND LOWER(BTRIM(bpt.file_name)) = LOWER(BTRIM(pf.file_name))
+					  AND COALESCE(bpt.file_size, 0) > 0
+				) par2_size ON TRUE
+				LEFT JOIN LATERAL (
+					SELECT MAX(p.yenc_file_size) AS size_bytes
+					FROM binary_parts bp
+					JOIN article_header_ingest_payloads p
+					  ON p.source_posted_at = bp.source_posted_at
+					 AND p.article_header_id = bp.article_header_id
+					WHERE bp.binary_id = pf.binary_id
+					  AND COALESCE(p.yenc_file_size, 0) > 0
+				) yenc_size ON TRUE
+				LEFT JOIN LATERAL (
+					SELECT MAX(cf.size_bytes) AS size_bytes
+					FROM release_catalog_files cf
+					WHERE cf.release_id = releases.release_id
+					  AND LOWER(BTRIM(cf.file_name)) = LOWER(BTRIM(pf.file_name))
+					  AND COALESCE(cf.is_pars, FALSE) = FALSE
+					  AND COALESCE(cf.size_bytes, 0) > 0
+				) observed_size ON TRUE
+			),
+			size_summary AS (
+				SELECT
+					COALESCE(SUM(size_bytes) FILTER (WHERE size_bytes > 0), 0) AS sum_size_bytes,
+					COALESCE(MAX(size_bytes) FILTER (WHERE size_bytes > 0), 0) AS max_size_bytes,
+					COUNT(*) FILTER (WHERE is_archive_payload) AS archive_file_count,
+					COUNT(*) FILTER (WHERE is_split_archive) AS split_archive_file_count,
+					COUNT(*) FILTER (WHERE size_bytes > 0) AS sized_file_count,
+					COUNT(*) FILTER (WHERE size_source = 'par2_target') AS par2_file_count,
+					COUNT(*) FILTER (WHERE size_source = 'yenc_or_subject_size') AS yenc_file_count,
+					COUNT(*) FILTER (WHERE size_source IN ('release_file_observed', 'observed_encoded_or_unknown')) AS observed_file_count
+				FROM file_sizes
+			),
+			top_file AS (
+				SELECT size_source
+				FROM file_sizes
+				WHERE size_bytes > 0
+				ORDER BY size_bytes DESC, file_name
+				LIMIT 1
+			)
+			SELECT
+				CASE
+					WHEN size_summary.archive_file_count >= 2
+					  AND size_summary.split_archive_file_count >= 1
+					THEN size_summary.sum_size_bytes
+					ELSE size_summary.max_size_bytes
+				END AS size_bytes,
+				CASE
+					WHEN size_summary.archive_file_count >= 2
+					  AND size_summary.split_archive_file_count >= 1
+					  AND size_summary.sized_file_count > 0
+					  AND size_summary.observed_file_count > 0 THEN 'decoded_payload_sum_with_observed_fallback'
+					WHEN size_summary.archive_file_count >= 2
+					  AND size_summary.split_archive_file_count >= 1
+					  AND size_summary.sized_file_count > 0
+					  AND size_summary.par2_file_count = size_summary.sized_file_count THEN 'par2_target_sum'
+					WHEN size_summary.archive_file_count >= 2
+					  AND size_summary.split_archive_file_count >= 1
+					  AND size_summary.sized_file_count > 0
+					  AND size_summary.yenc_file_count = size_summary.sized_file_count THEN 'yenc_or_subject_size_sum'
+					WHEN size_summary.archive_file_count >= 2
+					  AND size_summary.split_archive_file_count >= 1
+					  AND size_summary.sized_file_count > 0 THEN 'decoded_payload_sum'
+					ELSE COALESCE(top_file.size_source, '')
+				END AS size_source
+			FROM size_summary
+			LEFT JOIN top_file ON TRUE
+		) payload_size ON TRUE
 		WHERE `+where+`
 		ORDER BY updated_at DESC
 		LIMIT $1`, limit)
@@ -339,6 +442,9 @@ func (s *Store) ListReleaseEnrichmentCandidates(ctx context.Context, stageName s
 			&item.SeasonNumber,
 			&item.EpisodeNumber,
 			&postedAt,
+			&item.SizeBytes,
+			&item.PayloadSizeBytes,
+			&item.PayloadSizeSource,
 			&item.RuntimeSeconds,
 			&item.PrimaryResolution,
 			&item.PrimaryVideoCodec,
@@ -727,7 +833,14 @@ func (s *Store) ListPredbEntriesForWindow(ctx context.Context, from, to *time.Ti
 		WHERE ($1::timestamptz IS NULL OR posted_at >= $1)
 		  AND ($2::timestamptz IS NULL OR posted_at <= $2)
 		  AND ($3 = '' OR category ILIKE $3 || '%')
-		ORDER BY posted_at DESC NULLS LAST, updated_at DESC
+		ORDER BY
+			CASE
+				WHEN $1::timestamptz IS NOT NULL AND $2::timestamptz IS NOT NULL AND posted_at IS NOT NULL
+					THEN ABS(EXTRACT(EPOCH FROM (posted_at - ($2::timestamptz - INTERVAL '3 days'))))
+				ELSE NULL
+			END ASC NULLS LAST,
+			posted_at DESC NULLS LAST,
+			updated_at DESC
 		LIMIT $4`,
 		from,
 		to,
@@ -929,32 +1042,32 @@ func (s *Store) ApplyReleasePredbUpdate(ctx context.Context, in ReleasePredbUpda
 
 	return execReleaseMutationTx(ctx, s.db, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
-			UPDATE releases
-			SET title = CASE
-			    	WHEN $2 <> '' AND (title_source = '' OR title_source = 'source') THEN $2
-			    	ELSE title
-			    END,
-			    deobfuscated_title = CASE
-			    	WHEN $3 <> '' THEN $3
-			    	ELSE deobfuscated_title
-			    END,
-			    title_source = CASE
-			    	WHEN $4 <> '' AND (title_source = '' OR title_source = 'source') THEN $4
-			    	ELSE title_source
-			    END,
-			    title_confidence = CASE
-			    	WHEN $5 > title_confidence AND (title_source = '' OR title_source = 'source') THEN $5
-			    	ELSE title_confidence
-			    END,
-			    identity_status = CASE
-			    	WHEN $6 <> '' AND identity_status <> 'identified' THEN $6
-			    	ELSE identity_status
-			    END,
-			    identity_confidence_score = GREATEST(identity_confidence_score, $7),
-			    search_title = CASE
-			    	WHEN $2 <> '' AND (title_source = '' OR title_source = 'source') THEN LOWER($2)
-			    	ELSE search_title
-			    END,
+				UPDATE releases
+				SET title = CASE
+				        WHEN $2 <> '' AND ($4 IN ('manual', 'manual_predb') OR title_source = '' OR title_source IN ('source', 'source_obfuscated')) THEN $2
+				        ELSE title
+				    END,
+				    deobfuscated_title = CASE
+				        WHEN $3 <> '' THEN $3
+				        ELSE deobfuscated_title
+				    END,
+				    title_source = CASE
+				        WHEN $4 <> '' AND ($4 IN ('manual', 'manual_predb') OR title_source = '' OR title_source IN ('source', 'source_obfuscated')) THEN $4
+				        ELSE title_source
+				    END,
+				    title_confidence = CASE
+				        WHEN $5 > title_confidence AND ($4 IN ('manual', 'manual_predb') OR title_source = '' OR title_source IN ('source', 'source_obfuscated')) THEN $5
+				        ELSE title_confidence
+				    END,
+				    identity_status = CASE
+				        WHEN $6 <> '' AND identity_status <> 'identified' THEN $6
+				        ELSE identity_status
+				    END,
+				    identity_confidence_score = GREATEST(identity_confidence_score, $7),
+				    search_title = CASE
+				        WHEN $2 <> '' AND (title_source = '' OR title_source IN ('source', 'source_obfuscated')) THEN LOWER($2)
+				        ELSE search_title
+				    END,
 			    metadata_updated_at = COALESCE($8, metadata_updated_at),
 			    updated_at = NOW()
 			WHERE release_id = $1`,
@@ -975,4 +1088,119 @@ func (s *Store) ApplyReleasePredbUpdate(ctx context.Context, in ReleasePredbUpda
 		}
 		return nil
 	})
+}
+
+func (s *Store) ApplyReleaseManualIdentity(ctx context.Context, in ReleaseManualIdentityUpdate) error {
+	releaseID := strings.TrimSpace(in.ReleaseID)
+	title := strings.TrimSpace(in.Title)
+	if releaseID == "" {
+		return fmt.Errorf("release id is required")
+	}
+	if title == "" {
+		return fmt.Errorf("title is required")
+	}
+	titleSource := strings.TrimSpace(in.TitleSource)
+	if titleSource == "" {
+		titleSource = "manual"
+	}
+	if titleSource != "manual" && titleSource != "manual_predb" {
+		return fmt.Errorf("unsupported manual title source %q", titleSource)
+	}
+	identityStatus := strings.TrimSpace(in.IdentityStatus)
+	if identityStatus == "" {
+		identityStatus = "identified"
+	}
+	confidence := in.IdentityConfidenceScore
+	if confidence <= 0 {
+		confidence = 1
+	}
+	now := time.Now().UTC()
+	if in.MetadataUpdatedAt != nil {
+		now = in.MetadataUpdatedAt.UTC()
+	}
+
+	return execReleaseMutationTx(ctx, s.db, func(tx *sql.Tx) error {
+		if in.PredbEntryID > 0 {
+			var exists bool
+			if err := tx.QueryRowContext(ctx, `
+				SELECT EXISTS (
+					SELECT 1
+					FROM release_predb_matches
+					WHERE release_id = $1
+					  AND predb_entry_id = $2
+				)`, releaseID, in.PredbEntryID,
+			).Scan(&exists); err != nil {
+				return fmt.Errorf("check release predb match %s/%d: %w", releaseID, in.PredbEntryID, err)
+			}
+			if !exists {
+				return fmt.Errorf("predb candidate %d is not linked to release %s", in.PredbEntryID, releaseID)
+			}
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE release_predb_matches
+				SET chosen = (predb_entry_id = $2),
+				    updated_at = NOW()
+				WHERE release_id = $1`, releaseID, in.PredbEntryID,
+			); err != nil {
+				return fmt.Errorf("choose release predb match %s/%d: %w", releaseID, in.PredbEntryID, err)
+			}
+		} else {
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE release_predb_matches
+				SET chosen = FALSE,
+				    updated_at = NOW()
+				WHERE release_id = $1`, releaseID,
+			); err != nil {
+				return fmt.Errorf("clear release predb choices %s: %w", releaseID, err)
+			}
+		}
+
+		deobfuscatedTitle := releaseIdentityDotTitle(title)
+		_, err := tx.ExecContext(ctx, `
+			UPDATE releases
+			SET title = $2,
+			    deobfuscated_title = $3,
+			    search_title = LOWER($2),
+			    title_source = $4,
+			    title_confidence = GREATEST(title_confidence, $5),
+			    identity_status = $6,
+			    identity_confidence_score = GREATEST(identity_confidence_score, $7),
+			    external_media_type = CASE WHEN $8 <> '' THEN $8 ELSE external_media_type END,
+			    external_year = CASE WHEN $9 > 0 THEN $9 ELSE external_year END,
+			    season_number = CASE WHEN $10 > 0 THEN $10 ELSE season_number END,
+			    episode_number = CASE WHEN $11 > 0 THEN $11 ELSE episode_number END,
+			    classification = CASE WHEN $12 <> '' THEN $12 ELSE classification END,
+			    season_episode_source = CASE WHEN $10 > 0 OR $11 > 0 THEN $4 ELSE season_episode_source END,
+			    season_episode_confidence = CASE WHEN $10 > 0 OR $11 > 0 THEN GREATEST(season_episode_confidence, $7) ELSE season_episode_confidence END,
+			    metadata_updated_at = $13,
+			    updated_at = NOW()
+			WHERE release_id = $1`,
+			releaseID,
+			title,
+			deobfuscatedTitle,
+			titleSource,
+			confidence,
+			identityStatus,
+			confidence,
+			strings.TrimSpace(in.ExternalMediaType),
+			in.ExternalYear,
+			in.SeasonNumber,
+			in.EpisodeNumber,
+			strings.TrimSpace(in.Classification),
+			now,
+		)
+		if err != nil {
+			return fmt.Errorf("apply release manual identity %s: %w", releaseID, err)
+		}
+		if err := s.refreshReleaseCategoryTx(ctx, tx, releaseID); err != nil {
+			return err
+		}
+		return nil
+	})
+}
+
+func releaseIdentityDotTitle(v string) string {
+	v = strings.ReplaceAll(strings.TrimSpace(v), "_", ".")
+	v = strings.ReplaceAll(v, " ", ".")
+	v = strings.Join(strings.FieldsFunc(v, func(r rune) bool { return r == '.' }), ".")
+	return strings.Trim(v, ".")
 }

@@ -16,6 +16,107 @@ func (s *Store) ListReleaseNZBGenerateCandidates(ctx context.Context, limit int,
 		limit = 100
 	}
 	policy = NormalizeReleaseReadyPolicy(policy)
+	visibilityPolicy := policy
+	if visibilityPolicy.RequirePayloadComplete {
+		visibilityPolicy.MinCompletionPct = 0
+	}
+	inspectionClause := "TRUE"
+	if policy.RequireInspection {
+		inspectionClause = `
+			  (
+				(
+				  EXISTS (
+					SELECT 1
+					FROM release_files rf
+					LEFT JOIN binary_core bc ON bc.binary_id = rf.binary_id
+					LEFT JOIN binary_identity_current bic
+					  ON bic.source_posted_at = bc.source_posted_at
+					 AND bic.binary_id = bc.binary_id
+					WHERE rf.release_id = r.release_id
+					  AND COALESCE(bic.is_main_payload, TRUE) = TRUE
+					  AND (
+						LOWER(COALESCE(NULLIF(rf.file_name, ''), NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '')) LIKE '%.7z' OR
+						LOWER(COALESCE(NULLIF(rf.file_name, ''), NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '')) ~ '\.7z\.001$' OR
+						LOWER(COALESCE(NULLIF(rf.file_name, ''), NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '')) LIKE '%.zip' OR
+						LOWER(COALESCE(NULLIF(rf.file_name, ''), NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '')) ~ '\.zip\.001$' OR
+						LOWER(COALESCE(NULLIF(rf.file_name, ''), NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '')) ~ '\.part0*1\.rar$' OR
+						LOWER(COALESCE(NULLIF(rf.file_name, ''), NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '')) ~ '\.r00$' OR
+						(
+							LOWER(COALESCE(NULLIF(rf.file_name, ''), NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '')) LIKE '%.rar' AND
+							LOWER(COALESCE(NULLIF(rf.file_name, ''), NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '')) !~ '\.part\d+\.rar$' AND
+							LOWER(COALESCE(NULLIF(rf.file_name, ''), NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '')) !~ '\.r\d{2,3}$'
+						)
+					  )
+				  )
+				  AND EXISTS (
+					SELECT 1
+					FROM release_files rf
+					JOIN binary_inspections bai
+					  ON bai.binary_id = rf.binary_id
+					 AND bai.stage_name = 'inspect_archive'
+					 AND bai.status = 'completed'
+					WHERE rf.release_id = r.release_id
+				  )
+				  AND EXISTS (
+					SELECT 1
+					FROM release_files rf
+					JOIN binary_inspections bmi
+					  ON bmi.binary_id = rf.binary_id
+					 AND bmi.stage_name = 'inspect_media'
+					 AND bmi.status = 'completed'
+					WHERE rf.release_id = r.release_id
+				  )
+				)
+				OR (
+				  NOT EXISTS (
+					SELECT 1
+					FROM release_files rf
+					LEFT JOIN binary_core bc ON bc.binary_id = rf.binary_id
+					LEFT JOIN binary_identity_current bic
+					  ON bic.source_posted_at = bc.source_posted_at
+					 AND bic.binary_id = bc.binary_id
+					WHERE rf.release_id = r.release_id
+					  AND COALESCE(bic.is_main_payload, TRUE) = TRUE
+					  AND (
+						LOWER(COALESCE(NULLIF(rf.file_name, ''), NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '')) LIKE '%.7z' OR
+						LOWER(COALESCE(NULLIF(rf.file_name, ''), NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '')) ~ '\.7z\.001$' OR
+						LOWER(COALESCE(NULLIF(rf.file_name, ''), NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '')) LIKE '%.zip' OR
+						LOWER(COALESCE(NULLIF(rf.file_name, ''), NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '')) ~ '\.zip\.001$' OR
+						LOWER(COALESCE(NULLIF(rf.file_name, ''), NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '')) ~ '\.part0*1\.rar$' OR
+						LOWER(COALESCE(NULLIF(rf.file_name, ''), NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '')) ~ '\.r00$' OR
+						(
+							LOWER(COALESCE(NULLIF(rf.file_name, ''), NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '')) LIKE '%.rar' AND
+							LOWER(COALESCE(NULLIF(rf.file_name, ''), NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '')) !~ '\.part\d+\.rar$' AND
+							LOWER(COALESCE(NULLIF(rf.file_name, ''), NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '')) !~ '\.r\d{2,3}$'
+						)
+					  )
+				  )
+				  AND EXISTS (
+					SELECT 1
+					FROM release_files rf
+					LEFT JOIN binary_core bc ON bc.binary_id = rf.binary_id
+					LEFT JOIN binary_identity_current bic
+					  ON bic.source_posted_at = bc.source_posted_at
+					 AND bic.binary_id = bc.binary_id
+					JOIN binary_inspections bmi
+					  ON bmi.binary_id = rf.binary_id
+					 AND bmi.stage_name = 'inspect_media'
+					 AND bmi.status = 'completed'
+					WHERE rf.release_id = r.release_id
+					  AND COALESCE(bic.is_main_payload, TRUE) = TRUE
+					  AND (
+						LOWER(COALESCE(NULLIF(rf.file_name, ''), NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '')) LIKE '%.mkv' OR
+						LOWER(COALESCE(NULLIF(rf.file_name, ''), NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '')) LIKE '%.mp4' OR
+						LOWER(COALESCE(NULLIF(rf.file_name, ''), NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '')) LIKE '%.avi' OR
+						LOWER(COALESCE(NULLIF(rf.file_name, ''), NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '')) LIKE '%.ts' OR
+						LOWER(COALESCE(NULLIF(rf.file_name, ''), NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '')) LIKE '%.flac' OR
+						LOWER(COALESCE(NULLIF(rf.file_name, ''), NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '')) LIKE '%.mp3' OR
+						LOWER(COALESCE(NULLIF(rf.file_name, ''), NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '')) LIKE '%.m4a'
+					  )
+				  )
+				)
+			  )`
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -35,26 +136,9 @@ func (s *Store) ListReleaseNZBGenerateCandidates(ctx context.Context, limit int,
 			WHERE r.source_kind = 'usenet_index'
 			  AND EXISTS (SELECT 1 FROM release_files rf WHERE rf.release_id = r.release_id)
 			  AND EXISTS (SELECT 1 FROM release_newsgroups rng WHERE rng.release_id = r.release_id)
-			  AND EXISTS (
-				SELECT 1
-				FROM release_files rf
-				JOIN binary_inspections bai
-				  ON bai.binary_id = rf.binary_id
-				 AND bai.stage_name = 'inspect_archive'
-				 AND bai.status = 'completed'
-				WHERE rf.release_id = r.release_id
-			  )
-			  AND EXISTS (
-				SELECT 1
-				FROM release_files rf
-				JOIN binary_inspections bmi
-				  ON bmi.binary_id = rf.binary_id
-				 AND bmi.stage_name = 'inspect_media'
-				 AND bmi.status = 'completed'
-				WHERE rf.release_id = r.release_id
-			  )
+			  AND `+inspectionClause+`
 			  AND COALESCE(ras.archive_status, 'active') IN ('active', 'archive_failed')
-			  AND (`+releaseReadyVisibilityClause("r", policy)+`)
+			  AND (`+releaseReadyVisibilityClause("r", visibilityPolicy)+`)
 			ORDER BY r.posted_at DESC NULLS LAST, r.release_id
 			LIMIT $1
 			FOR UPDATE OF r SKIP LOCKED

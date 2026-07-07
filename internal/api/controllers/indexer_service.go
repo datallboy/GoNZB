@@ -25,6 +25,9 @@ type indexerService interface {
 	StorageStatus(ctx context.Context) (*indexerStorageStatusView, error)
 	StorageAudit(ctx context.Context) (*pgindex.IndexerStorageAuditReport, error)
 	BackfillProgress(ctx context.Context) (*pgindex.IndexerBackfillProgress, error)
+	RecoveryCapacity(ctx context.Context) (*pgindex.YEncRecoveryAdmissionSnapshot, error)
+	GroupProfiles(ctx context.Context, limit int) ([]pgindex.IndexerGroupProfileSummary, error)
+	DeferredArticleRanges(ctx context.Context, state string, limit int) ([]pgindex.DeferredArticleRangeSummary, error)
 	StageThroughput(ctx context.Context) (*pgindex.IndexerStageThroughput, error)
 	NNTPStats(ctx context.Context) (*app.NNTPRuntimeStats, error)
 	ListStages(ctx context.Context) ([]indexerStageView, error)
@@ -39,13 +42,17 @@ type indexerService interface {
 	DryRunMaintenanceTask(ctx context.Context, taskKey string) (*indexerMaintenanceTaskRunView, error)
 	RunMaintenanceTask(ctx context.Context, taskKey string) (*indexerMaintenanceTaskRunView, error)
 	UpdateMaintenanceTask(ctx context.Context, taskKey string, patch indexerMaintenanceTaskPatch) (*indexerMaintenanceTaskView, error)
+	ListAdminAttention(ctx context.Context, params pgindex.IndexerAdminAttentionParams) ([]pgindex.IndexerAdminAttentionItem, int, error)
+	ListArticleCohorts(ctx context.Context, params pgindex.IndexerArticleCohortParams) ([]pgindex.IndexerArticleCohortItem, int, error)
 	ListReleases(ctx context.Context, params pgindex.PublicIndexerReleaseListParams) ([]pgindex.PublicIndexerReleaseSummary, int, error)
 	GetRelease(ctx context.Context, releaseID string) (*pgindex.PublicIndexerReleaseDetail, error)
 	ListAdminReleases(ctx context.Context, params pgindex.AdminIndexerReleaseListParams) ([]pgindex.IndexerReleaseSummary, int, error)
 	GetAdminRelease(ctx context.Context, releaseID string) (*indexerAdminReleaseView, error)
 	UpdateReleaseOverride(ctx context.Context, releaseID string, patch indexerReleaseOverridePatch) (*pgindex.ReleaseOverrideRecord, error)
+	IdentifyRelease(ctx context.Context, releaseID string, patch indexerReleaseIdentityPatch) (*pgindex.IndexerReleaseDetail, error)
 	ReinspectRelease(ctx context.Context, releaseID string) error
 	ReenrichRelease(ctx context.Context, releaseID string) error
+	ListBinaries(ctx context.Context, params pgindex.IndexerBinaryListParams) ([]pgindex.IndexerBinarySummary, int, error)
 	GetBinary(ctx context.Context, binaryID int64) (*pgindex.IndexerBinaryDetail, error)
 	GetFile(ctx context.Context, fileID int64) (*pgindex.IndexerFileDetail, error)
 }
@@ -85,6 +92,7 @@ type indexerStageConfigPatch struct {
 	TargetWindowStart       *string  `json:"target_window_start,omitempty"`
 	TargetWindowEnd         *string  `json:"target_window_end,omitempty"`
 	TargetWindowPct         *int     `json:"target_window_pct,omitempty"`
+	FetchTimeoutSeconds     *int     `json:"fetch_timeout_seconds,omitempty"`
 	NewestPct               *int     `json:"newest_pct,omitempty"`
 }
 
@@ -116,6 +124,18 @@ type indexerReleaseOverridePatch struct {
 	Hidden                 *bool     `json:"hidden,omitempty"`
 	Notes                  *string   `json:"notes,omitempty"`
 	Tags                   *[]string `json:"tags,omitempty"`
+}
+
+type indexerReleaseIdentityPatch struct {
+	Source            string `json:"source"`
+	PredbEntryID      int64  `json:"predb_entry_id,omitempty"`
+	Title             string `json:"title,omitempty"`
+	ExternalMediaType string `json:"external_media_type,omitempty"`
+	ExternalYear      int    `json:"external_year,omitempty"`
+	SeasonNumber      int    `json:"season_number,omitempty"`
+	EpisodeNumber     int    `json:"episode_number,omitempty"`
+	Classification    string `json:"classification,omitempty"`
+	Notes             string `json:"notes,omitempty"`
 }
 
 type indexerMaintenanceTaskView struct {
@@ -301,6 +321,27 @@ func (s *runtimeIndexerService) BackfillProgress(ctx context.Context) (*pgindex.
 	}
 	overlayBackfillProgressFromRuntime(progress, runtime.Indexing)
 	return progress, nil
+}
+
+func (s *runtimeIndexerService) RecoveryCapacity(ctx context.Context) (*pgindex.YEncRecoveryAdmissionSnapshot, error) {
+	if s == nil || s.store == nil {
+		return nil, errIndexerUnavailable
+	}
+	return s.store.GetYEncRecoveryAdmissionSnapshot(ctx)
+}
+
+func (s *runtimeIndexerService) GroupProfiles(ctx context.Context, limit int) ([]pgindex.IndexerGroupProfileSummary, error) {
+	if s == nil || s.store == nil {
+		return nil, errIndexerUnavailable
+	}
+	return s.store.ListIndexerGroupProfiles(ctx, limit)
+}
+
+func (s *runtimeIndexerService) DeferredArticleRanges(ctx context.Context, state string, limit int) ([]pgindex.DeferredArticleRangeSummary, error) {
+	if s == nil || s.store == nil {
+		return nil, errIndexerUnavailable
+	}
+	return s.store.ListDeferredArticleRanges(ctx, state, limit)
 }
 
 func (s *runtimeIndexerService) StageThroughput(ctx context.Context) (*pgindex.IndexerStageThroughput, error) {
@@ -885,6 +926,13 @@ type maintenanceTaskStore interface {
 	RunReleaseSourcePurge(ctx context.Context, limit int, policy pgindex.ReleaseReadyPolicy) (*pgindex.MaintenanceTaskResult, error)
 	DryRunSimpleMaintenanceTask(ctx context.Context, taskKey string, batchSize int) (*pgindex.MaintenanceTaskResult, error)
 	RunSimpleMaintenanceTask(ctx context.Context, taskKey string, batchSize int) (*pgindex.MaintenanceTaskResult, error)
+	DryRunRawStageRetentionTask(ctx context.Context, batchSize int, policy pgindex.RawStageRetentionPolicy) (*pgindex.MaintenanceTaskResult, error)
+	RunRawStageRetentionTask(ctx context.Context, batchSize int, policy pgindex.RawStageRetentionPolicy) (*pgindex.MaintenanceTaskResult, error)
+	DryRunPartitionRetentionTask(ctx context.Context, batchSize int) (*pgindex.MaintenanceTaskResult, error)
+	RunPartitionRetentionTask(ctx context.Context, batchSize int) (*pgindex.MaintenanceTaskResult, error)
+	DryRunPartitionDefaultRehomeTask(ctx context.Context, batchSize int) (*pgindex.MaintenanceTaskResult, error)
+	RunPartitionDefaultRehomeTask(ctx context.Context, batchSize int) (*pgindex.MaintenanceTaskResult, error)
+	RefreshIndexerGroupProfiles(ctx context.Context) (int64, error)
 	RunIndexerMaintenance(ctx context.Context) (*pgindex.IndexerMaintenanceResult, error)
 	ClaimIndexerStage(ctx context.Context, req pgindex.IndexerStageClaimRequest) (*pgindex.IndexerStageClaimResult, error)
 	CompleteIndexerStageRun(ctx context.Context, req pgindex.IndexerStageFinishRequest) error
@@ -943,6 +991,34 @@ func (s *runtimeIndexerService) executeMaintenanceTask(ctx context.Context, task
 			return store.DryRunReleaseSourcePurge(ctx, cfg.BatchSize, s.releaseReadyPolicy(ctx))
 		}
 		return store.RunReleaseSourcePurge(ctx, cfg.BatchSize, s.releaseReadyPolicy(ctx))
+	case "group_profile_refresh":
+		if dryRun {
+			profiles, err := s.store.ListIndexerGroupProfiles(ctx, 1000)
+			if err != nil {
+				return nil, err
+			}
+			return &pgindex.MaintenanceTaskResult{TaskKey: taskKey, DryRun: true, EstimatedRowsByTable: map[string]int64{"indexer_group_profiles": int64(len(profiles))}, Warnings: []string{"dry-run reports visible profile count without recalculating scores"}}, nil
+		}
+		updated, err := store.RefreshIndexerGroupProfiles(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return &pgindex.MaintenanceTaskResult{TaskKey: taskKey, DryRun: false, EstimatedRowsByTable: map[string]int64{"indexer_group_profiles_scored": updated}}, nil
+	case "raw_stage_retention":
+		if dryRun {
+			return store.DryRunRawStageRetentionTask(ctx, cfg.BatchSize, rawStageRetentionPolicyFromRuntime(runtime))
+		}
+		return store.RunRawStageRetentionTask(ctx, cfg.BatchSize, rawStageRetentionPolicyFromRuntime(runtime))
+	case "partition_retention_drop":
+		if dryRun {
+			return store.DryRunPartitionRetentionTask(ctx, cfg.BatchSize)
+		}
+		return store.RunPartitionRetentionTask(ctx, cfg.BatchSize)
+	case "partition_default_rehome":
+		if dryRun {
+			return store.DryRunPartitionDefaultRehomeTask(ctx, cfg.BatchSize)
+		}
+		return store.RunPartitionDefaultRehomeTask(ctx, cfg.BatchSize)
 	case "readiness_cleanup":
 		if dryRun {
 			return &pgindex.MaintenanceTaskResult{TaskKey: taskKey, DryRun: true, EstimatedRowsByTable: map[string]int64{}, Warnings: []string{"dry-run is not exact for the existing combined readiness cleanup path"}}, nil
@@ -1087,6 +1163,7 @@ func (s *runtimeIndexerService) releaseReadyPolicy(ctx context.Context) pgindex.
 		MinIdentityStatus:                    release.PublicMinIdentityStatus,
 		RequireInspection:                    release.PublicRequireInspection,
 		RequireEnrichment:                    release.PublicRequireEnrichment,
+		RequireClearTitle:                    release.PublicRequireClearTitle,
 		RequirePayloadComplete:               release.PublicRequirePayloadComplete,
 		RequireExpectedFileCountComplete:     release.PublicRequireExpectedFileCountComplete,
 		RequirePAR2:                          release.PublicRequirePAR2,
@@ -1105,6 +1182,20 @@ func (s *runtimeIndexerService) ListAdminReleases(ctx context.Context, params pg
 	}
 	params.Query = strings.TrimSpace(params.Query)
 	return s.store.ListIndexerReleases(ctx, params)
+}
+
+func (s *runtimeIndexerService) ListAdminAttention(ctx context.Context, params pgindex.IndexerAdminAttentionParams) ([]pgindex.IndexerAdminAttentionItem, int, error) {
+	if s == nil || s.store == nil {
+		return nil, 0, errIndexerUnavailable
+	}
+	return s.store.ListIndexerAdminAttention(ctx, params)
+}
+
+func (s *runtimeIndexerService) ListArticleCohorts(ctx context.Context, params pgindex.IndexerArticleCohortParams) ([]pgindex.IndexerArticleCohortItem, int, error) {
+	if s == nil || s.store == nil {
+		return nil, 0, errIndexerUnavailable
+	}
+	return s.store.ListIndexerArticleCohorts(ctx, params)
 }
 
 func (s *runtimeIndexerService) GetAdminRelease(ctx context.Context, releaseID string) (*indexerAdminReleaseView, error) {
@@ -1144,6 +1235,68 @@ func (s *runtimeIndexerService) UpdateReleaseOverride(ctx context.Context, relea
 		return nil, err
 	}
 	return s.store.GetReleaseOverride(ctx, strings.TrimSpace(releaseID))
+}
+
+func (s *runtimeIndexerService) IdentifyRelease(ctx context.Context, releaseID string, patch indexerReleaseIdentityPatch) (*pgindex.IndexerReleaseDetail, error) {
+	if s == nil || s.store == nil {
+		return nil, errIndexerUnavailable
+	}
+	releaseID = strings.TrimSpace(releaseID)
+	if releaseID == "" {
+		return nil, fmt.Errorf("release id is required")
+	}
+	source := strings.TrimSpace(strings.ToLower(patch.Source))
+	if source == "" {
+		source = "manual"
+	}
+	current, err := s.store.GetIndexerReleaseDetail(ctx, releaseID)
+	if err != nil || current == nil {
+		return nil, err
+	}
+
+	title := strings.TrimSpace(patch.Title)
+	titleSource := "manual"
+	predbEntryID := int64(0)
+	if source == "predb" || source == "manual_predb" {
+		if patch.PredbEntryID <= 0 {
+			return nil, fmt.Errorf("predb_entry_id is required")
+		}
+		for _, match := range current.PredbMatches {
+			if match.EntryID == patch.PredbEntryID {
+				title = strings.TrimSpace(match.Title)
+				predbEntryID = match.EntryID
+				break
+			}
+		}
+		if title == "" || predbEntryID <= 0 {
+			return nil, fmt.Errorf("predb candidate %d is not linked to release %s", patch.PredbEntryID, releaseID)
+		}
+		titleSource = "manual_predb"
+	} else if source != "manual" {
+		return nil, fmt.Errorf("unsupported identity source %q", patch.Source)
+	}
+	if title == "" {
+		return nil, fmt.Errorf("title is required")
+	}
+	now := time.Now().UTC()
+	if err := s.store.ApplyReleaseManualIdentity(ctx, pgindex.ReleaseManualIdentityUpdate{
+		ReleaseID:               releaseID,
+		Title:                   title,
+		TitleSource:             titleSource,
+		PredbEntryID:            predbEntryID,
+		ExternalMediaType:       strings.TrimSpace(strings.ToLower(patch.ExternalMediaType)),
+		ExternalYear:            patch.ExternalYear,
+		SeasonNumber:            patch.SeasonNumber,
+		EpisodeNumber:           patch.EpisodeNumber,
+		Classification:          strings.TrimSpace(strings.ToLower(patch.Classification)),
+		IdentityStatus:          "identified",
+		IdentityConfidenceScore: 1,
+		Notes:                   strings.TrimSpace(patch.Notes),
+		MetadataUpdatedAt:       &now,
+	}); err != nil {
+		return nil, err
+	}
+	return s.store.GetIndexerReleaseDetail(ctx, releaseID)
 }
 
 func (s *runtimeIndexerService) ReinspectRelease(ctx context.Context, releaseID string) error {
@@ -1205,6 +1358,15 @@ func (s *runtimeIndexerService) GetBinary(ctx context.Context, binaryID int64) (
 	return s.store.GetIndexerBinaryDetail(ctx, binaryID)
 }
 
+func (s *runtimeIndexerService) ListBinaries(ctx context.Context, params pgindex.IndexerBinaryListParams) ([]pgindex.IndexerBinarySummary, int, error) {
+	if s == nil || s.store == nil {
+		return nil, 0, errIndexerUnavailable
+	}
+	params.Query = strings.TrimSpace(params.Query)
+	params.GroupName = strings.TrimSpace(params.GroupName)
+	return s.store.ListIndexerBinaries(ctx, params)
+}
+
 func (s *runtimeIndexerService) GetFile(ctx context.Context, fileID int64) (*pgindex.IndexerFileDetail, error) {
 	if s == nil || s.store == nil {
 		return nil, errIndexerUnavailable
@@ -1232,8 +1394,13 @@ func (s *runtimeIndexerService) runStageSequence(reason string, stages []string)
 		return
 	}
 	for _, stage := range stages {
-		if err := indexer.RunStageOnce(context.Background(), stage); err != nil && s.log != nil {
-			s.log.Error("%s failed stage=%s err=%v", reason, stage, err)
+		if err := indexer.RunStageOnce(context.Background(), stage); err != nil {
+			if strings.Contains(err.Error(), " is disabled") {
+				continue
+			}
+			if s.log != nil {
+				s.log.Error("%s failed stage=%s err=%v", reason, stage, err)
+			}
 		}
 	}
 }
@@ -1307,6 +1474,8 @@ func stageSettingsForName(runtime *app.RuntimeSettings, stageName string) (app.I
 		return runtime.Indexing.PosterMaterialize, true
 	case string(supervisor.StageCrosspostPopularityRefresh):
 		return runtime.Indexing.CrosspostPopularityRefresh, true
+	case string(supervisor.StageArticleCohortSchedule):
+		return runtime.Indexing.ArticleCohortSchedule, true
 	case string(supervisor.StageAssemble):
 		return runtime.Indexing.Assemble, true
 	case string(supervisor.StageRecoverYEnc):
@@ -1377,6 +1546,7 @@ var allIndexerStages = []string{
 	string(supervisor.StageScrapeBackfill),
 	string(supervisor.StagePosterMaterialize),
 	string(supervisor.StageCrosspostPopularityRefresh),
+	string(supervisor.StageArticleCohortSchedule),
 	string(supervisor.StageAssemble),
 	string(supervisor.StageRecoverYEnc),
 	string(supervisor.StageReleaseSummaryRefresh),
@@ -1425,6 +1595,10 @@ var indexerMaintenanceTaskDefinitions = []maintenanceTaskDefinition{
 	{TaskKey: "grouping_evidence_cleanup", Label: "Grouping Evidence Cleanup", Purpose: "Purges stale stable grouping evidence side-table rows.", Risk: "medium", SpaceEffect: "DB-internal cleanup; OS space is not returned until vacuum/table rewrite.", SupervisorEffect: "Grouping/release-family debug evidence is reduced; current identity projections remain.", DataEffect: "Deletes older stable side-table evidence rows.", ReleaseSafety: "Does not delete current binary identity, source headers, catalog files, or NZBs.", Destructive: true, UsesBatchSize: true, MinIntervalHours: 6},
 	{TaskKey: "crosspost_group_raw_purge", Label: "Crosspost Raw Group Purge", Purpose: "Purges raw Xref crosspost observations after the popularity summary watermark has consumed them.", Risk: "medium", SpaceEffect: "DB-internal cleanup; OS space is not returned until vacuum/table rewrite.", SupervisorEffect: "Crosspost popularity refresh keeps summary and queue state; historical raw Xref observations older than 72h are no longer available for recompute/debug.", DataEffect: "Deletes only article_header_crosspost_groups rows older than 72h whose group queue is done and whose article id is at or below the summary watermark.", ReleaseSafety: "Current release formation uses binary identity/release family evidence and persists release_newsgroups from binaries; this task does not delete source headers, binaries, releases, catalog files, or NZBs.", Destructive: true, UsesBatchSize: true, MinIntervalHours: 6, Warnings: []string{"medium risk because raw Xref forensic telemetry is removed after summary consumption"}},
 	{TaskKey: "yenc_done_work_item_cleanup", Label: "yEnc Done Work Item Cleanup", Purpose: "Purges completed recover_yenc work receipts after durable yEnc recovery projection exists.", Risk: "medium", SpaceEffect: "DB-internal cleanup followed by normal VACUUM (ANALYZE); OS space is not returned until vacuum full/table rewrite.", SupervisorEffect: "recover_yenc keeps ready/running backlog intact; completed receipts older than 72h are no longer available for queue audit.", DataEffect: "Deletes only yenc_recovery_work_items rows with status done, older than 72h, backed by binary_recovery_current recovered_source yenc_header, and not referenced by release/archive/running inspect work.", ReleaseSafety: "Does not delete article headers, payloads, binary roots, recovery projections, release files, archive lineage, catalog data, or NZBs.", Destructive: true, UsesBatchSize: true, MinIntervalHours: 6, Warnings: []string{"medium risk because completed yEnc queue audit receipts are removed after durable projection exists"}},
+	{TaskKey: "group_profile_refresh", Label: "Group Profile Refresh", Purpose: "Scores provider/newsgroup yield and refreshes automatic hot/warm/cold tiering when no manual tier override is set.", Risk: "low", SpaceEffect: "No storage reclaim; updates group profile metrics and tiers.", SupervisorEffect: "Scrape/yEnc admission uses refreshed tiers for capacity decisions.", DataEffect: "Updates indexer_group_profiles metrics, score, tier, and last_scored_at only.", ReleaseSafety: "No source, binary, release, catalog, or NZB data is deleted.", Destructive: false, UsesBatchSize: false, MinIntervalHours: 1},
+	{TaskKey: "raw_stage_retention", Label: "Raw Stage Retention", Purpose: "Purges old terminal raw-stage residue using tier-aware hot/warm/cold source windows and conservative relationship guards.", Risk: "high", SpaceEffect: "DB-internal cleanup followed by normal VACUUM (ANALYZE); OS space is not returned until vacuum full/table rewrite.", SupervisorEffect: "Reduces stale raw source/yEnc audit backlog without touching ready/running work.", DataEffect: "Deletes terminal yEnc receipts and fully orphaned old article headers with associated payload/crosspost/poster rows.", ReleaseSafety: "Skips ready/running yEnc work, assembly queue rows, binary parts, release files, archive lineage, and running inspections.", Destructive: true, UsesBatchSize: true, MinIntervalHours: 24, Warnings: []string{"high risk: use dry-run first", "retention thresholds come from runtime indexer retention settings"}},
+	{TaskKey: "partition_retention_drop", Label: "Partition Retention Drop", Purpose: "Drops eligible old native daily source/work partitions after checking default partitions and active downstream blockers.", Risk: "high", SpaceEffect: "Drops whole partition tables, which returns those table files to PostgreSQL immediately without row-by-row deletes.", SupervisorEffect: "Removes old source/header/yEnc/binary-part work partitions; stages can no longer use dropped source rows.", DataEffect: "Drops eligible dated partitions for article headers, header support tables, assembly/poster queues, yEnc work items, and binary parts.", ReleaseSafety: "Blocks days with assembly queue work, ready/running yEnc, running inspections, or non-archived release files still referencing that day.", Destructive: true, UsesBatchSize: true, MinIntervalHours: 24, Warnings: []string{"high risk: dry-run first", "batch size is interpreted as retention-days horizon"}},
+	{TaskKey: "partition_default_rehome", Label: "Partition Default Rehome", Purpose: "Moves rows that landed in default partitions into their dated native child partitions.", Risk: "medium", SpaceEffect: "No immediate storage reclaim; moves rows so future partition pruning and partition retention can work by day.", SupervisorEffect: "Briefly detaches default partitions in a transaction; run manually or schedule only when scrape is quiet.", DataEffect: "Copies default-partition rows into dated child partitions and removes the moved default rows.", ReleaseSafety: "Preserves source, binary, yEnc, inspect, and release projection rows; does not delete logical data.", Destructive: true, UsesBatchSize: true, MinIntervalHours: 24, Warnings: []string{"dry-run first", "batch size is number of default-partition days to move, capped at 7", "run while scrape is paused or quiet to avoid old-date inserts during the brief default detach"}},
 	{TaskKey: "inspect_workspace_cleanup", Label: "Inspect Workspace Cleanup", Purpose: "Cleans stale inspect workspaces.", Risk: "low", SpaceEffect: "Filesystem cleanup for stale inspect workspaces when scheduled maintenance runs it.", SupervisorEffect: "No DB queue population; stale workspaces may be recreated by future inspect jobs.", DataEffect: "Deletes stale temporary inspect workspaces, not release/catalog DB rows.", ReleaseSafety: "No source, binary, catalog, or NZB database rows are deleted.", Destructive: true, UsesBatchSize: true, MinIntervalHours: 6, Warnings: []string{"filesystem cleanup is executed by the scheduled indexer_maintenance service in this build"}},
 	{TaskKey: "stale_nonrelease_source_purge", Label: "Stale Non-Release Source Purge", Purpose: "Purges old source headers outside the default 7-day window only when no downstream relationship still references them.", Risk: "high", SpaceEffect: "DB-internal cleanup followed by normal VACUUM (ANALYZE); OS space is not returned until vacuum full/table rewrite.", SupervisorEffect: "Deletes source rows that are outside the active scrape window and not queued for assemble or yEnc; future releases cannot be formed from those purged source rows.", DataEffect: "Deletes eligible article_headers and cascades their ingest payload, crosspost, poster-ref, and poster queue rows.", ReleaseSafety: "Skips any header with assembly queue, binary_parts, yEnc work item, or archive lineage. Dry-run estimates only the next batch.", Destructive: true, UsesBatchSize: true, MinIntervalHours: 24, Warnings: []string{"high risk: use dry-run first and keep batch sizes conservative", "does not delete binaries, release files, catalog files, archive metadata, or NZBs directly"}},
 	{TaskKey: "emergency_source_window_reset", Label: "Emergency Source Window Reset", Purpose: "Discards old unreleased binary/source work outside the 7-day active window when a scrape backlog bypassed retention and disk pressure requires an emergency reset.", Risk: "high", SpaceEffect: "DB-internal cleanup followed by normal VACUUM (ANALYZE); OS space is returned only by CLI/DBA table rewrite commands such as VACUUM FULL or pg_repack.", SupervisorEffect: "Removes old unformed binary/yEnc/source work so assemble, recover_yenc, inspect, and release formation stop spending time on stale backlog.", DataEffect: "Deletes eligible binary_core roots and cascades binary parts, yEnc receipts, binary identity/current projections, inspection rows, and other binary-derived rows; then deletes fully orphaned old article headers and their payload/crosspost/poster rows.", ReleaseSafety: "Skips binaries referenced by release_files or release archive lineage, skips running inspect/yEnc work, and does not delete release detail, release catalog files, archive metadata, or archived NZBs.", Destructive: true, UsesBatchSize: true, MinIntervalHours: 24, Warnings: []string{"high risk: future releases cannot be formed from purged old source/binary rows", "dry-run first; dry-run uses a rollback-only transaction to estimate cascades", "manual or emergency scheduling only"}},
@@ -1457,6 +1631,21 @@ func maintenanceTaskConfig(runtime *app.RuntimeSettings, taskKey string) app.Ind
 		}
 	}
 	return cfg
+}
+
+func rawStageRetentionPolicyFromRuntime(runtime *app.RuntimeSettings) pgindex.RawStageRetentionPolicy {
+	defaults := app.DefaultRuntimeSettings()
+	retention := defaults.Indexing.Retention
+	if runtime != nil && runtime.Indexing != nil {
+		retention = runtime.Indexing.Retention
+	}
+	return pgindex.RawStageRetentionPolicy{
+		HotHours:         retention.RawStageHotHours,
+		WarmHours:        retention.RawStageWarmHours,
+		ColdHours:        retention.RawStageColdHours,
+		FailedProbeHours: retention.FailedProbeHours,
+		DoneYEncHours:    retention.RawStageWarmHours,
+	}
 }
 
 func maintenanceTaskViewFromSettings(def maintenanceTaskDefinition, runtime *app.RuntimeSettings) indexerMaintenanceTaskView {
@@ -1537,6 +1726,8 @@ func applyIndexerStageConfigPatch(indexing *app.IndexingRuntimeSettings, stageNa
 		applyStagePatch(&indexing.PosterMaterialize, patch)
 	case string(supervisor.StageCrosspostPopularityRefresh):
 		applyStagePatch(&indexing.CrosspostPopularityRefresh, patch)
+	case string(supervisor.StageArticleCohortSchedule):
+		applyStagePatch(&indexing.ArticleCohortSchedule, patch)
 	case string(supervisor.StageAssemble):
 		applyStagePatch(&indexing.Assemble, patch)
 	case string(supervisor.StageRecoverYEnc):
@@ -1634,6 +1825,9 @@ func applyStagePatch(dst *app.IndexingStageRuntimeSettings, patch indexerStageCo
 	}
 	if patch.TargetWindowPct != nil {
 		dst.TargetWindowPct = *patch.TargetWindowPct
+	}
+	if patch.FetchTimeoutSeconds != nil {
+		dst.FetchTimeoutSeconds = *patch.FetchTimeoutSeconds
 	}
 	if patch.NewestPct != nil {
 		dst.NewestPct = *patch.NewestPct

@@ -102,6 +102,7 @@ func (s *Source) releaseReadyPolicy(ctx context.Context) pgindex.ReleaseReadyPol
 		MinIdentityStatus:  release.PublicMinIdentityStatus,
 		RequireInspection:  release.PublicRequireInspection,
 		RequireEnrichment:  release.PublicRequireEnrichment,
+		RequireClearTitle:  release.PublicRequireClearTitle,
 	})
 }
 

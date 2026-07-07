@@ -37,6 +37,10 @@ type repository interface {
 	SetBackfillCheckpointState(ctx context.Context, providerID, newsgroupID int64, untilDate *time.Time, cutoffReached bool, stoppedReason string) error
 
 	InsertArticleHeaders(ctx context.Context, providerID, newsgroupID int64, headers []pgindex.ArticleHeader) (int64, error)
+	ObserveScrapeRange(ctx context.Context, providerID, newsgroupID int64, from, to int64, observations []pgindex.ScrapeRangeObservation) error
+	RefreshYEncRecoveryAdmissionSnapshot(ctx context.Context) (*pgindex.YEncRecoveryAdmissionSnapshot, error)
+	UpsertIndexerGroupProfile(ctx context.Context, providerID, newsgroupID int64, tier, reason string) error
+	UpsertDeferredArticleRange(ctx context.Context, in pgindex.DeferredArticleRangeRecord) error
 }
 
 type provider interface {
@@ -104,6 +108,7 @@ type runMetrics struct {
 	ArticlesInserted   int64
 	CutoffFiltered     int64
 	CheckpointUpdates  int
+	DeferredRanges     int
 	RotationStartIndex int
 	RotationNextIndex  int
 }
@@ -115,6 +120,7 @@ type groupRunResult struct {
 	ArticlesInserted   int64
 	CutoffFiltered     int64
 	CheckpointUpdates  int
+	DeferredRanges     int
 }
 
 type groupRunOutcome struct {
@@ -322,6 +328,7 @@ func (s *Service) runGroups(ctx context.Context, providerID int64, mode string, 
 		metrics.ArticlesInserted += outcome.result.ArticlesInserted
 		metrics.CutoffFiltered += outcome.result.CutoffFiltered
 		metrics.CheckpointUpdates += outcome.result.CheckpointUpdates
+		metrics.DeferredRanges += outcome.result.DeferredRanges
 
 		if outcome.err != nil && !isContextCancellation(outcome.err) && firstErr == nil {
 			firstErr = outcome.err
@@ -357,6 +364,9 @@ func (s *Service) runLatestGroup(ctx context.Context, providerID int64, group st
 	if err != nil {
 		return groupRunResult{}, err
 	}
+	if err := s.repo.UpsertIndexerGroupProfile(ctx, providerID, newsgroupID, "warm", "configured_latest_scrape"); err != nil {
+		return groupRunResult{}, err
+	}
 	if stats.High <= 0 {
 		s.log.Warn("scrape latest: group %s has no articles yet", group)
 		return groupRunResult{}, nil
@@ -371,6 +381,37 @@ func (s *Service) runLatestGroup(ctx context.Context, providerID int64, group st
 	start := last + 1
 	if last == 0 {
 		start = stats.High - s.opts.BatchSize + 1
+	} else if stats.High-last > s.opts.BatchSize {
+		gapLow := last + 1
+		start = stats.High - s.opts.BatchSize + 1
+		if start < stats.Low {
+			start = stats.Low
+		}
+		gapHigh := start - 1
+		if gapHigh >= gapLow {
+			if err := s.repo.UpsertDeferredArticleRange(ctx, pgindex.DeferredArticleRangeRecord{
+				ProviderID:               providerID,
+				NewsgroupID:              newsgroupID,
+				ArticleLow:               gapLow,
+				ArticleHigh:              gapHigh,
+				EstimatedArticleCount:    gapHigh - gapLow + 1,
+				EstimatedObfuscatedCount: gapHigh - gapLow + 1,
+				Reason:                   "latest_gap",
+				PriorityScore:            90,
+			}); err != nil {
+				return groupRunResult{}, fmt.Errorf("record latest gap %s %d-%d: %w", group, gapLow, gapHigh, err)
+			}
+			backfillCursor, err := s.repo.GetBackfillCheckpoint(ctx, providerID, newsgroupID)
+			if err != nil {
+				return groupRunResult{}, fmt.Errorf("get backfill checkpoint for latest gap %s: %w", group, err)
+			}
+			if backfillCursor < gapHigh {
+				if err := s.repo.UpsertBackfillCheckpoint(ctx, providerID, newsgroupID, gapHigh); err != nil {
+					return groupRunResult{}, fmt.Errorf("seed backfill checkpoint for latest gap %s=%d: %w", group, gapHigh, err)
+				}
+			}
+			s.log.Info("scrape latest: group=%s detected gap=%d-%d high=%d; latest will fetch head batch and backfill will drain gap", group, gapLow, gapHigh, stats.High)
+		}
 	}
 	if start < stats.Low {
 		start = stats.Low
@@ -385,6 +426,11 @@ func (s *Service) runLatestGroup(ctx context.Context, providerID int64, group st
 	to := start + s.opts.BatchSize - 1
 	if to > stats.High {
 		to = stats.High
+	}
+	if deferred, err := s.deferRangeWhenRecoveryPressured(ctx, "latest", providerID, newsgroupID, group, start, to); err != nil {
+		return groupRunResult{}, err
+	} else if deferred {
+		return groupRunResult{HadWork: true, DeferredRanges: 1}, nil
 	}
 
 	headers, inserted, _, _, actualProviderID, err := s.fetchInsertRange(ctx, providerID, newsgroupID, group, start, to, nil, stats.ProviderID)
@@ -420,6 +466,9 @@ func (s *Service) runBackfillGroup(ctx context.Context, providerID int64, group 
 	}
 	providerID, err = s.effectiveProviderID(ctx, providerID, stats.ProviderID)
 	if err != nil {
+		return groupRunResult{}, err
+	}
+	if err := s.repo.UpsertIndexerGroupProfile(ctx, providerID, newsgroupID, "warm", "configured_backfill_scrape"); err != nil {
 		return groupRunResult{}, err
 	}
 	if stats.High <= 0 {
@@ -495,6 +544,18 @@ func (s *Service) runBackfillGroup(ctx context.Context, providerID int64, group 
 	}
 
 	s.log.Info("scrape backfill: group=%s start=%d end=%d low=%d batch=%d", group, start, end, stats.Low, s.opts.BatchSize)
+	if deferred, err := s.deferRangeWhenRecoveryPressured(ctx, "backfill", providerID, newsgroupID, group, start, end); err != nil {
+		return groupRunResult{}, err
+	} else if deferred {
+		nextCursor := start - 1
+		if nextCursor < 0 {
+			nextCursor = 0
+		}
+		if err := s.repo.UpsertBackfillCheckpoint(ctx, providerID, newsgroupID, nextCursor); err != nil {
+			return groupRunResult{}, fmt.Errorf("upsert deferred backfill checkpoint %s=%d: %w", group, nextCursor, err)
+		}
+		return groupRunResult{HadWork: true, DeferredRanges: 1, CheckpointUpdates: 1}, nil
+	}
 
 	var cutoff *time.Time
 	if hasCutoff {
@@ -565,6 +626,7 @@ func (s *Service) fetchInsertRange(ctx context.Context, providerID, newsgroupID 
 		}
 	}
 
+	observations := make([]pgindex.ScrapeRangeObservation, 0, len(rows))
 	headers := make([]pgindex.ArticleHeader, 0, len(rows))
 	var oldestSeen *time.Time
 	cutoffFiltered := 0
@@ -572,6 +634,10 @@ func (s *Service) fetchInsertRange(ctx context.Context, providerID, newsgroupID 
 		if r.ArticleNumber <= 0 || strings.TrimSpace(r.MessageID) == "" {
 			continue
 		}
+		observations = append(observations, pgindex.ScrapeRangeObservation{
+			ArticleNumber: r.ArticleNumber,
+			DateUTC:       r.DateUTC,
+		})
 		if r.DateUTC != nil {
 			t := r.DateUTC.UTC()
 			if oldestSeen == nil || t.Before(*oldestSeen) {
@@ -614,8 +680,61 @@ func (s *Service) fetchInsertRange(ctx context.Context, providerID, newsgroupID 
 	if err != nil {
 		return nil, 0, oldestSeen, cutoffFiltered, 0, fmt.Errorf("insert headers %s %d-%d: %w", group, from, to, err)
 	}
+	if err := s.repo.ObserveScrapeRange(ctx, providerID, newsgroupID, from, to, observations); err != nil {
+		return nil, 0, oldestSeen, cutoffFiltered, 0, fmt.Errorf("observe scrape range %s %d-%d: %w", group, from, to, err)
+	}
 
 	return headers, inserted, oldestSeen, cutoffFiltered, providerID, nil
+}
+
+func (s *Service) deferRangeWhenRecoveryPressured(ctx context.Context, mode string, providerID, newsgroupID int64, group string, from, to int64) (bool, error) {
+	if from <= 0 || to < from {
+		return false, nil
+	}
+	snapshot, err := s.repo.RefreshYEncRecoveryAdmissionSnapshot(ctx)
+	if err != nil {
+		return false, err
+	}
+	if snapshot == nil {
+		return false, nil
+	}
+	hardBlocked := snapshot.HardCap > 0 && snapshot.OpenTotal >= snapshot.HardCap
+	softBlocked := snapshot.SoftCap > 0 && snapshot.OpenTotal >= snapshot.SoftCap
+	if !hardBlocked && !(mode == "backfill" && softBlocked) {
+		return false, nil
+	}
+	reason := "recovery_soft_cap"
+	if hardBlocked {
+		reason = "recovery_hard_cap"
+	}
+	if err := s.repo.UpsertDeferredArticleRange(ctx, pgindex.DeferredArticleRangeRecord{
+		ProviderID:               providerID,
+		NewsgroupID:              newsgroupID,
+		ArticleLow:               from,
+		ArticleHigh:              to,
+		EstimatedArticleCount:    to - from + 1,
+		EstimatedObfuscatedCount: to - from + 1,
+		Reason:                   reason,
+		PriorityScore:            deferredRangePriority(mode, snapshot),
+	}); err != nil {
+		return false, err
+	}
+	s.log.Info("scrape %s deferred: group=%s range=%d-%d reason=%s open_yenc=%d soft_cap=%d hard_cap=%d", mode, group, from, to, reason, snapshot.OpenTotal, snapshot.SoftCap, snapshot.HardCap)
+	return true, nil
+}
+
+func deferredRangePriority(mode string, snapshot *pgindex.YEncRecoveryAdmissionSnapshot) float64 {
+	score := 10.0
+	if mode == "latest" {
+		score = 100
+	}
+	if snapshot != nil && snapshot.HardCap > 0 {
+		score -= (float64(snapshot.OpenTotal) / float64(snapshot.HardCap)) * 10
+	}
+	if score < 0 {
+		return 0
+	}
+	return score
 }
 
 func (s *Service) effectiveProviderID(ctx context.Context, fallbackID int64, providerKey string) (int64, error) {
@@ -692,6 +811,7 @@ func (m *runMetrics) toMap() map[string]any {
 		"articles_inserted":    m.ArticlesInserted,
 		"cutoff_filtered":      m.CutoffFiltered,
 		"checkpoint_updates":   m.CheckpointUpdates,
+		"deferred_ranges":      m.DeferredRanges,
 		"batch_size":           m.BatchSize,
 		"rotation_start_index": m.RotationStartIndex,
 		"rotation_next_index":  m.RotationNextIndex,

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -36,6 +37,10 @@ type repositoryWithSelectionOptions interface {
 
 type repositoryWithBatchHeaderRecovery interface {
 	ApplyYEncHeaderRecoveries(ctx context.Context, in []pgindex.YEncHeaderRecoveryRecord) ([]pgindex.YEncHeaderRecoveryResult, error)
+}
+
+type repositoryWithPrioritySiblingAdmission interface {
+	BackfillPriorityYEncRecoveryWorkItemsForBinaries(ctx context.Context, binaryIDs []int64) (int64, int64, error)
 }
 
 type repositoryWithBatchRecoveryBackoff interface {
@@ -160,6 +165,10 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 		"write_apply_stats_refresh_ms":      float64(0),
 		"write_apply_summary_dirty_ms":      float64(0),
 		"write_apply_commit_ms":             float64(0),
+		"sibling_admission_ms":              float64(0),
+		"sibling_admission_attempts":        0,
+		"sibling_admission_upserted":        0,
+		"sibling_admission_failures":        0,
 		"not_found_write_ms":                float64(0),
 		"recovered":                         0,
 		"merged":                            0,
@@ -174,6 +183,15 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 		"selected_windowed":                 0,
 		"selection_buckets":                 0,
 		"selection_empty_buckets":           0,
+		"selection_ready_count":             0,
+		"selection_priority0_ready":         0,
+		"selection_priority_seed_limit":     0,
+		"selection_priority_seeded":         0,
+		"selection_priority_retired":        0,
+		"selection_generic_seed_limit":      0,
+		"selection_generic_seeded":          0,
+		"selection_generic_retired":         0,
+		"selection_seed_ms":                 float64(0),
 		"selection_windowed_requested":      0,
 		"selection_newest_requested":        0,
 		"fairness_bucket_start":             "",
@@ -219,11 +237,21 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 			}
 			metrics["selection_buckets"] = stats.BucketsScanned
 			metrics["selection_empty_buckets"] = stats.EmptyBuckets
+			metrics["selection_ready_count"] = stats.ReadyCount
+			metrics["selection_priority0_ready"] = stats.Priority0Ready
+			metrics["selection_priority_seed_limit"] = stats.PrioritySeedLimit
+			metrics["selection_priority_seeded"] = stats.PrioritySeeded
+			metrics["selection_priority_retired"] = stats.PriorityRetired
+			metrics["selection_generic_seed_limit"] = stats.GenericSeedLimit
+			metrics["selection_generic_seeded"] = stats.GenericSeeded
+			metrics["selection_generic_retired"] = stats.GenericRetired
+			metrics["selection_seed_ms"] = durationMillis(stats.SeedDuration)
 			metrics["selection_windowed_requested"] = stats.WindowedRequested
 			metrics["selection_newest_requested"] = stats.NewestRequested
 		}
 	}
 	for _, candidate := range candidates {
+		recordYEncSelectionMetric(metrics, "selected", candidate)
 		switch candidate.RecoveryLane {
 		case "time_cohort_fairness":
 			metrics["selected_fairness"] = metrics["selected_fairness"].(int) + 1
@@ -256,6 +284,12 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 	metrics["batch_full"] = len(candidates) >= s.opts.BatchSize
 	batchRepo, batchWrites := s.repo.(repositoryWithBatchHeaderRecovery)
 	metrics["batch_writes"] = batchWrites
+	candidateByBinaryID := make(map[int64]pgindex.YEncRecoveryCandidate, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.BinaryID > 0 {
+			candidateByBinaryID[candidate.BinaryID] = candidate
+		}
+	}
 	jobs := make(chan pgindex.YEncRecoveryCandidate)
 	var (
 		recordCh   chan pgindex.YEncHeaderRecoveryRecord
@@ -279,7 +313,7 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 		}
 		mu.Unlock()
 	}
-	recordResult := func(outcome *yencCandidateOutcome, kind string, timings yencCandidateTimings, err error) {
+	recordResult := func(candidate pgindex.YEncRecoveryCandidate, outcome *yencCandidateOutcome, kind string, timings yencCandidateTimings, err error) {
 		mu.Lock()
 		defer mu.Unlock()
 		addYEncDurationMetric(metrics, "fetch_ms", timings.Fetch)
@@ -288,34 +322,44 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 		addYEncDurationMetric(metrics, "write_ms", timings.Write)
 		addYEncDurationMetric(metrics, "not_found_write_ms", timings.NotFoundWrite)
 		metrics["attempted"] = metrics["attempted"].(int) + 1
+		recordYEncSelectionMetric(metrics, "attempted", candidate)
 		switch kind {
 		case "not_found":
 			metrics["not_found"] = metrics["not_found"].(int) + 1
+			recordYEncSelectionMetric(metrics, "not_found", candidate)
 			if batchWrites && outcome != nil && outcome.ArticleHeaderID > 0 {
 				notFoundArticleIDs = append(notFoundArticleIDs, outcome.ArticleHeaderID)
 			}
 		case "fetch_failure":
 			metrics["fetch_failures"] = metrics["fetch_failures"].(int) + 1
+			recordYEncSelectionMetric(metrics, "fetch_failure", candidate)
 			if batchWrites && outcome != nil && outcome.ArticleHeaderID > 0 {
 				transientArticleIDs = append(transientArticleIDs, outcome.ArticleHeaderID)
 			}
 		case "parse_failure":
 			metrics["parse_failures"] = metrics["parse_failures"].(int) + 1
+			recordYEncSelectionMetric(metrics, "parse_failure", candidate)
 			if batchWrites && outcome != nil && outcome.ArticleHeaderID > 0 {
 				notFoundArticleIDs = append(notFoundArticleIDs, outcome.ArticleHeaderID)
 			}
 		case "stale":
 			metrics["stale_candidates"] = metrics["stale_candidates"].(int) + 1
+			recordYEncSelectionMetric(metrics, "stale", candidate)
 		case "noop":
 			metrics["noops"] = metrics["noops"].(int) + 1
+			recordYEncSelectionMetric(metrics, "noop", candidate)
 			if batchWrites && outcome != nil && outcome.ArticleHeaderID > 0 {
 				noopArticleIDs = append(noopArticleIDs, outcome.ArticleHeaderID)
 			}
 		case "recovered":
 			metrics["recovered"] = metrics["recovered"].(int) + 1
+			recordYEncSelectionMetric(metrics, "recovered", candidate)
 			if outcome != nil && outcome.Result != nil && outcome.Result.Merged {
 				metrics["merged"] = metrics["merged"].(int) + 1
+				recordYEncSelectionMetric(metrics, "merged", candidate)
 			}
+		case "ready":
+			recordYEncSelectionMetric(metrics, "body_matched", candidate)
 		}
 		attempted := metrics["attempted"].(int)
 		if s.log != nil && (attempted == len(candidates) || attempted%100 == 0) {
@@ -363,7 +407,7 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 		recordCh = make(chan pgindex.YEncHeaderRecoveryRecord, maxYEncInt(yencRecoveryStreamFlushSize, workerCount*2))
 		writerDone = make(chan error, 1)
 		go func() {
-			writerDone <- s.runStreamingRecoveryWriter(ctx, batchRepo, recordCh, metrics, &mu)
+			writerDone <- s.runStreamingRecoveryWriter(ctx, batchRepo, recordCh, candidateByBinaryID, metrics, &mu)
 		}()
 	}
 	for i := 0; i < workerCount; i++ {
@@ -372,11 +416,11 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 			defer wg.Done()
 			for candidate := range jobs {
 				if ctx.Err() != nil {
-					recordResult(nil, "noop", yencCandidateTimings{}, ctx.Err())
+					recordResult(candidate, nil, "noop", yencCandidateTimings{}, ctx.Err())
 					continue
 				}
 				outcome, kind, timings, err := s.recoverCandidate(ctx, candidate, batchWrites)
-				recordResult(outcome, kind, timings, err)
+				recordResult(candidate, outcome, kind, timings, err)
 				if err == nil && outcome != nil && outcome.Record != nil {
 					if queueErr := queueRecoveryRecord(*outcome.Record); queueErr != nil {
 						setFirstErr(queueErr)
@@ -427,7 +471,7 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 
 	if s.log != nil {
 		s.log.Info(
-			"recover_yenc: candidates=%d attempted=%d recovered=%d merged=%d noops=%d not_found=%d fetch_failures=%d parse_failures=%d stale_candidates=%d max_header_bytes=%d concurrency=%d",
+			"recover_yenc: candidates=%d attempted=%d recovered=%d merged=%d noops=%d not_found=%d fetch_failures=%d parse_failures=%d stale_candidates=%d selected_priority0=%d selected_priority1=%d priority0_ready=%d priority_seeded=%d generic_seeded=%d max_header_bytes=%d concurrency=%d",
 			metrics["candidates"],
 			metrics["attempted"],
 			metrics["recovered"],
@@ -437,6 +481,11 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 			metrics["fetch_failures"],
 			metrics["parse_failures"],
 			metrics["stale_candidates"],
+			yencIntMetric(metrics, "selected_priority_0"),
+			yencIntMetric(metrics, "selected_priority_1"),
+			metrics["selection_priority0_ready"],
+			metrics["selection_priority_seeded"],
+			metrics["selection_generic_seeded"],
 			s.opts.MaxHeaderBytes,
 			workerCount,
 		)
@@ -528,7 +577,72 @@ func addYEncDurationMetric(metrics map[string]any, key string, d time.Duration) 
 	metrics[key] = current + durationMillis(d)
 }
 
-func (s *Service) runStreamingRecoveryWriter(ctx context.Context, repo repositoryWithBatchHeaderRecovery, records <-chan pgindex.YEncHeaderRecoveryRecord, metrics map[string]any, mu *sync.Mutex) error {
+func recordYEncSelectionMetric(metrics map[string]any, prefix string, candidate pgindex.YEncRecoveryCandidate) {
+	if metrics == nil {
+		return
+	}
+	incrementYEncIntMetric(metrics, prefix+"_priority_"+yencPriorityMetricSuffix(candidate.PriorityRank), 1)
+	incrementYEncIntMetric(metrics, prefix+"_admission_"+yencMetricSuffix(candidate.AdmissionReason), 1)
+	incrementYEncIntMetric(metrics, prefix+"_tier_"+yencMetricSuffix(candidate.GroupTier), 1)
+	incrementYEncIntMetric(metrics, prefix+"_lane_"+yencMetricSuffix(candidate.RecoveryLane), 1)
+}
+
+func yencPriorityMetricSuffix(priority int) string {
+	if priority < 0 {
+		return "unknown"
+	}
+	if priority > 2 {
+		return "2plus"
+	}
+	return fmt.Sprintf("%d", priority)
+}
+
+func yencMetricSuffix(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return "unknown"
+	}
+	var b strings.Builder
+	lastUnderscore := false
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			lastUnderscore = false
+			continue
+		}
+		if !lastUnderscore {
+			b.WriteByte('_')
+			lastUnderscore = true
+		}
+	}
+	out := strings.Trim(b.String(), "_")
+	if out == "" {
+		return "unknown"
+	}
+	return out
+}
+
+func incrementYEncIntMetric(metrics map[string]any, key string, delta int) {
+	metrics[key] = yencIntMetric(metrics, key) + delta
+}
+
+func yencIntMetric(metrics map[string]any, key string) int {
+	if metrics == nil {
+		return 0
+	}
+	switch v := metrics[key].(type) {
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case float64:
+		return int(v)
+	default:
+		return 0
+	}
+}
+
+func (s *Service) runStreamingRecoveryWriter(ctx context.Context, repo repositoryWithBatchHeaderRecovery, records <-chan pgindex.YEncHeaderRecoveryRecord, candidateByBinaryID map[int64]pgindex.YEncRecoveryCandidate, metrics map[string]any, mu *sync.Mutex) error {
 	batch := make([]pgindex.YEncHeaderRecoveryRecord, 0, yencRecoveryStreamFlushSize)
 	var firstErr error
 	flush := func() {
@@ -536,6 +650,34 @@ func (s *Service) runStreamingRecoveryWriter(ctx context.Context, repo repositor
 			return
 		}
 		rows := len(batch)
+		if siblingRepo, ok := repo.(repositoryWithPrioritySiblingAdmission); ok {
+			binaryIDs := make([]int64, 0, rows)
+			seen := make(map[int64]struct{}, rows)
+			for _, record := range batch {
+				if record.BinaryID <= 0 {
+					continue
+				}
+				if _, ok := seen[record.BinaryID]; ok {
+					continue
+				}
+				seen[record.BinaryID] = struct{}{}
+				binaryIDs = append(binaryIDs, record.BinaryID)
+			}
+			if len(binaryIDs) > 0 {
+				sort.Slice(binaryIDs, func(i, j int) bool { return binaryIDs[i] < binaryIDs[j] })
+				started := time.Now()
+				upserted, _, err := siblingRepo.BackfillPriorityYEncRecoveryWorkItemsForBinaries(ctx, binaryIDs)
+				elapsed := time.Since(started)
+				mu.Lock()
+				addYEncDurationMetric(metrics, "sibling_admission_ms", elapsed)
+				metrics["sibling_admission_attempts"] = metrics["sibling_admission_attempts"].(int) + 1
+				metrics["sibling_admission_upserted"] = metrics["sibling_admission_upserted"].(int) + int(upserted)
+				if err != nil {
+					metrics["sibling_admission_failures"] = metrics["sibling_admission_failures"].(int) + 1
+				}
+				mu.Unlock()
+			}
+		}
 		started := time.Now()
 		results, err := repo.ApplyYEncHeaderRecoveries(ctx, batch)
 		elapsed := time.Since(started)
@@ -562,8 +704,11 @@ func (s *Service) runStreamingRecoveryWriter(ctx context.Context, repo repositor
 		} else {
 			metrics["recovered"] = metrics["recovered"].(int) + len(results)
 			for _, result := range results {
+				candidate := candidateByBinaryID[result.BinaryID]
+				recordYEncSelectionMetric(metrics, "recovered", candidate)
 				if result.Merged {
 					metrics["merged"] = metrics["merged"].(int) + 1
+					recordYEncSelectionMetric(metrics, "merged", candidate)
 				}
 			}
 		}

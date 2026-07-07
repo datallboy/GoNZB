@@ -25,6 +25,7 @@ const (
 	StageScrapeBackfill                StageName = "scrape_backfill"
 	StagePosterMaterialize             StageName = "poster_materialize"
 	StageCrosspostPopularityRefresh    StageName = "crosspost_popularity_refresh"
+	StageArticleCohortSchedule         StageName = "article_cohort_schedule"
 	StageAssemble                      StageName = "assemble"
 	StageRecoverYEnc                   StageName = "recover_yenc"
 	StageReleaseSummaryRefresh         StageName = "release_summary_refresh"
@@ -187,6 +188,7 @@ func pipelineStageNames() []StageName {
 		StageScrapeBackfill,
 		StagePosterMaterialize,
 		StageCrosspostPopularityRefresh,
+		StageArticleCohortSchedule,
 		StageAssemble,
 		StageRecoverYEnc,
 		StageReleaseSummaryRefresh,
@@ -218,6 +220,14 @@ func maintenanceStageNames() []StageName {
 		StageName("maintenance.readiness_cleanup"),
 		StageName("maintenance.runtime_history_cleanup"),
 		StageName("maintenance.grouping_evidence_cleanup"),
+		StageName("maintenance.crosspost_group_raw_purge"),
+		StageName("maintenance.yenc_done_work_item_cleanup"),
+		StageName("maintenance.group_profile_refresh"),
+		StageName("maintenance.raw_stage_retention"),
+		StageName("maintenance.partition_retention_drop"),
+		StageName("maintenance.partition_default_rehome"),
+		StageName("maintenance.stale_nonrelease_source_purge"),
+		StageName("maintenance.emergency_source_window_reset"),
 		StageName("maintenance.header_payload_purge"),
 		StageMaintenance,
 	}

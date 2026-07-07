@@ -31,6 +31,8 @@ services:
       - -c
       - default_statistics_target=250
       - -c
+      - max_locks_per_transaction=512
+      - -c
       - jit=off
     environment:
       POSTGRES_DB: gonzb

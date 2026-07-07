@@ -93,8 +93,8 @@ func parsePositiveInt64(raw string) (int64, error) {
 	return n, nil
 }
 
-func upsertArticleHeaderCrosspostGroupsBatch(ctx context.Context, tx *sql.Tx, providerID, sourceNewsgroupID int64, batch []preparedArticleHeaderInsert, resolvedIDs []int64) error {
-	if len(batch) == 0 || len(resolvedIDs) == 0 {
+func upsertArticleHeaderCrosspostGroupsBatch(ctx context.Context, tx *sql.Tx, providerID, sourceNewsgroupID int64, batch []preparedArticleHeaderInsert, resolvedHeaders []articleHeaderResolution) error {
+	if len(batch) == 0 || len(resolvedHeaders) == 0 {
 		return nil
 	}
 	type row struct {
@@ -102,13 +102,15 @@ func upsertArticleHeaderCrosspostGroupsBatch(ctx context.Context, tx *sql.Tx, pr
 		messageID          string
 		observedGroupName  string
 		observedArticleNum int64
+		sourcePostedAt     *time.Time
 	}
 	rows := make([]row, 0, len(batch)*2)
 	seen := make(map[string]struct{}, len(batch)*2)
 	for idx, item := range batch {
-		if idx >= len(resolvedIDs) || resolvedIDs[idx] <= 0 {
+		if idx >= len(resolvedHeaders) || resolvedHeaders[idx].ID <= 0 {
 			continue
 		}
+		resolvedHeader := resolvedHeaders[idx]
 		refs := parseXrefGroupRefs(item.Xref)
 		if len(refs) == 0 {
 			continue
@@ -118,16 +120,18 @@ func upsertArticleHeaderCrosspostGroupsBatch(ctx context.Context, tx *sql.Tx, pr
 			if groupName == "" {
 				continue
 			}
-			key := fmt.Sprintf("%d\x00%s", resolvedIDs[idx], groupName)
+			key := fmt.Sprintf("%d\x00%s", resolvedHeader.ID, groupName)
 			if _, ok := seen[key]; ok {
 				continue
 			}
 			seen[key] = struct{}{}
+			sourcePostedAt := resolvedHeader.SourcePostedAt
 			rows = append(rows, row{
-				articleHeaderID:    resolvedIDs[idx],
+				articleHeaderID:    resolvedHeader.ID,
 				messageID:          item.MessageID,
 				observedGroupName:  groupName,
 				observedArticleNum: ref.ArticleNumber,
+				sourcePostedAt:     &sourcePostedAt,
 			})
 		}
 	}
@@ -144,10 +148,11 @@ func upsertArticleHeaderCrosspostGroupsBatch(ctx context.Context, tx *sql.Tx, pr
 			message_id,
 			observed_group_name,
 			observed_article_number,
+			source_posted_at,
 			observed_at
 		) AS (
 			VALUES `)
-	args := make([]any, 0, len(rows)*6)
+	args := make([]any, 0, len(rows)*7)
 	for idx, row := range rows {
 		if idx > 0 {
 			query.WriteString(",")
@@ -165,6 +170,8 @@ func upsertArticleHeaderCrosspostGroupsBatch(ctx context.Context, tx *sql.Tx, pr
 		args = append(args, row.observedGroupName)
 		fmt.Fprintf(&query, "$%d::bigint,", len(args)+1)
 		args = append(args, row.observedArticleNum)
+		fmt.Fprintf(&query, "$%d::timestamptz,", len(args)+1)
+		args = append(args, row.sourcePostedAt)
 		query.WriteString("NOW())")
 	}
 	query.WriteString(`
@@ -176,6 +183,7 @@ func upsertArticleHeaderCrosspostGroupsBatch(ctx context.Context, tx *sql.Tx, pr
 			message_id,
 			observed_group_name,
 			observed_article_number,
+			source_posted_at,
 			observed_at
 		)
 			SELECT
@@ -185,10 +193,11 @@ func upsertArticleHeaderCrosspostGroupsBatch(ctx context.Context, tx *sql.Tx, pr
 				COALESCE(BTRIM(message_id), ''),
 				observed_group_name,
 				observed_article_number,
+				COALESCE(source_posted_at, NOW()),
 				observed_at
 			FROM input_rows
 			WHERE BTRIM(COALESCE(observed_group_name, '')) <> ''
-			ON CONFLICT (article_header_id, observed_group_name) DO NOTHING`)
+			ON CONFLICT (source_posted_at, article_header_id, observed_group_name) DO NOTHING`)
 	if _, err := tx.ExecContext(ctx, query.String(), args...); err != nil {
 		return fmt.Errorf("upsert article header crosspost groups batch: %w", err)
 	}
@@ -286,6 +295,7 @@ func (s *Store) backfillIndexerCrosspostGroupsBatch(ctx context.Context, afterAr
 				ah.provider_id,
 				ah.newsgroup_id AS source_newsgroup_id,
 				ah.message_id,
+				ah.source_posted_at,
 				aip.xref
 			FROM article_headers ah
 			JOIN article_header_ingest_payloads aip ON aip.article_header_id = ah.id
@@ -300,6 +310,7 @@ func (s *Store) backfillIndexerCrosspostGroupsBatch(ctx context.Context, afterAr
 				b.provider_id,
 				b.source_newsgroup_id,
 				b.message_id,
+				b.source_posted_at,
 				LOWER(BTRIM(SPLIT_PART(tok.token, ':', 1))) AS observed_group_name,
 				COALESCE(NULLIF(SPLIT_PART(tok.token, ':', 2), ''), '0')::bigint AS observed_article_number
 			FROM batch b
@@ -318,6 +329,7 @@ func (s *Store) backfillIndexerCrosspostGroupsBatch(ctx context.Context, afterAr
 				message_id,
 				observed_group_name,
 				observed_article_number,
+				source_posted_at,
 				observed_at
 			)
 			SELECT
@@ -327,9 +339,10 @@ func (s *Store) backfillIndexerCrosspostGroupsBatch(ctx context.Context, afterAr
 				e.message_id,
 				e.observed_group_name,
 				e.observed_article_number,
+				COALESCE(e.source_posted_at, NOW()),
 				NOW()
 			FROM exploded e
-			ON CONFLICT (article_header_id, observed_group_name) DO NOTHING
+			ON CONFLICT (source_posted_at, article_header_id, observed_group_name) DO NOTHING
 			RETURNING observed_group_name
 		),
 		queue_upsert AS (

@@ -11,6 +11,14 @@ import (
 
 const staleNonreleaseSourceRetentionDays = 7
 
+type RawStageRetentionPolicy struct {
+	HotHours         int
+	WarmHours        int
+	ColdHours        int
+	FailedProbeHours int
+	DoneYEncHours    int
+}
+
 type MaintenanceTaskResult struct {
 	TaskKey              string                          `json:"task_key"`
 	DryRun               bool                            `json:"dry_run"`
@@ -43,6 +51,13 @@ type maintenanceVacuumCandidate struct {
 	DeadRows   int64
 	TotalBytes int64
 	DeadPct    float64
+}
+
+type partitionRetentionCandidate struct {
+	Day         time.Time
+	TableName   string
+	ChildTable  string
+	RowEstimate int64
 }
 
 func (s *Store) DryRunReleaseSourcePurge(ctx context.Context, limit int, policy ReleaseReadyPolicy) (*MaintenanceTaskResult, error) {
@@ -232,6 +247,827 @@ func (s *Store) DryRunSimpleMaintenanceTask(ctx context.Context, taskKey string,
 
 func (s *Store) RunSimpleMaintenanceTask(ctx context.Context, taskKey string, batchSize int) (*MaintenanceTaskResult, error) {
 	return s.runSimpleMaintenanceTask(ctx, taskKey, false, batchSize)
+}
+
+func (s *Store) DryRunRawStageRetentionTask(ctx context.Context, batchSize int, policy RawStageRetentionPolicy) (*MaintenanceTaskResult, error) {
+	return s.runRawStageRetentionTask(ctx, true, batchSize, normalizeRawStageRetentionPolicy(policy))
+}
+
+func (s *Store) RunRawStageRetentionTask(ctx context.Context, batchSize int, policy RawStageRetentionPolicy) (*MaintenanceTaskResult, error) {
+	return s.runRawStageRetentionTask(ctx, false, batchSize, normalizeRawStageRetentionPolicy(policy))
+}
+
+func (s *Store) DryRunPartitionRetentionTask(ctx context.Context, batchSize int) (*MaintenanceTaskResult, error) {
+	return s.partitionRetentionReport(ctx, true, batchSize)
+}
+
+func (s *Store) RunPartitionRetentionTask(ctx context.Context, batchSize int) (*MaintenanceTaskResult, error) {
+	return s.partitionRetentionReport(ctx, false, batchSize)
+}
+
+func (s *Store) DryRunPartitionDefaultRehomeTask(ctx context.Context, batchSize int) (*MaintenanceTaskResult, error) {
+	return s.partitionDefaultRehomeReport(ctx, true, batchSize)
+}
+
+func (s *Store) RunPartitionDefaultRehomeTask(ctx context.Context, batchSize int) (*MaintenanceTaskResult, error) {
+	return s.partitionDefaultRehomeReport(ctx, false, batchSize)
+}
+
+func (s *Store) partitionRetentionReport(ctx context.Context, dryRun bool, batchSize int) (*MaintenanceTaskResult, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("pgindex store is not initialized")
+	}
+	if batchSize <= 0 {
+		batchSize = 7
+	}
+	targetTables := nativeSourceWorkPartitionTables()
+	result := &MaintenanceTaskResult{
+		TaskKey:              "partition_retention_drop",
+		DryRun:               dryRun,
+		EstimatedRowsByTable: map[string]int64{},
+		Warnings: []string{
+			"targets the native source/work/projection partition set; binary_core and durable release/archive/catalog tables remain unpartitioned by design",
+			"batch size is interpreted as retention-days horizon",
+		},
+	}
+	if !dryRun {
+		result.DeletedRowsByTable = map[string]int64{}
+	}
+	targetValues := strings.Builder{}
+	args := make([]any, 0, len(targetTables))
+	for i, table := range targetTables {
+		if i > 0 {
+			targetValues.WriteString(",")
+		}
+		fmt.Fprintf(&targetValues, "($%d::text)", len(args)+1)
+		args = append(args, table)
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		WITH target(table_name) AS (
+			VALUES `+targetValues.String()+`
+		),
+		column_state AS (
+			SELECT
+				t.table_name,
+				EXISTS (
+					SELECT 1
+					FROM information_schema.columns c
+					WHERE c.table_schema = 'public'
+					  AND c.table_name = t.table_name
+					  AND c.column_name = 'source_posted_at'
+				) AS has_source_posted_at,
+				EXISTS (
+					SELECT 1
+					FROM pg_class cls
+					JOIN pg_namespace ns ON ns.oid = cls.relnamespace
+					JOIN pg_partitioned_table pt ON pt.partrelid = cls.oid
+					WHERE ns.nspname = 'public'
+					  AND cls.relname = t.table_name
+				) AS is_partitioned
+			FROM target t
+		)
+		SELECT table_name, has_source_posted_at, is_partitioned
+		FROM column_state
+		ORDER BY table_name`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("partition retention readiness report: %w", err)
+	}
+	defer rows.Close()
+
+	var withSourcePostedAt int64
+	var partitioned int64
+	var nonPartitioned int64
+	var missingSourcePostedAt []string
+	for rows.Next() {
+		var table string
+		var hasSourcePostedAt bool
+		var isPartitioned bool
+		if err := rows.Scan(&table, &hasSourcePostedAt, &isPartitioned); err != nil {
+			return nil, fmt.Errorf("scan partition retention readiness row: %w", err)
+		}
+		if hasSourcePostedAt {
+			withSourcePostedAt++
+		} else {
+			missingSourcePostedAt = append(missingSourcePostedAt, table)
+		}
+		if isPartitioned {
+			partitioned++
+		} else {
+			nonPartitioned++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate partition retention readiness rows: %w", err)
+	}
+	result.EstimatedRowsByTable["target_tables"] = int64(len(targetTables))
+	result.EstimatedRowsByTable["tables_with_source_posted_at"] = withSourcePostedAt
+	result.EstimatedRowsByTable["native_partitioned_tables"] = partitioned
+	result.EstimatedRowsByTable["non_partitioned_target_tables"] = nonPartitioned
+	result.EstimatedRowsByTable["retention_days_horizon"] = int64(batchSize)
+	partitionRows, err := s.db.QueryContext(ctx, `
+		WITH target(table_name) AS (
+			VALUES `+targetValues.String()+`
+		)
+		SELECT
+			t.table_name,
+			COUNT(i.inhrelid)::bigint AS partition_count,
+			COUNT(*) FILTER (WHERE pg_get_expr(c.relpartbound, c.oid) = 'DEFAULT')::bigint AS default_partition_count
+		FROM target t
+		LEFT JOIN pg_class p
+		  ON p.relname = t.table_name
+		LEFT JOIN pg_namespace pn
+		  ON pn.oid = p.relnamespace
+		 AND pn.nspname = 'public'
+		LEFT JOIN pg_inherits i
+		  ON i.inhparent = p.oid
+		LEFT JOIN pg_class c
+		  ON c.oid = i.inhrelid
+		GROUP BY t.table_name
+		ORDER BY t.table_name`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("partition retention partition counts: %w", err)
+	}
+	defer partitionRows.Close()
+	for partitionRows.Next() {
+		var table string
+		var partitionCount int64
+		var defaultPartitionCount int64
+		if err := partitionRows.Scan(&table, &partitionCount, &defaultPartitionCount); err != nil {
+			return nil, fmt.Errorf("scan partition retention partition counts: %w", err)
+		}
+		result.EstimatedRowsByTable[table+"_partitions"] = partitionCount
+		result.EstimatedRowsByTable[table+"_default_partitions"] = defaultPartitionCount
+	}
+	if err := partitionRows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate partition retention partition counts: %w", err)
+	}
+	if len(missingSourcePostedAt) > 0 {
+		result.Blockers = append(result.Blockers, "missing source_posted_at: "+strings.Join(missingSourcePostedAt, ", "))
+	}
+	if nonPartitioned > 0 {
+		result.Blockers = append(result.Blockers, "native partition drop is blocked until target source/work tables are rebuilt as daily partitions")
+	}
+	if len(result.Blockers) > 0 {
+		return result, nil
+	}
+
+	defaultRows, err := s.partitionDefaultRows(ctx, targetTables)
+	if err != nil {
+		return nil, err
+	}
+	for table, count := range defaultRows {
+		result.EstimatedRowsByTable[table+"_default_rows"] = count
+		if count > 0 {
+			result.Blockers = append(result.Blockers, fmt.Sprintf("%s default partition contains %d rows", table, count))
+		}
+	}
+	if len(result.Blockers) > 0 {
+		return result, nil
+	}
+
+	candidates, err := s.partitionRetentionCandidates(ctx, batchSize, targetTables)
+	if err != nil {
+		return nil, err
+	}
+	byDay := map[string][]partitionRetentionCandidate{}
+	for _, candidate := range candidates {
+		dayKey := candidate.Day.Format("2006-01-02")
+		byDay[dayKey] = append(byDay[dayKey], candidate)
+		result.EstimatedRowsByTable["partition_"+candidate.ChildTable] = candidate.RowEstimate
+		result.EstimatedRowsByTable["eligible_partition_rows"] += candidate.RowEstimate
+	}
+	result.EstimatedRowsByTable["eligible_partition_count"] = int64(len(candidates))
+	result.EstimatedRowsByTable["eligible_day_count"] = int64(len(byDay))
+
+	eligibleDays := make([]string, 0, len(byDay))
+	for dayKey := range byDay {
+		eligibleDays = append(eligibleDays, dayKey)
+	}
+	sort.Strings(eligibleDays)
+	for _, dayKey := range eligibleDays {
+		day, err := time.Parse("2006-01-02", dayKey)
+		if err != nil {
+			return nil, err
+		}
+		dayBlockers, err := s.partitionRetentionDayBlockers(ctx, day)
+		if err != nil {
+			return nil, err
+		}
+		if len(dayBlockers) > 0 {
+			for _, blocker := range dayBlockers {
+				result.Blockers = append(result.Blockers, dayKey+": "+blocker)
+			}
+			continue
+		}
+		if dryRun {
+			continue
+		}
+		dropped, err := s.dropPartitionRetentionDay(ctx, byDay[dayKey])
+		if err != nil {
+			return nil, err
+		}
+		for table, count := range dropped {
+			result.DeletedRowsByTable[table] += count
+		}
+	}
+	return result, nil
+}
+
+func nativeSourceWorkPartitionTables() []string {
+	return []string{
+		"article_headers",
+		"article_header_ingest_payloads",
+		"article_header_crosspost_groups",
+		"article_header_poster_refs",
+		"article_header_assembly_queue",
+		"poster_materialization_queue",
+		"binary_parts",
+		"binary_observation_stats",
+		"binary_identity_current",
+		"binary_recovery_current",
+		"binary_lifecycle",
+		"binary_completion_keys",
+		"binary_grouping_evidence",
+		"binary_projection_events",
+		"binary_superseded_sources",
+		"yenc_recovery_work_items",
+		"article_cohort_candidates",
+		"article_cohort_assembly_queue",
+		"article_cohort_yenc_queue",
+		"binary_inspection_ready_queue",
+		"binary_inspections",
+		"binary_inspection_artifacts",
+		"binary_archive_entries",
+		"binary_text_evidence",
+		"binary_media_streams",
+		"binary_par2_sets",
+		"binary_par2_targets",
+		"release_family_readiness_summaries",
+		"release_ready_candidates",
+		"release_recovered_file_set_candidates",
+		"release_stage_dirty_families",
+	}
+}
+
+func nativeSourceWorkPartitionDropOrder() []string {
+	return []string{
+		"release_stage_dirty_families",
+		"release_ready_candidates",
+		"release_recovered_file_set_candidates",
+		"release_family_readiness_summaries",
+		"binary_inspection_ready_queue",
+		"binary_inspection_artifacts",
+		"binary_archive_entries",
+		"binary_text_evidence",
+		"binary_media_streams",
+		"binary_par2_targets",
+		"binary_par2_sets",
+		"binary_inspections",
+		"yenc_recovery_work_items",
+		"article_cohort_yenc_queue",
+		"article_cohort_assembly_queue",
+		"article_cohort_candidates",
+		"binary_projection_events",
+		"binary_superseded_sources",
+		"binary_grouping_evidence",
+		"binary_completion_keys",
+		"binary_lifecycle",
+		"binary_recovery_current",
+		"binary_identity_current",
+		"binary_observation_stats",
+		"article_header_assembly_queue",
+		"poster_materialization_queue",
+		"binary_parts",
+		"article_header_poster_refs",
+		"article_header_crosspost_groups",
+		"article_header_ingest_payloads",
+		"article_headers",
+	}
+}
+
+func (s *Store) partitionDefaultRows(ctx context.Context, targetTables []string) (map[string]int64, error) {
+	out := make(map[string]int64, len(targetTables))
+	for _, table := range targetTables {
+		defaultTable := table + "_default"
+		exists, err := s.tableExists(ctx, defaultTable)
+		if err != nil {
+			return nil, err
+		}
+		if !exists {
+			continue
+		}
+		var count int64
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+quoteIdentifier(defaultTable)).Scan(&count); err != nil {
+			return nil, fmt.Errorf("count %s rows: %w", defaultTable, err)
+		}
+		out[table] = count
+	}
+	return out, nil
+}
+
+type partitionDefaultDay struct {
+	DayKey string
+	Rows   int64
+}
+
+func (s *Store) partitionDefaultRehomeReport(ctx context.Context, dryRun bool, batchSize int) (*MaintenanceTaskResult, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("pgindex store is not initialized")
+	}
+	if batchSize <= 0 {
+		batchSize = 1
+	}
+	if batchSize > 7 {
+		batchSize = 7
+	}
+	targetTables := nativeSourceWorkPartitionTables()
+	result := &MaintenanceTaskResult{
+		TaskKey:              "partition_default_rehome",
+		DryRun:               dryRun,
+		EstimatedRowsByTable: map[string]int64{},
+		Warnings: []string{
+			"moves rows out of default partitions into dated child partitions",
+			"batch size is interpreted as number of default-partition days to move, capped at 7",
+			"run manually or while scrape is quiet; default partitions are briefly detached in a transaction",
+		},
+	}
+	if !dryRun {
+		result.DeletedRowsByTable = map[string]int64{}
+	}
+	days, err := s.partitionDefaultRehomeDays(ctx, targetTables, batchSize)
+	if err != nil {
+		return nil, err
+	}
+	for _, day := range days {
+		result.EstimatedRowsByTable["default_day_"+day.DayKey] = day.Rows
+	}
+	result.EstimatedRowsByTable["eligible_default_day_count"] = int64(len(days))
+	if err := s.addPartitionDefaultRehomeBlockers(ctx, result); err != nil {
+		return nil, err
+	}
+	if len(result.Blockers) > 0 {
+		if err := s.addPartitionDefaultRowEstimates(ctx, result, targetTables); err != nil {
+			return nil, err
+		}
+		return result, nil
+	}
+	if dryRun || len(days) == 0 {
+		if err := s.addPartitionDefaultRowEstimates(ctx, result, targetTables); err != nil {
+			return nil, err
+		}
+		return result, nil
+	}
+	for _, day := range days {
+		moved, err := s.rehomeDefaultPartitionDay(ctx, day.DayKey, targetTables)
+		if err != nil {
+			return nil, err
+		}
+		for table, count := range moved {
+			result.DeletedRowsByTable[table+"_default_moved"] += count
+		}
+	}
+	if err := s.addPartitionDefaultRowEstimates(ctx, result, targetTables); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (s *Store) addPartitionDefaultRehomeBlockers(ctx context.Context, result *MaintenanceTaskResult) error {
+	exists, err := s.tableExists(ctx, "article_headers_default")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	var defaultRows int64
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM article_headers_default`).Scan(&defaultRows); err != nil {
+		return fmt.Errorf("count article_headers_default rows: %w", err)
+	}
+	if defaultRows == 0 {
+		return nil
+	}
+	var dependentFKs int64
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM pg_constraint
+		WHERE contype = 'f'
+		  AND confrelid = 'article_headers_default'::regclass`).Scan(&dependentFKs); err != nil {
+		return fmt.Errorf("count article_headers_default dependent fks: %w", err)
+	}
+	if dependentFKs > 0 {
+		result.Blockers = append(result.Blockers, fmt.Sprintf("article_headers_default has %d rows and %d partition-specific foreign keys; online rehome would require dropping inherited FK constraints, so leave these rows for raw retention or perform an offline migration", defaultRows, dependentFKs))
+	}
+	return nil
+}
+
+func (s *Store) addPartitionDefaultRowEstimates(ctx context.Context, result *MaintenanceTaskResult, targetTables []string) error {
+	defaultRows, err := s.partitionDefaultRows(ctx, targetTables)
+	if err != nil {
+		return err
+	}
+	for table, count := range defaultRows {
+		result.EstimatedRowsByTable[table+"_default_rows"] = count
+	}
+	return nil
+}
+
+func (s *Store) partitionDefaultRehomeDays(ctx context.Context, targetTables []string, limit int) ([]partitionDefaultDay, error) {
+	counts := map[string]int64{}
+	for _, table := range targetTables {
+		defaultTable := table + "_default"
+		exists, err := s.tableExists(ctx, defaultTable)
+		if err != nil {
+			return nil, err
+		}
+		if !exists {
+			continue
+		}
+		rows, err := s.db.QueryContext(ctx, `
+			SELECT (date_trunc('day', source_posted_at))::date::text AS day_key, COUNT(*)::bigint
+			FROM `+quoteIdentifier(defaultTable)+`
+			GROUP BY day_key
+			ORDER BY day_key`)
+		if err != nil {
+			return nil, fmt.Errorf("list default partition days for %s: %w", defaultTable, err)
+		}
+		for rows.Next() {
+			var dayKey string
+			var count int64
+			if err := rows.Scan(&dayKey, &count); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("scan default partition day for %s: %w", defaultTable, err)
+			}
+			counts[dayKey] += count
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("iterate default partition days for %s: %w", defaultTable, err)
+		}
+		rows.Close()
+	}
+	keys := make([]string, 0, len(counts))
+	for key := range counts {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	if len(keys) > limit {
+		keys = keys[:limit]
+	}
+	out := make([]partitionDefaultDay, 0, len(keys))
+	for _, key := range keys {
+		out = append(out, partitionDefaultDay{DayKey: key, Rows: counts[key]})
+	}
+	return out, nil
+}
+
+func (s *Store) rehomeDefaultPartitionDay(ctx context.Context, dayKey string, targetTables []string) (map[string]int64, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin default partition rehome tx: %w", err)
+	}
+	defer rollbackTx(tx)
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext('pgindex-partition-default-rehome'))`); err != nil {
+		return nil, fmt.Errorf("lock default partition rehome: %w", err)
+	}
+
+	detachOrder := orderedPartitionTables(targetTables, nativeSourceWorkPartitionDropOrder())
+	detached := make([]string, 0, len(detachOrder))
+	for _, table := range detachOrder {
+		defaultTable := table + "_default"
+		exists, err := s.tableExists(ctx, defaultTable)
+		if err != nil {
+			return nil, err
+		}
+		if !exists {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`ALTER TABLE %s DETACH PARTITION %s`, quoteIdentifier(table), quoteIdentifier(defaultTable))); err != nil {
+			return nil, fmt.Errorf("detach default partition %s: %w", defaultTable, err)
+		}
+		detached = append(detached, table)
+		childTable := table + "_" + strings.ReplaceAll(dayKey, "-", "")
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf(
+			`CREATE TABLE IF NOT EXISTS %s PARTITION OF %s FOR VALUES FROM (%s::date::timestamptz) TO ((%s::date + 1)::timestamptz)`,
+			quoteIdentifier(childTable),
+			quoteIdentifier(table),
+			quoteLiteral(dayKey),
+			quoteLiteral(dayKey),
+		)); err != nil {
+			return nil, fmt.Errorf("create dated partition %s: %w", childTable, err)
+		}
+	}
+
+	moved := map[string]int64{}
+	for _, table := range targetTables {
+		if !stringInSlice(table, detached) {
+			continue
+		}
+		defaultTable := table + "_default"
+		columns, err := s.tableInsertColumns(ctx, table)
+		if err != nil {
+			return nil, err
+		}
+		if len(columns) == 0 {
+			continue
+		}
+		columnSQL := quoteIdentifierList(columns)
+		res, err := tx.ExecContext(ctx, fmt.Sprintf(`
+			INSERT INTO %s (%s)
+			SELECT %s
+			FROM %s
+			WHERE source_posted_at >= %s::date::timestamptz
+			  AND source_posted_at < (%s::date + 1)::timestamptz
+			ON CONFLICT DO NOTHING`,
+			quoteIdentifier(table),
+			columnSQL,
+			columnSQL,
+			quoteIdentifier(defaultTable),
+			quoteLiteral(dayKey),
+			quoteLiteral(dayKey),
+		))
+		if err != nil {
+			return nil, fmt.Errorf("copy %s default rows for %s: %w", table, dayKey, err)
+		}
+		count, _ := res.RowsAffected()
+		moved[table] += count
+	}
+
+	dropOrder := orderedPartitionTables(detached, nativeSourceWorkPartitionDropOrder())
+	for _, table := range dropOrder {
+		if !stringInSlice(table, detached) {
+			continue
+		}
+		defaultTable := table + "_default"
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
+			DELETE FROM %s
+			WHERE source_posted_at >= %s::date::timestamptz
+			  AND source_posted_at < (%s::date + 1)::timestamptz`,
+			quoteIdentifier(defaultTable),
+			quoteLiteral(dayKey),
+			quoteLiteral(dayKey),
+		)); err != nil {
+			return nil, fmt.Errorf("delete moved %s rows for %s: %w", defaultTable, dayKey, err)
+		}
+	}
+
+	for i := len(dropOrder) - 1; i >= 0; i-- {
+		table := dropOrder[i]
+		defaultTable := table + "_default"
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`ALTER TABLE %s ATTACH PARTITION %s DEFAULT`, quoteIdentifier(table), quoteIdentifier(defaultTable))); err != nil {
+			return nil, fmt.Errorf("reattach default partition %s: %w", defaultTable, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit default partition rehome tx: %w", err)
+	}
+	return moved, nil
+}
+
+func orderedPartitionTables(tables []string, preferredOrder []string) []string {
+	remaining := make(map[string]struct{}, len(tables))
+	for _, table := range tables {
+		remaining[table] = struct{}{}
+	}
+	out := make([]string, 0, len(tables))
+	for _, table := range preferredOrder {
+		if _, ok := remaining[table]; !ok {
+			continue
+		}
+		out = append(out, table)
+		delete(remaining, table)
+	}
+	for _, table := range tables {
+		if _, ok := remaining[table]; !ok {
+			continue
+		}
+		out = append(out, table)
+		delete(remaining, table)
+	}
+	return out
+}
+
+func (s *Store) tableInsertColumns(ctx context.Context, table string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT column_name
+		FROM information_schema.columns
+		WHERE table_schema = 'public'
+		  AND table_name = $1
+		  AND is_generated = 'NEVER'
+		ORDER BY ordinal_position`, table)
+	if err != nil {
+		return nil, fmt.Errorf("list insert columns for %s: %w", table, err)
+	}
+	defer rows.Close()
+	columns := []string{}
+	for rows.Next() {
+		var column string
+		if err := rows.Scan(&column); err != nil {
+			return nil, fmt.Errorf("scan insert column for %s: %w", table, err)
+		}
+		columns = append(columns, column)
+	}
+	return columns, rows.Err()
+}
+
+func quoteIdentifierList(values []string) string {
+	out := strings.Builder{}
+	for i, value := range values {
+		if i > 0 {
+			out.WriteString(", ")
+		}
+		out.WriteString(quoteIdentifier(value))
+	}
+	return out.String()
+}
+
+func quoteLiteral(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
+}
+
+func stringInSlice(value string, values []string) bool {
+	for _, item := range values {
+		if item == value {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Store) tableExists(ctx context.Context, table string) (bool, error) {
+	var exists bool
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM pg_class c
+			JOIN pg_namespace n ON n.oid = c.relnamespace
+			WHERE n.nspname = 'public'
+			  AND c.relname = $1
+		)`, table).Scan(&exists); err != nil {
+		return false, err
+	}
+	return exists, nil
+}
+
+func (s *Store) partitionRetentionCandidates(ctx context.Context, retentionDays int, targetTables []string) ([]partitionRetentionCandidate, error) {
+	targetValues := strings.Builder{}
+	args := make([]any, 0, len(targetTables)+1)
+	for i, table := range targetTables {
+		if i > 0 {
+			targetValues.WriteString(",")
+		}
+		fmt.Fprintf(&targetValues, "($%d::text)", len(args)+1)
+		args = append(args, table)
+	}
+	args = append(args, retentionDays)
+	rows, err := s.db.QueryContext(ctx, `
+		WITH target(table_name) AS (
+			VALUES `+targetValues.String()+`
+		)
+		SELECT
+			parent.relname AS parent_table,
+			child.relname AS child_table,
+			to_date(substring(child.relname from '([0-9]{8})$'), 'YYYYMMDD')::date AS partition_day,
+			GREATEST(COALESCE(child.reltuples, 0), 0)::bigint AS row_estimate
+		FROM target t
+		JOIN pg_class parent
+		  ON parent.relname = t.table_name
+		JOIN pg_namespace pn
+		  ON pn.oid = parent.relnamespace
+		 AND pn.nspname = 'public'
+		JOIN pg_inherits i
+		  ON i.inhparent = parent.oid
+		JOIN pg_class child
+		  ON child.oid = i.inhrelid
+		WHERE child.relname ~ '_[0-9]{8}$'
+		  AND to_date(substring(child.relname from '([0-9]{8})$'), 'YYYYMMDD') < CURRENT_DATE - ($`+fmt.Sprint(len(args))+`::int)
+		ORDER BY partition_day, parent.relname`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list partition retention candidates: %w", err)
+	}
+	defer rows.Close()
+	out := []partitionRetentionCandidate{}
+	for rows.Next() {
+		var item partitionRetentionCandidate
+		if err := rows.Scan(&item.TableName, &item.ChildTable, &item.Day, &item.RowEstimate); err != nil {
+			return nil, fmt.Errorf("scan partition retention candidate: %w", err)
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate partition retention candidates: %w", err)
+	}
+	return out, nil
+}
+
+func (s *Store) partitionRetentionDayBlockers(ctx context.Context, day time.Time) ([]string, error) {
+	start := day.UTC()
+	end := start.AddDate(0, 0, 1)
+	checks := []struct {
+		label string
+		query string
+	}{
+		{
+			label: "assembly queue rows still exist",
+			query: `SELECT COUNT(*) FROM article_header_assembly_queue WHERE source_posted_at >= $1 AND source_posted_at < $2`,
+		},
+		{
+			label: "ready/running yEnc work still exists",
+			query: `SELECT COUNT(*) FROM yenc_recovery_work_items WHERE source_posted_at >= $1 AND source_posted_at < $2 AND status IN ('ready', 'running')`,
+		},
+		{
+			label: "active article cohort scheduler work still exists",
+			query: `
+				SELECT (
+					(SELECT COUNT(*) FROM article_cohort_assembly_queue WHERE source_posted_at >= $1 AND source_posted_at < $2 AND status IN ('ready', 'running')) +
+					(SELECT COUNT(*) FROM article_cohort_yenc_queue WHERE source_posted_at >= $1 AND source_posted_at < $2 AND status = 'ready') +
+					(SELECT COUNT(*) FROM article_cohort_candidates WHERE source_posted_at >= $1 AND source_posted_at < $2 AND status IN ('ready', 'active'))
+				)`,
+		},
+		{
+			label: "running inspect ready queue rows still exist",
+			query: `SELECT COUNT(*) FROM binary_inspection_ready_queue WHERE source_posted_at >= $1 AND source_posted_at < $2 AND status = 'running'`,
+		},
+		{
+			label: "running binary inspections still exist",
+			query: `SELECT COUNT(*) FROM binary_inspections WHERE source_updated_at >= $1 AND source_updated_at < $2 AND status = 'running'`,
+		},
+		{
+			label: "non-archived release files still reference this day",
+			query: `
+				SELECT COUNT(*)
+				FROM release_files rf
+				JOIN binary_parts bp ON bp.binary_id = rf.binary_id
+				LEFT JOIN release_archive_state ras ON ras.release_id = rf.release_id
+				WHERE bp.source_posted_at >= $1
+				  AND bp.source_posted_at < $2
+				  AND COALESCE(ras.archive_status, 'active') NOT IN ('archived', 'purge_pending', 'purged')`,
+		},
+	}
+	out := []string{}
+	for _, check := range checks {
+		var count int64
+		if err := s.db.QueryRowContext(ctx, check.query, start, end).Scan(&count); err != nil {
+			return nil, fmt.Errorf("check partition retention blocker %q: %w", check.label, err)
+		}
+		if count > 0 {
+			out = append(out, fmt.Sprintf("%s: %d", check.label, count))
+		}
+	}
+	return out, nil
+}
+
+func (s *Store) dropPartitionRetentionDay(ctx context.Context, candidates []partitionRetentionCandidate) (map[string]int64, error) {
+	byTable := map[string]partitionRetentionCandidate{}
+	for _, candidate := range candidates {
+		byTable[candidate.TableName] = candidate
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin partition drop tx: %w", err)
+	}
+	defer rollbackTx(tx)
+	out := map[string]int64{}
+	for _, table := range nativeSourceWorkPartitionDropOrder() {
+		candidate, ok := byTable[table]
+		if !ok {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf(
+			`ALTER TABLE %s DETACH PARTITION %s`,
+			quoteIdentifier(candidate.TableName),
+			quoteIdentifier(candidate.ChildTable),
+		)); err != nil {
+			return nil, fmt.Errorf("detach partition %s: %w", candidate.ChildTable, err)
+		}
+		if _, err := tx.ExecContext(ctx, `DROP TABLE `+quoteIdentifier(candidate.ChildTable)); err != nil {
+			return nil, fmt.Errorf("drop partition %s: %w", candidate.ChildTable, err)
+		}
+		out[candidate.ChildTable] = candidate.RowEstimate
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit partition drop tx: %w", err)
+	}
+	return out, nil
+}
+
+func normalizeRawStageRetentionPolicy(policy RawStageRetentionPolicy) RawStageRetentionPolicy {
+	if policy.HotHours <= 0 {
+		policy.HotHours = 48
+	}
+	if policy.WarmHours <= 0 {
+		policy.WarmHours = 24
+	}
+	if policy.ColdHours <= 0 {
+		policy.ColdHours = 12
+	}
+	if policy.FailedProbeHours <= 0 {
+		policy.FailedProbeHours = 48
+	}
+	if policy.DoneYEncHours <= 0 {
+		policy.DoneYEncHours = 48
+	}
+	return policy
 }
 
 func (s *Store) runSimpleMaintenanceTask(ctx context.Context, taskKey string, dryRun bool, batchSize int) (*MaintenanceTaskResult, error) {
@@ -500,7 +1336,7 @@ func (s *Store) runSimpleMaintenanceTask(ctx context.Context, taskKey string, dr
 			result.AfterStorage, _ = s.maintenanceStorageSnapshot(ctx, "indexer_stage_runs", "scrape_runs")
 		}
 	case "grouping_evidence_cleanup":
-		from := `FROM binary_grouping_evidence bge JOIN binary_identity_current bic ON bic.binary_id = bge.binary_id WHERE bge.updated_at < NOW() - INTERVAL '24 hours' AND bic.match_confidence >= 0.85 AND LOWER(COALESCE(bic.identity_strength, '')) NOT IN ('weak', 'provisional') AND LOWER(COALESCE(bic.family_kind, '')) NOT IN ('contextual_obfuscated', 'numeric_obfuscated_set', 'opaque_set') AND COALESCE((bge.payload_json->'summary'->>'fallback_used')::boolean, false) = false AND bge.payload_json ? 'summary'`
+		from := `FROM binary_grouping_evidence bge JOIN binary_identity_current bic ON bic.source_posted_at = bge.source_posted_at AND bic.binary_id = bge.binary_id WHERE bge.updated_at < NOW() - INTERVAL '24 hours' AND bic.match_confidence >= 0.85 AND LOWER(COALESCE(bic.identity_strength, '')) NOT IN ('weak', 'provisional') AND LOWER(COALESCE(bic.family_kind, '')) NOT IN ('contextual_obfuscated', 'numeric_obfuscated_set', 'opaque_set') AND COALESCE((bge.payload_json->'summary'->>'fallback_used')::boolean, false) = false AND bge.payload_json ? 'summary'`
 		if dryRun {
 			count, err := countRowsFrom(ctx, s.db, from)
 			if err != nil {
@@ -508,7 +1344,7 @@ func (s *Store) runSimpleMaintenanceTask(ctx context.Context, taskKey string, dr
 			}
 			add("binary_grouping_evidence", count)
 		} else {
-			count, err := execDeleteCount(ctx, s.db, `WITH eligible AS (SELECT bge.binary_id `+from+`) DELETE FROM binary_grouping_evidence bge USING eligible e WHERE bge.binary_id = e.binary_id`)
+			count, err := execDeleteCount(ctx, s.db, `WITH eligible AS (SELECT bge.source_posted_at, bge.binary_id `+from+`) DELETE FROM binary_grouping_evidence bge USING eligible e WHERE bge.source_posted_at = e.source_posted_at AND bge.binary_id = e.binary_id`)
 			if err != nil {
 				return nil, err
 			}
@@ -750,6 +1586,200 @@ func (s *Store) maintenanceVacuumCandidates(ctx context.Context, limit int) ([]m
 		return nil, err
 	}
 	return candidates, nil
+}
+
+func (s *Store) runRawStageRetentionTask(ctx context.Context, dryRun bool, batchSize int, policy RawStageRetentionPolicy) (*MaintenanceTaskResult, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("pgindex store is not initialized")
+	}
+	if batchSize <= 0 {
+		batchSize = 10000
+	}
+	result := &MaintenanceTaskResult{TaskKey: "raw_stage_retention", DryRun: dryRun}
+	if dryRun {
+		result.EstimatedRowsByTable = map[string]int64{}
+	} else {
+		result.DeletedRowsByTable = map[string]int64{}
+	}
+	tables := []string{
+		"yenc_recovery_work_items",
+		"article_headers",
+		"article_header_ingest_payloads",
+		"article_header_crosspost_groups",
+		"article_header_poster_refs",
+		"poster_materialization_queue",
+	}
+	if before, err := s.maintenanceStorageSnapshot(ctx, tables...); err == nil {
+		result.BeforeStorage = before
+	} else {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("pre-retention storage snapshot failed: %v", err))
+	}
+	result.Warnings = append(result.Warnings,
+		fmt.Sprintf("tier-aware raw retention uses hot=%dh warm=%dh cold=%dh terminal_yenc=%dh stale_probe=%dh", policy.HotHours, policy.WarmHours, policy.ColdHours, policy.DoneYEncHours, policy.FailedProbeHours),
+		"ready/running yEnc work, assembled binary parts, release files, archive lineage, and running inspections are retained",
+		"source headers are deleted only when no assembly queue, binary_parts, yEnc work item, or archive lineage still references them",
+		"delete creates PostgreSQL reusable space but does not return OS space until VACUUM FULL, pg_repack, CLUSTER, or a table rewrite",
+	)
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin raw stage retention tx: %w", err)
+	}
+	defer rollbackTx(tx)
+
+	if err := stageRawStageRetentionYEnc(ctx, tx, batchSize, policy); err != nil {
+		return nil, err
+	}
+	if err := stageRawStageRetentionHeaders(ctx, tx, batchSize, policy); err != nil {
+		return nil, err
+	}
+	counts, err := countRawStageRetentionRows(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	if dryRun {
+		for table, count := range counts {
+			result.EstimatedRowsByTable[table] = count
+		}
+		return result, nil
+	}
+
+	var deletedYEnc int64
+	if err := tx.QueryRowContext(ctx, `
+		WITH deleted AS (
+			DELETE FROM yenc_recovery_work_items wi
+			USING tmp_raw_stage_retention_yenc_ids e
+			WHERE wi.article_header_id = e.article_header_id
+			RETURNING 1
+		)
+		SELECT COUNT(*) FROM deleted`).Scan(&deletedYEnc); err != nil {
+		return nil, fmt.Errorf("delete raw retention yenc work items: %w", err)
+	}
+	counts["yenc_recovery_work_items"] = deletedYEnc
+
+	var deletedHeaders int64
+	if err := tx.QueryRowContext(ctx, `
+		WITH deleted AS (
+			DELETE FROM article_headers ah
+			USING tmp_raw_stage_retention_header_ids e
+			WHERE ah.id = e.article_header_id
+			RETURNING 1
+		)
+		SELECT COUNT(*) FROM deleted`).Scan(&deletedHeaders); err != nil {
+		return nil, fmt.Errorf("delete raw retention article headers: %w", err)
+	}
+	counts["article_headers"] = deletedHeaders
+
+	for table, count := range counts {
+		result.DeletedRowsByTable[table] = count
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit raw stage retention tx: %w", err)
+	}
+	if after, err := s.maintenanceStorageSnapshot(ctx, tables...); err == nil {
+		result.AfterStorage = after
+	} else {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("post-retention storage snapshot failed: %v", err))
+	}
+	s.vacuumDeletedMaintenanceTables(ctx, result)
+	return result, nil
+}
+
+func stageRawStageRetentionYEnc(ctx context.Context, tx *sql.Tx, batchSize int, policy RawStageRetentionPolicy) error {
+	if _, err := tx.ExecContext(ctx, `CREATE TEMP TABLE tmp_raw_stage_retention_yenc_ids (article_header_id bigint PRIMARY KEY) ON COMMIT DROP`); err != nil {
+		return fmt.Errorf("create raw retention yenc temp table: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO tmp_raw_stage_retention_yenc_ids (article_header_id)
+		SELECT wi.article_header_id
+		FROM yenc_recovery_work_items wi
+		LEFT JOIN binary_recovery_current brc
+		  ON brc.binary_id = wi.binary_id
+		WHERE wi.status IN ('done', 'stale')
+		  AND wi.updated_at < NOW() - (
+		  	CASE WHEN wi.status = 'done' THEN $2::int ELSE $3::int END * INTERVAL '1 hour'
+		  )
+		  AND (wi.status <> 'done' OR COALESCE(brc.recovered_source, '') = 'yenc_header')
+		  AND NOT EXISTS (SELECT 1 FROM release_files rf WHERE rf.binary_id = wi.binary_id)
+		  AND NOT EXISTS (SELECT 1 FROM release_archive_lineage_binaries lb WHERE lb.binary_id = wi.binary_id)
+		  AND NOT EXISTS (
+		  	SELECT 1
+		  	FROM binary_inspection_ready_queue rq
+		  	WHERE rq.binary_id = wi.binary_id
+		  	  AND rq.status = 'running'
+		  )
+		  AND NOT EXISTS (
+		  	SELECT 1
+		  	FROM binary_inspections bi
+		  	WHERE bi.binary_id = wi.binary_id
+		  	  AND bi.status = 'running'
+		  )
+		ORDER BY wi.updated_at, wi.article_header_id
+		LIMIT $1`, batchSize, policy.DoneYEncHours, policy.FailedProbeHours); err != nil {
+		return fmt.Errorf("stage raw retention yenc work items: %w", err)
+	}
+	return nil
+}
+
+func stageRawStageRetentionHeaders(ctx context.Context, tx *sql.Tx, batchSize int, policy RawStageRetentionPolicy) error {
+	if _, err := tx.ExecContext(ctx, `CREATE TEMP TABLE tmp_raw_stage_retention_header_ids (article_header_id bigint PRIMARY KEY) ON COMMIT DROP`); err != nil {
+		return fmt.Errorf("create raw retention header temp table: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO tmp_raw_stage_retention_header_ids (article_header_id)
+		SELECT ah.id
+		FROM article_headers ah
+		LEFT JOIN indexer_group_profiles igp
+		  ON igp.provider_id = ah.provider_id
+		 AND igp.newsgroup_id = ah.newsgroup_id
+		WHERE ah.date_utc < NOW() - (
+			CASE COALESCE(NULLIF(igp.tier_override, ''), NULLIF(igp.tier, ''), 'warm')
+				WHEN 'hot' THEN $2::int
+				WHEN 'cold' THEN $4::int
+				ELSE $3::int
+			END * INTERVAL '1 hour'
+		)
+		  AND NOT EXISTS (SELECT 1 FROM article_header_assembly_queue q WHERE q.article_header_id = ah.id)
+		  AND NOT EXISTS (SELECT 1 FROM binary_parts bp WHERE bp.article_header_id = ah.id)
+		  AND NOT EXISTS (SELECT 1 FROM yenc_recovery_work_items wi WHERE wi.article_header_id = ah.id)
+		  AND NOT EXISTS (SELECT 1 FROM release_archive_lineage_article_headers lah WHERE lah.article_header_id = ah.id)
+		ORDER BY ah.date_utc, ah.id
+		LIMIT $1`, batchSize, policy.HotHours, policy.WarmHours, policy.ColdHours); err != nil {
+		return fmt.Errorf("stage raw retention article headers: %w", err)
+	}
+	return nil
+}
+
+func countRawStageRetentionRows(ctx context.Context, tx *sql.Tx) (map[string]int64, error) {
+	queries := map[string]string{
+		"yenc_recovery_work_items": `SELECT COUNT(*) FROM tmp_raw_stage_retention_yenc_ids`,
+		"article_headers":          `SELECT COUNT(*) FROM tmp_raw_stage_retention_header_ids`,
+		"article_header_ingest_payloads": `
+			SELECT COUNT(*)
+			FROM article_header_ingest_payloads p
+			JOIN tmp_raw_stage_retention_header_ids e ON e.article_header_id = p.article_header_id`,
+		"article_header_crosspost_groups": `
+			SELECT COUNT(*)
+			FROM article_header_crosspost_groups g
+			JOIN tmp_raw_stage_retention_header_ids e ON e.article_header_id = g.article_header_id`,
+		"article_header_poster_refs": `
+			SELECT COUNT(*)
+			FROM article_header_poster_refs r
+			JOIN tmp_raw_stage_retention_header_ids e ON e.article_header_id = r.article_header_id`,
+		"poster_materialization_queue": `
+			SELECT COUNT(*)
+			FROM poster_materialization_queue q
+			JOIN tmp_raw_stage_retention_header_ids e ON e.article_header_id = q.article_header_id`,
+	}
+	counts := make(map[string]int64, len(queries))
+	for table, query := range queries {
+		var count int64
+		if err := tx.QueryRowContext(ctx, query).Scan(&count); err != nil {
+			return nil, fmt.Errorf("count raw retention %s: %w", table, err)
+		}
+		counts[table] = count
+	}
+	return counts, nil
 }
 
 func (s *Store) runStaleNonreleaseSourcePurge(ctx context.Context, result *MaintenanceTaskResult, dryRun bool, batchSize int) error {

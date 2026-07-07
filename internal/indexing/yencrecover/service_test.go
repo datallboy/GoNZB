@@ -110,6 +110,9 @@ func TestRunOnceReportsRecoverySelectionLanes(t *testing.T) {
 			MessageID:           "fairness@test",
 			Subject:             `2cf281e3e9fa4a1f82d5c320fa444010`,
 			RecoveryLane:        "time_cohort_fairness",
+			PriorityRank:        0,
+			AdmissionReason:     "opaque_near_time_cohort",
+			GroupTier:           "hot",
 			FairnessBucketStart: &bucketStart,
 			FairnessBucketEnd:   &bucketEnd,
 		}, {
@@ -119,6 +122,9 @@ func TestRunOnceReportsRecoverySelectionLanes(t *testing.T) {
 			MessageID:       "newest@test",
 			Subject:         `3cf281e3e9fa4a1f82d5c320fa444011`,
 			RecoveryLane:    "newest",
+			PriorityRank:    1,
+			AdmissionReason: "bounded_admission",
+			GroupTier:       "warm",
 		}},
 	}
 	fetcher := &fakePrefixFetcher{body: []byte("=ybegin part=1 total=1 line=128 size=1024 name=Example.Release.rar\r\n=ypart begin=1 end=1024\r\n")}
@@ -133,6 +139,15 @@ func TestRunOnceReportsRecoverySelectionLanes(t *testing.T) {
 	}
 	if metrics["fairness_bucket_start"] != bucketStart.Format(time.RFC3339) || metrics["fairness_bucket_end"] != bucketEnd.Format(time.RFC3339) {
 		t.Fatalf("expected fairness bucket metrics, got metrics=%v", metrics)
+	}
+	if metrics["selected_priority_0"] != 1 || metrics["selected_priority_1"] != 1 {
+		t.Fatalf("expected selected priority metrics, got metrics=%v", metrics)
+	}
+	if metrics["selected_admission_opaque_near_time_cohort"] != 1 || metrics["selected_admission_bounded_admission"] != 1 {
+		t.Fatalf("expected selected admission metrics, got metrics=%v", metrics)
+	}
+	if metrics["recovered_tier_hot"] != 1 || metrics["recovered_tier_warm"] != 1 {
+		t.Fatalf("expected recovered tier metrics, got metrics=%v", metrics)
 	}
 }
 
@@ -149,6 +164,10 @@ func TestRunOnceReportsSelectionFillMetrics(t *testing.T) {
 		selectionStats: pgindex.YEncRecoverySelectionStats{
 			BatchRequested:    4,
 			BatchSelected:     1,
+			ReadyCount:        12,
+			Priority0Ready:    3,
+			PrioritySeedLimit: 2,
+			PrioritySeeded:    1,
 			WindowedRequested: 4,
 			NewestRequested:   0,
 			SelectedWindowed:  1,
@@ -175,6 +194,9 @@ func TestRunOnceReportsSelectionFillMetrics(t *testing.T) {
 	}
 	if metrics["selection_windowed_requested"] != 4 || metrics["selection_newest_requested"] != 0 {
 		t.Fatalf("expected selection lane request metrics, got metrics=%v", metrics)
+	}
+	if metrics["selection_ready_count"] != 12 || metrics["selection_priority0_ready"] != 3 || metrics["selection_priority_seeded"] != int64(1) {
+		t.Fatalf("expected selection queue pressure metrics, got metrics=%v", metrics)
 	}
 }
 
@@ -375,6 +397,52 @@ func TestRunOnceStreamsRecoveredRecordsInFlushBatches(t *testing.T) {
 	}
 }
 
+func TestRunOnceAdmitsPrioritySiblingsForRecoveredStreamBatches(t *testing.T) {
+	candidates := []pgindex.YEncRecoveryCandidate{{
+		BinaryID:        10,
+		ArticleHeaderID: 100,
+		NewsgroupName:   "alt.binaries.test",
+		MessageID:       "burst-1@test",
+		Subject:         `opaque-one`,
+	}, {
+		BinaryID:        11,
+		ArticleHeaderID: 101,
+		NewsgroupName:   "alt.binaries.test",
+		MessageID:       "burst-2@test",
+		Subject:         `opaque-two`,
+	}, {
+		BinaryID:        10,
+		ArticleHeaderID: 102,
+		NewsgroupName:   "alt.binaries.test",
+		MessageID:       "burst-3@test",
+		Subject:         `opaque-three`,
+	}}
+	repo := &fakeBatchRepo{
+		fakeRepo:                 &fakeRepo{candidates: candidates},
+		siblingAdmissionUpserted: 42,
+	}
+	fetcher := &fakePrefixFetcher{body: []byte("=ybegin part=1 total=732 line=128 size=524288000 name=burst.part04.rar\r\n=ypart begin=1 end=716800\r\n")}
+	svc := NewService(repo, match.NewService(), fetcher, nil, Options{BatchSize: len(candidates), MaxHeaderBytes: 256, Concurrency: 2})
+
+	metrics, err := svc.RunOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("RunOnceWithMetrics failed: %v", err)
+	}
+	if metrics["sibling_admission_attempts"] != 1 || metrics["sibling_admission_upserted"] != 42 {
+		t.Fatalf("expected sibling admission metrics, got metrics=%v", metrics)
+	}
+	if len(repo.siblingAdmissionBatches) != 1 {
+		t.Fatalf("expected one sibling admission batch, got %+v", repo.siblingAdmissionBatches)
+	}
+	got := repo.siblingAdmissionBatches[0]
+	if len(got) != 2 || got[0] != 10 || got[1] != 11 {
+		t.Fatalf("expected de-duplicated recovered binary ids [10 11], got %+v", got)
+	}
+	if len(repo.batchSizes) != 1 || repo.batchSizes[0] != len(candidates) {
+		t.Fatalf("expected recovery records to still be applied, got batch sizes %+v", repo.batchSizes)
+	}
+}
+
 func TestRunOncePassesTargetWindowSelectionOptions(t *testing.T) {
 	repo := &fakeRepo{}
 	fetcher := &fakePrefixFetcher{}
@@ -488,8 +556,11 @@ type fakeRepo struct {
 
 type fakeBatchRepo struct {
 	*fakeRepo
-	mu         sync.Mutex
-	batchSizes []int
+	mu                       sync.Mutex
+	batchSizes               []int
+	siblingAdmissionBatches  [][]int64
+	siblingAdmissionUpserted int64
+	siblingAdmissionErr      error
 }
 
 func (f *fakeRepo) ListYEncRecoveryCandidates(context.Context, int) ([]pgindex.YEncRecoveryCandidate, error) {
@@ -523,6 +594,17 @@ func (f *fakeBatchRepo) ApplyYEncHeaderRecoveries(_ context.Context, in []pginde
 		results = append(results, pgindex.YEncHeaderRecoveryResult{BinaryID: record.BinaryID, TargetBinaryID: record.BinaryID})
 	}
 	return results, nil
+}
+
+func (f *fakeBatchRepo) BackfillPriorityYEncRecoveryWorkItemsForBinaries(_ context.Context, binaryIDs []int64) (int64, int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	copied := append([]int64(nil), binaryIDs...)
+	f.siblingAdmissionBatches = append(f.siblingAdmissionBatches, copied)
+	if f.siblingAdmissionErr != nil {
+		return 0, 0, f.siblingAdmissionErr
+	}
+	return f.siblingAdmissionUpserted, 0, nil
 }
 
 func (f *fakeRepo) RecordYEncRecoveryNotFound(_ context.Context, articleHeaderID int64) error {

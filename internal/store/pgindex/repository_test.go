@@ -158,6 +158,76 @@ func TestReleaseDetailDiagnosticsCountsMissingArchivePayloadFiles(t *testing.T) 
 	}
 }
 
+func TestReleaseDetailDiagnosticsUsesPayloadPartCompletionForDirectMedia(t *testing.T) {
+	release := IndexerReleaseSummary{
+		FileCount:         3,
+		ParFileCount:      2,
+		CompletionPct:     98.2,
+		ArchiveCount:      0,
+		VideoCount:        1,
+		ExpectedFileCount: 3,
+	}
+	files := []IndexerReleaseFileSummary{
+		{FileName: "opaque.mkv", ObservedParts: 1378, TotalParts: 1378},
+		{FileName: "opaque.vol01+02.par2", IsPars: true, ObservedParts: 1, TotalParts: 2},
+		{FileName: "opaque.vol03+04.par2", IsPars: true, ObservedParts: 1, TotalParts: 3},
+	}
+
+	diag := buildReleaseDetailDiagnostics(release, files)
+	if !diag.PayloadComplete {
+		t.Fatalf("expected complete media payload despite partial PAR2 sidecars, got %+v", diag)
+	}
+	if !diag.PayloadCompletenessKnown {
+		t.Fatalf("expected direct-media payload completeness to be known, got %+v", diag)
+	}
+	if diag.PayloadCompletionPct != 100 {
+		t.Fatalf("expected direct-media payload completion 100, got %.2f", diag.PayloadCompletionPct)
+	}
+	if diag.KnownBinaryCompletionPct != 98.2 {
+		t.Fatalf("expected overall binary completion to remain 98.2, got %.2f", diag.KnownBinaryCompletionPct)
+	}
+}
+
+func TestReleaseDetailDiagnosticsRejectsIncompleteDirectMediaPayload(t *testing.T) {
+	release := IndexerReleaseSummary{
+		FileCount:     1,
+		CompletionPct: 100,
+		VideoCount:    1,
+	}
+	files := []IndexerReleaseFileSummary{{FileName: "partial.mkv", ObservedParts: 2, TotalParts: 150}}
+
+	diag := buildReleaseDetailDiagnostics(release, files)
+	if diag.PayloadComplete {
+		t.Fatalf("expected incomplete direct-media payload, got %+v", diag)
+	}
+	if !diag.PayloadCompletenessKnown {
+		t.Fatalf("expected direct-media payload completeness to be known, got %+v", diag)
+	}
+	if diag.PayloadCompletionPct <= 0 || diag.PayloadCompletionPct >= 2 {
+		t.Fatalf("expected low direct-media payload completion pct, got %.2f", diag.PayloadCompletionPct)
+	}
+}
+
+func TestReleaseDetailDiagnosticsTreatsDirectMediaUnknownTotalAsUnknown(t *testing.T) {
+	release := IndexerReleaseSummary{
+		FileCount:     1,
+		CompletionPct: 100,
+		VideoCount:    1,
+	}
+	files := []IndexerReleaseFileSummary{{FileName: "unknown.mkv", ObservedParts: 2, TotalParts: 0}}
+
+	diag := buildReleaseDetailDiagnostics(release, files)
+	if diag.PayloadComplete {
+		t.Fatalf("expected unknown direct-media total to remain incomplete, got %+v", diag)
+	}
+	if diag.PayloadCompletenessKnown {
+		t.Fatalf("expected unknown direct-media total to be reported unknown, got %+v", diag)
+	}
+	if diag.PayloadCompletionPct != 0 {
+		t.Fatalf("expected unknown direct-media completion pct sentinel 0, got %.2f", diag.PayloadCompletionPct)
+	}
+}
+
 func TestClaimIndexerStageRecoversExpiredLeaseAndMarksOldRunAbandoned(t *testing.T) {
 	store := openTestStore(t)
 	stageName := uniqueTestStageName("expired_lease")
@@ -448,7 +518,7 @@ func TestApplyReleaseInspectionUpdateKnownPasswordClearsUnknownRollup(t *testing
 		Encrypted:         boolPtr(true),
 		Passworded:        &passworded,
 		PasswordedUnknown: &passwordedUnknown,
-		PasswordState:     "passworded_unknown",
+		PasswordState:     "password_unknown",
 	}); err != nil {
 		t.Fatalf("apply unresolved password state: %v", err)
 	}
@@ -460,7 +530,7 @@ func TestApplyReleaseInspectionUpdateKnownPasswordClearsUnknownRollup(t *testing
 		Passworded:        &passworded,
 		PasswordedKnown:   &passwordedKnown,
 		PasswordedUnknown: &passwordedUnknown,
-		PasswordState:     "passworded_known",
+		PasswordState:     "password_known",
 	}); err != nil {
 		t.Fatalf("apply verified password state: %v", err)
 	}
@@ -475,8 +545,8 @@ func TestApplyReleaseInspectionUpdateKnownPasswordClearsUnknownRollup(t *testing
 	if !release.Release.Passworded || !release.Release.PasswordedKnown || release.Release.PasswordedUnknown {
 		t.Fatalf("expected known password rollup to win, got %+v", release.Release)
 	}
-	if release.Release.PasswordState != "passworded_known" {
-		t.Fatalf("expected passworded_known state, got %q", release.Release.PasswordState)
+	if release.Release.PasswordState != "password_known" {
+		t.Fatalf("expected password_known state, got %q", release.Release.PasswordState)
 	}
 	if !release.Release.Encrypted {
 		t.Fatalf("expected encrypted flag to remain true, got %+v", release.Release)
@@ -530,7 +600,7 @@ func TestApplyReleaseInspectionUpdateUnknownPasswordReducesAvailabilityWhileComp
 		Encrypted:         boolPtr(true),
 		Passworded:        &passworded,
 		PasswordedUnknown: &passwordedUnknown,
-		PasswordState:     "passworded_unknown",
+		PasswordState:     "password_unknown",
 	}); err != nil {
 		t.Fatalf("apply unresolved password state: %v", err)
 	}
@@ -548,8 +618,8 @@ func TestApplyReleaseInspectionUpdateUnknownPasswordReducesAvailabilityWhileComp
 	if release.Release.AvailabilityScore >= release.Release.CompletionPct {
 		t.Fatalf("expected availability_score %.2f to drop below completion_pct %.2f", release.Release.AvailabilityScore, release.Release.CompletionPct)
 	}
-	if release.Release.PasswordState != "passworded_unknown" {
-		t.Fatalf("expected passworded_unknown state, got %q", release.Release.PasswordState)
+	if release.Release.PasswordState != "password_unknown" {
+		t.Fatalf("expected password_unknown state, got %q", release.Release.PasswordState)
 	}
 }
 
@@ -722,6 +792,11 @@ func TestUpsertReleasePreservesInspectionDerivedTitleAgainstLaterSourceSnapshot(
 		MediaQualityScore:       90,
 		MediaQualityTier:        "premium",
 		IdentityConfidenceScore: 90,
+		RuntimeSeconds:          1535,
+		PrimaryResolution:       "1080p",
+		PrimaryVideoCodec:       "h264",
+		PrimaryAudioCodec:       "aac",
+		SubtitleLanguages:       []string{"eng"},
 		MetadataUpdatedAt:       &now,
 	})
 	if err != nil {
@@ -771,6 +846,21 @@ func TestUpsertReleasePreservesInspectionDerivedTitleAgainstLaterSourceSnapshot(
 	}
 	if release.Release.DeobfuscatedTitle != "Kevin.S01E06.Fourth.of.July.720p.AMZN.WEB-DL.DDP5.1.H.264-playWEB" {
 		t.Fatalf("expected deobfuscated title to be preserved, got %q", release.Release.DeobfuscatedTitle)
+	}
+	if release.Release.RuntimeSeconds != 1535 {
+		t.Fatalf("expected inspected runtime to be preserved, got %d", release.Release.RuntimeSeconds)
+	}
+	if release.Release.PrimaryResolution != "1080p" {
+		t.Fatalf("expected inspected resolution to be preserved, got %q", release.Release.PrimaryResolution)
+	}
+	if release.Release.PrimaryVideoCodec != "h264" {
+		t.Fatalf("expected inspected video codec to be preserved, got %q", release.Release.PrimaryVideoCodec)
+	}
+	if release.Release.PrimaryAudioCodec != "aac" {
+		t.Fatalf("expected inspected audio codec to be preserved, got %q", release.Release.PrimaryAudioCodec)
+	}
+	if len(release.Release.SubtitleLanguages) != 1 || release.Release.SubtitleLanguages[0] != "eng" {
+		t.Fatalf("expected inspected subtitle languages to be preserved, got %#v", release.Release.SubtitleLanguages)
 	}
 }
 
@@ -1235,6 +1325,129 @@ func TestEnrichmentPersistenceHelpersBatchAndPreserveSemantics(t *testing.T) {
 	assertReleaseCount("release_tmdb_matches", 0)
 	assertReleaseCount("release_tvdb_matches", 0)
 	assertReleaseCount("release_predb_matches", 0)
+}
+
+func TestApplyReleasePredbUpdateReplacesSourceObfuscatedTitle(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	releaseID := seedTestRelease(t, store, "predb-source-obfuscated")
+	t.Cleanup(func() {
+		if _, err := store.DB().ExecContext(context.Background(), `DELETE FROM releases WHERE release_id = $1`, releaseID); err != nil {
+			t.Fatalf("cleanup release: %v", err)
+		}
+	})
+
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE releases
+		SET title = 'unknown-release',
+		    source_title = 'tVXofScxpPrnpZg9WDP3g2uxRzTFfwbK.vol01+02',
+		    deobfuscated_title = '',
+		    title_source = 'source_obfuscated',
+		    title_confidence = 0.30,
+		    search_title = 'unknown-release'
+		WHERE release_id = $1`, releaseID); err != nil {
+		t.Fatalf("mark release source-obfuscated: %v", err)
+	}
+
+	now := time.Now().UTC()
+	if err := store.ApplyReleasePredbUpdate(ctx, ReleasePredbUpdate{
+		ReleaseID:               releaseID,
+		Title:                   "Example Feature 1963 720p HDTV x264-GRP",
+		DeobfuscatedTitle:       "Example.Feature.1963.720p.HDTV.x264-GRP",
+		TitleSource:             "predb",
+		TitleConfidence:         0.91,
+		IdentityStatus:          "probable",
+		IdentityConfidenceScore: 0.91,
+		MetadataUpdatedAt:       &now,
+	}); err != nil {
+		t.Fatalf("apply predb update: %v", err)
+	}
+
+	release, err := store.GetIndexerReleaseDetail(ctx, releaseID)
+	if err != nil {
+		t.Fatalf("get release detail: %v", err)
+	}
+	if release.Release.TitleSource != "predb" {
+		t.Fatalf("expected predb title source, got %q", release.Release.TitleSource)
+	}
+	if release.Release.Title != "Example Feature 1963 720p HDTV x264-GRP" {
+		t.Fatalf("expected predb title, got %q", release.Release.Title)
+	}
+	if release.Release.DeobfuscatedTitle != "Example.Feature.1963.720p.HDTV.x264-GRP" {
+		t.Fatalf("expected predb deobfuscated title, got %q", release.Release.DeobfuscatedTitle)
+	}
+}
+
+func TestApplyReleaseManualIdentityChoosesPredbCandidate(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	releaseID := seedTestRelease(t, store, "manual-predb-identity")
+	normalized := normalizePredbTitle("The.Doomies.S01E22.720p.WEB.H264-AFO")
+	t.Cleanup(func() {
+		cleanupCtx := context.Background()
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM release_predb_matches WHERE release_id = $1`, releaseID); err != nil {
+			t.Fatalf("cleanup predb matches: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM predb_entries WHERE normalized_title = $1`, normalized); err != nil {
+			t.Fatalf("cleanup predb entry: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM releases WHERE release_id = $1`, releaseID); err != nil {
+			t.Fatalf("cleanup release: %v", err)
+		}
+	})
+
+	if err := store.ReplaceReleasePredbMatches(ctx, releaseID, []ReleasePredbMatchRecord{{
+		NormalizedTitle: normalized,
+		Title:           "The.Doomies.S01E22.720p.WEB.H264-AFO",
+		Category:        "TV-720P",
+		Source:          "predb",
+		ExternalID:      1001,
+		Confidence:      0.86,
+		Chosen:          false,
+	}}); err != nil {
+		t.Fatalf("replace predb matches: %v", err)
+	}
+
+	var entryID int64
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT p.id
+		FROM release_predb_matches rpm
+		JOIN predb_entries p ON p.id = rpm.predb_entry_id
+		WHERE rpm.release_id = $1
+		  AND p.normalized_title = $2`, releaseID, normalized,
+	).Scan(&entryID); err != nil {
+		t.Fatalf("load predb entry id: %v", err)
+	}
+
+	if err := store.ApplyReleaseManualIdentity(ctx, ReleaseManualIdentityUpdate{
+		ReleaseID:               releaseID,
+		Title:                   "The Doomies S01E22",
+		TitleSource:             "manual_predb",
+		PredbEntryID:            entryID,
+		ExternalMediaType:       "tv",
+		SeasonNumber:            1,
+		EpisodeNumber:           22,
+		IdentityConfidenceScore: 1,
+	}); err != nil {
+		t.Fatalf("apply manual identity: %v", err)
+	}
+
+	release, err := store.GetIndexerReleaseDetail(ctx, releaseID)
+	if err != nil {
+		t.Fatalf("get release detail: %v", err)
+	}
+	if release.Release.Title != "The Doomies S01E22" || release.Release.TitleSource != "manual_predb" {
+		t.Fatalf("expected manual predb identity, got title=%q source=%q", release.Release.Title, release.Release.TitleSource)
+	}
+	if release.Release.IdentityStatus != "identified" || release.Release.IdentityConfidenceScore != 1 {
+		t.Fatalf("expected identified identity, got status=%q confidence=%.2f", release.Release.IdentityStatus, release.Release.IdentityConfidenceScore)
+	}
+	if release.Release.ExternalMediaType != "tv" || release.Release.SeasonNumber != 1 || release.Release.EpisodeNumber != 22 {
+		t.Fatalf("expected tv episode identity, got type=%q season=%d episode=%d", release.Release.ExternalMediaType, release.Release.SeasonNumber, release.Release.EpisodeNumber)
+	}
+	if len(release.PredbMatches) != 1 || !release.PredbMatches[0].Chosen {
+		t.Fatalf("expected selected predb match to be chosen, got %+v", release.PredbMatches)
+	}
 }
 
 func TestUpsertBinaryStoresCompactGroupingEvidenceInlineWhenStable(t *testing.T) {
@@ -2014,11 +2227,11 @@ func TestResolveArticleHeaderIDsBatchFindsCommittedConflictRows(t *testing.T) {
 		DateUTC:       &now,
 		Bytes:         100,
 		Lines:         1,
-	}}, []int64{0})
+	}}, []articleHeaderResolution{{}})
 	if err != nil {
 		t.Fatalf("resolve article header ids fallback: %v", err)
 	}
-	if count != 1 || len(resolved) != 1 || resolved[0] <= 0 {
+	if count != 1 || len(resolved) != 1 || resolved[0].ID <= 0 || resolved[0].SourcePostedAt.IsZero() {
 		t.Fatalf("expected one resolved id, count=%d ids=%v", count, resolved)
 	}
 }
@@ -2913,12 +3126,78 @@ func TestAckReleaseCandidateStoresAckWithoutMutatingSummaryRow(t *testing.T) {
 	}
 }
 
+func TestAckReleaseCandidateAggregatesDuplicateReadyCandidateRows(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.release.ready.ack.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	family := fmt.Sprintf("ready-ack-family-%d", time.Now().UnixNano())
+	firstUpdatedAt := time.Now().UTC().Add(-2 * time.Minute).Truncate(time.Microsecond)
+	secondUpdatedAt := time.Now().UTC().Add(-1 * time.Minute).Truncate(time.Microsecond)
+	firstSourcePostedAt := time.Date(2026, 6, 26, 15, 0, 0, 0, time.UTC)
+	secondSourcePostedAt := firstSourcePostedAt.Add(time.Second)
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO release_ready_candidates (
+			source_posted_at,
+			provider_id, newsgroup_id, key_kind, family_key,
+			source_release_key, release_key, release_name,
+			binary_count, complete_binary_count, complete_main_payload_binary_count,
+			expected_file_count, expected_archive_file_count,
+			has_expected_file_count, has_expected_archive_file_count,
+			expected_file_coverage_pct, archive_file_coverage_pct,
+			total_bytes, earliest_posted_at, ready_reason, updated_at
+		)
+		VALUES
+			($1, 1, $3, 'release_family', $4, $4, $4, $4, 1, 1, 1, 1, 0, true, false, 100, 0, 100, $1, 'actionable', $5),
+			($2, 1, $3, 'release_family', $4, $4, $4, $4, 1, 1, 1, 1, 0, true, false, 100, 0, 100, $2, 'actionable', $6)`,
+		firstSourcePostedAt,
+		secondSourcePostedAt,
+		newsgroupID,
+		family,
+		firstUpdatedAt,
+		secondUpdatedAt,
+	); err != nil {
+		t.Fatalf("seed duplicate ready candidates: %v", err)
+	}
+
+	if err := store.AckReleaseCandidate(ctx, 1, newsgroupID, "release_family", family); err != nil {
+		t.Fatalf("ack release candidate: %v", err)
+	}
+
+	var ackCount int
+	var ackProcessedAt time.Time
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT COUNT(*), MAX(processed_at)
+		FROM release_ready_candidate_acks
+		WHERE provider_id = 1
+		  AND newsgroup_id = $1
+		  AND key_kind = 'release_family'
+		  AND family_key = $2`,
+		newsgroupID,
+		family,
+	).Scan(&ackCount, &ackProcessedAt); err != nil {
+		t.Fatalf("query release ready candidate ack: %v", err)
+	}
+	if ackCount != 1 {
+		t.Fatalf("expected one aggregated ack row, got %d", ackCount)
+	}
+	if !ackProcessedAt.Equal(secondUpdatedAt) {
+		t.Fatalf("expected ack processed_at %s, got %s", secondUpdatedAt, ackProcessedAt)
+	}
+}
+
 func TestCatalogReleaseNewsgroupsAndArticlesPreserveMultiGroupProvenance(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
 
 	groupA := fmt.Sprintf("alt.test.catalog.groupa.%d", time.Now().UnixNano())
 	groupB := fmt.Sprintf("alt.test.catalog.groupb.%d", time.Now().UnixNano())
+	groupC := fmt.Sprintf("alt.test.catalog.groupc.%d", time.Now().UnixNano())
 	groupAID, err := store.EnsureNewsgroup(ctx, groupA)
 	if err != nil {
 		t.Fatalf("ensure group A: %v", err)
@@ -2926,6 +3205,9 @@ func TestCatalogReleaseNewsgroupsAndArticlesPreserveMultiGroupProvenance(t *test
 	groupBID, err := store.EnsureNewsgroup(ctx, groupB)
 	if err != nil {
 		t.Fatalf("ensure group B: %v", err)
+	}
+	if _, err := store.EnsureNewsgroup(ctx, groupC); err != nil {
+		t.Fatalf("ensure group C: %v", err)
 	}
 
 	releaseID, err := store.UpsertRelease(ctx, ReleaseRecord{
@@ -2979,6 +3261,7 @@ func TestCatalogReleaseNewsgroupsAndArticlesPreserveMultiGroupProvenance(t *test
 		MessageID:     "<catalog-a@test>",
 		Subject:       `"movie.part01.rar" yEnc (1/2)`,
 		Poster:        "poster-a",
+		Xref:          fmt.Sprintf("Xref: news.example.com %s:1001 %s:3001", groupA, groupC),
 		DateUTC:       ptrTime(time.Now().UTC()),
 		Bytes:         111,
 	}}); err != nil {
@@ -2996,24 +3279,26 @@ func TestCatalogReleaseNewsgroupsAndArticlesPreserveMultiGroupProvenance(t *test
 	}
 
 	var articleOneID int64
+	var articleOneSourcePostedAt time.Time
 	if err := store.DB().QueryRowContext(ctx, `
-		SELECT id FROM article_headers
+		SELECT id, source_posted_at FROM article_headers
 		WHERE newsgroup_id = $1 AND message_id = $2`,
 		groupAID, "<catalog-a@test>",
-	).Scan(&articleOneID); err != nil {
+	).Scan(&articleOneID, &articleOneSourcePostedAt); err != nil {
 		t.Fatalf("load article one id: %v", err)
 	}
 	var articleTwoID int64
+	var articleTwoSourcePostedAt time.Time
 	if err := store.DB().QueryRowContext(ctx, `
-		SELECT id FROM article_headers
+		SELECT id, source_posted_at FROM article_headers
 		WHERE newsgroup_id = $1 AND message_id = $2`,
 		groupBID, "<catalog-b@test>",
-	).Scan(&articleTwoID); err != nil {
+	).Scan(&articleTwoID, &articleTwoSourcePostedAt); err != nil {
 		t.Fatalf("load article two id: %v", err)
 	}
 	if err := store.UpsertBinaryParts(ctx, []BinaryPartRecord{
-		{BinaryID: binaryID, ArticleHeaderID: articleOneID, MessageID: "<catalog-a@test>", PartNumber: 1, TotalParts: 2, SegmentBytes: 111, FileName: "movie.part01.rar"},
-		{BinaryID: binaryID, ArticleHeaderID: articleTwoID, MessageID: "<catalog-b@test>", PartNumber: 2, TotalParts: 2, SegmentBytes: 222, FileName: "movie.part01.rar"},
+		{BinaryID: binaryID, ArticleHeaderID: articleOneID, SourcePostedAt: articleOneSourcePostedAt, MessageID: "<catalog-a@test>", PartNumber: 1, TotalParts: 2, SegmentBytes: 111, FileName: "movie.part01.rar"},
+		{BinaryID: binaryID, ArticleHeaderID: articleTwoID, SourcePostedAt: articleTwoSourcePostedAt, MessageID: "<catalog-b@test>", PartNumber: 2, TotalParts: 2, SegmentBytes: 222, FileName: "movie.part01.rar"},
 	}); err != nil {
 		t.Fatalf("upsert binary parts: %v", err)
 	}
@@ -3037,8 +3322,8 @@ func TestCatalogReleaseNewsgroupsAndArticlesPreserveMultiGroupProvenance(t *test
 	if err != nil {
 		t.Fatalf("list catalog release newsgroups: %v", err)
 	}
-	if len(groups) != 2 || groups[0] != groupA || groups[1] != groupB {
-		t.Fatalf("unexpected catalog release groups: got %v want [%s %s]", groups, groupA, groupB)
+	if len(groups) != 3 || groups[0] != groupA || groups[1] != groupB || groups[2] != groupC {
+		t.Fatalf("unexpected catalog release groups: got %v want [%s %s %s]", groups, groupA, groupB, groupC)
 	}
 
 	files, err := store.ListCatalogReleaseFiles(ctx, releaseID)
@@ -3076,6 +3361,183 @@ func TestCatalogReleaseNewsgroupsAndArticlesPreserveMultiGroupProvenance(t *test
 	}
 	if _, err := store.DB().ExecContext(ctx, `DELETE FROM newsgroups WHERE id IN ($1, $2)`, groupAID, groupBID); err != nil {
 		t.Fatalf("cleanup newsgroups: %v", err)
+	}
+}
+
+func TestCatalogReleaseFileArticlesUseBinaryPartSourceSpan(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.catalog.span.%d", time.Now().UnixNano())
+	groupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure group: %v", err)
+	}
+	rootPostedAt := time.Date(2026, 6, 26, 19, 17, 45, 0, time.UTC)
+	releaseID, err := store.UpsertRelease(ctx, ReleaseRecord{
+		ReleaseID:         fmt.Sprintf("rel-span-%d", time.Now().UnixNano()),
+		GUID:              fmt.Sprintf("guid-span-%d", time.Now().UnixNano()),
+		ProviderID:        1,
+		SourceReleaseKey:  "catalog-span",
+		ReleaseFamilyKey:  "catalog-span",
+		ReleaseKey:        "catalog-span",
+		GroupName:         "release-group-catalog-span",
+		Title:             "Catalog Span Release",
+		SearchTitle:       "catalog span release",
+		Category:          "Other/Misc",
+		Classification:    "other",
+		PostedAt:          ptrTime(rootPostedAt),
+		IdentityStatus:    "identified",
+		AvailabilityTier:  "good",
+		MediaQualityTier:  "unknown",
+		MetadataUpdatedAt: ptrTime(rootPostedAt),
+	})
+	if err != nil {
+		t.Fatalf("upsert release: %v", err)
+	}
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       groupID,
+		SourceReleaseKey:  "catalog-span",
+		ReleaseFamilyKey:  "catalog-span",
+		FileFamilyKey:     "catalog-span::movie",
+		FamilyKind:        "file_name",
+		BaseStem:          "catalog-span",
+		IsMainPayload:     true,
+		ReleaseKey:        "catalog-span",
+		ReleaseName:       "Catalog Span Release",
+		BinaryKey:         fmt.Sprintf("catalog-span::binary-%d", time.Now().UnixNano()),
+		BinaryName:        "span.mkv",
+		FileName:          "span.mkv",
+		FileIndex:         1,
+		ExpectedFileCount: 1,
+		TotalParts:        3,
+		PostedAt:          ptrTime(rootPostedAt),
+		MatchConfidence:   0.95,
+		MatchStatus:       "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+
+	headers := []ArticleHeader{
+		{ArticleNumber: 1001, MessageID: "<catalog-span-1@test>", Subject: `"span.mkv" yEnc (1/3)`, Poster: "poster-a", DateUTC: ptrTime(rootPostedAt.Add(-10 * time.Second)), Bytes: 111},
+		{ArticleNumber: 1002, MessageID: "<catalog-span-2@test>", Subject: `"span.mkv" yEnc (2/3)`, Poster: "poster-b", DateUTC: ptrTime(rootPostedAt), Bytes: 222},
+		{ArticleNumber: 1004, MessageID: "<catalog-span-2-copy@test>", Subject: `[1/1] "span.mkv" yEnc (2/3)`, Poster: "poster-copy", DateUTC: ptrTime(rootPostedAt.Add(2 * time.Second)), Bytes: 999},
+		{ArticleNumber: 1003, MessageID: "<catalog-span-3@test>", Subject: `"span.mkv" yEnc (3/3)`, Poster: "poster-c", DateUTC: ptrTime(rootPostedAt.Add(8 * time.Second)), Bytes: 333},
+	}
+	if _, err := store.InsertArticleHeaders(ctx, 1, groupID, headers); err != nil {
+		t.Fatalf("insert article headers: %v", err)
+	}
+
+	type partSeed struct {
+		id             int64
+		sourcePostedAt time.Time
+		messageID      string
+		partNumber     int
+		bytes          int64
+	}
+	parts := make([]partSeed, 0, len(headers))
+	for i, header := range headers {
+		partNumber := i + 1
+		if header.MessageID == "<catalog-span-2-copy@test>" {
+			partNumber = 2
+		}
+		part := partSeed{
+			messageID:  header.MessageID,
+			partNumber: partNumber,
+			bytes:      header.Bytes,
+		}
+		if err := store.DB().QueryRowContext(ctx, `
+			SELECT id, source_posted_at
+			FROM article_headers
+			WHERE newsgroup_id = $1 AND message_id = $2`,
+			groupID, header.MessageID,
+		).Scan(&part.id, &part.sourcePostedAt); err != nil {
+			t.Fatalf("load article %s: %v", header.MessageID, err)
+		}
+		parts = append(parts, part)
+	}
+
+	partRecords := make([]BinaryPartRecord, 0, len(parts))
+	for _, part := range parts {
+		partRecords = append(partRecords, BinaryPartRecord{
+			BinaryID:        binaryID,
+			ArticleHeaderID: part.id,
+			SourcePostedAt:  part.sourcePostedAt,
+			MessageID:       part.messageID,
+			PartNumber:      part.partNumber,
+			TotalParts:      3,
+			SegmentBytes:    part.bytes,
+			FileName:        "span.mkv",
+		})
+	}
+	if err := store.UpsertBinaryParts(ctx, partRecords); err != nil {
+		t.Fatalf("upsert binary parts: %v", err)
+	}
+	if err := store.RefreshBinaryStats(ctx, binaryID); err != nil {
+		t.Fatalf("refresh binary stats: %v", err)
+	}
+	if err := store.ReplaceReleaseFiles(ctx, releaseID, []ReleaseFileRecord{{
+		BinaryID:  binaryID,
+		FileName:  "span.mkv",
+		SizeBytes: 666,
+		FileIndex: 1,
+		Articles: []ReleaseFileArticleRecord{
+			{ArticleHeaderID: parts[0].id, PartNumber: 1},
+			{ArticleHeaderID: parts[1].id, PartNumber: 2},
+			{ArticleHeaderID: parts[2].id, PartNumber: 3},
+		},
+	}}); err != nil {
+		t.Fatalf("replace release files: %v", err)
+	}
+
+	files, err := store.ListCatalogReleaseFiles(ctx, releaseID)
+	if err != nil {
+		t.Fatalf("list catalog release files: %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("expected one file, got %d", len(files))
+	}
+	articles, err := store.ListCatalogReleaseFileArticles(ctx, files[0].ID)
+	if err != nil {
+		t.Fatalf("list catalog release file articles: %v", err)
+	}
+	if len(articles) != 3 {
+		t.Fatalf("expected 3 logical cross-second article refs, got %d: %+v", len(articles), articles)
+	}
+	if articles[1].MessageID != "<catalog-span-2@test>" {
+		t.Fatalf("expected earliest article for duplicate part 2, got %+v", articles)
+	}
+
+	var articleCount, observedParts int
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT article_count, observed_parts
+		FROM release_catalog_files
+		WHERE release_id = $1 AND file_name = 'span.mkv'`,
+		releaseID,
+	).Scan(&articleCount, &observedParts); err != nil {
+		t.Fatalf("query release catalog article count: %v", err)
+	}
+	if articleCount != 3 || observedParts != 3 {
+		t.Fatalf("expected release catalog logical counts=3/3, got article_count=%d observed_parts=%d", articleCount, observedParts)
+	}
+
+	var binaryObserved int
+	var spanMin, spanMax time.Time
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT observed_parts, part_source_posted_at_min, part_source_posted_at_max
+		FROM binary_observation_stats
+		WHERE binary_id = $1`,
+		binaryID,
+	).Scan(&binaryObserved, &spanMin, &spanMax); err != nil {
+		t.Fatalf("query binary stats span: %v", err)
+	}
+	if binaryObserved != 3 {
+		t.Fatalf("expected binary observed parts to count logical parts, got %d", binaryObserved)
+	}
+	if !spanMin.Equal(parts[0].sourcePostedAt) || !spanMax.Equal(parts[3].sourcePostedAt) {
+		t.Fatalf("unexpected part source span: got %s - %s want %s - %s", spanMin, spanMax, parts[0].sourcePostedAt, parts[3].sourcePostedAt)
 	}
 }
 
@@ -4171,6 +4633,129 @@ func TestListYEncRecoveryCandidatesSeedsWhenWorkTableIsNonEmpty(t *testing.T) {
 	}
 	if status != "ready" {
 		t.Fatalf("expected eligible binary to be queued as ready, got %q", status)
+	}
+}
+
+func TestListYEncRecoveryCandidatesRefillsPriorityOpaqueCohortsWhenGenericReadyExists(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.yenc-recovery.priority-cohort.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+
+	now := time.Now().UTC()
+	var genericBinaryID int64
+	var genericArticleID int64
+	for i := 0; i < yencRecoveryOpaqueCohortMin+1; i++ {
+		name := fmt.Sprintf("opaque-priority-%02d-%d.bin", i, time.Now().UnixNano())
+		binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+			ProviderID:       1,
+			NewsgroupID:      newsgroupID,
+			ReleaseFamilyKey: name,
+			FileFamilyKey:    name + "::part",
+			IdentityStrength: "provisional",
+			IdentityReason:   "opaque_subject_set",
+			FamilyKind:       "opaque_set",
+			BaseStem:         name,
+			IsMainPayload:    true,
+			ReleaseKey:       name,
+			ReleaseName:      name,
+			BinaryKey:        name + "::binary",
+			BinaryName:       name,
+			FileName:         name,
+			TotalParts:       1,
+			PostedAt:         &now,
+			MatchConfidence:  0.50,
+			MatchStatus:      "provisional",
+		})
+		if err != nil {
+			t.Fatalf("upsert binary %d: %v", i, err)
+		}
+		messageID := fmt.Sprintf("<opaque-priority-%02d-%d@test>", i, time.Now().UnixNano())
+		if _, err := store.InsertArticleHeaders(ctx, 1, newsgroupID, []ArticleHeader{{
+			ArticleNumber: int64(2000 + i),
+			MessageID:     messageID,
+			Subject:       name,
+			Poster:        "poster@test",
+			DateUTC:       &now,
+			Bytes:         111,
+			Lines:         11,
+		}}); err != nil {
+			t.Fatalf("insert article header %d: %v", i, err)
+		}
+		var articleID int64
+		if err := store.DB().QueryRowContext(ctx, `
+			SELECT id FROM article_headers
+			WHERE newsgroup_id = $1 AND message_id = $2`,
+			newsgroupID, messageID,
+		).Scan(&articleID); err != nil {
+			t.Fatalf("load article id %d: %v", i, err)
+		}
+		if err := store.UpsertBinaryParts(ctx, []BinaryPartRecord{{
+			BinaryID:        binaryID,
+			ArticleHeaderID: articleID,
+			MessageID:       messageID,
+			PartNumber:      1,
+			TotalParts:      1,
+			SegmentBytes:    111,
+			FileName:        name,
+		}}); err != nil {
+			t.Fatalf("upsert binary part %d: %v", i, err)
+		}
+		if i == 0 {
+			genericBinaryID = binaryID
+			genericArticleID = articleID
+		}
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO yenc_recovery_work_items (
+			binary_id,
+			article_header_id,
+			provider_id,
+			newsgroup_id,
+			message_id,
+			status,
+			ready_at,
+			priority_rank,
+			missing_count,
+			current_binary_key,
+			current_release_family_key,
+			current_base_stem,
+			current_readiness_bucket,
+			structured_identity_binary_matched,
+			updated_at
+		) VALUES (
+			$1, $2, 1, $3, '<generic-ready@test>', 'ready', NOW(), 1, 0,
+			'generic-ready::binary', 'generic-ready', 'generic-ready',
+			'weak_single_binary', false, NOW()
+		)`,
+		genericBinaryID, genericArticleID, newsgroupID,
+	); err != nil {
+		t.Fatalf("seed generic ready yenc work item: %v", err)
+	}
+
+	if _, err := store.ListYEncRecoveryCandidates(ctx, 10); err != nil {
+		t.Fatalf("list yenc recovery candidates: %v", err)
+	}
+
+	var priorityCohortCount int
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM yenc_recovery_work_items
+		WHERE newsgroup_id = $1
+		  AND priority_rank = 0
+		  AND admission_reason = 'opaque_near_time_cohort'
+		  AND status IN ('ready', 'running')`,
+		newsgroupID,
+	).Scan(&priorityCohortCount); err != nil {
+		t.Fatalf("count priority opaque cohort work items: %v", err)
+	}
+	if priorityCohortCount == 0 {
+		t.Fatalf("expected priority opaque cohort work to be seeded despite existing generic ready work")
 	}
 }
 
@@ -5548,6 +6133,22 @@ func TestApplyYEncHeaderRecoveryMergesRecoveredMultipartArticlesByYEncPart(t *te
 	}
 
 	recovery(binaryOne, articleOne, 1)
+	var ownPartNumber int
+	var ownTotalParts int
+	var ownFileName string
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT part_number, total_parts, file_name
+		FROM binary_parts
+		WHERE binary_id = $1
+		  AND article_header_id = $2`,
+		binaryOne,
+		articleOne,
+	).Scan(&ownPartNumber, &ownTotalParts, &ownFileName); err != nil {
+		t.Fatalf("load same-binary recovered part: %v", err)
+	}
+	if ownPartNumber != 1 || ownTotalParts != 732 || ownFileName != "5AzyRS4rfbOyP5fZH.part2.rar" {
+		t.Fatalf("expected same-binary recovery to strengthen part projection, got part=%d total=%d file=%q", ownPartNumber, ownTotalParts, ownFileName)
+	}
 	recovery(binaryTwo, articleTwo, 2)
 
 	var remainingSource int
@@ -9303,6 +9904,297 @@ func TestListBinaryInspectionCandidatesInspectMediaAllowsPayloadCompleteWithMiss
 	t.Fatalf("expected inspect_media candidate for payload-complete release below 100%% overall completion")
 }
 
+func TestListReleaseNZBGenerateCandidatesAllowsDirectMediaWithoutArchiveInspection(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	releaseID, binaryID := seedNZBGenerateCandidateRelease(t, store, ctx, "direct-media", "Example.Movie.2026.mkv", 0, "video")
+	if _, err := store.DB().ExecContext(ctx, `UPDATE releases SET completion_pct = 98 WHERE release_id = $1`, releaseID); err != nil {
+		t.Fatalf("mark release overall incomplete: %v", err)
+	}
+	if err := store.CompleteBinaryInspection(ctx, BinaryInspectionRecord{
+		StageName: "inspect_media",
+		BinaryID:  binaryID,
+		ReleaseID: releaseID,
+		Status:    "completed",
+		Summary: map[string]any{
+			"runtime_seconds":               5400,
+			"video_codec":                   "h264",
+			"media_title_extractor_version": "v2",
+		},
+	}); err != nil {
+		t.Fatalf("complete media inspection: %v", err)
+	}
+
+	candidates, err := store.ListReleaseNZBGenerateCandidates(ctx, 10, DefaultReleaseReadyPolicy())
+	if err != nil {
+		t.Fatalf("list nzb generate candidates: %v", err)
+	}
+	if !containsNZBGenerateCandidate(candidates, releaseID) {
+		t.Fatalf("expected direct media release to be eligible without archive inspection, got %+v", candidates)
+	}
+}
+
+func TestListReleaseNZBGenerateCandidatesRejectsOpaqueDirectMediaTitle(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	releaseID, binaryID := seedNZBGenerateCandidateRelease(t, store, ctx, "opaque-direct-media", "tVXofScxpPrnpZg9WDP3g2uxRzTFfwbK.mkv", 0, "video")
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE releases
+		SET title = 'tVXofScxpPrnpZg9WDP3g2uxRzTFfwbK vol01+02',
+		    source_title = 'tVXofScxpPrnpZg9WDP3g2uxRzTFfwbK.vol01+02',
+		    deobfuscated_title = '',
+		    matched_media_title = '',
+		    original_media_title = '',
+		    title_source = 'source',
+		    title_confidence = 0.30,
+		    search_title = 'tvxofscxpprnpzg9wdp3g2uxrztffwbk vol01 02'
+		WHERE release_id = $1`, releaseID); err != nil {
+		t.Fatalf("mark release title opaque: %v", err)
+	}
+	if err := store.CompleteBinaryInspection(ctx, BinaryInspectionRecord{
+		StageName: "inspect_media",
+		BinaryID:  binaryID,
+		ReleaseID: releaseID,
+		Status:    "completed",
+		Summary: map[string]any{
+			"runtime_seconds":               1397,
+			"resolution":                    "720p",
+			"video_codec":                   "h264",
+			"audio_codec":                   "eac3",
+			"media_title_extractor_version": "v2",
+		},
+	}); err != nil {
+		t.Fatalf("complete media inspection: %v", err)
+	}
+
+	candidates, err := store.ListReleaseNZBGenerateCandidates(ctx, 10, DefaultReleaseReadyPolicy())
+	if err != nil {
+		t.Fatalf("list nzb generate candidates: %v", err)
+	}
+	if containsNZBGenerateCandidate(candidates, releaseID) {
+		t.Fatalf("opaque direct media release should not be NZB eligible, got %+v", candidates)
+	}
+}
+
+func TestListReleaseNZBGenerateCandidatesRequiresArchiveAndMediaForArchivePayload(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	releaseID, binaryID := seedNZBGenerateCandidateRelease(t, store, ctx, "archive-media", "Example.Movie.2026.rar", 1, "video_archive")
+	if err := store.CompleteBinaryInspection(ctx, BinaryInspectionRecord{
+		StageName: "inspect_archive",
+		BinaryID:  binaryID,
+		ReleaseID: releaseID,
+		Status:    "completed",
+		Summary: map[string]any{
+			"archive_entries": []any{"Example.Movie.2026/Example.Movie.2026.mkv"},
+		},
+	}); err != nil {
+		t.Fatalf("complete archive inspection: %v", err)
+	}
+
+	candidates, err := store.ListReleaseNZBGenerateCandidates(ctx, 10, DefaultReleaseReadyPolicy())
+	if err != nil {
+		t.Fatalf("list nzb generate candidates after archive inspection: %v", err)
+	}
+	if containsNZBGenerateCandidate(candidates, releaseID) {
+		t.Fatalf("archive payload should wait for media inspection, got %+v", candidates)
+	}
+
+	if err := store.CompleteBinaryInspection(ctx, BinaryInspectionRecord{
+		StageName: "inspect_media",
+		BinaryID:  binaryID,
+		ReleaseID: releaseID,
+		Status:    "completed",
+		Summary: map[string]any{
+			"runtime_seconds":               5400,
+			"video_codec":                   "h264",
+			"media_title_extractor_version": "v2",
+		},
+	}); err != nil {
+		t.Fatalf("complete media inspection: %v", err)
+	}
+
+	candidates, err = store.ListReleaseNZBGenerateCandidates(ctx, 10, DefaultReleaseReadyPolicy())
+	if err != nil {
+		t.Fatalf("list nzb generate candidates after media inspection: %v", err)
+	}
+	if !containsNZBGenerateCandidate(candidates, releaseID) {
+		t.Fatalf("expected archive payload to be eligible after archive and media inspections, got %+v", candidates)
+	}
+}
+
+func TestListBinaryInspectionCandidatesInspectMediaRerunsLegacyTitleExtractorSummary(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	releaseID, binaryID := seedNZBGenerateCandidateRelease(t, store, ctx, "legacy-media-title", "Legacy.Title.2026.mkv", 0, "video")
+	if err := store.CompleteBinaryInspection(ctx, BinaryInspectionRecord{
+		StageName: "inspect_media",
+		BinaryID:  binaryID,
+		ReleaseID: releaseID,
+		Status:    "completed",
+		Summary: map[string]any{
+			"runtime_seconds": 5400,
+			"video_codec":     "h264",
+		},
+	}); err != nil {
+		t.Fatalf("complete legacy media inspection: %v", err)
+	}
+
+	candidates, err := store.ListBinaryInspectionCandidates(ctx, "inspect_media", 20)
+	if err != nil {
+		t.Fatalf("list inspect media candidates: %v", err)
+	}
+	if !containsInspectionCandidate(candidates, binaryID) {
+		t.Fatalf("expected legacy inspect_media summary to rerun for title extractor refresh")
+	}
+
+	if err := store.CompleteBinaryInspection(ctx, BinaryInspectionRecord{
+		StageName: "inspect_media",
+		BinaryID:  binaryID,
+		ReleaseID: releaseID,
+		Status:    "completed",
+		Summary: map[string]any{
+			"runtime_seconds":               5400,
+			"video_codec":                   "h264",
+			"media_title_extractor_version": "v2",
+		},
+	}); err != nil {
+		t.Fatalf("complete refreshed media inspection: %v", err)
+	}
+
+	candidates, err = store.ListBinaryInspectionCandidates(ctx, "inspect_media", 20)
+	if err != nil {
+		t.Fatalf("list inspect media candidates after refresh: %v", err)
+	}
+	if containsInspectionCandidate(candidates, binaryID) {
+		t.Fatalf("did not expect v2 inspect_media summary to rerun again")
+	}
+}
+
+func seedNZBGenerateCandidateRelease(t *testing.T, store *Store, ctx context.Context, suffix, fileName string, archiveCount int, classification string) (string, int64) {
+	t.Helper()
+
+	now := time.Now().UTC()
+	groupName := fmt.Sprintf("alt.test.nzb.generate.%s.%d", suffix, now.UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+	posterName := fmt.Sprintf("poster-nzb-%s-%d@example.com", suffix, now.UnixNano())
+	posterID, err := ensureTestPoster(t, store, ctx, posterName)
+	if err != nil {
+		t.Fatalf("ensure poster: %v", err)
+	}
+
+	baseKey := fmt.Sprintf("nzb-generate-%s-%d", suffix, now.UnixNano())
+	releaseID, err := store.UpsertRelease(ctx, ReleaseRecord{
+		ProviderID:               1,
+		SourceReleaseKey:         baseKey,
+		ReleaseFamilyKey:         baseKey,
+		ReleaseKey:               baseKey,
+		GroupName:                groupName,
+		Title:                    strings.TrimSuffix(fileName, ".mkv"),
+		SourceTitle:              fileName,
+		DeobfuscatedTitle:        strings.TrimSuffix(fileName, ".mkv"),
+		TitleSource:              "source",
+		TitleConfidence:          0.95,
+		SearchTitle:              strings.ToLower(strings.ReplaceAll(fileName, ".", " ")),
+		Category:                 "usenet",
+		Classification:           classification,
+		Poster:                   posterName,
+		SizeBytes:                1000,
+		PostedAt:                 &now,
+		FileCount:                1,
+		ExpectedFileCount:        1,
+		ExpectedArchiveFileCount: archiveCount,
+		CompletionPct:            100,
+		MatchConfidence:          0.95,
+		IdentityStatus:           "identified",
+		PasswordState:            "none",
+		ArchiveCount:             archiveCount,
+		VideoCount:               1,
+		AvailabilityScore:        100,
+		AvailabilityTier:         "excellent",
+		MediaQualityScore:        80,
+		MediaQualityTier:         "good",
+		IdentityConfidenceScore:  95,
+		RuntimeSeconds:           5400,
+		PrimaryResolution:        "1080p",
+		PrimaryVideoCodec:        "h264",
+		PrimaryAudioCodec:        "aac",
+		MetadataUpdatedAt:        &now,
+	})
+	if err != nil {
+		t.Fatalf("upsert release: %v", err)
+	}
+
+	binaryID, err := store.UpsertBinary(ctx, BinaryRecord{
+		ProviderID:        1,
+		NewsgroupID:       newsgroupID,
+		PosterID:          posterID,
+		SourceReleaseKey:  baseKey,
+		ReleaseFamilyKey:  baseKey,
+		FileFamilyKey:     baseKey + "::file",
+		FamilyKind:        "readable_title",
+		BaseStem:          strings.TrimSuffix(fileName, ".mkv"),
+		IsMainPayload:     true,
+		ReleaseKey:        baseKey,
+		ReleaseName:       strings.TrimSuffix(fileName, ".mkv"),
+		BinaryKey:         baseKey + "::binary",
+		BinaryName:        fileName,
+		FileName:          fileName,
+		FileIndex:         1,
+		ExpectedFileCount: 1,
+		TotalParts:        1,
+		PostedAt:          &now,
+		MatchConfidence:   0.95,
+		MatchStatus:       "matched",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE binary_observation_stats
+		SET observed_parts = GREATEST(total_parts, 1),
+		    total_bytes = 1000,
+		    updated_at = NOW()
+		WHERE binary_id = $1`, binaryID); err != nil {
+		t.Fatalf("mark binary observation complete: %v", err)
+	}
+	if err := store.ReplaceReleaseFiles(ctx, releaseID, []ReleaseFileRecord{{
+		BinaryID:  binaryID,
+		FileName:  fileName,
+		SizeBytes: 1000,
+		FileIndex: 1,
+		PostedAt:  &now,
+	}}); err != nil {
+		t.Fatalf("replace release files: %v", err)
+	}
+	return releaseID, binaryID
+}
+
+func containsNZBGenerateCandidate(candidates []ReleaseNZBGenerateCandidate, releaseID string) bool {
+	for _, candidate := range candidates {
+		if candidate.ReleaseID == releaseID {
+			return true
+		}
+	}
+	return false
+}
+
+func containsInspectionCandidate(candidates []BinaryInspectionCandidate, binaryID int64) bool {
+	for _, candidate := range candidates {
+		if candidate.BinaryID == binaryID {
+			return true
+		}
+	}
+	return false
+}
+
 func TestListBinaryInspectionCandidatesInspectPAR2RerunsWhenTargetsMissing(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
@@ -10324,6 +11216,30 @@ func TestListReleaseTitleCandidatesIncludesArchiveMediaEntries(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("complete archive inspection: %v", err)
 	}
+	if err := store.CompleteBinaryInspection(ctx, BinaryInspectionRecord{
+		StageName: "inspect_media",
+		BinaryID:  binaryID,
+		ReleaseID: "release-1",
+		Status:    "completed",
+		Summary: map[string]any{
+			"media_title": "Show Name S01E01",
+		},
+	}); err != nil {
+		t.Fatalf("complete media inspection: %v", err)
+	}
+	if err := store.ReplaceBinaryArchiveEntries(ctx, binaryID, []BinaryArchiveEntryRecord{{
+		BinaryID:  binaryID,
+		ReleaseID: "release-1",
+		EntryName: "Show.Name.S01E01.1080p.WEB.H264-GROUP/Show.Name.S01E01.1080p.WEB.H264-GROUP.mkv",
+		MediaType: "video",
+	}, {
+		BinaryID:  binaryID,
+		ReleaseID: "release-1",
+		EntryName: "Software.Release/Setup.exe",
+		MediaType: "application/octet-stream",
+	}}); err != nil {
+		t.Fatalf("replace archive entries: %v", err)
+	}
 
 	candidates, err := store.ListReleaseTitleCandidates(ctx, []int64{binaryID})
 	if err != nil {
@@ -10338,6 +11254,26 @@ func TestListReleaseTitleCandidatesIncludesArchiveMediaEntries(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected archive media entry candidate, got %#v", candidates)
+	}
+	found = false
+	for _, candidate := range candidates {
+		if candidate.Source == "media_title" && candidate.Value == "Show Name S01E01" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected media title candidate, got %#v", candidates)
+	}
+	found = false
+	for _, candidate := range candidates {
+		if candidate.Source == "archive_software_entry" && strings.HasSuffix(candidate.Value, "Setup.exe") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected archive software evidence candidate, got %#v", candidates)
 	}
 }
 
@@ -11109,7 +12045,7 @@ func TestListPublicIndexerReleasesReturnsStableVisibleContract(t *testing.T) {
 
 	token := fmt.Sprintf("publicvisible%d", time.Now().UnixNano())
 	releaseID, record := seedVisibilityTestRelease(t, store, token, func(in *ReleaseRecord) {
-		in.PasswordState = "passworded_known"
+		in.PasswordState = "password_known"
 	})
 
 	if err := store.ReplaceReleaseFiles(ctx, releaseID, []ReleaseFileRecord{
@@ -11140,7 +12076,7 @@ func TestListPublicIndexerReleasesReturnsStableVisibleContract(t *testing.T) {
 	if items[0].ReleaseID != releaseID {
 		t.Fatalf("expected release %s, got %+v", releaseID, items[0])
 	}
-	if items[0].PasswordState != "passworded_known" {
+	if items[0].PasswordState != "password_known" {
 		t.Fatalf("expected stable password state, got %+v", items[0])
 	}
 
@@ -11173,7 +12109,7 @@ func TestPublicIndexerReleaseDetailUsesPermanentCatalogFilesAfterPurge(t *testin
 		in.PrimaryVideoCodec = "x265"
 		in.PrimaryAudioCodec = "dts"
 		in.SubtitleLanguages = []string{"en", "es"}
-		in.PasswordState = "passworded_known"
+		in.PasswordState = "password_known"
 	})
 
 	if err := store.ReplaceReleaseFiles(ctx, releaseID, []ReleaseFileRecord{
@@ -11252,7 +12188,7 @@ func TestPublicIndexerReleaseDetailUsesPermanentCatalogFilesAfterPurge(t *testin
 	if len(detail.Media.SubtitleLanguages) != 2 {
 		t.Fatalf("expected subtitle snapshot to survive purge, got %+v", detail.Media.SubtitleLanguages)
 	}
-	if detail.Release.PasswordState != "passworded_known" {
+	if detail.Release.PasswordState != "password_known" {
 		t.Fatalf("expected stable archived password state, got %+v", detail.Release)
 	}
 
@@ -11988,7 +12924,7 @@ func TestPublicIndexerReleaseVisibilitySuppressesPasswordedUnknownRows(t *testin
 		in.MatchConfidence = 0.96
 		in.Passworded = true
 		in.PasswordedUnknown = true
-		in.PasswordState = "passworded_unknown"
+		in.PasswordState = "password_unknown"
 		in.Encrypted = true
 	})
 
@@ -11997,7 +12933,7 @@ func TestPublicIndexerReleaseVisibilitySuppressesPasswordedUnknownRows(t *testin
 		t.Fatalf("list public passworded unknown releases: %v", err)
 	}
 	if total != 0 || len(items) != 0 {
-		t.Fatalf("expected passworded_unknown release to be hidden, got total=%d items=%d", total, len(items))
+		t.Fatalf("expected password_unknown release to be hidden, got total=%d items=%d", total, len(items))
 	}
 
 	detail, err := store.GetPublicIndexerReleaseDetail(ctx, releaseID)
@@ -12005,7 +12941,7 @@ func TestPublicIndexerReleaseVisibilitySuppressesPasswordedUnknownRows(t *testin
 		t.Fatalf("get public passworded unknown detail: %v", err)
 	}
 	if detail != nil {
-		t.Fatalf("expected passworded_unknown detail to be hidden, got %+v", detail)
+		t.Fatalf("expected password_unknown detail to be hidden, got %+v", detail)
 	}
 }
 
@@ -12066,6 +13002,54 @@ func TestPublicIndexerReleaseVisibilitySuppressesPlaceholderTitles(t *testing.T)
 	}
 	if detail != nil {
 		t.Fatalf("expected placeholder-title detail to be hidden, got %+v", detail)
+	}
+}
+
+func TestPublicIndexerReleaseVisibilitySuppressesOpaqueTitlesWithMediaEvidence(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	token := fmt.Sprintf("opaquepublic%d", time.Now().UnixNano())
+	releaseID, _ := seedVisibilityTestRelease(t, store, token, func(in *ReleaseRecord) {
+		in.Title = "tVXofScxpPrnpZg9WDP3g2uxRzTFfwbK vol01+02"
+		in.SourceTitle = "tVXofScxpPrnpZg9WDP3g2uxRzTFfwbK.vol01+02"
+		in.DeobfuscatedTitle = ""
+		in.MatchedMediaTitle = ""
+		in.TitleSource = "source"
+		in.TitleConfidence = 0.30
+		in.SearchTitle = "tvxofscxpprnpzg9wdp3g2uxrztffwbk vol01 02"
+		in.ArchiveCount = 0
+		in.ExpectedArchiveFileCount = 0
+		in.RuntimeSeconds = 1397
+		in.PrimaryResolution = "720p"
+		in.PrimaryVideoCodec = "h264"
+		in.PrimaryAudioCodec = "eac3"
+	})
+	if err := store.ReplaceReleaseFiles(ctx, releaseID, []ReleaseFileRecord{{
+		FileName:  "tVXofScxpPrnpZg9WDP3g2uxRzTFfwbK.mkv",
+		SizeBytes: 553127684,
+		FileIndex: 1,
+		PostedAt:  ptrTime(time.Now().UTC()),
+	}}); err != nil {
+		t.Fatalf("replace opaque release files: %v", err)
+	}
+
+	items, total, err := store.ListPublicIndexerReleases(ctx, PublicIndexerReleaseListParams{Limit: 50, Offset: 0})
+	if err != nil {
+		t.Fatalf("list public opaque-title releases: %v", err)
+	}
+	for _, item := range items {
+		if item.ReleaseID == releaseID {
+			t.Fatalf("opaque-title release should be hidden, got total=%d item=%+v", total, item)
+		}
+	}
+
+	detail, err := store.GetPublicIndexerReleaseDetail(ctx, releaseID)
+	if err != nil {
+		t.Fatalf("get public opaque-title detail: %v", err)
+	}
+	if detail != nil {
+		t.Fatalf("expected opaque-title detail to be hidden, got %+v", detail)
 	}
 }
 

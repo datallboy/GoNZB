@@ -4,10 +4,12 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/indexing/supervisor"
 	"github.com/datallboy/gonzb/internal/infra/config"
+	"github.com/datallboy/gonzb/internal/store/pgindex"
 )
 
 type fakeBacklogSettingsStore struct {
@@ -42,6 +44,7 @@ type fakeUnassembledBacklogReader struct {
 	estimate     int64
 	count        int64
 	blockingYEnc int64
+	admission    *pgindex.YEncRecoveryAdmissionSnapshot
 }
 
 func (f fakeUnassembledBacklogReader) EstimateUnassembledArticleHeaders(context.Context) (int64, error) {
@@ -56,6 +59,25 @@ func (f fakeUnassembledBacklogReader) CountBlockingYEncRecoveryBacklog(context.C
 	return f.blockingYEnc, nil
 }
 
+func (f fakeUnassembledBacklogReader) ConfigureYEncRecoveryAdmission(context.Context, pgindex.YEncRecoveryAdmissionConfig) error {
+	return nil
+}
+
+func (f fakeUnassembledBacklogReader) RefreshYEncRecoveryAdmissionSnapshot(context.Context) (*pgindex.YEncRecoveryAdmissionSnapshot, error) {
+	if f.admission != nil {
+		return f.admission, nil
+	}
+	return &pgindex.YEncRecoveryAdmissionSnapshot{
+		ProbesPerHourEWMA: 25000,
+		SoftCap:           100000,
+		HardCap:           200000,
+		OpenReady:         f.blockingYEnc,
+		OpenTotal:         f.blockingYEnc,
+		RemainingToHard:   200000 - f.blockingYEnc,
+		CalculatedAt:      time.Now(),
+	}, nil
+}
+
 func TestScrapeBacklogGuardBlocksScheduledBackfillWhenAssembleEnabled(t *testing.T) {
 	guard := &cachedScrapeBacklogGuard{
 		settingsStore: fakeBacklogSettingsStore{runtime: &app.RuntimeSettings{
@@ -63,7 +85,7 @@ func TestScrapeBacklogGuardBlocksScheduledBackfillWhenAssembleEnabled(t *testing
 				Assemble: app.IndexingStageRuntimeSettings{Enabled: true, BatchSize: 5000},
 			},
 		}},
-		repo: fakeUnassembledBacklogReader{estimate: 200000},
+		repo: fakeUnassembledBacklogReader{count: 120000},
 	}
 
 	decision, err := guard.allowStage(context.Background(), supervisor.Stage{Name: supervisor.StageScrapeBackfill}, "scheduled")
@@ -75,22 +97,22 @@ func TestScrapeBacklogGuardBlocksScheduledBackfillWhenAssembleEnabled(t *testing
 	}
 }
 
-func TestScrapeBacklogGuardAllowsLatestTrickleDuringAssembleCatchup(t *testing.T) {
+func TestScrapeBacklogGuardBlocksLatestAndBackfillDuringAssembleCatchup(t *testing.T) {
 	guard := &cachedScrapeBacklogGuard{
 		settingsStore: fakeBacklogSettingsStore{runtime: &app.RuntimeSettings{
 			Indexing: &app.IndexingRuntimeSettings{
 				Assemble: app.IndexingStageRuntimeSettings{Enabled: true, BatchSize: 5000},
 			},
 		}},
-		repo: fakeUnassembledBacklogReader{estimate: 200000},
+		repo: fakeUnassembledBacklogReader{count: 200000},
 	}
 
 	latest, err := guard.allowStage(context.Background(), supervisor.Stage{Name: supervisor.StageScrapeLatest}, "scheduled")
 	if err != nil {
 		t.Fatalf("allow latest returned error: %v", err)
 	}
-	if !latest.Allowed {
-		t.Fatalf("expected scrape_latest trickle to be allowed, got %+v", latest)
+	if latest.Allowed {
+		t.Fatalf("expected scrape_latest to stay blocked, got %+v", latest)
 	}
 
 	backfill, err := guard.allowStage(context.Background(), supervisor.Stage{Name: supervisor.StageScrapeBackfill}, "scheduled")
@@ -102,19 +124,15 @@ func TestScrapeBacklogGuardAllowsLatestTrickleDuringAssembleCatchup(t *testing.T
 	}
 }
 
-func TestScrapeBacklogGuardUsesSourceWindowThresholds(t *testing.T) {
+func TestScrapeBacklogGuardUsesScrapeTierThresholds(t *testing.T) {
 	guard := &cachedScrapeBacklogGuard{
 		settingsStore: fakeBacklogSettingsStore{runtime: &app.RuntimeSettings{
 			Indexing: &app.IndexingRuntimeSettings{
-				Assemble: app.IndexingStageRuntimeSettings{Enabled: true, BatchSize: 5000},
-				SourceWindow: app.IndexingSourceWindowRuntimeSettings{
-					Enabled:           true,
-					MaxOpenHeaders:    75000,
-					ResumeOpenHeaders: 25000,
-				},
+				Assemble:    app.IndexingStageRuntimeSettings{Enabled: true, BatchSize: 5000},
+				ScrapeTiers: app.IndexingScrapeTierRuntimeSettings{MaxArticlesPerGroupWindow: 60000},
 			},
 		}},
-		repo: fakeUnassembledBacklogReader{estimate: 76000},
+		repo: fakeUnassembledBacklogReader{count: 121000},
 	}
 
 	backfill, err := guard.allowStage(context.Background(), supervisor.Stage{Name: supervisor.StageScrapeBackfill}, "scheduled")
@@ -122,9 +140,9 @@ func TestScrapeBacklogGuardUsesSourceWindowThresholds(t *testing.T) {
 		t.Fatalf("allow backfill returned error: %v", err)
 	}
 	if backfill.Allowed {
-		t.Fatalf("expected scrape_backfill to be blocked by source window threshold, got %+v", backfill)
+		t.Fatalf("expected scrape_backfill to be blocked by scrape tier threshold, got %+v", backfill)
 	}
-	if want := "high_water=75000"; !strings.Contains(backfill.Reason, want) {
+	if want := "high_water=120000"; !strings.Contains(backfill.Reason, want) {
 		t.Fatalf("expected reason to include %q, got %q", want, backfill.Reason)
 	}
 }
@@ -134,14 +152,13 @@ func TestScrapeBacklogGuardDoesNotFreshBlockBelowHighWater(t *testing.T) {
 		settingsStore: fakeBacklogSettingsStore{runtime: &app.RuntimeSettings{
 			Indexing: &app.IndexingRuntimeSettings{
 				Assemble: app.IndexingStageRuntimeSettings{Enabled: true, BatchSize: 5000},
-				SourceWindow: app.IndexingSourceWindowRuntimeSettings{
-					Enabled:           true,
-					MaxOpenHeaders:    75000,
-					ResumeOpenHeaders: 25000,
+				ScrapeTiers: app.IndexingScrapeTierRuntimeSettings{
+					AssembleBacklogHighWater: 100000,
+					AssembleBacklogLowWater:  50000,
 				},
 			},
 		}},
-		repo: fakeUnassembledBacklogReader{estimate: 50000},
+		repo: fakeUnassembledBacklogReader{count: 90000},
 	}
 
 	backfill, err := guard.allowStage(context.Background(), supervisor.Stage{Name: supervisor.StageScrapeBackfill}, "scheduled")
@@ -153,22 +170,18 @@ func TestScrapeBacklogGuardDoesNotFreshBlockBelowHighWater(t *testing.T) {
 	}
 }
 
-func TestScrapeBacklogGuardBlocksOnBlockingYEncBacklog(t *testing.T) {
+func TestScrapeBacklogGuardUsesExplicitAssembleBacklogThresholds(t *testing.T) {
 	guard := &cachedScrapeBacklogGuard{
 		settingsStore: fakeBacklogSettingsStore{runtime: &app.RuntimeSettings{
 			Indexing: &app.IndexingRuntimeSettings{
-				Assemble:    app.IndexingStageRuntimeSettings{Enabled: true, BatchSize: 5000},
-				RecoverYEnc: app.IndexingStageRuntimeSettings{Enabled: true, BatchSize: 5000},
-				SourceWindow: app.IndexingSourceWindowRuntimeSettings{
-					Enabled:            true,
-					MaxOpenHeaders:     75000,
-					ResumeOpenHeaders:  25000,
-					MaxBlockingYEnc:    50000,
-					ResumeBlockingYEnc: 10000,
+				Assemble: app.IndexingStageRuntimeSettings{Enabled: true, BatchSize: 20000},
+				ScrapeTiers: app.IndexingScrapeTierRuntimeSettings{
+					AssembleBacklogHighWater: 50000,
+					AssembleBacklogLowWater:  10000,
 				},
 			},
 		}},
-		repo: fakeUnassembledBacklogReader{estimate: 1000, blockingYEnc: 50001},
+		repo: fakeUnassembledBacklogReader{count: 54249},
 	}
 
 	latest, err := guard.allowStage(context.Background(), supervisor.Stage{Name: supervisor.StageScrapeLatest}, "scheduled")
@@ -176,60 +189,76 @@ func TestScrapeBacklogGuardBlocksOnBlockingYEncBacklog(t *testing.T) {
 		t.Fatalf("allow latest returned error: %v", err)
 	}
 	if latest.Allowed {
-		t.Fatalf("expected scrape_latest to be blocked by yenc backlog, got %+v", latest)
+		t.Fatalf("expected scrape_latest to be blocked by explicit high-water, got %+v", latest)
 	}
-	if want := "blocking_yenc=50001 high_water=50000"; !strings.Contains(latest.Reason, want) {
+	if want := "high_water=50000"; !strings.Contains(latest.Reason, want) {
 		t.Fatalf("expected reason to include %q, got %q", want, latest.Reason)
 	}
 }
 
-func TestScrapeBacklogGuardYEncHysteresisBeforeReenabling(t *testing.T) {
+func TestScrapeBacklogGuardPausesBackfillOnYEncSoftCap(t *testing.T) {
 	guard := &cachedScrapeBacklogGuard{
 		settingsStore: fakeBacklogSettingsStore{runtime: &app.RuntimeSettings{
 			Indexing: &app.IndexingRuntimeSettings{
-				Assemble:    app.IndexingStageRuntimeSettings{Enabled: true, BatchSize: 5000},
-				RecoverYEnc: app.IndexingStageRuntimeSettings{Enabled: true, BatchSize: 5000},
-				SourceWindow: app.IndexingSourceWindowRuntimeSettings{
-					Enabled:            true,
-					MaxOpenHeaders:     75000,
-					ResumeOpenHeaders:  25000,
-					MaxBlockingYEnc:    50000,
-					ResumeBlockingYEnc: 10000,
-				},
+				Assemble:     app.IndexingStageRuntimeSettings{Enabled: true, BatchSize: 5000},
+				RecoverYEnc:  app.IndexingStageRuntimeSettings{Enabled: true, BatchSize: 5000},
+				SourceWindow: app.IndexingSourceWindowRuntimeSettings{Enabled: true, MaxOpenHeaders: 75000, ResumeOpenHeaders: 25000},
 			},
 		}},
-		repo: fakeUnassembledBacklogReader{estimate: 1000, blockingYEnc: 50001},
+		repo: fakeUnassembledBacklogReader{count: 1000, admission: &pgindex.YEncRecoveryAdmissionSnapshot{
+			SoftCap:   100000,
+			HardCap:   200000,
+			OpenReady: 125000,
+			OpenTotal: 125000,
+		}},
 	}
 
-	stage := supervisor.Stage{Name: supervisor.StageScrapeBackfill}
-	decision, err := guard.allowStage(context.Background(), stage, "scheduled")
+	latest, err := guard.allowStage(context.Background(), supervisor.Stage{Name: supervisor.StageScrapeLatest}, "scheduled")
 	if err != nil {
-		t.Fatalf("first allowStage returned error: %v", err)
+		t.Fatalf("allow latest returned error: %v", err)
+	}
+	if !latest.Allowed {
+		t.Fatalf("expected scrape_latest to remain allowed below hard cap, got %+v", latest)
+	}
+
+	backfill, err := guard.allowStage(context.Background(), supervisor.Stage{Name: supervisor.StageScrapeBackfill}, "scheduled")
+	if err != nil {
+		t.Fatalf("allow backfill returned error: %v", err)
+	}
+	if backfill.Allowed {
+		t.Fatalf("expected scrape_backfill to be blocked by yenc soft cap, got %+v", backfill)
+	}
+	if want := "soft_cap=100000"; !strings.Contains(backfill.Reason, want) {
+		t.Fatalf("expected reason to include %q, got %q", want, backfill.Reason)
+	}
+}
+
+func TestScrapeBacklogGuardBlocksAllScrapeOnYEncHardCap(t *testing.T) {
+	guard := &cachedScrapeBacklogGuard{
+		settingsStore: fakeBacklogSettingsStore{runtime: &app.RuntimeSettings{
+			Indexing: &app.IndexingRuntimeSettings{
+				Assemble:     app.IndexingStageRuntimeSettings{Enabled: true, BatchSize: 5000},
+				RecoverYEnc:  app.IndexingStageRuntimeSettings{Enabled: true, BatchSize: 5000},
+				SourceWindow: app.IndexingSourceWindowRuntimeSettings{Enabled: true, MaxOpenHeaders: 75000, ResumeOpenHeaders: 25000},
+			},
+		}},
+		repo: fakeUnassembledBacklogReader{count: 1000, admission: &pgindex.YEncRecoveryAdmissionSnapshot{
+			SoftCap:   100000,
+			HardCap:   200000,
+			OpenReady: 200000,
+			OpenTotal: 200000,
+		}},
+	}
+
+	decision, err := guard.allowStage(context.Background(), supervisor.Stage{Name: supervisor.StageScrapeLatest}, "scheduled")
+	if err != nil {
+		t.Fatalf("allowStage returned error: %v", err)
 	}
 	if decision.Allowed {
-		t.Fatalf("expected initial yenc block")
+		t.Fatalf("expected scrape_latest to be blocked at hard cap")
 	}
-
-	guard.lastCheck = guard.lastCheck.Add(-scrapeBacklogGuardRefreshInterval - 1)
-	guard.repo = fakeUnassembledBacklogReader{estimate: 1000, blockingYEnc: 20000}
-
-	decision, err = guard.allowStage(context.Background(), stage, "scheduled")
-	if err != nil {
-		t.Fatalf("second allowStage returned error: %v", err)
-	}
-	if decision.Allowed {
-		t.Fatalf("expected yenc hysteresis to keep scrape blocked above resume threshold, got %+v", decision)
-	}
-
-	guard.lastCheck = guard.lastCheck.Add(-scrapeBacklogGuardRefreshInterval - 1)
-	guard.repo = fakeUnassembledBacklogReader{estimate: 1000, blockingYEnc: 5000}
-
-	decision, err = guard.allowStage(context.Background(), stage, "scheduled")
-	if err != nil {
-		t.Fatalf("third allowStage returned error: %v", err)
-	}
-	if !decision.Allowed {
-		t.Fatalf("expected scrape to resume below yenc low-water mark, got %+v", decision)
+	if want := "hard_cap=200000"; !strings.Contains(decision.Reason, want) {
+		t.Fatalf("expected reason to include %q, got %q", want, decision.Reason)
 	}
 }
 
@@ -240,7 +269,7 @@ func TestScrapeBacklogGuardAllowsManualScrapeOverride(t *testing.T) {
 				Assemble: app.IndexingStageRuntimeSettings{Enabled: true, BatchSize: 5000},
 			},
 		}},
-		repo: fakeUnassembledBacklogReader{estimate: 200000},
+		repo: fakeUnassembledBacklogReader{count: 120000},
 	}
 
 	decision, err := guard.allowStage(context.Background(), supervisor.Stage{Name: supervisor.StageScrapeBackfill}, "manual")
@@ -259,7 +288,7 @@ func TestScrapeBacklogGuardUsesHysteresisBeforeReenabling(t *testing.T) {
 				Assemble: app.IndexingStageRuntimeSettings{Enabled: true, BatchSize: 5000},
 			},
 		}},
-		repo: fakeUnassembledBacklogReader{estimate: 200000},
+		repo: fakeUnassembledBacklogReader{count: 200000},
 	}
 
 	stage := supervisor.Stage{Name: supervisor.StageScrapeBackfill}
@@ -272,7 +301,7 @@ func TestScrapeBacklogGuardUsesHysteresisBeforeReenabling(t *testing.T) {
 	}
 
 	guard.lastCheck = guard.lastCheck.Add(-scrapeBacklogGuardRefreshInterval - 1)
-	guard.repo = fakeUnassembledBacklogReader{estimate: 60000}
+	guard.repo = fakeUnassembledBacklogReader{count: 75000}
 
 	decision, err = guard.allowStage(context.Background(), stage, "scheduled")
 	if err != nil {
@@ -283,7 +312,7 @@ func TestScrapeBacklogGuardUsesHysteresisBeforeReenabling(t *testing.T) {
 	}
 
 	guard.lastCheck = guard.lastCheck.Add(-scrapeBacklogGuardRefreshInterval - 1)
-	guard.repo = fakeUnassembledBacklogReader{estimate: 5000}
+	guard.repo = fakeUnassembledBacklogReader{count: 25000}
 
 	decision, err = guard.allowStage(context.Background(), stage, "scheduled")
 	if err != nil {

@@ -147,6 +147,61 @@ export type IndexerBackfillProgress = {
   count: number
 }
 
+export type IndexerRecoveryCapacity = {
+  probes_per_hour_ewma: number
+  soft_cap: number
+  hard_cap: number
+  open_ready: number
+  open_running: number
+  open_total: number
+  remaining_to_hard: number
+  oldest_ready_at?: string
+  newest_ready_at?: string
+  calculated_at?: string
+}
+
+export type IndexerGroupProfile = {
+  provider_id: number
+  provider_key: string
+  newsgroup_id: number
+  group_name: string
+  tier: string
+  tier_override: string
+  score: number
+  recovery_queued_1d: number
+  releases_created_1d: number
+  updated_at?: string
+}
+
+export type IndexerGroupProfileResponse = {
+  items: IndexerGroupProfile[]
+  count: number
+}
+
+export type IndexerDeferredArticleRange = {
+  id: number
+  provider_id: number
+  provider_key: string
+  newsgroup_id: number
+  group_name: string
+  range_kind: string
+  state: string
+  reason: string
+  article_low: number
+  article_high: number
+  estimated_count: number
+  priority: number
+  attempt_count: number
+  not_before?: string
+  last_attempt_at?: string
+  created_at?: string
+}
+
+export type IndexerDeferredArticleRangeResponse = {
+  items: IndexerDeferredArticleRange[]
+  count: number
+}
+
 export type IndexerStageThroughputWindow = {
   window_hours: number
   completed_runs: number
@@ -516,6 +571,87 @@ export type AdminReleaseListResponse = {
   has_more: boolean
 }
 
+export type AdminAttentionItem = {
+  release_id: string
+  title: string
+  group_name: string
+  category: string
+  classification: string
+  identity_status: string
+  title_source: string
+  payload_completion_state: string
+  size_bytes: number
+  posted_at?: string
+  updated_at: string
+  public_visible: boolean
+  has_sfv: boolean
+  has_par2: boolean
+  has_nfo: boolean
+  predb_candidate_count: number
+  unchosen_predb_count: number
+  inspection_failure_count: number
+  latest_inspection_error: string
+  priority: number
+  reasons: string[]
+}
+
+export type AdminAttentionListParams = {
+  reason?: string
+  limit?: number
+  offset?: number
+}
+
+export type AdminAttentionListResponse = {
+  items: AdminAttentionItem[]
+  count: number
+  total: number
+  limit: number
+  offset: number
+  has_more: boolean
+}
+
+export type AdminArticleCohort = {
+  source_posted_at: string
+  cohort_key: string
+  provider_id: number
+  newsgroup_id: number
+  newsgroup_name: string
+  cohort_kind: string
+  priority_rank: number
+  admission_reason: string
+  score: number
+  status: string
+  bucket_start: string
+  bucket_end: string
+  article_count: number
+  unassembled_count: number
+  singleton_count: number
+  yenc_ready_count: number
+  yenc_running_count: number
+  yenc_done_count: number
+  yenc_recovered_count: number
+  yenc_no_identity_count: number
+  assembly_queue_ready: number
+  recovery_queue_ready: number
+  recovery_queue_admitted: number
+  subject_file_name: string
+  subject_file_index: number
+  subject_file_total: number
+  yenc_total_parts: number
+  yenc_file_size: number
+  first_article_number: number
+  last_article_number: number
+  last_scheduled_at?: string
+  cooldown_until?: string
+  updated_at: string
+}
+
+export type AdminArticleCohortListResponse = {
+  items: AdminArticleCohort[]
+  count: number
+  total: number
+}
+
 export type AdminReleaseListParams = {
   q?: string
   newsgroup?: string
@@ -619,6 +755,17 @@ export type AdminPredbMatch = {
   posted_at?: string
   confidence: number
   chosen: boolean
+  payload_size_bytes: number
+  payload_size_source: string
+  predb_size_bytes: number
+  size_delta_bytes: number
+  size_delta_pct: number
+  posted_delta_minutes?: number
+  resolution_match: boolean
+  video_codec_match: boolean
+  audio_codec_match: boolean
+  auto_apply_eligible: boolean
+  auto_apply_skip_reason: string
   payload_json?: unknown
 }
 
@@ -728,6 +875,53 @@ export type AdminFileDetail = {
   articles: AdminFileArticle[]
 }
 
+export type AdminBinarySummary = {
+  binary_id: number
+  release_id: string
+  release_title: string
+  group_name: string
+  release_name: string
+  binary_name: string
+  file_name: string
+  family_kind: string
+  identity_strength: string
+  readiness_bucket: string
+  match_status: string
+  match_confidence: number
+  posted_at?: string
+  total_parts: number
+  observed_parts: number
+  completion_pct: number
+  total_bytes: number
+  recovered_source: string
+  recovered_file_name: string
+  yenc_status: string
+  yenc_priority_rank: number
+  inspection_count: number
+  updated_at: string
+}
+
+export type AdminBinaryListResponse = {
+  items: AdminBinarySummary[]
+  count: number
+  total: number
+  limit: number
+  offset: number
+  has_more: boolean
+}
+
+export type AdminBinaryListParams = {
+  q?: string
+  newsgroup?: string
+  identity_strength?: string
+  readiness_bucket?: string
+  match_status?: string
+  release_state?: string
+  sort?: string
+  limit?: number
+  offset?: number
+}
+
 export type AdminBinaryInspectionArtifact = {
   stage_name: string
   artifact_role: string
@@ -789,15 +983,42 @@ export type AdminPAR2Set = {
 
 export type AdminBinaryPart = {
   article_header_id: number
+  provider_id: number
+  newsgroup_id: number
+  group_name: string
+  article_number: number
   message_id: string
+  subject: string
+  poster: string
+  date_utc?: string
   part_number: number
   total_parts: number
   segment_bytes: number
   file_name: string
+  article_bytes: number
+  article_lines: number
+  subject_file_name: string
+  subject_file_index: number
+  subject_file_total: number
+  yenc_part_number: number
+  yenc_total_parts: number
+  yenc_file_size: number
+  recovered_part_number: number
+  recovered_total_parts: number
+  recovered_file_size: number
+  yenc_recovery_status: string
+  yenc_recovery_ready_at?: string
+  yenc_recovery_error: string
+  recovered_kind: string
+  recovered_source: string
+  recovered_file_name: string
 }
 
 export type AdminBinaryDetail = {
   binary_id: number
+  superseded_by_id?: number
+  superseded_reason?: string
+  superseded_at?: string
   release_id: string
   release_title: string
   group_name: string

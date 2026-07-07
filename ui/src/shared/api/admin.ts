@@ -2,11 +2,19 @@ import { apiRequest, apiURL } from "./http"
 import type {
   IndexerBackfillProgress,
   IndexerDashboardStats,
+  IndexerDeferredArticleRangeResponse,
+  IndexerGroupProfileResponse,
   IndexerNNTPStats,
   IndexerOverviewStreamSnapshot,
+  IndexerRecoveryCapacity,
   IndexerStorageStatus,
   IndexerStageThroughput,
+  AdminAttentionListParams,
+  AdminAttentionListResponse,
+  AdminArticleCohortListResponse,
   AdminReleaseDetailResponse,
+  AdminBinaryListParams,
+  AdminBinaryListResponse,
   AdminBinaryDetail,
   AdminFileDetail,
   AdminReleaseListResponse,
@@ -46,6 +54,35 @@ export function getAdminBackfillProgress() {
   return apiRequest<IndexerBackfillProgress>(
     "/api/v1/admin/indexer/overview/backfill-progress",
   )
+}
+
+export function getAdminRecoveryCapacity() {
+  return apiRequest<IndexerRecoveryCapacity>("/api/v1/admin/indexer/work/recovery-capacity")
+}
+
+export function getAdminGroupProfiles(limit = 50) {
+  return apiRequest<IndexerGroupProfileResponse>(`/api/v1/admin/indexer/work/group-profiles?limit=${limit}`)
+}
+
+export function getAdminDeferredRanges(limit = 50, state = "queued") {
+  const query = new URLSearchParams({ limit: String(limit) })
+  if (state) {
+    query.set("state", state)
+  }
+  return apiRequest<IndexerDeferredArticleRangeResponse>(`/api/v1/admin/indexer/work/deferred-ranges?${query.toString()}`)
+}
+
+export function getAdminArticleCohorts(params: { kind?: string; status?: string; limit?: number; offset?: number } = {}) {
+  const query = new URLSearchParams()
+  query.set("limit", String(params.limit ?? 100))
+  query.set("offset", String(params.offset ?? 0))
+  if (params.kind) {
+    query.set("kind", params.kind)
+  }
+  if (params.status) {
+    query.set("status", params.status)
+  }
+  return apiRequest<AdminArticleCohortListResponse>(`/api/v1/admin/indexer/work/cohorts?${query.toString()}`)
 }
 
 export function getAdminStageThroughput() {
@@ -267,9 +304,35 @@ export function getAdminReleases(params: AdminReleaseListParams) {
   )
 }
 
+export function getAdminAttention(params: AdminAttentionListParams) {
+  const query = new URLSearchParams()
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null || value === "") {
+      continue
+    }
+    query.set(key, String(value))
+  }
+  return apiRequest<AdminAttentionListResponse>(
+    `/api/v1/admin/indexer/attention?${query.toString()}`,
+  )
+}
+
 export function getAdminRelease(id: string) {
   return apiRequest<AdminReleaseDetailResponse>(
     `/api/v1/admin/indexer/releases/${id}`,
+  )
+}
+
+export function getAdminBinaries(params: AdminBinaryListParams) {
+  const query = new URLSearchParams()
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null || value === "") {
+      continue
+    }
+    query.set(key, String(value))
+  }
+  return apiRequest<AdminBinaryListResponse>(
+    `/api/v1/admin/indexer/binaries?${query.toString()}`,
   )
 }
 
@@ -284,6 +347,27 @@ export function getIndexerBinary(id: number) {
 export function patchAdminRelease(id: string, body: ReleaseOverridePatch) {
   return apiRequest(`/api/v1/admin/indexer/releases/${id}`, {
     method: "PATCH",
+    body,
+  })
+}
+
+export function identifyAdminRelease(
+  id: string,
+  body:
+    | { source: "predb"; predb_entry_id: number }
+    | {
+        source: "manual"
+        title: string
+        external_media_type?: string
+        external_year?: number
+        season_number?: number
+        episode_number?: number
+        classification?: string
+        notes?: string
+      },
+) {
+  return apiRequest(`/api/v1/admin/indexer/releases/${id}/actions/identify`, {
+    method: "POST",
     body,
   })
 }

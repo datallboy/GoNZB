@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-const defaultBinaryUpsertDBChunkSize = 250
+const defaultBinaryUpsertDBChunkSize = 1000
 
 const (
 	defaultRetryableTxAttempts = 3
@@ -19,6 +19,8 @@ type binaryUpsertChunkSizeContextKey struct{}
 type deferReleaseFamilySummaryRefreshContextKey struct{}
 type binaryUpsertTelemetryContextKey struct{}
 type binaryStatsRefreshTelemetryContextKey struct{}
+type skipYEncRecoveryWorkItemSyncContextKey struct{}
+type skipYEncRecoveryWorkItemRetireContextKey struct{}
 
 func WithBinaryUpsertChunkSize(ctx context.Context, size int) context.Context {
 	if ctx == nil {
@@ -54,33 +56,73 @@ func deferReleaseFamilySummaryRefreshFromContext(ctx context.Context) bool {
 	return value
 }
 
+func WithSkipYEncRecoveryWorkItemSync(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, skipYEncRecoveryWorkItemSyncContextKey{}, true)
+}
+
+func skipYEncRecoveryWorkItemSyncFromContext(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	value, _ := ctx.Value(skipYEncRecoveryWorkItemSyncContextKey{}).(bool)
+	return value
+}
+
+func WithSkipYEncRecoveryWorkItemRetire(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, skipYEncRecoveryWorkItemRetireContextKey{}, true)
+}
+
+func skipYEncRecoveryWorkItemRetireFromContext(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	value, _ := ctx.Value(skipYEncRecoveryWorkItemRetireContextKey{}).(bool)
+	return value
+}
+
 type BinaryUpsertTelemetry struct {
-	mu                            sync.Mutex
-	ChunkCount                    int
-	ChunkRows                     int
-	ChunkRetries                  int
-	ChunkRetryDeadlocks           int
-	ChunkRetrySerialization       int
-	ChunkDurationMs               float64
-	ChunkDurationMaxMs            float64
-	LockDurationMs                float64
-	LockDurationMaxMs             float64
-	StageDurationMs               float64
-	StageDurationMaxMs            float64
-	ExistingSnapshotDurationMs    float64
-	ExistingSnapshotDurationMaxMs float64
-	UpdateDurationMs              float64
-	UpdateDurationMaxMs           float64
-	InsertDurationMs              float64
-	InsertDurationMaxMs           float64
-	ReadbackDurationMs            float64
-	ReadbackDurationMaxMs         float64
-	UpsertQueryDurationMs         float64
-	UpsertQueryDurationMaxMs      float64
-	EvidenceDurationMs            float64
-	EvidenceDurationMaxMs         float64
-	DeferredSummaryRefreshChunks  int
-	DeferredSummaryKeyCount       int
+	mu                             sync.Mutex
+	ChunkCount                     int
+	ChunkRows                      int
+	ChunkRetries                   int
+	ChunkRetryDeadlocks            int
+	ChunkRetrySerialization        int
+	ChunkDurationMs                float64
+	ChunkDurationMaxMs             float64
+	LockDurationMs                 float64
+	LockDurationMaxMs              float64
+	StageDurationMs                float64
+	StageDurationMaxMs             float64
+	ExistingSnapshotDurationMs     float64
+	ExistingSnapshotDurationMaxMs  float64
+	UpdateDurationMs               float64
+	UpdateDurationMaxMs            float64
+	InsertDurationMs               float64
+	InsertDurationMaxMs            float64
+	ObservationStatsDurationMs     float64
+	ObservationStatsDurationMaxMs  float64
+	IdentityDurationMs             float64
+	IdentityDurationMaxMs          float64
+	RecoverySeedDurationMs         float64
+	RecoverySeedDurationMaxMs      float64
+	LifecycleSeedDurationMs        float64
+	LifecycleSeedDurationMaxMs     float64
+	CompletionKeySyncDurationMs    float64
+	CompletionKeySyncDurationMaxMs float64
+	ReadbackDurationMs             float64
+	ReadbackDurationMaxMs          float64
+	UpsertQueryDurationMs          float64
+	UpsertQueryDurationMaxMs       float64
+	EvidenceDurationMs             float64
+	EvidenceDurationMaxMs          float64
+	DeferredSummaryRefreshChunks   int
+	DeferredSummaryKeyCount        int
 }
 
 func (t *BinaryUpsertTelemetry) recordChunk(rows, retries int, elapsed time.Duration) {
@@ -131,31 +173,41 @@ func (t *BinaryUpsertTelemetry) Snapshot() BinaryUpsertTelemetry {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return BinaryUpsertTelemetry{
-		ChunkCount:                    t.ChunkCount,
-		ChunkRows:                     t.ChunkRows,
-		ChunkRetries:                  t.ChunkRetries,
-		ChunkRetryDeadlocks:           t.ChunkRetryDeadlocks,
-		ChunkRetrySerialization:       t.ChunkRetrySerialization,
-		ChunkDurationMs:               t.ChunkDurationMs,
-		ChunkDurationMaxMs:            t.ChunkDurationMaxMs,
-		LockDurationMs:                t.LockDurationMs,
-		LockDurationMaxMs:             t.LockDurationMaxMs,
-		StageDurationMs:               t.StageDurationMs,
-		StageDurationMaxMs:            t.StageDurationMaxMs,
-		ExistingSnapshotDurationMs:    t.ExistingSnapshotDurationMs,
-		ExistingSnapshotDurationMaxMs: t.ExistingSnapshotDurationMaxMs,
-		UpdateDurationMs:              t.UpdateDurationMs,
-		UpdateDurationMaxMs:           t.UpdateDurationMaxMs,
-		InsertDurationMs:              t.InsertDurationMs,
-		InsertDurationMaxMs:           t.InsertDurationMaxMs,
-		ReadbackDurationMs:            t.ReadbackDurationMs,
-		ReadbackDurationMaxMs:         t.ReadbackDurationMaxMs,
-		UpsertQueryDurationMs:         t.UpsertQueryDurationMs,
-		UpsertQueryDurationMaxMs:      t.UpsertQueryDurationMaxMs,
-		EvidenceDurationMs:            t.EvidenceDurationMs,
-		EvidenceDurationMaxMs:         t.EvidenceDurationMaxMs,
-		DeferredSummaryRefreshChunks:  t.DeferredSummaryRefreshChunks,
-		DeferredSummaryKeyCount:       t.DeferredSummaryKeyCount,
+		ChunkCount:                     t.ChunkCount,
+		ChunkRows:                      t.ChunkRows,
+		ChunkRetries:                   t.ChunkRetries,
+		ChunkRetryDeadlocks:            t.ChunkRetryDeadlocks,
+		ChunkRetrySerialization:        t.ChunkRetrySerialization,
+		ChunkDurationMs:                t.ChunkDurationMs,
+		ChunkDurationMaxMs:             t.ChunkDurationMaxMs,
+		LockDurationMs:                 t.LockDurationMs,
+		LockDurationMaxMs:              t.LockDurationMaxMs,
+		StageDurationMs:                t.StageDurationMs,
+		StageDurationMaxMs:             t.StageDurationMaxMs,
+		ExistingSnapshotDurationMs:     t.ExistingSnapshotDurationMs,
+		ExistingSnapshotDurationMaxMs:  t.ExistingSnapshotDurationMaxMs,
+		UpdateDurationMs:               t.UpdateDurationMs,
+		UpdateDurationMaxMs:            t.UpdateDurationMaxMs,
+		InsertDurationMs:               t.InsertDurationMs,
+		InsertDurationMaxMs:            t.InsertDurationMaxMs,
+		ObservationStatsDurationMs:     t.ObservationStatsDurationMs,
+		ObservationStatsDurationMaxMs:  t.ObservationStatsDurationMaxMs,
+		IdentityDurationMs:             t.IdentityDurationMs,
+		IdentityDurationMaxMs:          t.IdentityDurationMaxMs,
+		RecoverySeedDurationMs:         t.RecoverySeedDurationMs,
+		RecoverySeedDurationMaxMs:      t.RecoverySeedDurationMaxMs,
+		LifecycleSeedDurationMs:        t.LifecycleSeedDurationMs,
+		LifecycleSeedDurationMaxMs:     t.LifecycleSeedDurationMaxMs,
+		CompletionKeySyncDurationMs:    t.CompletionKeySyncDurationMs,
+		CompletionKeySyncDurationMaxMs: t.CompletionKeySyncDurationMaxMs,
+		ReadbackDurationMs:             t.ReadbackDurationMs,
+		ReadbackDurationMaxMs:          t.ReadbackDurationMaxMs,
+		UpsertQueryDurationMs:          t.UpsertQueryDurationMs,
+		UpsertQueryDurationMaxMs:       t.UpsertQueryDurationMaxMs,
+		EvidenceDurationMs:             t.EvidenceDurationMs,
+		EvidenceDurationMaxMs:          t.EvidenceDurationMaxMs,
+		DeferredSummaryRefreshChunks:   t.DeferredSummaryRefreshChunks,
+		DeferredSummaryKeyCount:        t.DeferredSummaryKeyCount,
 	}
 }
 
@@ -221,6 +273,71 @@ func (t *BinaryUpsertTelemetry) recordInsertDuration(elapsed time.Duration) {
 	t.InsertDurationMs += durationMs
 	if durationMs > t.InsertDurationMaxMs {
 		t.InsertDurationMaxMs = durationMs
+	}
+}
+
+func (t *BinaryUpsertTelemetry) recordObservationStatsDuration(elapsed time.Duration) {
+	if t == nil {
+		return
+	}
+	durationMs := float64(elapsed.Microseconds()) / 1000.0
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.ObservationStatsDurationMs += durationMs
+	if durationMs > t.ObservationStatsDurationMaxMs {
+		t.ObservationStatsDurationMaxMs = durationMs
+	}
+}
+
+func (t *BinaryUpsertTelemetry) recordIdentityDuration(elapsed time.Duration) {
+	if t == nil {
+		return
+	}
+	durationMs := float64(elapsed.Microseconds()) / 1000.0
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.IdentityDurationMs += durationMs
+	if durationMs > t.IdentityDurationMaxMs {
+		t.IdentityDurationMaxMs = durationMs
+	}
+}
+
+func (t *BinaryUpsertTelemetry) recordRecoverySeedDuration(elapsed time.Duration) {
+	if t == nil {
+		return
+	}
+	durationMs := float64(elapsed.Microseconds()) / 1000.0
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.RecoverySeedDurationMs += durationMs
+	if durationMs > t.RecoverySeedDurationMaxMs {
+		t.RecoverySeedDurationMaxMs = durationMs
+	}
+}
+
+func (t *BinaryUpsertTelemetry) recordLifecycleSeedDuration(elapsed time.Duration) {
+	if t == nil {
+		return
+	}
+	durationMs := float64(elapsed.Microseconds()) / 1000.0
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.LifecycleSeedDurationMs += durationMs
+	if durationMs > t.LifecycleSeedDurationMaxMs {
+		t.LifecycleSeedDurationMaxMs = durationMs
+	}
+}
+
+func (t *BinaryUpsertTelemetry) recordCompletionKeySyncDuration(elapsed time.Duration) {
+	if t == nil {
+		return
+	}
+	durationMs := float64(elapsed.Microseconds()) / 1000.0
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.CompletionKeySyncDurationMs += durationMs
+	if durationMs > t.CompletionKeySyncDurationMaxMs {
+		t.CompletionKeySyncDurationMaxMs = durationMs
 	}
 }
 
@@ -333,6 +450,20 @@ type BinaryStatsRefreshTelemetry struct {
 	SummaryMarkDurationMaxMs      float64
 	YEncSyncDurationMs            float64
 	YEncSyncDurationMaxMs         float64
+	YEncAdmissionDurationMs       float64
+	YEncAdmissionDurationMaxMs    float64
+	YEncPriorityOpenDurationMs    float64
+	YEncPriorityOpenDurationMaxMs float64
+	YEncSyncChunkCount            int
+	YEncSyncChunkBinaryCount      int
+	YEncSyncUpserted              int64
+	YEncSyncRetired               int64
+	YEncSyncUpsertDurationMs      float64
+	YEncSyncUpsertDurationMaxMs   float64
+	YEncSyncRetireDurationMs      float64
+	YEncSyncRetireDurationMaxMs   float64
+	YEncPromotionDurationMs       float64
+	YEncPromotionDurationMaxMs    float64
 }
 
 func (t *BinaryStatsRefreshTelemetry) recordBatch(binaryCount, summaryKeys int, deferred bool, statsUpdateDuration, summaryMarkDuration, yencSyncDuration time.Duration) {
@@ -366,6 +497,49 @@ func (t *BinaryStatsRefreshTelemetry) recordBatch(binaryCount, summaryKeys int, 
 	}
 }
 
+func (t *BinaryStatsRefreshTelemetry) recordYEncAdmissionDuration(d time.Duration) {
+	t.recordYEncDuration(&t.YEncAdmissionDurationMs, &t.YEncAdmissionDurationMaxMs, d)
+}
+
+func (t *BinaryStatsRefreshTelemetry) recordYEncPriorityOpenDuration(d time.Duration) {
+	t.recordYEncDuration(&t.YEncPriorityOpenDurationMs, &t.YEncPriorityOpenDurationMaxMs, d)
+}
+
+func (t *BinaryStatsRefreshTelemetry) recordYEncPromotionDuration(d time.Duration) {
+	t.recordYEncDuration(&t.YEncPromotionDurationMs, &t.YEncPromotionDurationMaxMs, d)
+}
+
+func (t *BinaryStatsRefreshTelemetry) recordYEncSyncChunk(binaryCount int, upserted, retired int64, upsertDuration, retireDuration time.Duration) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.YEncSyncChunkCount++
+	t.YEncSyncChunkBinaryCount += binaryCount
+	t.YEncSyncUpserted += upserted
+	t.YEncSyncRetired += retired
+	recordTelemetryDurationLocked(&t.YEncSyncUpsertDurationMs, &t.YEncSyncUpsertDurationMaxMs, upsertDuration)
+	recordTelemetryDurationLocked(&t.YEncSyncRetireDurationMs, &t.YEncSyncRetireDurationMaxMs, retireDuration)
+}
+
+func (t *BinaryStatsRefreshTelemetry) recordYEncDuration(total *float64, max *float64, d time.Duration) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	recordTelemetryDurationLocked(total, max, d)
+}
+
+func recordTelemetryDurationLocked(total *float64, max *float64, d time.Duration) {
+	ms := float64(d.Microseconds()) / 1000.0
+	*total += ms
+	if ms > *max {
+		*max = ms
+	}
+}
+
 func (t *BinaryStatsRefreshTelemetry) Snapshot() BinaryStatsRefreshTelemetry {
 	if t == nil {
 		return BinaryStatsRefreshTelemetry{}
@@ -385,6 +559,20 @@ func (t *BinaryStatsRefreshTelemetry) Snapshot() BinaryStatsRefreshTelemetry {
 		SummaryMarkDurationMaxMs:      t.SummaryMarkDurationMaxMs,
 		YEncSyncDurationMs:            t.YEncSyncDurationMs,
 		YEncSyncDurationMaxMs:         t.YEncSyncDurationMaxMs,
+		YEncAdmissionDurationMs:       t.YEncAdmissionDurationMs,
+		YEncAdmissionDurationMaxMs:    t.YEncAdmissionDurationMaxMs,
+		YEncPriorityOpenDurationMs:    t.YEncPriorityOpenDurationMs,
+		YEncPriorityOpenDurationMaxMs: t.YEncPriorityOpenDurationMaxMs,
+		YEncSyncChunkCount:            t.YEncSyncChunkCount,
+		YEncSyncChunkBinaryCount:      t.YEncSyncChunkBinaryCount,
+		YEncSyncUpserted:              t.YEncSyncUpserted,
+		YEncSyncRetired:               t.YEncSyncRetired,
+		YEncSyncUpsertDurationMs:      t.YEncSyncUpsertDurationMs,
+		YEncSyncUpsertDurationMaxMs:   t.YEncSyncUpsertDurationMaxMs,
+		YEncSyncRetireDurationMs:      t.YEncSyncRetireDurationMs,
+		YEncSyncRetireDurationMaxMs:   t.YEncSyncRetireDurationMaxMs,
+		YEncPromotionDurationMs:       t.YEncPromotionDurationMs,
+		YEncPromotionDurationMaxMs:    t.YEncPromotionDurationMaxMs,
 	}
 }
 

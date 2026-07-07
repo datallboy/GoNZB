@@ -16,7 +16,6 @@ var criticalIndexerIndexNames = []string{
 	"public.article_headers_newsgroup_id_message_id_key",
 	"public.binary_core_pkey",
 	"public.binary_core_provider_id_newsgroup_id_binary_key_key",
-	"public.idx_binary_core_provider_group_key",
 	"public.binary_observation_stats_pkey",
 	"public.binary_identity_current_pkey",
 	"public.idx_binary_identity_release_family",
@@ -127,6 +126,14 @@ func (s *Store) checkCriticalIndexerHeap(ctx context.Context, relation string, a
 		relation,
 	).Scan(&relkind); err != nil {
 		return check, fmt.Errorf("inspect critical heap metadata %s: %w", relation, err)
+	}
+
+	if relkind == "p" {
+		check.AccessMethod = "partitioned"
+		check.MetadataOK = true
+		check.OK = true
+		check.Detail = "metadata-only check passed; relation is a partitioned table parent"
+		return check, nil
 	}
 
 	check.AccessMethod = "heap"

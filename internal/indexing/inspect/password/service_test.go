@@ -58,8 +58,8 @@ func TestRunOnceVerifiesPasswordCandidateAndRollsUpReleaseState(t *testing.T) {
 	if len(repo.releaseUpdates) != 1 {
 		t.Fatalf("expected 1 release inspection update, got %d", len(repo.releaseUpdates))
 	}
-	if repo.releaseUpdates[0].PasswordState != "passworded_known" {
-		t.Fatalf("expected passworded_known, got %q", repo.releaseUpdates[0].PasswordState)
+	if repo.releaseUpdates[0].PasswordState != "password_known" {
+		t.Fatalf("expected password_known, got %q", repo.releaseUpdates[0].PasswordState)
 	}
 	if len(repo.completedInspections) != 1 {
 		t.Fatalf("expected completed inspection, got %d", len(repo.completedInspections))
@@ -137,8 +137,8 @@ func TestRunOnceMarksEncryptedReleaseUnknownWhenNoPasswordCandidatesExist(t *tes
 	if !boolPtrValue(update.Passworded) || boolPtrValue(update.PasswordedKnown) || !boolPtrValue(update.PasswordedUnknown) {
 		t.Fatalf("expected password flags true/false/true, got %+v", update)
 	}
-	if update.PasswordState != "passworded_unknown" {
-		t.Fatalf("expected passworded_unknown state, got %q", update.PasswordState)
+	if update.PasswordState != "password_unknown" {
+		t.Fatalf("expected password_unknown state, got %q", update.PasswordState)
 	}
 	if update.PreferredPasswordID != nil {
 		t.Fatalf("expected no preferred password id, got %#v", update.PreferredPasswordID)
@@ -190,8 +190,8 @@ func TestRunOnceRejectsFalsePositivePasswordHintAndKeepsUnknownState(t *testing.
 	if !boolPtrValue(update.Passworded) || boolPtrValue(update.PasswordedKnown) || !boolPtrValue(update.PasswordedUnknown) {
 		t.Fatalf("expected password flags true/false/true, got %+v", update)
 	}
-	if update.PasswordState != "passworded_unknown" {
-		t.Fatalf("expected passworded_unknown state, got %q", update.PasswordState)
+	if update.PasswordState != "password_unknown" {
+		t.Fatalf("expected password_unknown state, got %q", update.PasswordState)
 	}
 }
 
@@ -251,8 +251,8 @@ func TestRunOnceVerifiesLaterPasswordCandidateAfterRejectingEarlierHint(t *testi
 	if update.PreferredPasswordID == nil || *update.PreferredPasswordID != 32 {
 		t.Fatalf("expected preferred password id 32, got %#v", update.PreferredPasswordID)
 	}
-	if update.PasswordState != "passworded_known" {
-		t.Fatalf("expected passworded_known, got %q", update.PasswordState)
+	if update.PasswordState != "password_known" {
+		t.Fatalf("expected password_known, got %q", update.PasswordState)
 	}
 }
 

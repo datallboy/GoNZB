@@ -115,9 +115,14 @@ func publicIndexerReleaseVisibilityClause(alias string, policy ReleaseReadyPolic
 }
 
 func sanitizePublicPasswordState(raw string) string {
-	switch strings.TrimSpace(raw) {
-	case "not_passworded", "passworded_known", "passworded_unknown":
-		return raw
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	normalized := normalizeReleasePasswordState(raw, false, false, false)
+	switch normalized {
+	case "not_passworded", "password_known", "password_unknown":
+		return normalized
 	default:
 		return ""
 	}
@@ -236,7 +241,7 @@ func buildPublicIndexerFilterSQL(params PublicIndexerReleaseListParams) (string,
 		add(fmt.Sprintf("r.has_par2 = $%d", arg), *params.HasPAR2)
 	}
 	if v := sanitizePublicPasswordState(strings.TrimSpace(params.PasswordState)); v != "" {
-		add(fmt.Sprintf("r.password_state = $%d", arg), v)
+		add(fmt.Sprintf("%s = $%d", releasePasswordStateSQL("r"), arg), v)
 	}
 	if v := strings.TrimSpace(params.AvailabilityTier); v != "" {
 		add(fmt.Sprintf("r.availability_tier = $%d", arg), v)

@@ -32,9 +32,14 @@ func DefaultRuntimeSettings() *RuntimeSettings {
 			ScrapeBackfill:               defaultScrapeStage(false),
 			PosterMaterialize:            defaultStage(false, 2, 10000, 0),
 			CrosspostPopularityRefresh:   defaultStage(false, 2, 1000, 0),
+			ArticleCohortSchedule:        defaultStage(true, 0.25, 50000, 0),
 			Assemble:                     defaultAssembleStage(false, 2, 5000, 1),
 			RecoverYEnc:                  defaultRecoverYEncStage(false),
 			SourceWindow:                 defaultSourceWindowSettings(),
+			Retention:                    defaultRetentionSettings(),
+			RecoveryAdmission:            defaultRecoveryAdmissionSettings(),
+			ScrapeTiers:                  defaultScrapeTierSettings(),
+			DeferredBackfill:             defaultDeferredBackfillSettings(),
 			ReleaseSummaryRefresh:        defaultReleaseSummaryRefreshStage(false),
 			Release:                      defaultReleaseStage(false),
 			ReleaseGenerateNZB:           defaultStage(false, 10, 100, 0),
@@ -116,7 +121,7 @@ func defaultReleaseSummaryRefreshStage(enabled bool) IndexingStageRuntimeSetting
 
 func defaultAssembleStage(enabled bool, interval float64, batch, concurrency int) IndexingStageRuntimeSettings {
 	stage := defaultStage(enabled, interval, batch, concurrency)
-	stage.BinaryUpsertDBChunkSize = 250
+	stage.BinaryUpsertDBChunkSize = 1000
 	stage.LaneATargetPct = 70
 	stage.LaneBMinPct = 30
 	stage.LaneATimeWindowMinutes = 15
@@ -125,6 +130,7 @@ func defaultAssembleStage(enabled bool, interval float64, batch, concurrency int
 
 func defaultRecoverYEncStage(enabled bool) IndexingStageRuntimeSettings {
 	stage := defaultStage(enabled, 10, 25, 1)
+	stage.FetchTimeoutSeconds = 10
 	stage.TargetWindowPct = 60
 	stage.NewestPct = 40
 	return stage
@@ -134,11 +140,61 @@ func defaultSourceWindowSettings() IndexingSourceWindowRuntimeSettings {
 	return IndexingSourceWindowRuntimeSettings{
 		Enabled:            true,
 		WindowMinutes:      15,
-		BackfillWindowDays: 7,
+		BackfillWindowDays: 0,
 		MaxOpenHeaders:     50000,
 		ResumeOpenHeaders:  10000,
 		MaxBlockingYEnc:    50000,
 		ResumeBlockingYEnc: 10000,
+	}
+}
+
+func defaultRetentionSettings() IndexingRetentionRuntimeSettings {
+	return IndexingRetentionRuntimeSettings{
+		RawStageHotHours:                48,
+		RawStageWarmHours:               24,
+		RawStageColdHours:               12,
+		FailedProbeHours:                48,
+		ArchivedReleaseDetailGraceHours: 6,
+		MetadataIncompleteReleaseHours:  48,
+		CreatePartitionsDaysBefore:      180,
+		CreatePartitionsDaysAhead:       8,
+		PurgeDryRunDefault:              true,
+	}
+}
+
+func defaultRecoveryAdmissionSettings() IndexingRecoveryAdmissionRuntimeSettings {
+	return IndexingRecoveryAdmissionRuntimeSettings{
+		TargetHotLagHours:           4,
+		TargetWarmLagHours:          24,
+		SoftQueueHours:              4,
+		HardQueueMultiplier:         2,
+		AbsoluteHardQueueCap:        250000,
+		EWMAWindowMinutes:           30,
+		BootstrapProbesPerHour:      25000,
+		Priority0OverflowCap:        25000,
+		Priority0ReservoirBatches:   5,
+		NearTimeCohortBucketMinutes: 5,
+	}
+}
+
+func defaultScrapeTierSettings() IndexingScrapeTierRuntimeSettings {
+	return IndexingScrapeTierRuntimeSettings{
+		HotWindowMinutes:          30,
+		WarmWindowMinutes:         120,
+		ColdSampleHeaders:         2000,
+		MaxArticlesPerGroupWindow: 50000,
+		AssembleBacklogHighWater:  50000,
+		AssembleBacklogLowWater:   10000,
+		AllowGlobalDailyGate:      false,
+	}
+}
+
+func defaultDeferredBackfillSettings() IndexingDeferredBackfillRuntimeSettings {
+	return IndexingDeferredBackfillRuntimeSettings{
+		Enabled:                  true,
+		MaxRangesPerRun:          10,
+		MaxArticlesPerRangeChunk: 10000,
+		RunOnlyBelowQueueRatio:   0.25,
 	}
 }
 
@@ -147,7 +203,7 @@ func defaultReleaseStage(enabled bool) IndexingReleaseRuntimeSettings {
 		Enabled: enabled, IntervalMinutes: 10, BatchSize: 1000, AutoReformBatchSize: 25, MinConfidence: 0.55,
 		MinCompletionPct: 0, MinExpectedFileCoveragePct: 90, RequireExpectedFileCountForContextualObfuscated: true,
 		PublicMinMatchConfidence: 0.55, PublicMinCompletionPct: 100, PublicMinIdentityStatus: "probable",
-		PublicRequireInspection: true, PublicRequireEnrichment: false,
+		PublicRequireInspection: true, PublicRequireEnrichment: false, PublicRequireClearTitle: true,
 		PublicRequirePayloadComplete: true, PublicRequireExpectedFileCountComplete: false,
 		PublicRequirePAR2: false, PublicRequireNFO: false, PublicRequireSFV: false,
 		RetainUntilExpectedFileCountComplete: false, RetainRequirePAR2: false, RetainRequireNFO: false, RetainRequireSFV: false,
@@ -244,12 +300,17 @@ func IndexingRuntimeFromConfig(cfg config.IndexingConfig) IndexingRuntimeSetting
 	out.ScrapeBackfill = indexStageRuntimeFromConfigWithConcurrency(cfg.ScrapeBackfill, true, 10, 5000)
 	out.PosterMaterialize = indexStageRuntimeFromConfig(cfg.PosterMaterialize, true, 2, 10000)
 	out.CrosspostPopularityRefresh = indexStageRuntimeFromConfig(cfg.CrosspostPopularityRefresh, true, 2, 1000)
+	out.ArticleCohortSchedule = defaultStage(true, 0.25, 50000, 0)
 	out.Assemble = mergeStageRuntimeSettings(
 		defaultAssembleStage(false, 2, 5000, 1),
 		indexStageRuntimeFromConfigWithConcurrency(cfg.Assemble, false, 2, 5000),
 	)
 	out.RecoverYEnc = indexStageRuntimeFromConfigWithConcurrency(cfg.RecoverYEnc, false, 10, 25)
 	out.SourceWindow = defaultSourceWindowSettings()
+	out.Retention = defaultRetentionSettings()
+	out.RecoveryAdmission = defaultRecoveryAdmissionSettings()
+	out.ScrapeTiers = defaultScrapeTierSettings()
+	out.DeferredBackfill = defaultDeferredBackfillSettings()
 	out.ReleaseSummaryRefresh = mergeStageRuntimeSettings(
 		defaultReleaseSummaryRefreshStage(boolValue(cfg.Release.Enabled, true)),
 		indexStageRuntimeFromConfig(cfg.ReleaseSummaryRefresh, boolValue(cfg.Release.Enabled, true), 2, 10000),
@@ -269,6 +330,7 @@ func IndexingRuntimeFromConfig(cfg config.IndexingConfig) IndexingRuntimeSetting
 		PublicMinIdentityStatus:                         firstNonEmpty(cfg.Release.PublicMinIdentityStatus, "probable"),
 		PublicRequireInspection:                         boolValue(cfg.Release.PublicRequireInspection, true),
 		PublicRequireEnrichment:                         boolValue(cfg.Release.PublicRequireEnrichment, false),
+		PublicRequireClearTitle:                         boolValue(cfg.Release.PublicRequireClearTitle, true),
 		PublicRequirePayloadComplete:                    boolValue(cfg.Release.PublicRequirePayloadComplete, true),
 		PublicRequireExpectedFileCountComplete:          boolValue(cfg.Release.PublicRequireExpectedFileCountComplete, false),
 		PublicRequirePAR2:                               boolValue(cfg.Release.PublicRequirePAR2, false),
@@ -443,6 +505,7 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 			PublicMinIdentityStatus:                         indexing.Release.PublicMinIdentityStatus,
 			PublicRequireInspection:                         boolPtr(indexing.Release.PublicRequireInspection),
 			PublicRequireEnrichment:                         boolPtr(indexing.Release.PublicRequireEnrichment),
+			PublicRequireClearTitle:                         boolPtr(indexing.Release.PublicRequireClearTitle),
 			PublicRequirePayloadComplete:                    boolPtr(indexing.Release.PublicRequirePayloadComplete),
 			PublicRequireExpectedFileCountComplete:          boolPtr(indexing.Release.PublicRequireExpectedFileCountComplete),
 			PublicRequirePAR2:                               boolPtr(indexing.Release.PublicRequirePAR2),
@@ -725,6 +788,7 @@ func indexingConfigured(in *IndexingRuntimeSettings) bool {
 		in.ScrapeBackfill.Enabled ||
 		in.PosterMaterialize.Enabled ||
 		in.CrosspostPopularityRefresh.Enabled ||
+		in.ArticleCohortSchedule.Enabled ||
 		in.Assemble.Enabled ||
 		in.RecoverYEnc.Enabled ||
 		in.ReleaseSummaryRefresh.Enabled ||
@@ -862,9 +926,14 @@ func cloneIndexing(in *IndexingRuntimeSettings) *IndexingRuntimeSettings {
 		ScrapeBackfill:               in.ScrapeBackfill,
 		PosterMaterialize:            mergeStageRuntimeSettings(defaultStage(false, 2, 10000, 0), in.PosterMaterialize),
 		CrosspostPopularityRefresh:   mergeStageRuntimeSettings(defaultStage(false, 2, 1000, 0), in.CrosspostPopularityRefresh),
+		ArticleCohortSchedule:        mergeStageRuntimeSettings(defaultStage(false, 0.25, 50000, 0), in.ArticleCohortSchedule),
 		Assemble:                     mergeStageRuntimeSettings(defaultAssembleStage(false, 2, 5000, 1), in.Assemble),
 		RecoverYEnc:                  mergeStageRuntimeSettings(defaultRecoverYEncStage(false), in.RecoverYEnc),
 		SourceWindow:                 normalizeSourceWindowRuntimeSettings(in.SourceWindow),
+		Retention:                    mergeRetentionRuntimeSettings(defaultRetentionSettings(), in.Retention),
+		RecoveryAdmission:            mergeRecoveryAdmissionRuntimeSettings(defaultRecoveryAdmissionSettings(), in.RecoveryAdmission),
+		ScrapeTiers:                  mergeScrapeTierRuntimeSettings(defaultScrapeTierSettings(), in.ScrapeTiers),
+		DeferredBackfill:             mergeDeferredBackfillRuntimeSettings(defaultDeferredBackfillSettings(), in.DeferredBackfill),
 		ReleaseSummaryRefresh:        mergeStageRuntimeSettings(defaultReleaseSummaryRefreshStage(false), in.ReleaseSummaryRefresh),
 		Release:                      in.Release,
 		ReleaseGenerateNZB:           mergeStageRuntimeSettings(defaultStage(false, 10, 100, 0), in.ReleaseGenerateNZB),
@@ -1123,9 +1192,6 @@ func normalizeSourceWindowRuntimeSettings(in IndexingSourceWindowRuntimeSettings
 	if out.WindowMinutes <= 0 {
 		out.WindowMinutes = defaults.WindowMinutes
 	}
-	if out.BackfillWindowDays <= 0 {
-		out.BackfillWindowDays = defaults.BackfillWindowDays
-	}
 	if out.MaxOpenHeaders <= 0 {
 		out.MaxOpenHeaders = defaults.MaxOpenHeaders
 	}
@@ -1151,6 +1217,108 @@ func normalizeSourceWindowRuntimeSettings(in IndexingSourceWindowRuntimeSettings
 		}
 	}
 	return out
+}
+
+func mergeRetentionRuntimeSettings(base, override IndexingRetentionRuntimeSettings) IndexingRetentionRuntimeSettings {
+	if override.RawStageHotHours > 0 {
+		base.RawStageHotHours = override.RawStageHotHours
+	}
+	if override.RawStageWarmHours > 0 {
+		base.RawStageWarmHours = override.RawStageWarmHours
+	}
+	if override.RawStageColdHours > 0 {
+		base.RawStageColdHours = override.RawStageColdHours
+	}
+	if override.FailedProbeHours > 0 {
+		base.FailedProbeHours = override.FailedProbeHours
+	}
+	if override.ArchivedReleaseDetailGraceHours > 0 {
+		base.ArchivedReleaseDetailGraceHours = override.ArchivedReleaseDetailGraceHours
+	}
+	if override.MetadataIncompleteReleaseHours > 0 {
+		base.MetadataIncompleteReleaseHours = override.MetadataIncompleteReleaseHours
+	}
+	if override.CreatePartitionsDaysBefore > 0 {
+		base.CreatePartitionsDaysBefore = override.CreatePartitionsDaysBefore
+	}
+	if override.CreatePartitionsDaysAhead > 0 {
+		base.CreatePartitionsDaysAhead = override.CreatePartitionsDaysAhead
+	}
+	if !override.PurgeDryRunDefault {
+		base.PurgeDryRunDefault = false
+	}
+	return base
+}
+
+func mergeRecoveryAdmissionRuntimeSettings(base, override IndexingRecoveryAdmissionRuntimeSettings) IndexingRecoveryAdmissionRuntimeSettings {
+	if override.TargetHotLagHours > 0 {
+		base.TargetHotLagHours = override.TargetHotLagHours
+	}
+	if override.TargetWarmLagHours > 0 {
+		base.TargetWarmLagHours = override.TargetWarmLagHours
+	}
+	if override.SoftQueueHours > 0 {
+		base.SoftQueueHours = override.SoftQueueHours
+	}
+	if override.HardQueueMultiplier > 0 {
+		base.HardQueueMultiplier = override.HardQueueMultiplier
+	}
+	if override.AbsoluteHardQueueCap > 0 {
+		base.AbsoluteHardQueueCap = override.AbsoluteHardQueueCap
+	}
+	if override.EWMAWindowMinutes > 0 {
+		base.EWMAWindowMinutes = override.EWMAWindowMinutes
+	}
+	if override.BootstrapProbesPerHour > 0 {
+		base.BootstrapProbesPerHour = override.BootstrapProbesPerHour
+	}
+	if override.Priority0OverflowCap > 0 {
+		base.Priority0OverflowCap = override.Priority0OverflowCap
+	}
+	if override.Priority0ReservoirBatches > 0 {
+		base.Priority0ReservoirBatches = override.Priority0ReservoirBatches
+	}
+	if override.NearTimeCohortBucketMinutes > 0 {
+		base.NearTimeCohortBucketMinutes = override.NearTimeCohortBucketMinutes
+	}
+	return base
+}
+
+func mergeScrapeTierRuntimeSettings(base, override IndexingScrapeTierRuntimeSettings) IndexingScrapeTierRuntimeSettings {
+	if override.HotWindowMinutes > 0 {
+		base.HotWindowMinutes = override.HotWindowMinutes
+	}
+	if override.WarmWindowMinutes > 0 {
+		base.WarmWindowMinutes = override.WarmWindowMinutes
+	}
+	if override.ColdSampleHeaders > 0 {
+		base.ColdSampleHeaders = override.ColdSampleHeaders
+	}
+	if override.MaxArticlesPerGroupWindow > 0 {
+		base.MaxArticlesPerGroupWindow = override.MaxArticlesPerGroupWindow
+	}
+	if override.AssembleBacklogHighWater > 0 {
+		base.AssembleBacklogHighWater = override.AssembleBacklogHighWater
+	}
+	if override.AssembleBacklogLowWater > 0 {
+		base.AssembleBacklogLowWater = override.AssembleBacklogLowWater
+	}
+	base.AllowGlobalDailyGate = override.AllowGlobalDailyGate
+	return base
+}
+
+func mergeDeferredBackfillRuntimeSettings(base, override IndexingDeferredBackfillRuntimeSettings) IndexingDeferredBackfillRuntimeSettings {
+	base.Enabled = override.Enabled
+	if override.MaxRangesPerRun > 0 {
+		base.MaxRangesPerRun = override.MaxRangesPerRun
+	}
+	if override.MaxArticlesPerRangeChunk > 0 {
+		base.MaxArticlesPerRangeChunk = override.MaxArticlesPerRangeChunk
+	}
+	if override.RunOnlyBelowQueueRatio > 0 {
+		base.RunOnlyBelowQueueRatio = override.RunOnlyBelowQueueRatio
+	}
+	return base
 }
 
 func mergeStageRuntimeSettings(base, override IndexingStageRuntimeSettings) IndexingStageRuntimeSettings {
@@ -1206,6 +1374,9 @@ func mergeStageRuntimeSettings(base, override IndexingStageRuntimeSettings) Inde
 		base.NewestPct = override.NewestPct
 		base.TargetWindowPct = 100 - override.NewestPct
 	}
+	if override.FetchTimeoutSeconds > 0 {
+		base.FetchTimeoutSeconds = override.FetchTimeoutSeconds
+	}
 	if base.TargetWindowPct < 0 {
 		base.TargetWindowPct = 0
 	}
@@ -1228,6 +1399,10 @@ func defaultMaintenanceTasks() map[string]IndexingMaintenanceTaskRuntimeSettings
 		"grouping_evidence_cleanup":     {Enabled: true, ScheduleEnabled: false, IntervalHours: 24, BatchSize: 1000},
 		"crosspost_group_raw_purge":     {Enabled: true, ScheduleEnabled: false, IntervalHours: 24, BatchSize: 250000},
 		"yenc_done_work_item_cleanup":   {Enabled: true, ScheduleEnabled: false, IntervalHours: 24, BatchSize: 250000},
+		"group_profile_refresh":         {Enabled: true, ScheduleEnabled: true, IntervalHours: 1, BatchSize: 1},
+		"raw_stage_retention":           {Enabled: true, ScheduleEnabled: false, IntervalHours: 24, BatchSize: 250000},
+		"partition_retention_drop":      {Enabled: true, ScheduleEnabled: false, IntervalHours: 24, BatchSize: 7},
+		"partition_default_rehome":      {Enabled: true, ScheduleEnabled: false, IntervalHours: 24, BatchSize: 1},
 		"inspect_workspace_cleanup":     {Enabled: true, ScheduleEnabled: false, IntervalHours: 24, BatchSize: 1000},
 		"stale_nonrelease_source_purge": {Enabled: true, ScheduleEnabled: false, IntervalHours: 24, BatchSize: 10000},
 		"emergency_source_window_reset": {Enabled: true, ScheduleEnabled: false, IntervalHours: 168, BatchSize: 10000},

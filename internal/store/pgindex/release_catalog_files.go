@@ -41,34 +41,24 @@ func syncReleaseCatalogFiles(ctx context.Context, tx *sql.Tx, releaseID string) 
 			rf.file_index,
 			rf.is_pars,
 			COALESCE(rf.subject, ''),
-			COALESCE(NULLIF(rf.poster, ''), raw_meta.poster, ''),
-			COALESCE(rf.posted_at, raw_meta.posted_at),
-			COUNT(bp.id)::integer AS article_count,
+			COALESCE(rf.poster, ''),
+			COALESCE(rf.posted_at, bos.posted_at),
+			COALESCE(MAX(bos.observed_parts), 0)::integer AS article_count,
 			COALESCE(MAX(bos.total_parts), 0)::integer,
 			COALESCE(MAX(bos.observed_parts), 0)::integer,
 			COALESCE(MAX(bic.match_confidence), 0),
 			COALESCE(MAX(bic.match_status), ''),
 			NOW()
 		FROM release_files rf
-		LEFT JOIN binary_identity_current bic ON bic.binary_id = rf.binary_id
-		LEFT JOIN binary_observation_stats bos ON bos.binary_id = rf.binary_id
-		LEFT JOIN binary_parts bp ON bp.binary_id = rf.binary_id
-		LEFT JOIN LATERAL (
-			SELECT
-				COALESCE(NULLIF(p.poster_name, ''), NULLIF(aip.poster, '')) AS poster,
-				MIN(ah.date_utc) AS posted_at
-			FROM binary_parts rbp
-			JOIN article_headers ah ON ah.id = rbp.article_header_id
-			LEFT JOIN article_header_poster_refs apr ON apr.article_header_id = ah.id
-			LEFT JOIN posters p ON p.id = apr.poster_id
-			LEFT JOIN article_header_ingest_payloads aip ON aip.article_header_id = ah.id
-			WHERE rbp.binary_id = rf.binary_id
-			GROUP BY COALESCE(NULLIF(p.poster_name, ''), NULLIF(aip.poster, ''))
-			ORDER BY COUNT(*) DESC, COALESCE(NULLIF(p.poster_name, ''), NULLIF(aip.poster, ''))
-			LIMIT 1
-		) raw_meta ON TRUE
+		LEFT JOIN binary_core bc ON bc.binary_id = rf.binary_id
+		LEFT JOIN binary_identity_current bic
+		  ON bic.source_posted_at = bc.source_posted_at
+		 AND bic.binary_id = rf.binary_id
+		LEFT JOIN binary_observation_stats bos
+		  ON bos.source_posted_at = bc.source_posted_at
+		 AND bos.binary_id = rf.binary_id
 		WHERE rf.release_id = $1
-		GROUP BY rf.release_id, rf.file_name, rf.size_bytes, rf.file_index, rf.is_pars, rf.subject, rf.poster, rf.posted_at, raw_meta.poster, raw_meta.posted_at`,
+		GROUP BY rf.release_id, rf.file_name, rf.size_bytes, rf.file_index, rf.is_pars, rf.subject, rf.poster, rf.posted_at, bos.posted_at`,
 		releaseID,
 	)
 	if err != nil {
@@ -93,16 +83,33 @@ func (s *Store) BackfillMissingReleaseCatalogFiles(ctx context.Context, limit in
 	defer rollbackTx(tx)
 
 	rows, err := tx.QueryContext(ctx, `
+		WITH stale_releases AS MATERIALIZED (
+			SELECT r.release_id, r.created_at
+			FROM releases r
+			JOIN release_files rf ON rf.release_id = r.release_id
+			LEFT JOIN release_catalog_files cf
+			  ON cf.release_id = rf.release_id
+			 AND cf.file_index = rf.file_index
+			 AND cf.file_name = rf.file_name
+			LEFT JOIN binary_core bc ON bc.binary_id = rf.binary_id
+			LEFT JOIN binary_observation_stats bos
+			  ON bos.source_posted_at = bc.source_posted_at
+			 AND bos.binary_id = rf.binary_id
+			WHERE cf.release_id IS NULL
+			   OR COALESCE(cf.article_count, 0) < COALESCE(bos.observed_parts, 0)
+			   OR COALESCE(cf.observed_parts, 0) <> COALESCE(bos.observed_parts, 0)
+			   OR COALESCE(cf.total_parts, 0) <> COALESCE(bos.total_parts, 0)
+			GROUP BY r.release_id, r.created_at
+			ORDER BY r.created_at ASC, r.release_id
+			LIMIT $1
+		)
 		SELECT r.release_id
 		FROM releases r
-		LEFT JOIN release_catalog_files cf ON cf.release_id = r.release_id
-		WHERE cf.release_id IS NULL
-		  AND EXISTS (SELECT 1 FROM release_files rf WHERE rf.release_id = r.release_id)
-		ORDER BY r.created_at ASC, r.release_id
-		LIMIT $1
+		JOIN stale_releases sr ON sr.release_id = r.release_id
+		ORDER BY sr.created_at ASC, r.release_id
 		FOR UPDATE OF r`, limit)
 	if err != nil {
-		return 0, fmt.Errorf("list missing release catalog files: %w", err)
+		return 0, fmt.Errorf("list missing or stale release catalog files: %w", err)
 	}
 	defer rows.Close()
 
