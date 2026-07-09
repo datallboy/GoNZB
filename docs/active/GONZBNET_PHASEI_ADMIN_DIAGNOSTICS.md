@@ -14,11 +14,12 @@ Close the remaining v1 diagnostics gap from the GoNZBNet implementation spec:
 ## Implementation Plan
 
 1. Add read-only PostgreSQL store methods for federation peers, event summaries,
-   rejected events, peer deliveries, and validation tasks.
+   rejected events, rejected-event rate summaries, peer deliveries, and
+   validation tasks.
 2. Add local admin API endpoints under `/api/v1/admin/gonzbnet/diagnostics/*`,
    guarded by existing local GoNZBNet admin permissions.
 3. Extend the GoNZBNet admin WebUI with diagnostics panels for peers, events,
-   rejected events, deliveries, and validation tasks.
+   rejected events, rejected-event rates, deliveries, and validation tasks.
 4. Document the diagnostics behavior in `docs/wiki/gonzbnet/`.
 5. Run UI build and Go tests.
 

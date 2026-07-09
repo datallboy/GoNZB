@@ -31,7 +31,10 @@ The diagnostics read existing PostgreSQL state:
 - `federation_validation_tasks`
 
 No migration is required. The queries are capped by a `limit` parameter with a
-maximum of 500 rows per endpoint.
+maximum of 500 rows per endpoint. Rejected-event diagnostics also return a
+summary grouped by author node and rejection reason with one-hour, one-day, and
+total counters so operators can track invalid-signature or malformed-event
+rates.
 
 ## WebUI
 
@@ -40,6 +43,7 @@ The GoNZBNet admin page now includes diagnostics panels for:
 - peer status, cursor, failures, and sync timestamps
 - accepted event log status and projection status
 - rejected event reasons
+- rejected event rates by author and reason
 - peer delivery attempts and errors
 - validation task status, due times, attempts, and errors
 

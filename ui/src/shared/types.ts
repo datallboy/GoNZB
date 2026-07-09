@@ -1624,6 +1624,20 @@ export type GoNZBNetRejectedEventDiagnostic = {
   received_at: string
 }
 
+export type GoNZBNetRejectedEventSummary = {
+  author_node_id: string
+  rejection_reason: string
+  total: number
+  last_hour: number
+  last_day: number
+  first_seen_at: string
+  last_seen_at: string
+}
+
+export type GoNZBNetRejectedEventDiagnosticsResponse = GoNZBNetListResponse<GoNZBNetRejectedEventDiagnostic> & {
+  summary: GoNZBNetRejectedEventSummary[]
+}
+
 export type GoNZBNetPeerDeliveryDiagnostic = {
   peer_id: number
   peer_url: string

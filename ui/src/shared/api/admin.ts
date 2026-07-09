@@ -64,7 +64,7 @@ import type {
   GoNZBNetPoolMemberRevocationResponse,
   GoNZBNetPoolMember,
   GoNZBNetPoolMemberRequest,
-  GoNZBNetRejectedEventDiagnostic,
+  GoNZBNetRejectedEventDiagnosticsResponse,
   GoNZBNetReleaseSourceDiagnostic,
   GoNZBNetReputationDiagnostic,
   GoNZBNetRolePoolAccess,
@@ -561,7 +561,7 @@ export function getGoNZBNetEventDiagnostics(limit = 100) {
 }
 
 export function getGoNZBNetRejectedEventDiagnostics(limit = 100) {
-  return apiRequest<GoNZBNetListResponse<GoNZBNetRejectedEventDiagnostic>>(
+  return apiRequest<GoNZBNetRejectedEventDiagnosticsResponse>(
     `/api/v1/admin/gonzbnet/diagnostics/rejected-events${goNZBNetQuery({ limit })}`,
   )
 }

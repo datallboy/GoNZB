@@ -69,6 +69,7 @@ import type {
   GoNZBNetPoolControlEvent,
   GoNZBNetPoolMember,
   GoNZBNetRejectedEventDiagnostic,
+  GoNZBNetRejectedEventSummary,
   GoNZBNetReleaseSourceDiagnostic,
   GoNZBNetReputationDiagnostic,
   GoNZBNetRolePoolAccess,
@@ -527,6 +528,7 @@ export function AdminGoNZBNetPage() {
   const [peerDiagnostics, setPeerDiagnostics] = useState<GoNZBNetPeerDiagnostic[]>([])
   const [eventDiagnostics, setEventDiagnostics] = useState<GoNZBNetEventDiagnostic[]>([])
   const [rejectedDiagnostics, setRejectedDiagnostics] = useState<GoNZBNetRejectedEventDiagnostic[]>([])
+  const [rejectedSummary, setRejectedSummary] = useState<GoNZBNetRejectedEventSummary[]>([])
   const [deliveryDiagnostics, setDeliveryDiagnostics] = useState<GoNZBNetPeerDeliveryDiagnostic[]>([])
   const [validationTaskDiagnostics, setValidationTaskDiagnostics] = useState<GoNZBNetValidationTaskDiagnostic[]>([])
   const [releaseSourceDiagnostics, setReleaseSourceDiagnostics] = useState<GoNZBNetReleaseSourceDiagnostic[]>([])
@@ -626,6 +628,7 @@ export function AdminGoNZBNetPage() {
       setPeerDiagnostics(nextPeers.items ?? [])
       setEventDiagnostics(nextEvents.items ?? [])
       setRejectedDiagnostics(nextRejected.items ?? [])
+      setRejectedSummary(nextRejected.summary ?? [])
       setDeliveryDiagnostics(nextDeliveries.items ?? [])
       setValidationTaskDiagnostics(nextValidationTasks.items ?? [])
       setTrustPools(nextTrustPools.items ?? [])
@@ -1835,6 +1838,33 @@ export function AdminGoNZBNetPage() {
                 </td>
                 <td>{item.projected ? formatDateTime(item.projected_at) : 'no'}</td>
                 <td>{formatDateTime(item.received_at)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </SectionTable>
+
+      <SectionTable title="Rejected event rates" count={rejectedSummary.length}>
+        <table className="data-table data-table--compact">
+          <thead>
+            <tr>
+              <th>Author</th>
+              <th>Reason</th>
+              <th>1h</th>
+              <th>24h</th>
+              <th>Total</th>
+              <th>Last seen</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rejectedSummary.map((item) => (
+              <tr key={`${item.author_node_id}-${item.rejection_reason}`}>
+                <td className="mono-cell breakable-value" title={item.author_node_id}>{shortID(item.author_node_id)}</td>
+                <td className="breakable-value">{item.rejection_reason}</td>
+                <td>{formatNumber(item.last_hour)}</td>
+                <td>{formatNumber(item.last_day)}</td>
+                <td>{formatNumber(item.total)}</td>
+                <td>{formatDateTime(item.last_seen_at)}</td>
               </tr>
             ))}
           </tbody>
