@@ -45,6 +45,7 @@ type gonzbnetStore interface {
 	UpsertFederationNode(ctx context.Context, node pgindex.FederationNodeRecord) error
 	AppendVerifiedFederationEvent(ctx context.Context, event *events.SignedEvent, validation *events.ValidationResult) error
 	AppendRejectedFederationEvent(ctx context.Context, eventID, authorNodeID, eventType string, rawEventJSON []byte, reason string) error
+	ListPoolMembers(ctx context.Context, poolID string) ([]pgindex.PoolMemberRecord, error)
 	UpsertFederatedReleaseCardProjection(ctx context.Context, projection releasecard.Projection) error
 	ValidateFederationPoolControlEvent(ctx context.Context, event *events.SignedEvent) error
 	ProjectFederationPoolEvent(ctx context.Context, event *events.SignedEvent) error
@@ -69,6 +70,13 @@ type outboxResponse struct {
 	Events        []*events.SignedEvent `json:"events"`
 	NextCursor    string                `json:"next_cursor"`
 	HasMore       bool                  `json:"has_more"`
+}
+
+type poolMembersResponse struct {
+	SchemaVersion string                     `json:"schema_version"`
+	Type          string                     `json:"type"`
+	PoolID        string                     `json:"pool_id"`
+	Members       []pgindex.PoolMemberRecord `json:"members"`
 }
 
 type inboxEventBatch struct {
@@ -257,6 +265,27 @@ func (ctrl *GoNZBNetController) Event(c *echo.Context) error {
 		return federationJSONError(c, http.StatusNotFound, "invalid_event_id", "event not found")
 	}
 	return c.JSON(http.StatusOK, event)
+}
+
+func (ctrl *GoNZBNetController) PoolMembers(c *echo.Context) error {
+	store, ok := ctrl.appCtx.PGIndexStore.(gonzbnetStore)
+	if !ok {
+		return federationJSONError(c, http.StatusServiceUnavailable, "internal_error", "gonzbnet store is unavailable")
+	}
+	poolID := pathParamTrimmed(c, "pool_id")
+	if poolID == "" {
+		return federationJSONError(c, http.StatusBadRequest, "invalid_schema", "pool_id is required")
+	}
+	members, err := store.ListPoolMembers(c.Request().Context(), poolID)
+	if err != nil {
+		return federationJSONError(c, http.StatusInternalServerError, "internal_error", err.Error())
+	}
+	return c.JSON(http.StatusOK, poolMembersResponse{
+		SchemaVersion: "1.0",
+		Type:          "PoolMembers",
+		PoolID:        poolID,
+		Members:       members,
+	})
 }
 
 func (ctrl *GoNZBNetController) Handshake(c *echo.Context) error {
