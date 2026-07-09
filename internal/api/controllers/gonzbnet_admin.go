@@ -40,6 +40,7 @@ type gonzbnetAdminStore interface {
 	ProjectCoverageEvent(ctx context.Context, event *events.SignedEvent) error
 	ListCoverageDashboard(ctx context.Context, poolID string) (pgindex.CoverageDashboard, error)
 	SuggestCoverageWork(ctx context.Context, params pgindex.CoverageWorkSuggestionParams) ([]pgindex.CoverageWorkSuggestion, error)
+	BuildCoverageSchedulerPlan(ctx context.Context, params pgindex.CoverageWorkSuggestionParams) (pgindex.CoverageSchedulerPlan, error)
 }
 
 type trustPoolRequest struct {
@@ -397,6 +398,41 @@ func (ctrl *GoNZBNetAdminController) CoverageSuggestions(c *echo.Context) error 
 		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}
 	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
+func (ctrl *GoNZBNetAdminController) CoverageSchedulerPlan(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	params, err := ctrl.coverageSuggestionParams(c)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	plan, err := store.BuildCoverageSchedulerPlan(c.Request().Context(), params)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, plan)
+}
+
+func (ctrl *GoNZBNetAdminController) coverageSuggestionParams(c *echo.Context) (pgindex.CoverageWorkSuggestionParams, error) {
+	poolID := firstNonBlank(queryParamTrimmed(c, "pool_id"), ctrl.appCtx.Config.GoNZBNet.LocalPoolID, "pool.local")
+	nodeID := queryParamTrimmed(c, "node_id")
+	if nodeID == "" {
+		localNodeID, err := ctrl.localNodeID(c)
+		if err != nil {
+			return pgindex.CoverageWorkSuggestionParams{}, err
+		}
+		nodeID = localNodeID
+	}
+	return pgindex.CoverageWorkSuggestionParams{
+		PoolID:                poolID,
+		NodeID:                nodeID,
+		Mode:                  firstNonBlank(queryParamTrimmed(c, "mode"), "scanner"),
+		Limit:                 parseIntDefault(queryParamTrimmed(c, "limit"), 25),
+		MinBlockingTrustScore: parseCoverageFloatDefault(queryParamTrimmed(c, "min_blocking_trust"), 0.25),
+	}, nil
 }
 
 func (ctrl *GoNZBNetAdminController) CreateCoverageAssignment(c *echo.Context) error {
