@@ -15,12 +15,14 @@ import (
 
 	"github.com/datallboy/gonzb/internal/gonzbnet/canonical"
 	"github.com/datallboy/gonzb/internal/gonzbnet/events"
+	"github.com/datallboy/gonzb/internal/gonzbnet/gossip"
 	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
 	"github.com/datallboy/gonzb/internal/gonzbnet/pools"
 	"github.com/datallboy/gonzb/internal/gonzbnet/profile"
 	"github.com/datallboy/gonzb/internal/gonzbnet/releasecard"
 	"github.com/datallboy/gonzb/internal/gonzbnet/requestauth"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
+	"golang.org/x/net/websocket"
 )
 
 type Identity interface {
@@ -93,6 +95,14 @@ type InboxResponse struct {
 	Duplicate     []InboxEventResult `json:"duplicate"`
 	Rejected      []InboxEventResult `json:"rejected"`
 	Cursor        string             `json:"cursor,omitempty"`
+}
+
+type GossipOptions struct {
+	NetworkID           string
+	TTL                 int
+	BatchSize           int
+	Fanout              int
+	PeerExchangeEnabled bool
 }
 
 func New(identity Identity, store Store, logger Logger) *Service {
@@ -211,6 +221,70 @@ func (s *Service) RunPush(ctx context.Context, interval time.Duration, limit int
 		case <-ticker.C:
 		}
 	}
+}
+
+func (s *Service) RunGossip(ctx context.Context, interval time.Duration, opts GossipOptions) error {
+	if interval <= 0 {
+		_, err := s.GossipOnce(ctx, opts)
+		return err
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		if _, err := s.GossipOnce(ctx, opts); err != nil && s.logger != nil {
+			s.logger.Warn("gonzbnet websocket gossip pass failed: %v", err)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func (s *Service) GossipOnce(ctx context.Context, opts GossipOptions) (Result, error) {
+	var result Result
+	if s == nil || s.identity == nil || s.store == nil {
+		return result, fmt.Errorf("sync dependencies are required")
+	}
+	peers, err := s.store.ListEnabledFederationPeers(ctx)
+	if err != nil {
+		return result, err
+	}
+	if opts.Fanout <= 0 || opts.Fanout > len(peers) {
+		opts.Fanout = len(peers)
+	}
+	attempted := 0
+	for i := 0; i < len(peers) && attempted < opts.Fanout; i++ {
+		if !peerBackoffReady(peers[i], time.Now()) {
+			continue
+		}
+		attempted++
+		peerResult, err := s.gossipPeer(ctx, peers[i], opts)
+		if err != nil {
+			_ = s.store.MarkFederationPeerSyncFailure(ctx, peers[i].ID, err.Error())
+			if s.logger != nil {
+				s.logger.Warn("gonzbnet websocket gossip failed peer=%s: %v", peers[i].PeerURL, err)
+			}
+			continue
+		}
+		result.Accepted += peerResult.Accepted
+		result.Duplicate += peerResult.Duplicate
+		result.Rejected += peerResult.Rejected
+	}
+	result.Peers = attempted
+	return result, nil
+}
+
+func peerBackoffReady(peer pgindex.FederationPeerRecord, now time.Time) bool {
+	if strings.TrimSpace(peer.Status) != "error" || peer.FailureCount <= 0 || peer.UpdatedAt.IsZero() {
+		return true
+	}
+	delay := time.Duration(peer.FailureCount) * time.Minute
+	if delay > 10*time.Minute {
+		delay = 10 * time.Minute
+	}
+	return now.Sub(peer.UpdatedAt) >= delay
 }
 
 func (s *Service) syncPeer(ctx context.Context, peer pgindex.FederationPeerRecord) (Result, error) {
@@ -424,6 +498,139 @@ func (s *Service) pushPeer(ctx context.Context, peer pgindex.FederationPeerRecor
 		}
 	}
 	return result, nil
+}
+
+func (s *Service) gossipPeer(ctx context.Context, peer pgindex.FederationPeerRecord, opts GossipOptions) (Result, error) {
+	var result Result
+	limit := opts.BatchSize
+	if limit <= 0 || limit > 100 {
+		limit = 100
+	}
+	wellKnown, err := s.fetchWellKnown(ctx, peer.PeerURL)
+	if err != nil {
+		return result, err
+	}
+	nodeProfile, err := s.fetchNodeProfile(ctx, wellKnown.BaseURL)
+	if err != nil {
+		return result, err
+	}
+	if err := s.validatePeerIdentity(wellKnown, nodeProfile); err != nil {
+		return result, err
+	}
+	publicKey, err := canonical.DecodeBase64URL(nodeProfile.PublicKey)
+	if err != nil {
+		return result, fmt.Errorf("decode peer public key: %w", err)
+	}
+	profileJSON, _ := json.Marshal(nodeProfile)
+	capabilitiesJSON, _ := json.Marshal(nodeProfile.Capabilities)
+	if err := s.store.UpsertFederationNode(ctx, pgindex.FederationNodeRecord{
+		NodeID:          nodeProfile.NodeID,
+		PublicKey:       ed25519.PublicKey(publicKey),
+		Alias:           nodeProfile.Alias,
+		Software:        nodeProfile.Software,
+		SoftwareVersion: nodeProfile.SoftwareVersion,
+		BaseURL:         wellKnown.BaseURL,
+		Capabilities:    capabilitiesJSON,
+		ProfileJSON:     profileJSON,
+		Status:          "connected",
+	}); err != nil {
+		return result, err
+	}
+	if !nodeProfile.Capabilities.WebSocketGossip {
+		return result, fmt.Errorf("peer does not advertise websocket gossip")
+	}
+	items, err := s.store.ListUndeliveredFederationEvents(ctx, peer.ID, limit)
+	if err != nil {
+		return result, err
+	}
+	if len(items) == 0 {
+		return result, nil
+	}
+	batchEvents := make([]events.SignedEvent, 0, len(items))
+	for _, item := range items {
+		if item != nil {
+			batchEvents = append(batchEvents, *item)
+		}
+	}
+	wsURL := websocketURL(nodeProfile, wellKnown.BaseURL)
+	parsed, err := url.Parse(wsURL)
+	if err != nil {
+		return result, err
+	}
+	authorization, err := requestauth.Sign(ctx, s.identity, http.MethodGet, parsed.Path, parsed.RawQuery, nil, time.Now())
+	if err != nil {
+		return result, err
+	}
+	cfg, err := websocket.NewConfig(wsURL, wellKnown.BaseURL)
+	if err != nil {
+		return result, err
+	}
+	cfg.Header.Set("Authorization", authorization)
+	ws, err := websocket.DialConfig(cfg)
+	if err != nil {
+		return result, err
+	}
+	defer ws.Close()
+	peers := []string{}
+	if opts.PeerExchangeEnabled {
+		knownPeers, err := s.store.ListEnabledFederationPeers(ctx)
+		if err == nil {
+			for _, known := range knownPeers {
+				peers = append(peers, known.PeerURL)
+			}
+		}
+	}
+	if err := websocket.JSON.Send(ws, gossip.Batch{
+		SchemaVersion: "1.0",
+		Type:          gossip.Type,
+		NetworkID:     opts.NetworkID,
+		TTL:           gossip.NormalizeTTL(opts.TTL, opts.TTL),
+		Events:        batchEvents,
+		WantMissing:   false,
+		Peers:         gossip.FilterPeers(peers, opts.PeerExchangeEnabled, opts.Fanout),
+	}); err != nil {
+		return result, err
+	}
+	var response gossip.Response
+	if err := websocket.JSON.Receive(ws, &response); err != nil {
+		return result, err
+	}
+	for _, item := range response.Accepted {
+		result.Accepted++
+		_ = s.store.RecordFederationPeerDelivery(ctx, pgindex.FederationDeliveryResult{PeerID: peer.ID, EventID: item.EventID, Status: "accepted"})
+	}
+	for _, item := range response.Duplicate {
+		result.Duplicate++
+		_ = s.store.RecordFederationPeerDelivery(ctx, pgindex.FederationDeliveryResult{PeerID: peer.ID, EventID: item.EventID, Status: "duplicate"})
+	}
+	for _, item := range response.Rejected {
+		result.Rejected++
+		_ = s.store.RecordFederationPeerDelivery(ctx, pgindex.FederationDeliveryResult{PeerID: peer.ID, EventID: item.EventID, Status: "rejected", Error: firstNonBlank(item.Message, item.Code)})
+	}
+	if opts.PeerExchangeEnabled {
+		for _, peerURL := range gossip.FilterPeers(response.Peers, true, opts.Fanout) {
+			_, _ = s.store.UpsertFederationPeerURL(ctx, peerURL)
+		}
+	}
+	return result, nil
+}
+
+func websocketURL(nodeProfile profile.NodeProfile, baseURL string) string {
+	endpoint := strings.TrimSpace(nodeProfile.Endpoints.WS)
+	if endpoint == "" {
+		endpoint = strings.TrimRight(strings.TrimSpace(baseURL), "/") + "/ws"
+	}
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return endpoint
+	}
+	switch parsed.Scheme {
+	case "https":
+		parsed.Scheme = "wss"
+	case "http":
+		parsed.Scheme = "ws"
+	}
+	return parsed.String()
 }
 
 func (s *Service) pushEvents(ctx context.Context, baseURL string, items []*events.SignedEvent) (InboxResponse, error) {

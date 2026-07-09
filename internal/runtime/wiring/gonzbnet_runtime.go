@@ -65,7 +65,8 @@ func (m *gonzbnetRuntimeModule) Start(ctx context.Context) error {
 	healthEnabled := m.publisher != nil && m.appCtx.Config.GoNZBNet.HealthAttestationsEnabled
 	pullEnabled := m.pullSync != nil && m.appCtx.Config.GoNZBNet.PullSyncEnabled
 	pushEnabled := m.pullSync != nil && m.appCtx.Config.GoNZBNet.PushSyncEnabled
-	if !publishEnabled && !healthEnabled && !pullEnabled && !pushEnabled {
+	gossipEnabled := m.pullSync != nil && m.appCtx.Config.GoNZBNet.WebSocketGossipEnabled
+	if !publishEnabled && !healthEnabled && !pullEnabled && !pushEnabled && !gossipEnabled {
 		return nil
 	}
 	if m.running {
@@ -111,6 +112,22 @@ func (m *gonzbnetRuntimeModule) Start(ctx context.Context) error {
 		go func() {
 			if err := m.pullSync.RunPush(childCtx, interval, batchSize); err != nil && childCtx.Err() == nil {
 				m.appCtx.Logger.Error("gonzbnet push sync failed: %v", err)
+			}
+		}()
+	}
+	if gossipEnabled {
+		interval := time.Duration(m.appCtx.Config.GoNZBNet.GossipIntervalMin * float64(time.Minute))
+		opts := gonzbnetsync.GossipOptions{
+			NetworkID:           m.appCtx.Config.GoNZBNet.NetworkID,
+			TTL:                 m.appCtx.Config.GoNZBNet.GossipTTL,
+			BatchSize:           m.appCtx.Config.GoNZBNet.GossipBatchSize,
+			Fanout:              m.appCtx.Config.GoNZBNet.GossipFanout,
+			PeerExchangeEnabled: m.appCtx.Config.GoNZBNet.PeerExchangeEnabled,
+		}
+		m.appCtx.Logger.Info("starting gonzbnet websocket gossip interval=%s batch_size=%d ttl=%d fanout=%d peer_exchange=%v", interval, opts.BatchSize, opts.TTL, opts.Fanout, opts.PeerExchangeEnabled)
+		go func() {
+			if err := m.pullSync.RunGossip(childCtx, interval, opts); err != nil && childCtx.Err() == nil {
+				m.appCtx.Logger.Error("gonzbnet websocket gossip failed: %v", err)
 			}
 		}()
 	}
