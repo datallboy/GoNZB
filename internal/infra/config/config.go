@@ -141,6 +141,7 @@ type GoNZBNetConfig struct {
 	MaxBatchEvents                 int      `mapstructure:"max_batch_events" yaml:"max_batch_events"`
 	RateLimitEventsPerMinute       int      `mapstructure:"rate_limit_events_per_minute" yaml:"rate_limit_events_per_minute"`
 	TimeToleranceSeconds           int      `mapstructure:"time_tolerance_seconds" yaml:"time_tolerance_seconds"`
+	MaxEventAgeHours               int      `mapstructure:"max_event_age_hours" yaml:"max_event_age_hours"`
 	NonceTTLSeconds                int      `mapstructure:"nonce_ttl_seconds" yaml:"nonce_ttl_seconds"`
 	LiveQueryEnabled               bool     `mapstructure:"live_query_enabled" yaml:"live_query_enabled"`
 	SendUserContext                bool     `mapstructure:"send_user_context" yaml:"send_user_context"`
@@ -565,6 +566,7 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("gonzbnet.max_batch_events", 100)
 	v.SetDefault("gonzbnet.rate_limit_events_per_minute", 120)
 	v.SetDefault("gonzbnet.time_tolerance_seconds", 120)
+	v.SetDefault("gonzbnet.max_event_age_hours", 720)
 	v.SetDefault("gonzbnet.nonce_ttl_seconds", 600)
 	v.SetDefault("gonzbnet.live_query_enabled", false)
 	v.SetDefault("gonzbnet.send_user_context", false)

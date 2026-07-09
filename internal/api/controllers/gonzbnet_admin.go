@@ -352,6 +352,9 @@ func (ctrl *GoNZBNetAdminController) ConfigValidation(c *echo.Context) error {
 	if cfg.TimeToleranceSeconds <= 0 {
 		issue("error", "gonzbnet.time_tolerance_seconds", "must be greater than 0")
 	}
+	if cfg.MaxEventAgeHours <= 0 {
+		issue("error", "gonzbnet.max_event_age_hours", "must be greater than 0")
+	}
 	if cfg.NonceTTLSeconds <= 0 {
 		issue("error", "gonzbnet.nonce_ttl_seconds", "must be greater than 0")
 	}
@@ -1710,6 +1713,7 @@ func (ctrl *GoNZBNetAdminController) syncService() (*gonzbnetsync.Service, error
 	return gonzbnetsync.NewWithOptions(nodeIdentity, syncStore, ctrl.appCtx.Logger, gonzbnetsync.Options{
 		AllowInsecurePeerHTTP: ctrl.appCtx.Config.GoNZBNet.AllowInsecurePeerHTTP,
 		EventTimeTolerance:    time.Duration(ctrl.appCtx.Config.GoNZBNet.TimeToleranceSeconds) * time.Second,
+		MaxEventAge:           time.Duration(ctrl.appCtx.Config.GoNZBNet.MaxEventAgeHours) * time.Hour,
 	}), nil
 }
 
@@ -1728,6 +1732,7 @@ func (ctrl *GoNZBNetAdminController) manifestResolver() (*manifestresolver.Resol
 	return manifestresolver.NewWithOptions(nodeIdentity, resolverStore, manifestresolver.Options{
 		AllowInsecurePeerHTTP: ctrl.appCtx.Config.GoNZBNet.AllowInsecurePeerHTTP,
 		EventTimeTolerance:    time.Duration(ctrl.appCtx.Config.GoNZBNet.TimeToleranceSeconds) * time.Second,
+		MaxEventAge:           time.Duration(ctrl.appCtx.Config.GoNZBNet.MaxEventAgeHours) * time.Hour,
 	}), nil
 }
 
@@ -1909,6 +1914,7 @@ func (ctrl *GoNZBNetAdminController) adminConfigSummary() gonzbnetAdminConfigSum
 		Limits: map[string]int{
 			"max_batch_events":             cfg.MaxBatchEvents,
 			"max_event_bytes":              cfg.MaxEventBytes,
+			"max_event_age_hours":          cfg.MaxEventAgeHours,
 			"max_manifest_bytes":           cfg.MaxManifestBytes,
 			"nonce_ttl_seconds":            cfg.NonceTTLSeconds,
 			"rate_limit_events_per_minute": cfg.RateLimitEventsPerMinute,

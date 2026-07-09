@@ -596,6 +596,7 @@ func testGoNZBNetAdminConfig(t *testing.T) *config.Config {
 			MaxBatchEvents:                 100,
 			RateLimitEventsPerMinute:       120,
 			TimeToleranceSeconds:           120,
+			MaxEventAgeHours:               720,
 			NonceTTLSeconds:                600,
 		},
 		Modules: config.ModulesConfig{

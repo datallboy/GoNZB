@@ -159,6 +159,29 @@ func TestVerifyAtRejectsFutureAndExpiredEvents(t *testing.T) {
 	}
 }
 
+func TestVerifyWithinRejectsEventsPastMaxAge(t *testing.T) {
+	ctx := context.Background()
+	node, err := identity.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("load identity: %v", err)
+	}
+	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
+	opts := testCreateOptions()
+	opts.CreatedAt = now.Add(-49 * time.Hour)
+	event, _, err := Create(ctx, node, opts)
+	if err != nil {
+		t.Fatalf("create old event: %v", err)
+	}
+
+	result, err := VerifyWithin(event, now, 2*time.Minute, 48*time.Hour)
+	if err != nil {
+		t.Fatalf("verify old event: %v", err)
+	}
+	if result.OK || result.Reason != "event too old" {
+		t.Fatalf("expected stale event rejection, got %+v", result)
+	}
+}
+
 func testCreateOptions() CreateOptions {
 	return CreateOptions{
 		EventType:  "NodeProfile",

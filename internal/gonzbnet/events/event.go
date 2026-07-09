@@ -191,18 +191,22 @@ func Verify(event *SignedEvent) (*ValidationResult, error) {
 }
 
 func VerifyAt(event *SignedEvent, now time.Time, futureTolerance time.Duration) (*ValidationResult, error) {
+	return VerifyWithin(event, now, futureTolerance, 0)
+}
+
+func VerifyWithin(event *SignedEvent, now time.Time, futureTolerance, maxAge time.Duration) (*ValidationResult, error) {
 	result, err := Verify(event)
 	if err != nil || result == nil || !result.OK {
 		return result, err
 	}
-	if err := ValidateTimeWindow(event, now, futureTolerance); err != nil {
+	if err := ValidateTimeWindow(event, now, futureTolerance, maxAge); err != nil {
 		result.OK = false
 		result.Reason = err.Error()
 	}
 	return result, nil
 }
 
-func ValidateTimeWindow(event *SignedEvent, now time.Time, futureTolerance time.Duration) error {
+func ValidateTimeWindow(event *SignedEvent, now time.Time, futureTolerance, maxAge time.Duration) error {
 	if event == nil {
 		return fmt.Errorf("event is required")
 	}
@@ -221,6 +225,9 @@ func ValidateTimeWindow(event *SignedEvent, now time.Time, futureTolerance time.
 	}
 	if event.ExpiresAt != nil && !event.ExpiresAt.After(now) {
 		return fmt.Errorf("event expired")
+	}
+	if maxAge > 0 && event.CreatedAt.Before(now.Add(-maxAge)) {
+		return fmt.Errorf("event too old")
 	}
 	return nil
 }

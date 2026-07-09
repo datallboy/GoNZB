@@ -99,7 +99,8 @@ Current implementation state:
 - Config cleanup maps the spec shorthand `GONZBNET_ENABLED` to the existing
   `modules.gonzbnet.enabled` module gate.
 - Security cleanup rejects remote signed events with future `created_at` /
-  `not_before` windows or expired `expires_at` values.
+  `not_before` windows, expired `expires_at` values, or event ages beyond
+  `gonzbnet.max_event_age_hours`.
 - Test cleanup adds direct coverage for non-member event rejection and local
   GoNZBNet RBAC denial paths.
 
