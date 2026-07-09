@@ -102,8 +102,8 @@ Current implementation state:
   `modules.gonzbnet.enabled` module gate.
 - Config cleanup adds direct route-gate coverage for
   `modules.gonzbnet.enabled` and `gonzbnet.http_enabled`.
-- Public endpoint cleanup adds the spec-listed `/events/batch` inbox alias and
-  `/pools/:pool_id/members` trust-pool member discovery route.
+- Public endpoint cleanup adds the spec-listed `/events/batch` inbox alias,
+  `/pools/:pool_id/members`, and `/peers` discovery routes.
 - Security cleanup rejects remote signed events with future `created_at` /
   `not_before` windows, expired `expires_at` values, or event ages beyond
   `gonzbnet.max_event_age_hours`.

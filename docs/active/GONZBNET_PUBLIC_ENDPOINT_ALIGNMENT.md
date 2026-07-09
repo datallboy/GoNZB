@@ -9,6 +9,8 @@ Implemented:
   the existing inbox batch handler.
 - `GET /gonzbnet/v1/pools/:pool_id/members` returns the local trust-pool member
   projection as a `PoolMembers` response.
+- `GET /gonzbnet/v1/peers` returns a filtered list of enabled peer URLs when
+  peer exchange is enabled.
 
 Behavior:
 
@@ -17,5 +19,7 @@ Behavior:
 - The member endpoint exposes node-level pool membership only. It does not
   expose local usernames, API keys, searches, grabs, downloads, or local RBAC
   assignments.
+- The peer endpoint returns an empty peer list when
+  `gonzbnet.peer_exchange_enabled` is false.
 - Pool checkpoint publication remains deferred with the existing trust-pool
   checkpoint work.

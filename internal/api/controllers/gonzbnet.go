@@ -79,6 +79,12 @@ type poolMembersResponse struct {
 	Members       []pgindex.PoolMemberRecord `json:"members"`
 }
 
+type peersResponse struct {
+	SchemaVersion string   `json:"schema_version"`
+	Type          string   `json:"type"`
+	Peers         []string `json:"peers"`
+}
+
 type inboxEventBatch struct {
 	SchemaVersion string               `json:"schema_version"`
 	Type          string               `json:"type"`
@@ -285,6 +291,34 @@ func (ctrl *GoNZBNetController) PoolMembers(c *echo.Context) error {
 		Type:          "PoolMembers",
 		PoolID:        poolID,
 		Members:       members,
+	})
+}
+
+func (ctrl *GoNZBNetController) Peers(c *echo.Context) error {
+	cfg := ctrl.appCtx.Config.GoNZBNet
+	if !cfg.PeerExchangeEnabled {
+		return c.JSON(http.StatusOK, peersResponse{
+			SchemaVersion: "1.0",
+			Type:          "PeerList",
+			Peers:         []string{},
+		})
+	}
+	store, ok := ctrl.appCtx.PGIndexStore.(gonzbnetStore)
+	if !ok {
+		return federationJSONError(c, http.StatusServiceUnavailable, "internal_error", "gonzbnet store is unavailable")
+	}
+	records, err := store.ListEnabledFederationPeers(c.Request().Context())
+	if err != nil {
+		return federationJSONError(c, http.StatusInternalServerError, "internal_error", err.Error())
+	}
+	peers := make([]string, 0, len(records))
+	for _, record := range records {
+		peers = append(peers, record.PeerURL)
+	}
+	return c.JSON(http.StatusOK, peersResponse{
+		SchemaVersion: "1.0",
+		Type:          "PeerList",
+		Peers:         gossip.FilterPeers(peers, true, cfg.GossipFanout),
 	})
 }
 

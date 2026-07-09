@@ -5,6 +5,7 @@ previously covered by other paths or local admin routes only:
 
 - `POST /gonzbnet/v1/events/batch`
 - `GET /gonzbnet/v1/pools/:pool_id/members`
+- `GET /gonzbnet/v1/peers`
 
 `events/batch` uses the same authenticated, rate-limited inbox handler as
 `/gonzbnet/v1/inbox`.
@@ -13,7 +14,11 @@ previously covered by other paths or local admin routes only:
 `PoolMembers` response containing node IDs, pool roles, status, allowed
 capabilities, limits, and membership timestamps.
 
-Both routes are public federation routes, so they are only registered when
+`peers` returns enabled peer URLs through the same fanout filter used by
+WebSocket gossip. When `gonzbnet.peer_exchange_enabled` is false, it returns an
+empty list.
+
+These routes are public federation routes, so they are only registered when
 `modules.gonzbnet.enabled` and `gonzbnet.http_enabled` are true. They do not
 expose local user identity, API keys, search history, grab history, download
 history, or role-to-pool RBAC mappings.
