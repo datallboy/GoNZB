@@ -43,7 +43,13 @@ import type {
   GoNZBNetOutcomeRequest,
   GoNZBNetPeerDeliveryDiagnostic,
   GoNZBNetPeerDiagnostic,
+  GoNZBNetPoolMember,
+  GoNZBNetPoolMemberRequest,
   GoNZBNetRejectedEventDiagnostic,
+  GoNZBNetTombstone,
+  GoNZBNetTombstoneRequest,
+  GoNZBNetTrustPool,
+  GoNZBNetTrustPoolRequest,
   GoNZBNetValidationTaskDiagnostic,
   GoNZBNetValidationGap,
   IndexerOverview,
@@ -531,5 +537,54 @@ export function getGoNZBNetPeerDeliveryDiagnostics(limit = 100) {
 export function getGoNZBNetValidationTaskDiagnostics(limit = 100) {
   return apiRequest<GoNZBNetListResponse<GoNZBNetValidationTaskDiagnostic>>(
     `/api/v1/admin/gonzbnet/diagnostics/validation-tasks${goNZBNetQuery({ limit })}`,
+  )
+}
+
+export function getGoNZBNetTrustPools() {
+  return apiRequest<GoNZBNetListResponse<GoNZBNetTrustPool>>(
+    "/api/v1/admin/gonzbnet/pools",
+  )
+}
+
+export function upsertGoNZBNetTrustPool(body: GoNZBNetTrustPoolRequest) {
+  return apiRequest<GoNZBNetActionResponse>("/api/v1/admin/gonzbnet/pools", {
+    method: "POST",
+    body,
+  })
+}
+
+export function getGoNZBNetPoolMembers(poolID: string) {
+  return apiRequest<GoNZBNetListResponse<GoNZBNetPoolMember>>(
+    `/api/v1/admin/gonzbnet/pools/${encodeURIComponent(poolID)}/members`,
+  )
+}
+
+export function upsertGoNZBNetPoolMember(
+  poolID: string,
+  body: GoNZBNetPoolMemberRequest,
+) {
+  return apiRequest<GoNZBNetActionResponse>(
+    `/api/v1/admin/gonzbnet/pools/${encodeURIComponent(poolID)}/members`,
+    { method: "POST", body },
+  )
+}
+
+export function revokeGoNZBNetPoolMember(poolID: string, nodeID: string) {
+  return apiRequest<GoNZBNetActionResponse>(
+    `/api/v1/admin/gonzbnet/pools/${encodeURIComponent(poolID)}/members/${encodeURIComponent(nodeID)}/revoke`,
+    { method: "POST" },
+  )
+}
+
+export function getGoNZBNetTombstones(activeOnly = false) {
+  return apiRequest<GoNZBNetListResponse<GoNZBNetTombstone>>(
+    `/api/v1/admin/gonzbnet/moderation/tombstones${goNZBNetQuery({ active: activeOnly ? "true" : undefined })}`,
+  )
+}
+
+export function createGoNZBNetTombstone(body: GoNZBNetTombstoneRequest) {
+  return apiRequest<GoNZBNetActionResponse>(
+    "/api/v1/admin/gonzbnet/moderation/tombstones",
+    { method: "POST", body },
   )
 }
