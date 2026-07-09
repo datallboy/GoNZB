@@ -104,6 +104,8 @@ Current implementation state:
   `modules.gonzbnet.enabled` and `gonzbnet.http_enabled`.
 - Public endpoint cleanup adds the spec-listed `/events/batch` inbox alias,
   `/pools/:pool_id/members`, and `/peers` discovery routes.
+- Pool checkpoint cleanup adds `PoolCheckpoint` validation and projection over
+  the accepted append-only event log.
 - Security cleanup rejects remote signed events with future `created_at` /
   `not_before` windows, expired `expires_at` values, or event ages beyond
   `gonzbnet.max_event_age_hours`.
@@ -159,6 +161,7 @@ Maintained pages:
 - [Config Enable Alias](./config-enable-alias.md)
 - [Config Route Gate Coverage](./config-route-gate-coverage.md)
 - [Public Endpoint Alignment](./public-endpoint-alignment.md)
+- [Pool Checkpoints](./pool-checkpoints.md)
 - [Capability Profile Alignment](./capability-profile-alignment.md)
 - [Test Coverage Cleanup](./test-coverage-cleanup.md)
 - [Security: Node Key Encryption](./security-key-encryption.md)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"testing"
+	"time"
 
 	"github.com/datallboy/gonzb/internal/gonzbnet/canonical"
 	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
@@ -71,15 +72,76 @@ func TestEventTypeSupportedRejectsUnknownTypes(t *testing.T) {
 		EventTypeManifestAvailability,
 		EventTypeCoverageAssignment,
 		EventTypePoolMemberApproved,
+		EventTypePoolCheckpoint,
 	} {
 		if !EventTypeSupported(eventType) {
 			t.Fatalf("expected %s to be supported", eventType)
 		}
 	}
-	for _, eventType := range []string{"", "UnknownFutureEvent", "PoolCheckpoint", "TrustAttestation"} {
+	for _, eventType := range []string{"", "UnknownFutureEvent", "TrustAttestation"} {
 		if EventTypeSupported(eventType) {
 			t.Fatalf("expected %s to be rejected", eventType)
 		}
+	}
+}
+
+func TestValidateCheckpointVerifiesMerkleRootAndWitnesses(t *testing.T) {
+	ctx := context.Background()
+	witness1 := testIdentity(t)
+	witness2 := testIdentity(t)
+	witnessKeys := map[string]ed25519.PublicKey{}
+	for _, witness := range []*identity.Identity{witness1, witness2} {
+		nodeID, _ := witness.NodeID(ctx)
+		publicKey, _ := witness.PublicKey(ctx)
+		witnessKeys[nodeID] = publicKey
+	}
+	leaves := []CheckpointLeaf{
+		{
+			EventID:      "evt_a",
+			AuthorNodeID: "node_a",
+			Sequence:     1,
+			BodyHash:     "sha256:a",
+			CreatedAt:    time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC),
+		},
+		{
+			EventID:      "evt_b",
+			AuthorNodeID: "node_b",
+			Sequence:     2,
+			BodyHash:     "sha256:b",
+			CreatedAt:    time.Date(2026, 7, 9, 12, 1, 0, 0, time.UTC),
+		},
+	}
+	root, err := CheckpointMerkleRoot(leaves)
+	if err != nil {
+		t.Fatalf("merkle root: %v", err)
+	}
+	body := Checkpoint{
+		PoolID:      "pool.private.movies",
+		Height:      1,
+		EventCount:  int64(len(leaves)),
+		FromEventID: leaves[0].EventID,
+		ToEventID:   leaves[len(leaves)-1].EventID,
+		MerkleRoot:  root,
+		CreatedAt:   "2026-07-09T12:05:00Z",
+	}
+	body.Witnesses = []Approval{
+		signCheckpoint(t, witness1, body, "2026-07-09T12:06:00Z"),
+		signCheckpoint(t, witness2, body, "2026-07-09T12:07:00Z"),
+	}
+	if err := ValidateCheckpoint(body, witnessKeys, 2, leaves); err != nil {
+		t.Fatalf("expected checkpoint to validate: %v", err)
+	}
+
+	tampered := body
+	tampered.MerkleRoot = "sha256:deadbeef"
+	if err := ValidateCheckpoint(tampered, witnessKeys, 2, leaves); err == nil {
+		t.Fatalf("expected tampered merkle root to fail")
+	}
+
+	tampered = body
+	tampered.Witnesses = tampered.Witnesses[:1]
+	if err := ValidateCheckpoint(tampered, witnessKeys, 2, leaves); err == nil {
+		t.Fatalf("expected insufficient witnesses to fail")
 	}
 }
 
@@ -112,6 +174,33 @@ func signApproval(t *testing.T, signer *identity.Identity, body MemberApproved, 
 	return Approval{
 		NodeID:     nodeID,
 		ApprovedAt: approvedAt,
+		Signature:  canonical.Base64URL(signature),
+	}
+}
+
+func signCheckpoint(t *testing.T, signer *identity.Identity, body Checkpoint, witnessedAt string) Approval {
+	t.Helper()
+	nodeID, _ := signer.NodeID(context.Background())
+	payload, err := canonical.Marshal(map[string]any{
+		"pool_id":       body.PoolID,
+		"height":        body.Height,
+		"event_count":   body.EventCount,
+		"from_event_id": body.FromEventID,
+		"to_event_id":   body.ToEventID,
+		"merkle_root":   body.MerkleRoot,
+		"created_at":    body.CreatedAt,
+		"witnessed_at":  witnessedAt,
+	})
+	if err != nil {
+		t.Fatalf("canonical checkpoint: %v", err)
+	}
+	signature, err := signer.Sign(context.Background(), payload)
+	if err != nil {
+		t.Fatalf("sign checkpoint: %v", err)
+	}
+	return Approval{
+		NodeID:     nodeID,
+		ApprovedAt: witnessedAt,
 		Signature:  canonical.Base64URL(signature),
 	}
 }

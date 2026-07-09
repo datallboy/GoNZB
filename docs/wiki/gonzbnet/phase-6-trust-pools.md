@@ -46,9 +46,14 @@ Public federation API:
 - `GET /gonzbnet/v1/pools/:pool_id/members` returns the local node-level
   member projection for federation peer discovery.
 
+Later cleanup:
+
+- `PoolCheckpoint` validation and projection now recomputes Merkle roots over
+  the accepted append-only pool event log and stores the latest checkpoint on
+  `trust_pools`.
+
 Out of scope:
 
-- Pool checkpoints and Merkle roots.
 - Tombstones and moderation records.
 - Pool invitation UI.
 - Automatic trust scoring.

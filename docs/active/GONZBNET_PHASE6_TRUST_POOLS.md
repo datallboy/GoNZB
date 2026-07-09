@@ -25,9 +25,13 @@ Implementation plan:
 6. Add tests for 2-of-3 approvals, non-member rejection, and revoked-member
    rejection.
 
+Later cleanup:
+
+- `GONZBNET_POOL_CHECKPOINTS.md` adds `PoolCheckpoint` validation and
+  projection over the accepted append-only event log.
+
 Out of scope:
 
-- Pool checkpoint Merkle roots.
 - Pool invitation UX.
 - Admin UI.
 - Tombstone/moderation events.

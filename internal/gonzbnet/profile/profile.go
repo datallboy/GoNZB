@@ -239,6 +239,7 @@ func CapsFor(maxEventBytes, maxManifestBytes int) Caps {
 			"PoolJoinRequest",
 			"PoolMemberApproved",
 			"PoolMemberRevoked",
+			"PoolCheckpoint",
 			"Tombstone",
 		},
 		Encodings:        []string{"jcs-json"},

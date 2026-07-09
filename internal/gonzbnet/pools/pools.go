@@ -2,8 +2,11 @@ package pools
 
 import (
 	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/datallboy/gonzb/internal/gonzbnet/canonical"
 	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
@@ -32,6 +35,7 @@ const (
 	EventTypePoolJoinRequest    = "PoolJoinRequest"
 	EventTypePoolMemberApproved = "PoolMemberApproved"
 	EventTypePoolMemberRevoked  = "PoolMemberRevoked"
+	EventTypePoolCheckpoint     = "PoolCheckpoint"
 
 	RoleAdmin   = "admin"
 	RoleWitness = "witness"
@@ -113,13 +117,35 @@ type MemberRevoked struct {
 	Approvals         []Approval `json:"approvals"`
 }
 
+type Checkpoint struct {
+	SchemaVersion string     `json:"schema_version"`
+	Type          string     `json:"type"`
+	PoolID        string     `json:"pool_id"`
+	Height        int64      `json:"height"`
+	EventCount    int64      `json:"event_count"`
+	FromEventID   string     `json:"from_event_id"`
+	ToEventID     string     `json:"to_event_id"`
+	MerkleRoot    string     `json:"merkle_root"`
+	CreatedAt     string     `json:"created_at"`
+	Witnesses     []Approval `json:"witnesses"`
+}
+
+type CheckpointLeaf struct {
+	EventID      string    `json:"event_id"`
+	AuthorNodeID string    `json:"author_node_id"`
+	Sequence     int64     `json:"sequence"`
+	BodyHash     string    `json:"body_hash"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
 type PoolPolicy struct {
-	PoolID              string
-	MembershipThreshold int
-	ModerationThreshold int
-	AcceptMode          string
-	MinNodeTrustScore   float64
-	AcceptedEventTypes  []string
+	PoolID                     string
+	MembershipThreshold        int
+	ModerationThreshold        int
+	CheckpointWitnessThreshold int
+	AcceptMode                 string
+	MinNodeTrustScore          float64
+	AcceptedEventTypes         []string
 }
 
 type Member struct {
@@ -169,7 +195,7 @@ func NormalizePolicy(policy Policy, adminCount int) Policy {
 
 func EventIsPoolControl(eventType string) bool {
 	switch strings.TrimSpace(eventType) {
-	case EventTypePoolGenesis, EventTypePoolJoinRequest, EventTypePoolMemberApproved, EventTypePoolMemberRevoked:
+	case EventTypePoolGenesis, EventTypePoolJoinRequest, EventTypePoolMemberApproved, EventTypePoolMemberRevoked, EventTypePoolCheckpoint:
 		return true
 	default:
 		return false
@@ -198,7 +224,8 @@ func EventTypeSupported(eventType string) bool {
 		EventTypePoolGenesis,
 		EventTypePoolJoinRequest,
 		EventTypePoolMemberApproved,
-		EventTypePoolMemberRevoked:
+		EventTypePoolMemberRevoked,
+		EventTypePoolCheckpoint:
 		return true
 	default:
 		return false
@@ -255,6 +282,88 @@ func ValidateMemberRevocation(body MemberRevoked, adminKeys map[string]ed25519.P
 			"effective_at":    body.EffectiveAt,
 		}, nil
 	})
+}
+
+func ValidateCheckpoint(body Checkpoint, witnessKeys map[string]ed25519.PublicKey, required int, leaves []CheckpointLeaf) error {
+	if strings.TrimSpace(body.PoolID) == "" {
+		return fmt.Errorf("checkpoint requires pool_id")
+	}
+	if body.Height <= 0 {
+		return fmt.Errorf("checkpoint height must be positive")
+	}
+	if body.EventCount <= 0 {
+		return fmt.Errorf("checkpoint event_count must be positive")
+	}
+	if strings.TrimSpace(body.FromEventID) == "" || strings.TrimSpace(body.ToEventID) == "" {
+		return fmt.Errorf("checkpoint requires from_event_id and to_event_id")
+	}
+	if _, err := time.Parse(time.RFC3339, strings.TrimSpace(body.CreatedAt)); err != nil {
+		return fmt.Errorf("checkpoint created_at must be RFC3339")
+	}
+	if int64(len(leaves)) != body.EventCount {
+		return fmt.Errorf("checkpoint event range missing: have %d need %d", len(leaves), body.EventCount)
+	}
+	if leaves[0].EventID != body.FromEventID || leaves[len(leaves)-1].EventID != body.ToEventID {
+		return fmt.Errorf("checkpoint event range mismatch")
+	}
+	root, err := CheckpointMerkleRoot(leaves)
+	if err != nil {
+		return err
+	}
+	if root != strings.TrimSpace(body.MerkleRoot) {
+		return fmt.Errorf("checkpoint merkle_root mismatch")
+	}
+	return validateApprovals(required, body.Witnesses, witnessKeys, func(approval Approval) (map[string]any, error) {
+		return map[string]any{
+			"pool_id":       body.PoolID,
+			"height":        body.Height,
+			"event_count":   body.EventCount,
+			"from_event_id": body.FromEventID,
+			"to_event_id":   body.ToEventID,
+			"merkle_root":   body.MerkleRoot,
+			"created_at":    body.CreatedAt,
+			"witnessed_at":  approval.ApprovedAt,
+		}, nil
+	})
+}
+
+func CheckpointMerkleRoot(leaves []CheckpointLeaf) (string, error) {
+	if len(leaves) == 0 {
+		return "", fmt.Errorf("checkpoint requires at least one leaf")
+	}
+	level := make([][]byte, 0, len(leaves))
+	for _, leaf := range leaves {
+		payload := map[string]any{
+			"event_id":       leaf.EventID,
+			"author_node_id": leaf.AuthorNodeID,
+			"sequence":       leaf.Sequence,
+			"body_hash":      leaf.BodyHash,
+			"created_at":     leaf.CreatedAt.UTC().Format(time.RFC3339Nano),
+		}
+		canonicalLeaf, err := canonical.Marshal(payload)
+		if err != nil {
+			return "", err
+		}
+		sum := sha256.Sum256(canonicalLeaf)
+		level = append(level, sum[:])
+	}
+	for len(level) > 1 {
+		next := make([][]byte, 0, (len(level)+1)/2)
+		for i := 0; i < len(level); i += 2 {
+			left := level[i]
+			right := left
+			if i+1 < len(level) {
+				right = level[i+1]
+			}
+			combined := make([]byte, 0, len(left)+len(right))
+			combined = append(combined, left...)
+			combined = append(combined, right...)
+			sum := sha256.Sum256(combined)
+			next = append(next, sum[:])
+		}
+		level = next
+	}
+	return "sha256:" + hex.EncodeToString(level[0]), nil
 }
 
 func validateApprovals(required int, approvals []Approval, adminKeys map[string]ed25519.PublicKey, payload func(Approval) (map[string]any, error)) error {
