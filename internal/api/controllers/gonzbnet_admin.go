@@ -2,12 +2,16 @@ package controllers
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/datallboy/gonzb/internal/app"
+	"github.com/datallboy/gonzb/internal/gonzbnet/events"
+	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
+	"github.com/datallboy/gonzb/internal/gonzbnet/moderation"
 	"github.com/datallboy/gonzb/internal/gonzbnet/pools"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
 	"github.com/labstack/echo/v5"
@@ -23,6 +27,12 @@ type gonzbnetAdminStore interface {
 	UpsertTrustPool(ctx context.Context, pool pgindex.TrustPoolRecord) error
 	UpsertPoolMember(ctx context.Context, member pgindex.PoolMemberRecord) error
 	RevokePoolMember(ctx context.Context, poolID, nodeID, eventID string, effectiveAt *time.Time) error
+	UpsertFederationNodeIdentity(ctx context.Context, nodeID string, publicKey ed25519.PublicKey) error
+	NextFederationEventSequence(ctx context.Context, authorNodeID string) (int64, *string, error)
+	FindFederationEventByBodyHash(ctx context.Context, authorNodeID, eventType, bodyHash string) (string, error)
+	AppendVerifiedFederationEvent(ctx context.Context, event *events.SignedEvent, validation *events.ValidationResult) error
+	ProjectTombstone(ctx context.Context, projection pgindex.TombstoneProjection) error
+	ListTombstones(ctx context.Context, activeOnly bool) ([]pgindex.TombstoneRecord, error)
 }
 
 type trustPoolRequest struct {
@@ -42,6 +52,17 @@ type poolMemberRequest struct {
 	NodeID string `json:"node_id"`
 	Role   string `json:"role"`
 	Status string `json:"status"`
+}
+
+type tombstoneRequest struct {
+	TargetType       string   `json:"target_type"`
+	TargetID         string   `json:"target_id"`
+	PoolID           string   `json:"pool_id"`
+	Reason           string   `json:"reason"`
+	Severity         string   `json:"severity"`
+	EvidenceEventIDs []string `json:"evidence_event_ids"`
+	EffectiveAt      string   `json:"effective_at"`
+	ExpiresAt        *string  `json:"expires_at"`
 }
 
 func NewGoNZBNetAdminController(appCtx *app.Context) *GoNZBNetAdminController {
@@ -78,7 +99,7 @@ func (ctrl *GoNZBNetAdminController) UpsertPool(c *echo.Context) error {
 	}
 	acceptedTypes := req.AcceptedEventTypes
 	if len(acceptedTypes) == 0 {
-		acceptedTypes = []string{"ReleaseCard", "HealthAttestation"}
+		acceptedTypes = []string{"ReleaseCard", "HealthAttestation", "Tombstone"}
 	}
 	policy := pools.Policy{
 		MembershipThreshold:        req.MembershipThreshold,
@@ -152,6 +173,119 @@ func (ctrl *GoNZBNetAdminController) RevokePoolMember(c *echo.Context) error {
 		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}
 	return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (ctrl *GoNZBNetAdminController) ListTombstones(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	activeOnly := strings.EqualFold(queryParamTrimmed(c, "active"), "true")
+	items, err := store.ListTombstones(c.Request().Context(), activeOnly)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
+func (ctrl *GoNZBNetAdminController) CreateTombstone(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	var req tombstoneRequest
+	if err := decodeJSONBody(c, &req); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	now := time.Now().UTC()
+	severity := firstNonBlank(req.Severity, moderation.SeverityReject)
+	if strings.TrimSpace(req.PoolID) == "" && strings.TrimSpace(req.Severity) == "" {
+		severity = moderation.SeverityLocalOnly
+	}
+	effectiveAt := firstNonBlank(req.EffectiveAt, now.Format(time.RFC3339))
+	body := moderation.Tombstone{
+		SchemaVersion:    "1.0",
+		Type:             moderation.Type,
+		TargetType:       strings.TrimSpace(req.TargetType),
+		TargetID:         strings.TrimSpace(req.TargetID),
+		PoolID:           strings.TrimSpace(req.PoolID),
+		Reason:           strings.TrimSpace(req.Reason),
+		Severity:         severity,
+		EvidenceEventIDs: req.EvidenceEventIDs,
+		EffectiveAt:      effectiveAt,
+		ExpiresAt:        req.ExpiresAt,
+	}
+	if err := moderation.Validate(body, now, 2*time.Minute); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	nodeIdentity, err := identity.LoadOrCreate(ctrl.appCtx.Config.GoNZBNet.KeysDir)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	nodeID, err := nodeIdentity.NodeID(c.Request().Context())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	publicKey, err := nodeIdentity.PublicKey(c.Request().Context())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if err := store.UpsertFederationNodeIdentity(c.Request().Context(), nodeID, publicKey); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	bodyHash, err := moderation.HashBody(body)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if existingEventID, err := store.FindFederationEventByBodyHash(c.Request().Context(), nodeID, moderation.Type, bodyHash); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	} else if existingEventID != "" {
+		if err := store.ProjectTombstone(c.Request().Context(), pgindex.TombstoneProjection{
+			Tombstone:    body,
+			EventID:      existingEventID,
+			AuthorNodeID: nodeID,
+		}); err != nil {
+			return jsonError(c, http.StatusInternalServerError, err.Error())
+		}
+		return c.JSON(http.StatusOK, map[string]string{"status": "ok", "event_id": existingEventID})
+	}
+	sequence, previousEventID, err := store.NextFederationEventSequence(c.Request().Context(), nodeID)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	poolIDs := []string{}
+	visibility := "local"
+	if strings.TrimSpace(body.PoolID) != "" && body.Severity != moderation.SeverityLocalOnly {
+		poolIDs = []string{body.PoolID}
+		visibility = "pool"
+	}
+	event, validation, err := events.Create(c.Request().Context(), nodeIdentity, events.CreateOptions{
+		EventType:       moderation.Type,
+		Sequence:        sequence,
+		PreviousEventID: previousEventID,
+		CreatedAt:       now,
+		PoolIDs:         poolIDs,
+		Visibility:      visibility,
+		BodySchema:      moderation.BodySchema,
+		Body:            body,
+	})
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if validation == nil || !validation.OK {
+		return jsonError(c, http.StatusInternalServerError, "signed tombstone did not verify")
+	}
+	if err := store.AppendVerifiedFederationEvent(c.Request().Context(), event, validation); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if err := store.ProjectTombstone(c.Request().Context(), pgindex.TombstoneProjection{
+		Tombstone:    body,
+		EventID:      event.EventID,
+		AuthorNodeID: nodeID,
+	}); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusCreated, map[string]string{"status": "ok", "event_id": event.EventID})
 }
 
 func (ctrl *GoNZBNetAdminController) store() (gonzbnetAdminStore, bool) {

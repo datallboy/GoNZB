@@ -22,6 +22,7 @@ const (
 	PermissionGoNZBNetAdminRead          = "gonzbnet.admin.read"
 	PermissionGoNZBNetAdminWrite         = "gonzbnet.admin.write"
 	PermissionGoNZBNetAdminPools         = "gonzbnet.admin.pools"
+	PermissionGoNZBNetAdminModeration    = "gonzbnet.admin.moderation"
 	PermissionDownloaderRuntimeRead      = "downloader.runtime.read"
 	PermissionDownloaderRuntimeConfigure = "downloader.runtime.configure"
 	PermissionAuthUsersRead              = "auth.users.read"
@@ -126,6 +127,7 @@ func DefaultRoles() []Role {
 				PermissionGoNZBNetAdminRead,
 				PermissionGoNZBNetAdminWrite,
 				PermissionGoNZBNetAdminPools,
+				PermissionGoNZBNetAdminModeration,
 				PermissionDownloaderRuntimeRead,
 				PermissionDownloaderRuntimeConfigure,
 				PermissionAuthUsersRead,

@@ -292,7 +292,7 @@ func (s *Store) ListFederationOutboxEvents(ctx context.Context, params Federatio
 		limit = 100
 	}
 
-	clauses := []string{"validation_status = 'accepted'"}
+	clauses := []string{"validation_status = 'accepted'", "visibility <> 'local'"}
 	args := make([]any, 0, 6)
 	arg := 1
 	if eventType := strings.TrimSpace(params.EventType); eventType != "" {
