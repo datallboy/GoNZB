@@ -193,7 +193,7 @@ func (ctrl *GoNZBNetAdminController) NodeProfile(c *echo.Context) error {
 	if ctrl == nil || ctrl.appCtx == nil || ctrl.appCtx.Config == nil {
 		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin controller is unavailable")
 	}
-	nodeIdentity, err := identity.LoadOrCreate(ctrl.appCtx.Config.GoNZBNet.KeysDir)
+	nodeIdentity, err := ctrl.localIdentity()
 	if err != nil {
 		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}
@@ -487,7 +487,7 @@ func (ctrl *GoNZBNetAdminController) CreateTombstone(c *echo.Context) error {
 	if err := moderation.Validate(body, now, 2*time.Minute); err != nil {
 		return jsonError(c, http.StatusBadRequest, err.Error())
 	}
-	nodeIdentity, err := identity.LoadOrCreate(ctrl.appCtx.Config.GoNZBNet.KeysDir)
+	nodeIdentity, err := ctrl.localIdentity()
 	if err != nil {
 		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}
@@ -1064,7 +1064,7 @@ func (ctrl *GoNZBNetAdminController) signAndProjectCoverage(c *echo.Context, eve
 	if err := coverage.Validate(eventType, body, now, 2*time.Minute); err != nil {
 		return jsonError(c, http.StatusBadRequest, err.Error())
 	}
-	nodeIdentity, err := identity.LoadOrCreate(ctrl.appCtx.Config.GoNZBNet.KeysDir)
+	nodeIdentity, err := ctrl.localIdentity()
 	if err != nil {
 		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}
@@ -1109,11 +1109,19 @@ func (ctrl *GoNZBNetAdminController) signAndProjectCoverage(c *echo.Context, eve
 }
 
 func (ctrl *GoNZBNetAdminController) localNodeID(c *echo.Context) (string, error) {
-	nodeIdentity, err := identity.LoadOrCreate(ctrl.appCtx.Config.GoNZBNet.KeysDir)
+	nodeIdentity, err := ctrl.localIdentity()
 	if err != nil {
 		return "", err
 	}
 	return nodeIdentity.NodeID(c.Request().Context())
+}
+
+func (ctrl *GoNZBNetAdminController) localIdentity() (*identity.Identity, error) {
+	if ctrl == nil || ctrl.appCtx == nil || ctrl.appCtx.Config == nil {
+		return nil, fmt.Errorf("gonzbnet admin controller is not initialized")
+	}
+	cfg := ctrl.appCtx.Config.GoNZBNet
+	return identity.LoadOrCreateWithPassword(cfg.KeysDir, cfg.KeyPassword)
 }
 
 func (ctrl *GoNZBNetAdminController) syncService() (*gonzbnetsync.Service, error) {
@@ -1124,7 +1132,7 @@ func (ctrl *GoNZBNetAdminController) syncService() (*gonzbnetsync.Service, error
 	if !ok {
 		return nil, fmt.Errorf("gonzbnet sync store is unavailable")
 	}
-	nodeIdentity, err := identity.LoadOrCreate(ctrl.appCtx.Config.GoNZBNet.KeysDir)
+	nodeIdentity, err := ctrl.localIdentity()
 	if err != nil {
 		return nil, err
 	}
@@ -1139,7 +1147,7 @@ func (ctrl *GoNZBNetAdminController) manifestResolver() (*manifestresolver.Resol
 	if !ok {
 		return nil, fmt.Errorf("gonzbnet manifest resolver store is unavailable")
 	}
-	nodeIdentity, err := identity.LoadOrCreate(ctrl.appCtx.Config.GoNZBNet.KeysDir)
+	nodeIdentity, err := ctrl.localIdentity()
 	if err != nil {
 		return nil, err
 	}

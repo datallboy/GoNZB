@@ -70,6 +70,8 @@ Current implementation state:
 - Addendum Phase P adds local peer removal to the peer-management admin API/UI.
 - Admin requirements cleanup tracks spec admin requirements that are implemented
   outside named phases, including local node block/unblock controls.
+- Security cleanup adds optional encrypted node-key storage when
+  `gonzbnet.key_password` is configured.
 
 Maintained pages:
 
@@ -101,3 +103,4 @@ Maintained pages:
 - [Phase O Force Resolve Manifest](./phase-o-force-resolve-manifest.md)
 - [Phase P Remove Peer](./phase-p-remove-peer.md)
 - [Admin Requirements Cleanup](./admin-requirements-cleanup.md)
+- [Security: Node Key Encryption](./security-key-encryption.md)

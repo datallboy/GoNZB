@@ -41,7 +41,7 @@ func (m *gonzbnetRuntimeModule) Build(ctx context.Context) error {
 	if !ok {
 		return fmt.Errorf("pgindex store does not support gonzbnet publishing")
 	}
-	nodeIdentity, err := identity.LoadOrCreate(m.appCtx.Config.GoNZBNet.KeysDir)
+	nodeIdentity, err := identity.LoadOrCreateWithPassword(m.appCtx.Config.GoNZBNet.KeysDir, m.appCtx.Config.GoNZBNet.KeyPassword)
 	if err != nil {
 		return err
 	}

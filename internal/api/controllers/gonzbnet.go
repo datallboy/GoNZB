@@ -775,7 +775,8 @@ func (ctrl *GoNZBNetController) localIdentity() (*identity.Identity, error) {
 	if ctrl.identity != nil {
 		return ctrl.identity, nil
 	}
-	id, err := identity.LoadOrCreate(ctrl.appCtx.Config.GoNZBNet.KeysDir)
+	cfg := ctrl.appCtx.Config.GoNZBNet
+	id, err := identity.LoadOrCreateWithPassword(cfg.KeysDir, cfg.KeyPassword)
 	if err != nil {
 		return nil, err
 	}
