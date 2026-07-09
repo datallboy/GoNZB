@@ -96,6 +96,8 @@ Current implementation state:
   publish pool-scoped Tombstone moderation votes.
 - Config cleanup treats GoNZBNet as a first-class enabled module and requires
   PostgreSQL when `modules.gonzbnet.enabled` is true.
+- Security cleanup rejects remote signed events with future `created_at` /
+  `not_before` windows or expired `expires_at` values.
 
 Maintained pages:
 
@@ -140,3 +142,4 @@ Maintained pages:
 - [Security: Node Key Rotation](./security-key-rotation.md)
 - [Security: Federation Transport Hardening](./security-transport-hardening.md)
 - [Security: Peer TLS Policy](./security-peer-tls-policy.md)
+- [Security: Event Time Windows](./security-event-time-windows.md)

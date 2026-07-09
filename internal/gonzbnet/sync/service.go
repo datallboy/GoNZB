@@ -67,6 +67,7 @@ type Service struct {
 	client                *http.Client
 	logger                Logger
 	allowInsecurePeerHTTP bool
+	eventTimeTolerance    time.Duration
 }
 
 type Result struct {
@@ -117,6 +118,7 @@ type GossipOptions struct {
 
 type Options struct {
 	AllowInsecurePeerHTTP bool
+	EventTimeTolerance    time.Duration
 }
 
 func New(identity Identity, store Store, logger Logger) *Service {
@@ -124,11 +126,16 @@ func New(identity Identity, store Store, logger Logger) *Service {
 }
 
 func NewWithOptions(identity Identity, store Store, logger Logger, opts Options) *Service {
+	eventTimeTolerance := opts.EventTimeTolerance
+	if eventTimeTolerance <= 0 {
+		eventTimeTolerance = 2 * time.Minute
+	}
 	return &Service{
 		identity:              identity,
 		store:                 store,
 		logger:                logger,
 		allowInsecurePeerHTTP: opts.AllowInsecurePeerHTTP,
+		eventTimeTolerance:    eventTimeTolerance,
 		client: &http.Client{
 			Timeout: 15 * time.Second,
 		},
@@ -358,7 +365,7 @@ func (s *Service) syncPeer(ctx context.Context, peer pgindex.FederationPeerRecor
 		for _, eventValue := range page.Events {
 			event := eventValue
 			raw, _ := json.Marshal(event)
-			validation, err := events.Verify(&event)
+			validation, err := events.VerifyAt(&event, time.Now(), s.eventTimeTolerance)
 			if err != nil || validation == nil || !validation.OK {
 				reason := "verification failed"
 				if validation != nil && validation.Reason != "" {
