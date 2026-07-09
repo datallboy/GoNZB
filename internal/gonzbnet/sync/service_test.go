@@ -320,6 +320,18 @@ func (s *fakeSyncStore) RecordFederationPeerDelivery(_ context.Context, result p
 	return nil
 }
 
+func (s *fakeSyncStore) ValidateFederationPoolControlEvent(_ context.Context, _ *events.SignedEvent) error {
+	return nil
+}
+
+func (s *fakeSyncStore) ProjectFederationPoolEvent(_ context.Context, _ *events.SignedEvent) error {
+	return nil
+}
+
+func (s *fakeSyncStore) CanAcceptFederationEventForPools(_ context.Context, _ string, _ []string, _ string) (pgindex.PoolAuthorizationResult, error) {
+	return pgindex.PoolAuthorizationResult{Allowed: true}, nil
+}
+
 type fakeRequestAuthStore struct {
 	keys   map[string]ed25519.PublicKey
 	nonces map[string]bool
