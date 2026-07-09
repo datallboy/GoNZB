@@ -44,6 +44,16 @@ type PoolMemberRecord struct {
 	RevokedAt           *time.Time      `json:"revoked_at,omitempty"`
 }
 
+type PoolControlEventRecord struct {
+	EventID      string          `json:"event_id"`
+	EventType    string          `json:"event_type"`
+	AuthorNodeID string          `json:"author_node_id"`
+	PoolIDs      json.RawMessage `json:"pool_ids"`
+	BodyJSON     json.RawMessage `json:"body_json"`
+	CreatedAt    time.Time       `json:"created_at"`
+	ReceivedAt   time.Time       `json:"received_at"`
+}
+
 type PoolAuthorizationResult struct {
 	Allowed bool
 	Reason  string
@@ -373,6 +383,45 @@ func (s *Store) ListPoolMembers(ctx context.Context, poolID string) ([]PoolMembe
 			value := revokedAt.Time.UTC()
 			item.RevokedAt = &value
 		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ListPoolControlEvents(ctx context.Context, poolID string, limit int) ([]PoolControlEventRecord, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("pgindex store is not initialized")
+	}
+	poolID = strings.TrimSpace(poolID)
+	if poolID == "" {
+		return nil, fmt.Errorf("pool_id is required")
+	}
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	poolFilter, _ := json.Marshal([]string{poolID})
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT event_id, event_type, author_node_id, pool_ids, body_json, created_at, received_at
+		FROM federation_events
+		WHERE validation_status = 'accepted'
+		  AND event_type IN ('PoolJoinRequest', 'PoolMemberApproved', 'PoolMemberRevoked')
+		  AND pool_ids @> $1::jsonb
+		ORDER BY created_at DESC, event_id DESC
+		LIMIT $2`, string(poolFilter), limit)
+	if err != nil {
+		return nil, fmt.Errorf("list pool control events: %w", err)
+	}
+	defer rows.Close()
+	out := []PoolControlEventRecord{}
+	for rows.Next() {
+		var item PoolControlEventRecord
+		var poolIDs []byte
+		var bodyJSON []byte
+		if err := rows.Scan(&item.EventID, &item.EventType, &item.AuthorNodeID, &poolIDs, &bodyJSON, &item.CreatedAt, &item.ReceivedAt); err != nil {
+			return nil, err
+		}
+		item.PoolIDs = defaultRawJSON(poolIDs, `[]`)
+		item.BodyJSON = defaultRawJSON(bodyJSON, `{}`)
 		out = append(out, item)
 	}
 	return out, rows.Err()

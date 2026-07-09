@@ -57,6 +57,7 @@ import type {
   GoNZBNetPeerRequest,
   GoNZBNetPoolJoinRequest,
   GoNZBNetPoolJoinResponse,
+  GoNZBNetPoolControlEvent,
   GoNZBNetPoolMemberApprovalRequest,
   GoNZBNetPoolMemberApprovalResponse,
   GoNZBNetPoolMemberRevocationRequest,
@@ -620,6 +621,12 @@ export function upsertGoNZBNetTrustPool(body: GoNZBNetTrustPoolRequest) {
 export function getGoNZBNetPoolMembers(poolID: string) {
   return apiRequest<GoNZBNetListResponse<GoNZBNetPoolMember>>(
     `/api/v1/admin/gonzbnet/pools/${encodeURIComponent(poolID)}/members`,
+  )
+}
+
+export function getGoNZBNetPoolControlEvents(poolID: string, limit = 100) {
+  return apiRequest<GoNZBNetListResponse<GoNZBNetPoolControlEvent>>(
+    `/api/v1/admin/gonzbnet/pools/${encodeURIComponent(poolID)}/control-events${goNZBNetQuery({ limit })}`,
   )
 }
 

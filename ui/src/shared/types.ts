@@ -1761,6 +1761,16 @@ export type GoNZBNetPoolMemberRevocationResponse = {
   approval_count: number
 }
 
+export type GoNZBNetPoolControlEvent = {
+  event_id: string
+  event_type: string
+  author_node_id: string
+  pool_ids: string[]
+  body_json: Record<string, unknown>
+  created_at: string
+  received_at: string
+}
+
 export type GoNZBNetTombstone = {
   id: number
   target_type: string

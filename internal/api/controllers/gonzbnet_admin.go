@@ -35,6 +35,7 @@ type GoNZBNetAdminController struct {
 type gonzbnetAdminStore interface {
 	ListTrustPools(ctx context.Context) ([]pgindex.TrustPoolRecord, error)
 	ListPoolMembers(ctx context.Context, poolID string) ([]pgindex.PoolMemberRecord, error)
+	ListPoolControlEvents(ctx context.Context, poolID string, limit int) ([]pgindex.PoolControlEventRecord, error)
 	UpsertTrustPool(ctx context.Context, pool pgindex.TrustPoolRecord) error
 	UpsertPoolMember(ctx context.Context, member pgindex.PoolMemberRecord) error
 	RevokePoolMember(ctx context.Context, poolID, nodeID, eventID string, effectiveAt *time.Time) error
@@ -574,6 +575,18 @@ func (ctrl *GoNZBNetAdminController) ListPoolMembers(c *echo.Context) error {
 		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
 	}
 	items, err := store.ListPoolMembers(c.Request().Context(), pathParamTrimmed(c, "pool_id"))
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
+func (ctrl *GoNZBNetAdminController) ListPoolControlEvents(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	items, err := store.ListPoolControlEvents(c.Request().Context(), pathParamTrimmed(c, "pool_id"), parseIntDefault(queryParamTrimmed(c, "limit"), 100))
 	if err != nil {
 		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}

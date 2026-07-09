@@ -76,6 +76,8 @@ Current implementation state:
   promoting reviewed join requests into active pool membership.
 - Admin requirements cleanup adds a local signed `PoolMemberRevoked` action for
   auditable pool membership removal.
+- Admin requirements cleanup adds a local pool-control event view for accepted
+  join requests, approvals, and revocations.
 - Security cleanup adds optional encrypted node-key storage when
   `gonzbnet.key_password` is configured.
 - Security cleanup adds explicit encrypted node-key export guarded by
@@ -121,6 +123,7 @@ Maintained pages:
 - [Admin: Pool Join Request](./admin-pool-join-request.md)
 - [Admin: Pool Member Approval](./admin-pool-member-approval.md)
 - [Admin: Pool Member Revocation](./admin-pool-member-revocation.md)
+- [Admin: Pool Control Events](./admin-pool-control-events.md)
 - [Security: Node Key Encryption](./security-key-encryption.md)
 - [Security: Key Export](./security-key-export.md)
 - [Security: Node Key Rotation](./security-key-rotation.md)

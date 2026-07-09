@@ -160,6 +160,7 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		v1AdminGoNZBNet.GET("/pools", gonzbnetAdminCtrl.ListPools)
 		v1AdminGoNZBNet.POST("/pools", gonzbnetAdminCtrl.UpsertPool)
 		v1AdminGoNZBNet.GET("/pools/:pool_id/members", gonzbnetAdminCtrl.ListPoolMembers)
+		v1AdminGoNZBNet.GET("/pools/:pool_id/control-events", gonzbnetAdminCtrl.ListPoolControlEvents)
 		v1AdminGoNZBNet.POST("/pools/:pool_id/members", gonzbnetAdminCtrl.UpsertPoolMember)
 		v1AdminGoNZBNet.POST("/pools/:pool_id/members/:node_id/approve", gonzbnetAdminCtrl.ApprovePoolMember)
 		v1AdminGoNZBNet.POST("/pools/:pool_id/members/:node_id/revocations", gonzbnetAdminCtrl.CreatePoolMemberRevocation)
