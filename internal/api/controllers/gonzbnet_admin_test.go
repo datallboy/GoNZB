@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -74,6 +75,25 @@ func TestGoNZBNetAdminConfigValidationRedactsSensitiveValues(t *testing.T) {
 		if strings.Contains(raw, secret) {
 			t.Fatalf("response leaked sensitive value %q: %s", secret, raw)
 		}
+	}
+}
+
+func TestGoNZBNetAdminResolveManifestRequiresReleaseID(t *testing.T) {
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/gonzbnet/manifests/resolve", bytes.NewReader([]byte(`{}`)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	ctrl := NewGoNZBNetAdminController(&app.Context{Config: testGoNZBNetAdminConfig(t)})
+
+	if err := ctrl.ResolveManifest(c); err != nil {
+		t.Fatalf("ResolveManifest returned error: %v", err)
+	}
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "release_id is required") {
+		t.Fatalf("expected release_id validation error, got %s", rec.Body.String())
 	}
 }
 

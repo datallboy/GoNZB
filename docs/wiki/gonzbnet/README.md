@@ -65,6 +65,8 @@ Current implementation state:
   sources, health attestations, and node reputation/trust visibility.
 - Addendum Phase N adds local node profile visibility and redacted GoNZBNet
   configuration validation to the admin API/UI.
+- Addendum Phase O adds a local admin action to resolve federated manifests
+  through the existing signed manifest resolver path.
 
 Maintained pages:
 
@@ -93,3 +95,4 @@ Maintained pages:
 - [Phase L RBAC Alignment](./phase-l-rbac-alignment.md)
 - [Phase M Source And Health Diagnostics](./phase-m-source-health-diagnostics.md)
 - [Phase N Node Profile And Config Admin](./phase-n-node-config-admin.md)
+- [Phase O Force Resolve Manifest](./phase-o-force-resolve-manifest.md)
