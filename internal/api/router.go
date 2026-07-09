@@ -210,6 +210,7 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		v1AdminGoNZBNetKeys.Use(csrfProtectionMiddleware())
 		v1AdminGoNZBNetKeys.Use(auditLogMiddleware(appCtx, "admin.gonzbnet.keys"))
 		v1AdminGoNZBNetKeys.POST("/keys/export", gonzbnetAdminCtrl.ExportKey)
+		v1AdminGoNZBNetKeys.POST("/keys/rotate", gonzbnetAdminCtrl.RotateKey)
 	}
 
 	var (

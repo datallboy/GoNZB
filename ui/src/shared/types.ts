@@ -1896,3 +1896,18 @@ export type GoNZBNetKeyExportResponse = {
   encrypted_key: string
   created_at: string
 }
+
+export type GoNZBNetKeyRotateRequest = {
+  confirmation: string
+}
+
+export type GoNZBNetKeyRotateResponse = {
+  status: string
+  old_node_id: string
+  old_public_key: string
+  new_node_id: string
+  new_public_key: string
+  backup_path: string
+  rotated_at: string
+  warning: string
+}
