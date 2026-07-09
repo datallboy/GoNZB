@@ -22,7 +22,12 @@ import {
   getGoNZBNetValidationGaps,
   materializeGoNZBNetStalePenalties,
   revokeGoNZBNetPoolMember,
+  runGoNZBNetGossipSync,
+  runGoNZBNetPullSync,
+  runGoNZBNetPushSync,
+  setGoNZBNetPeerEnabled,
   upsertGoNZBNetPoolMember,
+  upsertGoNZBNetPeer,
   upsertGoNZBNetTrustPool,
 } from '../../shared/api/admin'
 import { formatDateTime, formatNumber } from '../../shared/lib/format'
@@ -383,6 +388,7 @@ export function AdminGoNZBNetPage() {
   const [poolForm, setPoolForm] = useState<PoolForm>(defaultPoolForm)
   const [memberForm, setMemberForm] = useState<MemberForm>(defaultMemberForm)
   const [tombstoneForm, setTombstoneForm] = useState<TombstoneForm>(defaultTombstoneForm)
+  const [peerURL, setPeerURL] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [actionStatus, setActionStatus] = useState<string | null>(null)
@@ -491,6 +497,42 @@ export function AdminGoNZBNetPage() {
       await refresh()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save trust pool')
+    }
+  }
+
+  async function handlePeer(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    try {
+      const response = await upsertGoNZBNetPeer({ peer_url: peerURL.trim() })
+      setActionStatus(`Peer saved ${response.peer_id ?? ''}`)
+      setPeerURL('')
+      await refresh()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save peer')
+    }
+  }
+
+  async function handlePeerEnabled(peerID: number, enabled: boolean) {
+    try {
+      const response = await setGoNZBNetPeerEnabled(peerID, enabled)
+      setActionStatus(`Peer ${enabled ? 'enabled' : 'disabled'} ${response.status}`)
+      await refresh()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update peer')
+    }
+  }
+
+  async function handleSync(action: 'pull' | 'push' | 'gossip') {
+    try {
+      const response = action === 'pull'
+        ? await runGoNZBNetPullSync()
+        : action === 'push'
+          ? await runGoNZBNetPushSync()
+          : await runGoNZBNetGossipSync()
+      setActionStatus(`${action} sync: ${formatNumber(response.result.accepted)} accepted, ${formatNumber(response.result.rejected)} rejected`)
+      await refresh()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `Failed to run ${action} sync`)
     }
   }
 
@@ -1027,6 +1069,19 @@ export function AdminGoNZBNetPage() {
         </table>
       </SectionTable>
 
+      <div className="page-card stack">
+        <h2 className="section-title">Peer controls</h2>
+        <form className="release-table-search" onSubmit={handlePeer}>
+          <input className="table-input" required value={peerURL} onChange={(event) => setPeerURL(event.target.value)} />
+          <button className="primary-button" type="submit">Add peer</button>
+        </form>
+        <div className="button-row">
+          <button className="secondary-button" type="button" onClick={() => void handleSync('pull')}>Pull sync</button>
+          <button className="secondary-button" type="button" onClick={() => void handleSync('push')}>Push sync</button>
+          <button className="secondary-button" type="button" onClick={() => void handleSync('gossip')}>Gossip</button>
+        </div>
+      </div>
+
       <SectionTable title="Peer diagnostics" count={peerDiagnostics.length}>
         <table className="data-table data-table--compact">
           <thead>
@@ -1038,6 +1093,7 @@ export function AdminGoNZBNetPage() {
               <th>Failures</th>
               <th>Last sync</th>
               <th>Updated</th>
+              <th>Action</th>
             </tr>
           </thead>
           <tbody>
@@ -1053,6 +1109,11 @@ export function AdminGoNZBNetPage() {
                 </td>
                 <td>{formatDateTime(item.last_sync_at)}</td>
                 <td>{formatDateTime(item.updated_at)}</td>
+                <td>
+                  <button className="secondary-button secondary-button--small" type="button" onClick={() => void handlePeerEnabled(item.id, !item.enabled)}>
+                    {item.enabled ? 'Disable' : 'Enable'}
+                  </button>
+                </td>
               </tr>
             ))}
           </tbody>
