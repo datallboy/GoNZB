@@ -63,7 +63,8 @@ func (m *gonzbnetRuntimeModule) Start(ctx context.Context) error {
 	}
 	publishEnabled := m.publisher != nil && m.appCtx.Config.GoNZBNet.PublishReleaseCardsEnabled
 	pullEnabled := m.pullSync != nil && m.appCtx.Config.GoNZBNet.PullSyncEnabled
-	if !publishEnabled && !pullEnabled {
+	pushEnabled := m.pullSync != nil && m.appCtx.Config.GoNZBNet.PushSyncEnabled
+	if !publishEnabled && !pullEnabled && !pushEnabled {
 		return nil
 	}
 	if m.running {
@@ -89,6 +90,16 @@ func (m *gonzbnetRuntimeModule) Start(ctx context.Context) error {
 		go func() {
 			if err := m.pullSync.Run(childCtx, interval); err != nil && childCtx.Err() == nil {
 				m.appCtx.Logger.Error("gonzbnet pull sync failed: %v", err)
+			}
+		}()
+	}
+	if pushEnabled {
+		interval := time.Duration(m.appCtx.Config.GoNZBNet.PushSyncIntervalMin * float64(time.Minute))
+		batchSize := m.appCtx.Config.GoNZBNet.PushSyncBatchSize
+		m.appCtx.Logger.Info("starting gonzbnet push sync interval=%s batch_size=%d", interval, batchSize)
+		go func() {
+			if err := m.pullSync.RunPush(childCtx, interval, batchSize); err != nil && childCtx.Err() == nil {
+				m.appCtx.Logger.Error("gonzbnet push sync failed: %v", err)
 			}
 		}()
 	}

@@ -154,6 +154,74 @@ func (s *Store) FindFederationEventByBodyHash(ctx context.Context, authorNodeID,
 	return eventID, nil
 }
 
+func (s *Store) FederationEventExists(ctx context.Context, eventID string) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, fmt.Errorf("pgindex store is not initialized")
+	}
+	eventID = strings.TrimSpace(eventID)
+	if eventID == "" {
+		return false, nil
+	}
+	var exists bool
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM federation_events
+			WHERE event_id = $1
+		)`, eventID).Scan(&exists); err != nil {
+		return false, fmt.Errorf("check federation event exists: %w", err)
+	}
+	return exists, nil
+}
+
+func (s *Store) GetFederationNodePublicKey(ctx context.Context, nodeID string) (ed25519.PublicKey, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("pgindex store is not initialized")
+	}
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return nil, fmt.Errorf("node_id is required")
+	}
+	var publicKey []byte
+	err := s.db.QueryRowContext(ctx, `
+		SELECT public_key
+		FROM federation_nodes
+		WHERE node_id = $1
+		  AND status <> 'blocked'`, nodeID).Scan(&publicKey)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("unknown federation node")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read federation node public key: %w", err)
+	}
+	if len(publicKey) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("stored federation public key has invalid size")
+	}
+	return ed25519.PublicKey(publicKey), nil
+}
+
+func (s *Store) StoreFederationNonce(ctx context.Context, nodeID, nonce string, expiresAt time.Time) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, fmt.Errorf("pgindex store is not initialized")
+	}
+	res, err := s.db.ExecContext(ctx, `
+		INSERT INTO federation_nonce_replay_cache (node_id, nonce, expires_at)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (node_id, nonce) DO NOTHING`,
+		strings.TrimSpace(nodeID),
+		strings.TrimSpace(nonce),
+		expiresAt.UTC(),
+	)
+	if err != nil {
+		return false, fmt.Errorf("store federation nonce: %w", err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return rows > 0, nil
+}
+
 func (s *Store) AppendVerifiedFederationEvent(ctx context.Context, event *events.SignedEvent, validation *events.ValidationResult) error {
 	return s.AppendFederationEvent(ctx, FederationEventRecord{
 		Event:      event,

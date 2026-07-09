@@ -38,6 +38,13 @@ type FederationOutboxPage struct {
 	HasMore    bool
 }
 
+type FederationDeliveryResult struct {
+	PeerID  int64
+	EventID string
+	Status  string
+	Error   string
+}
+
 func (s *Store) UpsertFederationPeerURL(ctx context.Context, peerURL string) (int64, error) {
 	if s == nil || s.db == nil {
 		return 0, fmt.Errorf("pgindex store is not initialized")
@@ -159,6 +166,92 @@ func (s *Store) MarkFederationPeerSyncFailure(ctx context.Context, peerID int64,
 		WHERE id = $1`, peerID, trimError(errText))
 	if err != nil {
 		return fmt.Errorf("update federation peer failure: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) ListUndeliveredFederationEvents(ctx context.Context, peerID int64, limit int) ([]*events.SignedEvent, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("pgindex store is not initialized")
+	}
+	if limit <= 0 || limit > 100 {
+		limit = 100
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			e.event_id, e.spec_version, e.event_type, e.author_node_id, e.author_public_key,
+			e.sequence, e.previous_event_id, e.body_schema, e.body_hash, e.signature_alg,
+			e.signature, e.body_json, e.pool_ids, e.visibility, e.created_at, e.not_before,
+			e.expires_at
+		FROM federation_events e
+		LEFT JOIN federation_peer_deliveries d
+		  ON d.peer_id = $1
+		 AND d.event_id = e.event_id
+		WHERE e.validation_status = 'accepted'
+		  AND e.event_type = 'ReleaseCard'
+		  AND (
+		    d.event_id IS NULL
+		    OR (
+		      d.status NOT IN ('accepted', 'duplicate')
+		      AND d.last_attempt_at < NOW() - (LEAST(d.attempts, 10) * INTERVAL '1 minute')
+		    )
+		  )
+		ORDER BY e.created_at ASC, e.event_id ASC
+		LIMIT $2`, peerID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list undelivered federation events: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]*events.SignedEvent, 0, limit)
+	for rows.Next() {
+		event, err := scanFederationEvent(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan undelivered federation event: %w", err)
+		}
+		out = append(out, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate undelivered federation events: %w", err)
+	}
+	return out, nil
+}
+
+func (s *Store) RecordFederationPeerDelivery(ctx context.Context, result FederationDeliveryResult) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("pgindex store is not initialized")
+	}
+	status := strings.TrimSpace(result.Status)
+	if status == "" {
+		status = "error"
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO federation_peer_deliveries (
+			peer_id, event_id, status, attempts, last_attempt_at, delivered_at,
+			last_error, updated_at
+		)
+		VALUES (
+			$1, $2, $3, 1, NOW(),
+			CASE WHEN $3 IN ('accepted', 'duplicate') THEN NOW() ELSE NULL END,
+			NULLIF($4, ''), NOW()
+		)
+		ON CONFLICT (peer_id, event_id) DO UPDATE SET
+			status = EXCLUDED.status,
+			attempts = federation_peer_deliveries.attempts + 1,
+			last_attempt_at = NOW(),
+			delivered_at = CASE
+				WHEN EXCLUDED.status IN ('accepted', 'duplicate') THEN NOW()
+				ELSE federation_peer_deliveries.delivered_at
+			END,
+			last_error = EXCLUDED.last_error,
+			updated_at = NOW()`,
+		result.PeerID,
+		result.EventID,
+		status,
+		trimError(result.Error),
+	)
+	if err != nil {
+		return fmt.Errorf("record federation peer delivery: %w", err)
 	}
 	return nil
 }
