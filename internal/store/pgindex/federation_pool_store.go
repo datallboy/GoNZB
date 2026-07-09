@@ -550,6 +550,25 @@ func (s *Store) ActivePoolAdminPublicKeys(ctx context.Context, poolID string) (m
 	return out, rows.Err()
 }
 
+func (s *Store) IsActivePoolAdmin(ctx context.Context, poolID, nodeID string) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, fmt.Errorf("pgindex store is not initialized")
+	}
+	var ok bool
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM pool_members
+			WHERE pool_id = $1
+			  AND node_id = $2
+			  AND role = $3
+			  AND status = $4
+		)`, strings.TrimSpace(poolID), strings.TrimSpace(nodeID), pools.RoleAdmin, pools.StatusActive).Scan(&ok); err != nil {
+		return false, fmt.Errorf("check active pool admin: %w", err)
+	}
+	return ok, nil
+}
+
 func (s *Store) IsActivePoolMember(ctx context.Context, poolID, nodeID string) (bool, error) {
 	var ok bool
 	if err := s.db.QueryRowContext(ctx, `

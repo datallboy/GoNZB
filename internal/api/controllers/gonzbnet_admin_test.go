@@ -15,6 +15,7 @@ import (
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/gonzbnet/events"
 	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
+	"github.com/datallboy/gonzb/internal/gonzbnet/moderation"
 	"github.com/datallboy/gonzb/internal/gonzbnet/pools"
 	"github.com/datallboy/gonzb/internal/infra/config"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
@@ -417,6 +418,74 @@ func TestGoNZBNetAdminCreatePoolMemberRevocationSignsAppendsAndProjectsEvent(t *
 	}
 }
 
+func TestGoNZBNetAdminCreatePoolTombstoneRequiresActiveAdmin(t *testing.T) {
+	cfg := testGoNZBNetAdminConfig(t)
+	store := &fakeGoNZBNetAdminStore{}
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/gonzbnet/tombstones", bytes.NewReader([]byte(`{"target_type":"release","target_id":"rel_1","pool_id":"pool.remote","reason":"bad release","severity":"reject"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	ctrl := &GoNZBNetAdminController{appCtx: &app.Context{Config: cfg}, storeOverride: store}
+
+	if err := ctrl.CreateTombstone(c); err != nil {
+		t.Fatalf("CreateTombstone returned error: %v", err)
+	}
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected status 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if store.activePoolAdminPoolID != "pool.remote" || store.activePoolAdminNodeID == "" {
+		t.Fatalf("expected active pool admin check for local node, pool_id=%q node_id=%q", store.activePoolAdminPoolID, store.activePoolAdminNodeID)
+	}
+	if store.appended != nil {
+		t.Fatal("expected unauthorized pool tombstone not to append an event")
+	}
+}
+
+func TestGoNZBNetAdminCreatePoolTombstoneSignsPoolEventForActiveAdmin(t *testing.T) {
+	cfg := testGoNZBNetAdminConfig(t)
+	store := &fakeGoNZBNetAdminStore{activePoolAdmin: true}
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/gonzbnet/tombstones", bytes.NewReader([]byte(`{"target_type":"release","target_id":"rel_1","pool_id":"pool.remote","reason":"bad release","severity":"reject"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	ctrl := &GoNZBNetAdminController{appCtx: &app.Context{Config: cfg}, storeOverride: store}
+
+	if err := ctrl.CreateTombstone(c); err != nil {
+		t.Fatalf("CreateTombstone returned error: %v", err)
+	}
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected status 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if store.appended == nil {
+		t.Fatal("expected signed tombstone event to be appended")
+	}
+	if store.appended.EventType != moderation.Type {
+		t.Fatalf("expected tombstone event type, got %q", store.appended.EventType)
+	}
+	if store.appended.Visibility != "pool" || len(store.appended.PoolIDs) != 1 || store.appended.PoolIDs[0] != "pool.remote" {
+		t.Fatalf("expected pool-scoped tombstone event, visibility=%q pool_ids=%v", store.appended.Visibility, store.appended.PoolIDs)
+	}
+	validation, err := events.Verify(store.appended)
+	if err != nil {
+		t.Fatalf("verify event: %v", err)
+	}
+	if validation == nil || !validation.OK {
+		t.Fatalf("expected event signature to verify, got %+v", validation)
+	}
+	if store.tombstoneProjection == nil || store.tombstoneProjection.EventID != store.appended.EventID {
+		t.Fatalf("expected appended tombstone to be projected, appended=%v projected=%v", store.appended != nil, store.tombstoneProjection != nil)
+	}
+	var body moderation.Tombstone
+	if err := json.Unmarshal(store.appended.Body, &body); err != nil {
+		t.Fatalf("decode event body: %v", err)
+	}
+	if body.PoolID != "pool.remote" || body.TargetID != "rel_1" || body.Severity != moderation.SeverityReject {
+		t.Fatalf("unexpected tombstone body: %+v", body)
+	}
+}
+
 func TestGoNZBNetAdminRecomputeScoresUsesRequestedPool(t *testing.T) {
 	store := &fakeGoNZBNetAdminStore{
 		scoreResult: pgindex.FederatedScoreRecomputeResult{
@@ -552,6 +621,11 @@ type fakeGoNZBNetAdminStore struct {
 	scoreResult     pgindex.FederatedScoreRecomputeResult
 	roleAccess      pgindex.FederationRolePoolAccessRecord
 
+	activePoolAdmin       bool
+	activePoolAdminPoolID string
+	activePoolAdminNodeID string
+	tombstoneProjection   *pgindex.TombstoneProjection
+
 	deleteRoleAccessPoolID string
 	deleteRoleAccessRoleID string
 	deleteRoleAccessResult bool
@@ -620,6 +694,12 @@ func (s *fakeGoNZBNetAdminStore) FindFederationEventByBodyHash(context.Context, 
 	return "", nil
 }
 
+func (s *fakeGoNZBNetAdminStore) IsActivePoolAdmin(_ context.Context, poolID, nodeID string) (bool, error) {
+	s.activePoolAdminPoolID = poolID
+	s.activePoolAdminNodeID = nodeID
+	return s.activePoolAdmin, nil
+}
+
 func (s *fakeGoNZBNetAdminStore) ValidateFederationPoolControlEvent(_ context.Context, event *events.SignedEvent) error {
 	if event == nil {
 		return fmt.Errorf("event is required")
@@ -668,7 +748,8 @@ func (s *fakeGoNZBNetAdminStore) ProjectFederationPoolEvent(_ context.Context, e
 	return nil
 }
 
-func (s *fakeGoNZBNetAdminStore) ProjectTombstone(context.Context, pgindex.TombstoneProjection) error {
+func (s *fakeGoNZBNetAdminStore) ProjectTombstone(_ context.Context, projection pgindex.TombstoneProjection) error {
+	s.tombstoneProjection = &projection
 	return nil
 }
 
