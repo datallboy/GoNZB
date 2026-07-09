@@ -21,6 +21,9 @@ Current implementation state:
   local federated ReleaseCard cache.
 - Phase 6 adds trust pool projections, M-of-N membership validation, protected
   pool event authorization, and local pool administration APIs.
+- Phase 7 adds signed ResolutionManifest retrieval, verified manifest/NZB
+  caching, and Newznab get integration through the local GoNZBNet aggregator
+  source.
 
 Maintained pages:
 
@@ -30,3 +33,4 @@ Maintained pages:
 - [Phase 4 Inbox Push Sync](./phase-4-inbox-push-sync.md)
 - [Phase 5 RBAC And Aggregator Integration](./phase-5-rbac-aggregator.md)
 - [Phase 6 Trust Pools](./phase-6-trust-pools.md)
+- [Phase 7 Resolution Manifests](./phase-7-resolution-manifests.md)
