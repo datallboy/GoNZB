@@ -79,6 +79,8 @@ Current implementation state:
 - Admin requirements cleanup adds a local pool-control event view for accepted
   join requests, approvals, and revocations.
 - Admin requirements cleanup adds a local federated score recomputation action.
+- Admin requirements cleanup adds local role-level federation pool access
+  management.
 - Security cleanup adds optional encrypted node-key storage when
   `gonzbnet.key_password` is configured.
 - Security cleanup adds explicit encrypted node-key export guarded by
@@ -126,6 +128,7 @@ Maintained pages:
 - [Admin: Pool Member Revocation](./admin-pool-member-revocation.md)
 - [Admin: Pool Control Events](./admin-pool-control-events.md)
 - [Admin: Recompute Scores](./admin-recompute-scores.md)
+- [Admin: Role Pool Access](./admin-role-pool-access.md)
 - [Security: Node Key Encryption](./security-key-encryption.md)
 - [Security: Key Export](./security-key-export.md)
 - [Security: Node Key Rotation](./security-key-rotation.md)

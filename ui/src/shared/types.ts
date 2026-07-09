@@ -1686,6 +1686,23 @@ export type GoNZBNetPoolMember = {
   revoked_at?: string
 }
 
+export type GoNZBNetRolePoolAccess = {
+  role_id: string
+  pool_id: string
+  can_search: boolean
+  can_get: boolean
+  can_resolve_manifest: boolean
+  created_at: string
+  updated_at: string
+}
+
+export type GoNZBNetRolePoolAccessRequest = {
+  role_id: string
+  can_search?: boolean
+  can_get?: boolean
+  can_resolve_manifest?: boolean
+}
+
 export type GoNZBNetTrustPoolRequest = {
   pool_id: string
   display_name: string

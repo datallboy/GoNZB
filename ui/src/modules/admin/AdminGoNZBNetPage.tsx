@@ -9,6 +9,7 @@ import {
   createGoNZBNetCoverageFailed,
   createGoNZBNetTombstone,
   deleteGoNZBNetPeer,
+  deleteGoNZBNetRolePoolAccess,
   exportGoNZBNetKey,
   getGoNZBNetConfigValidation,
   getGoNZBNetCoverageDashboard,
@@ -27,6 +28,7 @@ import {
   getGoNZBNetRejectedEventDiagnostics,
   getGoNZBNetReleaseSourceDiagnostics,
   getGoNZBNetReputationDiagnostics,
+  getGoNZBNetRolePoolAccess,
   getGoNZBNetTombstones,
   getGoNZBNetTrustPools,
   getGoNZBNetValidationTaskDiagnostics,
@@ -44,6 +46,7 @@ import {
   setGoNZBNetPeerEnabled,
   upsertGoNZBNetPoolMember,
   upsertGoNZBNetPeer,
+  upsertGoNZBNetRolePoolAccess,
   upsertGoNZBNetTrustPool,
 } from '../../shared/api/admin'
 import { formatDateTime, formatNumber } from '../../shared/lib/format'
@@ -68,6 +71,7 @@ import type {
   GoNZBNetRejectedEventDiagnostic,
   GoNZBNetReleaseSourceDiagnostic,
   GoNZBNetReputationDiagnostic,
+  GoNZBNetRolePoolAccess,
   GoNZBNetTombstone,
   GoNZBNetTrustPool,
   GoNZBNetValidationTaskDiagnostic,
@@ -122,6 +126,13 @@ type MemberForm = {
   role: string
   status: string
   allowed_capabilities: string
+}
+
+type RolePoolAccessForm = {
+  role_id: string
+  can_search: boolean
+  can_get: boolean
+  can_resolve_manifest: boolean
 }
 
 type PoolJoinForm = {
@@ -215,6 +226,13 @@ const defaultMemberForm: MemberForm = {
   role: 'member',
   status: 'active',
   allowed_capabilities: 'consumer',
+}
+
+const defaultRolePoolAccessForm: RolePoolAccessForm = {
+  role_id: '',
+  can_search: true,
+  can_get: true,
+  can_resolve_manifest: false,
 }
 
 const defaultPoolJoinForm: PoolJoinForm = {
@@ -518,6 +536,7 @@ export function AdminGoNZBNetPage() {
   const [trustPools, setTrustPools] = useState<GoNZBNetTrustPool[]>([])
   const [poolMembers, setPoolMembers] = useState<GoNZBNetPoolMember[]>([])
   const [poolControlEvents, setPoolControlEvents] = useState<GoNZBNetPoolControlEvent[]>([])
+  const [rolePoolAccess, setRolePoolAccess] = useState<GoNZBNetRolePoolAccess[]>([])
   const [tombstones, setTombstones] = useState<GoNZBNetTombstone[]>([])
   const [assignmentForm, setAssignmentForm] = useState<AssignmentForm>(defaultAssignmentForm)
   const [claimForm, setClaimForm] = useState<ClaimForm>(defaultClaimForm)
@@ -525,6 +544,7 @@ export function AdminGoNZBNetPage() {
   const [failedForm, setFailedForm] = useState<OutcomeForm>(defaultOutcomeForm)
   const [poolForm, setPoolForm] = useState<PoolForm>(defaultPoolForm)
   const [memberForm, setMemberForm] = useState<MemberForm>(defaultMemberForm)
+  const [rolePoolAccessForm, setRolePoolAccessForm] = useState<RolePoolAccessForm>(defaultRolePoolAccessForm)
   const [poolJoinForm, setPoolJoinForm] = useState<PoolJoinForm>(defaultPoolJoinForm)
   const [memberApprovalForm, setMemberApprovalForm] = useState<MemberApprovalForm>(defaultMemberApprovalForm)
   const [memberRevocationForm, setMemberRevocationForm] = useState<MemberRevocationForm>(defaultMemberRevocationForm)
@@ -564,6 +584,7 @@ export function AdminGoNZBNetPage() {
         nextTrustPools,
         nextPoolMembers,
         nextPoolControlEvents,
+        nextRolePoolAccess,
         nextTombstones,
         nextReleaseSources,
         nextManifestSources,
@@ -587,6 +608,7 @@ export function AdminGoNZBNetPage() {
           getGoNZBNetTrustPools(),
           getGoNZBNetPoolMembers(effectivePoolID),
           getGoNZBNetPoolControlEvents(effectivePoolID, 100),
+          getGoNZBNetRolePoolAccess(effectivePoolID),
           getGoNZBNetTombstones(false).catch(() => ({ items: [], count: 0 })),
           getGoNZBNetReleaseSourceDiagnostics(effectivePoolID, 100),
           getGoNZBNetManifestSourceDiagnostics(effectivePoolID, 100),
@@ -609,6 +631,7 @@ export function AdminGoNZBNetPage() {
       setTrustPools(nextTrustPools.items ?? [])
       setPoolMembers(nextPoolMembers.items ?? [])
       setPoolControlEvents(nextPoolControlEvents.items ?? [])
+      setRolePoolAccess(nextRolePoolAccess.items ?? [])
       setTombstones(nextTombstones.items ?? [])
       setReleaseSourceDiagnostics(nextReleaseSources.items ?? [])
       setManifestSourceDiagnostics(nextManifestSources.items ?? [])
@@ -749,6 +772,33 @@ export function AdminGoNZBNetPage() {
       await refresh()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save pool member')
+    }
+  }
+
+  async function handleRolePoolAccess(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    try {
+      const response = await upsertGoNZBNetRolePoolAccess(effectivePoolID, {
+        role_id: rolePoolAccessForm.role_id.trim(),
+        can_search: rolePoolAccessForm.can_search,
+        can_get: rolePoolAccessForm.can_get,
+        can_resolve_manifest: rolePoolAccessForm.can_resolve_manifest,
+      })
+      setActionStatus(`Role pool access saved ${response.status}`)
+      setRolePoolAccessForm(defaultRolePoolAccessForm)
+      await refresh()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save role pool access')
+    }
+  }
+
+  async function handleRolePoolAccessDelete(roleID: string) {
+    try {
+      const response = await deleteGoNZBNetRolePoolAccess(effectivePoolID, roleID)
+      setActionStatus(`Role pool access removed ${response.status}`)
+      await refresh()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to remove role pool access')
     }
   }
 
@@ -1311,6 +1361,29 @@ export function AdminGoNZBNetPage() {
           </div>
           <button className="secondary-button align-end" type="submit">Sign revocation</button>
         </form>
+
+        <form className="page-card stack" onSubmit={handleRolePoolAccess}>
+          <h2 className="section-title">Role pool access</h2>
+          <div className="toolbar-grid">
+            <label className="field">
+              <span>Role ID</span>
+              <input className="table-input" required value={rolePoolAccessForm.role_id} onChange={(event) => setRolePoolAccessForm({ ...rolePoolAccessForm, role_id: event.target.value })} />
+            </label>
+            <label className="checkbox-inline align-end">
+              <input type="checkbox" checked={rolePoolAccessForm.can_search} onChange={(event) => setRolePoolAccessForm({ ...rolePoolAccessForm, can_search: event.target.checked })} />
+              <span>Search</span>
+            </label>
+            <label className="checkbox-inline align-end">
+              <input type="checkbox" checked={rolePoolAccessForm.can_get} onChange={(event) => setRolePoolAccessForm({ ...rolePoolAccessForm, can_get: event.target.checked })} />
+              <span>Get</span>
+            </label>
+            <label className="checkbox-inline align-end">
+              <input type="checkbox" checked={rolePoolAccessForm.can_resolve_manifest} onChange={(event) => setRolePoolAccessForm({ ...rolePoolAccessForm, can_resolve_manifest: event.target.checked })} />
+              <span>Resolve</span>
+            </label>
+          </div>
+          <button className="primary-button align-end" type="submit">Save role access</button>
+        </form>
       </div>
 
       <form className="page-card stack" onSubmit={handleTombstone}>
@@ -1569,6 +1642,37 @@ export function AdminGoNZBNetPage() {
                 <td>
                   <button className="secondary-button secondary-button--small" type="button" onClick={() => void handleRevokeMember(item.node_id)}>
                     Revoke
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </SectionTable>
+
+      <SectionTable title={`Role access: ${effectivePoolID}`} count={rolePoolAccess.length}>
+        <table className="data-table data-table--compact">
+          <thead>
+            <tr>
+              <th>Role</th>
+              <th>Search</th>
+              <th>Get</th>
+              <th>Resolve</th>
+              <th>Updated</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rolePoolAccess.map((item) => (
+              <tr key={`${item.pool_id}-${item.role_id}`}>
+                <td className="mono-cell breakable-value">{item.role_id}</td>
+                <td>{item.can_search ? 'yes' : 'no'}</td>
+                <td>{item.can_get ? 'yes' : 'no'}</td>
+                <td>{item.can_resolve_manifest ? 'yes' : 'no'}</td>
+                <td>{formatDateTime(item.updated_at)}</td>
+                <td>
+                  <button className="secondary-button secondary-button--small" type="button" onClick={() => void handleRolePoolAccessDelete(item.role_id)}>
+                    Remove
                   </button>
                 </td>
               </tr>

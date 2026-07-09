@@ -38,6 +38,16 @@ type FederatedReleaseCardSummary struct {
 	ManifestConfidence float64
 }
 
+type FederationRolePoolAccessRecord struct {
+	RoleID             string    `json:"role_id"`
+	PoolID             string    `json:"pool_id"`
+	CanSearch          bool      `json:"can_search"`
+	CanGet             bool      `json:"can_get"`
+	CanResolveManifest bool      `json:"can_resolve_manifest"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
+}
+
 func (s *Store) ListGoNZBNetLocalReleaseCandidates(ctx context.Context, limit int) ([]releasecard.LocalRelease, error) {
 	if limit <= 0 {
 		limit = 50
@@ -384,6 +394,78 @@ func (s *Store) ListFederationSearchPoolsForPrincipal(ctx context.Context, userI
 		return nil, fmt.Errorf("iterate federation search pools: %w", err)
 	}
 	return out, nil
+}
+
+func (s *Store) ListFederationRolePoolAccess(ctx context.Context, poolID string) ([]FederationRolePoolAccessRecord, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("pgindex store is not initialized")
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT role_id, pool_id, can_search, can_get, can_resolve_manifest, created_at, updated_at
+		FROM role_federation_pool_access
+		WHERE pool_id = $1
+		ORDER BY role_id`, strings.TrimSpace(poolID))
+	if err != nil {
+		return nil, fmt.Errorf("list federation role pool access: %w", err)
+	}
+	defer rows.Close()
+	out := []FederationRolePoolAccessRecord{}
+	for rows.Next() {
+		var item FederationRolePoolAccessRecord
+		if err := rows.Scan(&item.RoleID, &item.PoolID, &item.CanSearch, &item.CanGet, &item.CanResolveManifest, &item.CreatedAt, &item.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) UpsertFederationRolePoolAccess(ctx context.Context, record FederationRolePoolAccessRecord) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("pgindex store is not initialized")
+	}
+	roleID := strings.TrimSpace(record.RoleID)
+	poolID := strings.TrimSpace(record.PoolID)
+	if roleID == "" || poolID == "" {
+		return fmt.Errorf("role_id and pool_id are required")
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO role_federation_pool_access (
+			role_id, pool_id, can_search, can_get, can_resolve_manifest, updated_at
+		)
+		VALUES ($1, $2, $3, $4, $5, NOW())
+		ON CONFLICT (role_id, pool_id) DO UPDATE SET
+			can_search = EXCLUDED.can_search,
+			can_get = EXCLUDED.can_get,
+			can_resolve_manifest = EXCLUDED.can_resolve_manifest,
+			updated_at = NOW()`,
+		roleID,
+		poolID,
+		record.CanSearch,
+		record.CanGet,
+		record.CanResolveManifest,
+	); err != nil {
+		return fmt.Errorf("upsert federation role pool access: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) DeleteFederationRolePoolAccess(ctx context.Context, poolID, roleID string) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, fmt.Errorf("pgindex store is not initialized")
+	}
+	result, err := s.db.ExecContext(ctx, `
+		DELETE FROM role_federation_pool_access
+		WHERE pool_id = $1
+		  AND role_id = $2`, strings.TrimSpace(poolID), strings.TrimSpace(roleID))
+	if err != nil {
+		return false, fmt.Errorf("delete federation role pool access: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return rows > 0, nil
 }
 
 func (s *Store) SearchFederatedReleaseCards(ctx context.Context, params FederatedReleaseCardSearchParams) ([]FederatedReleaseCardSummary, error) {

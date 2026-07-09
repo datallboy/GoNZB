@@ -450,6 +450,53 @@ func TestGoNZBNetAdminRecomputeScoresUsesRequestedPool(t *testing.T) {
 	}
 }
 
+func TestGoNZBNetAdminUpsertRolePoolAccessStoresGrant(t *testing.T) {
+	store := &fakeGoNZBNetAdminStore{}
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/gonzbnet/pools/pool.remote/role-access", bytes.NewReader([]byte(`{"role_id":"federated-viewer","can_search":true,"can_get":false,"can_resolve_manifest":true}`)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.SetPathValues(echo.PathValues{{Name: "pool_id", Value: "pool.remote"}})
+	ctrl := &GoNZBNetAdminController{appCtx: &app.Context{Config: testGoNZBNetAdminConfig(t)}, storeOverride: store}
+
+	if err := ctrl.UpsertRolePoolAccess(c); err != nil {
+		t.Fatalf("UpsertRolePoolAccess returned error: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if store.roleAccess.RoleID != "federated-viewer" || store.roleAccess.PoolID != "pool.remote" {
+		t.Fatalf("unexpected role pool access record: %+v", store.roleAccess)
+	}
+	if !store.roleAccess.CanSearch || store.roleAccess.CanGet || !store.roleAccess.CanResolveManifest {
+		t.Fatalf("unexpected role pool access flags: %+v", store.roleAccess)
+	}
+}
+
+func TestGoNZBNetAdminDeleteRolePoolAccessUsesPathValues(t *testing.T) {
+	store := &fakeGoNZBNetAdminStore{deleteRoleAccessResult: true}
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/admin/gonzbnet/pools/pool.remote/role-access/federated-viewer", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.SetPathValues(echo.PathValues{
+		{Name: "pool_id", Value: "pool.remote"},
+		{Name: "role_id", Value: "federated-viewer"},
+	})
+	ctrl := &GoNZBNetAdminController{appCtx: &app.Context{Config: testGoNZBNetAdminConfig(t)}, storeOverride: store}
+
+	if err := ctrl.DeleteRolePoolAccess(c); err != nil {
+		t.Fatalf("DeleteRolePoolAccess returned error: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if store.deleteRoleAccessPoolID != "pool.remote" || store.deleteRoleAccessRoleID != "federated-viewer" {
+		t.Fatalf("unexpected delete path values pool=%q role=%q", store.deleteRoleAccessPoolID, store.deleteRoleAccessRoleID)
+	}
+}
+
 const encryptedKeyEnvelopeMarker = "gonzbnet.ed25519.private.v1"
 
 func testGoNZBNetAdminConfig(t *testing.T) *config.Config {
@@ -503,6 +550,11 @@ type fakeGoNZBNetAdminStore struct {
 	projected       *events.SignedEvent
 	scorePoolID     string
 	scoreResult     pgindex.FederatedScoreRecomputeResult
+	roleAccess      pgindex.FederationRolePoolAccessRecord
+
+	deleteRoleAccessPoolID string
+	deleteRoleAccessRoleID string
+	deleteRoleAccessResult bool
 }
 
 func (s *fakeGoNZBNetAdminStore) ListTrustPools(context.Context) ([]pgindex.TrustPoolRecord, error) {
@@ -515,6 +567,21 @@ func (s *fakeGoNZBNetAdminStore) ListPoolMembers(context.Context, string) ([]pgi
 
 func (s *fakeGoNZBNetAdminStore) ListPoolControlEvents(context.Context, string, int) ([]pgindex.PoolControlEventRecord, error) {
 	return nil, nil
+}
+
+func (s *fakeGoNZBNetAdminStore) ListFederationRolePoolAccess(context.Context, string) ([]pgindex.FederationRolePoolAccessRecord, error) {
+	return nil, nil
+}
+
+func (s *fakeGoNZBNetAdminStore) UpsertFederationRolePoolAccess(_ context.Context, record pgindex.FederationRolePoolAccessRecord) error {
+	s.roleAccess = record
+	return nil
+}
+
+func (s *fakeGoNZBNetAdminStore) DeleteFederationRolePoolAccess(_ context.Context, poolID, roleID string) (bool, error) {
+	s.deleteRoleAccessPoolID = poolID
+	s.deleteRoleAccessRoleID = roleID
+	return s.deleteRoleAccessResult, nil
 }
 
 func (s *fakeGoNZBNetAdminStore) UpsertTrustPool(context.Context, pgindex.TrustPoolRecord) error {
