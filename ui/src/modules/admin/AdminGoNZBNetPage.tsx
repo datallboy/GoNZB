@@ -32,6 +32,7 @@ import {
   getGoNZBNetValidationTaskDiagnostics,
   getGoNZBNetValidationGaps,
   materializeGoNZBNetStalePenalties,
+  recomputeGoNZBNetScores,
   requestGoNZBNetPoolJoin,
   revokeGoNZBNetPoolMember,
   resolveGoNZBNetManifest,
@@ -724,6 +725,16 @@ export function AdminGoNZBNetPage() {
     }
   }
 
+  async function handleRecomputeScores() {
+    try {
+      const response = await recomputeGoNZBNetScores({ pool_id: effectivePoolID })
+      setActionStatus(`Scores recomputed: ${formatNumber(response.result.source_updates)} sources, ${formatNumber(response.result.card_updates)} releases`)
+      await refresh()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to recompute scores')
+    }
+  }
+
   async function handleMember(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     try {
@@ -950,6 +961,9 @@ export function AdminGoNZBNetPage() {
           </div>
           <button className="secondary-button" type="button" onClick={() => void refresh()} disabled={loading}>
             {loading ? 'Loading...' : 'Refresh'}
+          </button>
+          <button className="secondary-button" type="button" onClick={() => void handleRecomputeScores()}>
+            Recompute scores
           </button>
         </div>
         <div className="toolbar-grid">

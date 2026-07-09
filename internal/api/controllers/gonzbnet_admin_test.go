@@ -417,6 +417,39 @@ func TestGoNZBNetAdminCreatePoolMemberRevocationSignsAppendsAndProjectsEvent(t *
 	}
 }
 
+func TestGoNZBNetAdminRecomputeScoresUsesRequestedPool(t *testing.T) {
+	store := &fakeGoNZBNetAdminStore{
+		scoreResult: pgindex.FederatedScoreRecomputeResult{
+			PoolID:        "pool.remote",
+			SourceUpdates: 3,
+			CardUpdates:   2,
+		},
+	}
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/gonzbnet/scores/recompute", bytes.NewReader([]byte(`{"pool_id":"pool.remote"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	ctrl := &GoNZBNetAdminController{appCtx: &app.Context{Config: testGoNZBNetAdminConfig(t)}, storeOverride: store}
+
+	if err := ctrl.RecomputeScores(c); err != nil {
+		t.Fatalf("RecomputeScores returned error: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if store.scorePoolID != "pool.remote" {
+		t.Fatalf("expected recompute pool pool.remote, got %q", store.scorePoolID)
+	}
+	var response scoreRecomputeResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Result.SourceUpdates != 3 || response.Result.CardUpdates != 2 {
+		t.Fatalf("unexpected recompute response: %+v", response)
+	}
+}
+
 const encryptedKeyEnvelopeMarker = "gonzbnet.ed25519.private.v1"
 
 func testGoNZBNetAdminConfig(t *testing.T) *config.Config {
@@ -468,6 +501,8 @@ type fakeGoNZBNetAdminStore struct {
 	policy          pools.PoolPolicy
 	appended        *events.SignedEvent
 	projected       *events.SignedEvent
+	scorePoolID     string
+	scoreResult     pgindex.FederatedScoreRecomputeResult
 }
 
 func (s *fakeGoNZBNetAdminStore) ListTrustPools(context.Context) ([]pgindex.TrustPoolRecord, error) {
@@ -656,4 +691,12 @@ func (s *fakeGoNZBNetAdminStore) ListHealthAttestationDiagnostics(context.Contex
 
 func (s *fakeGoNZBNetAdminStore) ListReputationDiagnostics(context.Context, int) ([]pgindex.ReputationDiagnostic, error) {
 	return nil, nil
+}
+
+func (s *fakeGoNZBNetAdminStore) RecomputeFederatedScores(_ context.Context, poolID string) (pgindex.FederatedScoreRecomputeResult, error) {
+	s.scorePoolID = poolID
+	if s.scoreResult.PoolID == "" {
+		s.scoreResult.PoolID = poolID
+	}
+	return s.scoreResult, nil
 }

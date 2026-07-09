@@ -67,6 +67,8 @@ import type {
   GoNZBNetRejectedEventDiagnostic,
   GoNZBNetReleaseSourceDiagnostic,
   GoNZBNetReputationDiagnostic,
+  GoNZBNetScoreRecomputeRequest,
+  GoNZBNetScoreRecomputeResponse,
   GoNZBNetSyncActionResponse,
   GoNZBNetTombstone,
   GoNZBNetTombstoneRequest,
@@ -601,6 +603,13 @@ export function getGoNZBNetReputationDiagnostics(limit = 100) {
 export function resolveGoNZBNetManifest(body: GoNZBNetManifestResolveRequest) {
   return apiRequest<GoNZBNetManifestResolveResponse>(
     "/api/v1/admin/gonzbnet/manifests/resolve",
+    { method: "POST", body },
+  )
+}
+
+export function recomputeGoNZBNetScores(body: GoNZBNetScoreRecomputeRequest) {
+  return apiRequest<GoNZBNetScoreRecomputeResponse>(
+    "/api/v1/admin/gonzbnet/scores/recompute",
     { method: "POST", body },
   )
 }

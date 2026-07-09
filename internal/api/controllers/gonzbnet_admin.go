@@ -69,6 +69,7 @@ type gonzbnetAdminStore interface {
 	ListFederatedManifestSourceDiagnostics(ctx context.Context, poolID string, limit int) ([]pgindex.FederatedManifestSourceDiagnostic, error)
 	ListHealthAttestationDiagnostics(ctx context.Context, poolID string, limit int) ([]pgindex.HealthAttestationDiagnostic, error)
 	ListReputationDiagnostics(ctx context.Context, limit int) ([]pgindex.ReputationDiagnostic, error)
+	RecomputeFederatedScores(ctx context.Context, poolID string) (pgindex.FederatedScoreRecomputeResult, error)
 }
 
 type trustPoolRequest struct {
@@ -153,6 +154,15 @@ type manifestResolveResponse struct {
 	ReleaseID string `json:"release_id"`
 	NZBBytes  int    `json:"nzb_bytes"`
 	Resolved  bool   `json:"resolved"`
+}
+
+type scoreRecomputeRequest struct {
+	PoolID string `json:"pool_id"`
+}
+
+type scoreRecomputeResponse struct {
+	Status string                                `json:"status"`
+	Result pgindex.FederatedScoreRecomputeResult `json:"result"`
 }
 
 type keyExportRequest struct {
@@ -408,6 +418,23 @@ func (ctrl *GoNZBNetAdminController) ResolveManifest(c *echo.Context) error {
 		NZBBytes:  len(payload),
 		Resolved:  len(payload) > 0,
 	})
+}
+
+func (ctrl *GoNZBNetAdminController) RecomputeScores(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	var req scoreRecomputeRequest
+	if err := decodeJSONBody(c, &req); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	poolID := firstNonBlank(req.PoolID, ctrl.appCtx.Config.GoNZBNet.LocalPoolID, "pool.local")
+	result, err := store.RecomputeFederatedScores(c.Request().Context(), poolID)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, scoreRecomputeResponse{Status: "ok", Result: result})
 }
 
 func (ctrl *GoNZBNetAdminController) ExportKey(c *echo.Context) error {

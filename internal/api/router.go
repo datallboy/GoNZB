@@ -182,6 +182,7 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		v1AdminGoNZBNet.GET("/diagnostics/health", gonzbnetAdminCtrl.HealthDiagnostics)
 		v1AdminGoNZBNet.GET("/diagnostics/reputation", gonzbnetAdminCtrl.ReputationDiagnostics)
 		v1AdminGoNZBNet.POST("/manifests/resolve", gonzbnetAdminCtrl.ResolveManifest)
+		v1AdminGoNZBNet.POST("/scores/recompute", gonzbnetAdminCtrl.RecomputeScores)
 		v1AdminGoNZBNet.POST("/coverage/assignments", gonzbnetAdminCtrl.CreateCoverageAssignment)
 		v1AdminGoNZBNet.POST("/coverage/claims", gonzbnetAdminCtrl.CreateCoverageClaim)
 		v1AdminGoNZBNet.POST("/coverage/complete", gonzbnetAdminCtrl.CreateCoverageComplete)
