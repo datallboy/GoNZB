@@ -38,10 +38,12 @@ type Resolver struct {
 	store                 Store
 	client                *http.Client
 	allowInsecurePeerHTTP bool
+	eventTimeTolerance    time.Duration
 }
 
 type Options struct {
 	AllowInsecurePeerHTTP bool
+	EventTimeTolerance    time.Duration
 }
 
 func New(identity Identity, store Store) *Resolver {
@@ -49,10 +51,15 @@ func New(identity Identity, store Store) *Resolver {
 }
 
 func NewWithOptions(identity Identity, store Store, opts Options) *Resolver {
+	eventTimeTolerance := opts.EventTimeTolerance
+	if eventTimeTolerance <= 0 {
+		eventTimeTolerance = 2 * time.Minute
+	}
 	return &Resolver{
 		identity:              identity,
 		store:                 store,
 		allowInsecurePeerHTTP: opts.AllowInsecurePeerHTTP,
+		eventTimeTolerance:    eventTimeTolerance,
 		client: &http.Client{
 			Timeout: 20 * time.Second,
 		},
@@ -79,35 +86,38 @@ func (r *Resolver) ResolveNZB(ctx context.Context, releaseID string) (io.ReadClo
 	if source == nil {
 		return nil, fmt.Errorf("federated manifest source not found")
 	}
-	event, err := r.fetchManifest(ctx, *source)
-	if err != nil {
+	failSource := func(err error) (io.ReadCloser, error) {
 		_ = r.store.RecordFederatedManifestSourceFailure(ctx, *source)
 		return nil, err
 	}
-	validation, err := events.Verify(event)
+	event, err := r.fetchManifest(ctx, *source)
 	if err != nil {
-		return nil, err
+		return failSource(err)
+	}
+	validation, err := events.VerifyAt(event, time.Now(), r.eventTimeTolerance)
+	if err != nil {
+		return failSource(err)
 	}
 	if validation == nil || !validation.OK {
-		return nil, fmt.Errorf("manifest event verification failed: %s", validationReason(validation))
+		return failSource(fmt.Errorf("manifest event verification failed: %s", validationReason(validation)))
 	}
 	if event.EventType != manifest.Type {
-		return nil, fmt.Errorf("unexpected manifest event type %q", event.EventType)
+		return failSource(fmt.Errorf("unexpected manifest event type %q", event.EventType))
 	}
 	var body manifest.ResolutionManifest
 	if err := json.Unmarshal(event.Body, &body); err != nil {
-		return nil, err
+		return failSource(err)
 	}
 	canonicalCore, err := manifest.Validate(body)
 	if err != nil {
-		return nil, err
+		return failSource(err)
 	}
 	if body.ManifestID != source.ManifestID {
-		return nil, fmt.Errorf("manifest_id mismatch")
+		return failSource(fmt.Errorf("manifest_id mismatch"))
 	}
 	nzbPayload, err := manifest.GenerateNZB(body)
 	if err != nil {
-		return nil, err
+		return failSource(err)
 	}
 	if err := r.store.AppendVerifiedFederationEvent(ctx, event, validation); err != nil {
 		return nil, err

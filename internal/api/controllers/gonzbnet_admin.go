@@ -1709,6 +1709,7 @@ func (ctrl *GoNZBNetAdminController) syncService() (*gonzbnetsync.Service, error
 	}
 	return gonzbnetsync.NewWithOptions(nodeIdentity, syncStore, ctrl.appCtx.Logger, gonzbnetsync.Options{
 		AllowInsecurePeerHTTP: ctrl.appCtx.Config.GoNZBNet.AllowInsecurePeerHTTP,
+		EventTimeTolerance:    time.Duration(ctrl.appCtx.Config.GoNZBNet.TimeToleranceSeconds) * time.Second,
 	}), nil
 }
 
@@ -1726,6 +1727,7 @@ func (ctrl *GoNZBNetAdminController) manifestResolver() (*manifestresolver.Resol
 	}
 	return manifestresolver.NewWithOptions(nodeIdentity, resolverStore, manifestresolver.Options{
 		AllowInsecurePeerHTTP: ctrl.appCtx.Config.GoNZBNet.AllowInsecurePeerHTTP,
+		EventTimeTolerance:    time.Duration(ctrl.appCtx.Config.GoNZBNet.TimeToleranceSeconds) * time.Second,
 	}), nil
 }
 

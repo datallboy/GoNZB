@@ -104,6 +104,61 @@ func TestSignedEventSignedFieldTamperFailsVerification(t *testing.T) {
 	}
 }
 
+func TestVerifyAtRejectsFutureAndExpiredEvents(t *testing.T) {
+	ctx := context.Background()
+	node, err := identity.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("load identity: %v", err)
+	}
+	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
+
+	futureOpts := testCreateOptions()
+	futureOpts.CreatedAt = now.Add(5 * time.Minute)
+	futureEvent, _, err := Create(ctx, node, futureOpts)
+	if err != nil {
+		t.Fatalf("create future event: %v", err)
+	}
+	result, err := VerifyAt(futureEvent, now, 2*time.Minute)
+	if err != nil {
+		t.Fatalf("verify future event: %v", err)
+	}
+	if result.OK || result.Reason != "created_at is in the future" {
+		t.Fatalf("expected future event rejection, got %+v", result)
+	}
+
+	notBefore := now.Add(5 * time.Minute)
+	notBeforeOpts := testCreateOptions()
+	notBeforeOpts.CreatedAt = now
+	notBeforeOpts.NotBefore = &notBefore
+	notBeforeEvent, _, err := Create(ctx, node, notBeforeOpts)
+	if err != nil {
+		t.Fatalf("create not-before event: %v", err)
+	}
+	result, err = VerifyAt(notBeforeEvent, now, 2*time.Minute)
+	if err != nil {
+		t.Fatalf("verify not-before event: %v", err)
+	}
+	if result.OK || result.Reason != "not_before is in the future" {
+		t.Fatalf("expected not_before rejection, got %+v", result)
+	}
+
+	expiresAt := now.Add(-time.Minute)
+	expiredOpts := testCreateOptions()
+	expiredOpts.CreatedAt = now.Add(-10 * time.Minute)
+	expiredOpts.ExpiresAt = &expiresAt
+	expiredEvent, _, err := Create(ctx, node, expiredOpts)
+	if err != nil {
+		t.Fatalf("create expired event: %v", err)
+	}
+	result, err = VerifyAt(expiredEvent, now, 2*time.Minute)
+	if err != nil {
+		t.Fatalf("verify expired event: %v", err)
+	}
+	if result.OK || result.Reason != "event expired" {
+		t.Fatalf("expected expired event rejection, got %+v", result)
+	}
+}
+
 func testCreateOptions() CreateOptions {
 	return CreateOptions{
 		EventType:  "NodeProfile",

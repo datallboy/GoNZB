@@ -73,6 +73,33 @@ func TestSyncOnceRejectsTamperedRemoteEvent(t *testing.T) {
 	}
 }
 
+func TestSyncOnceRejectsFutureRemoteEvent(t *testing.T) {
+	ctx := context.Background()
+	localIdentity, err := identity.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("local identity: %v", err)
+	}
+	remoteIdentity, event := testRemoteReleaseCardEventAt(t, time.Now().UTC().Add(5*time.Minute), nil)
+	server := testPeerServer(t, remoteIdentity, []events.SignedEvent{*event})
+	store := &fakeSyncStore{
+		peers: []pgindex.FederationPeerRecord{{ID: 1, PeerURL: server.URL}},
+	}
+
+	result, err := NewWithOptions(localIdentity, store, nil, Options{
+		AllowInsecurePeerHTTP: true,
+		EventTimeTolerance:    2 * time.Minute,
+	}).SyncOnce(ctx)
+	if err != nil {
+		t.Fatalf("sync once: %v", err)
+	}
+	if result.Accepted != 0 || result.Projected != 0 || result.Rejected != 1 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if len(store.rejected) != 1 || store.rejected[0] != "created_at is in the future" {
+		t.Fatalf("expected future event rejection, got %+v", store.rejected)
+	}
+}
+
 func TestPushOnceSendsSignedEventBatchAndRecordsDelivery(t *testing.T) {
 	ctx := context.Background()
 	localIdentity, event := testRemoteReleaseCardEvent(t)
@@ -242,6 +269,10 @@ func testPushPeerServer(t *testing.T, nodeIdentity *identity.Identity, authStore
 }
 
 func testRemoteReleaseCardEvent(t *testing.T) (*identity.Identity, *events.SignedEvent) {
+	return testRemoteReleaseCardEventAt(t, time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC), nil)
+}
+
+func testRemoteReleaseCardEventAt(t *testing.T, createdAt time.Time, expiresAt *time.Time) (*identity.Identity, *events.SignedEvent) {
 	t.Helper()
 	nodeIdentity, err := identity.LoadOrCreate(t.TempDir())
 	if err != nil {
@@ -254,7 +285,8 @@ func testRemoteReleaseCardEvent(t *testing.T) (*identity.Identity, *events.Signe
 	event, validation, err := events.Create(context.Background(), nodeIdentity, events.CreateOptions{
 		EventType:  "ReleaseCard",
 		Sequence:   1,
-		CreatedAt:  time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC),
+		CreatedAt:  createdAt,
+		ExpiresAt:  expiresAt,
 		PoolIDs:    []string{"pool.local"},
 		Visibility: "pool",
 		BodySchema: releasecard.BodySchema,

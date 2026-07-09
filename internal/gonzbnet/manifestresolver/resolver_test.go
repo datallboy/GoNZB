@@ -101,7 +101,72 @@ func TestResolveNZBRejectsInsecureNonLocalHTTPSource(t *testing.T) {
 	}
 }
 
+func TestResolveNZBRejectsExpiredManifestEvent(t *testing.T) {
+	ctx := context.Background()
+	localIdentity, err := identity.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("local identity: %v", err)
+	}
+	localNodeID, _ := localIdentity.NodeID(ctx)
+	localPublicKey, _ := localIdentity.PublicKey(ctx)
+	now := time.Now().UTC()
+	expiresAt := now.Add(-time.Minute)
+	_, manifestEvent := testManifestEventWithTimes(t, now.Add(-10*time.Minute), &expiresAt)
+	requestStore := &fakeRequestStore{
+		keys:   map[string]ed25519.PublicKey{localNodeID: localPublicKey},
+		nonces: map[string]bool{},
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if _, err := requestauth.Verify(ctx, requestStore, r.Header.Get("Authorization"), r.Method, r.URL.Path, r.URL.RawQuery, body, time.Now(), 2*time.Minute, 10*time.Minute); err != nil {
+			http.Error(w, err.Error(), http.StatusUnauthorized)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(manifest.Response{
+			SchemaVersion: "1.0",
+			Type:          "ManifestResponse",
+			RequestID:     "req_test",
+			Status:        "ok",
+			ManifestEvent: manifestEvent,
+		})
+	}))
+	defer server.Close()
+
+	var body manifest.ResolutionManifest
+	if err := json.Unmarshal(manifestEvent.Body, &body); err != nil {
+		t.Fatalf("manifest body: %v", err)
+	}
+	store := &fakeResolverStore{
+		source: &pgindex.FederatedManifestSource{
+			ManifestID:   body.ManifestID,
+			ReleaseID:    body.ReleaseID,
+			SourceNodeID: manifestEvent.AuthorNodeID,
+			PoolID:       "pool.local",
+			BaseURL:      server.URL,
+			TrustScore:   1,
+		},
+	}
+
+	_, err = NewWithOptions(localIdentity, store, Options{
+		AllowInsecurePeerHTTP: true,
+		EventTimeTolerance:    2 * time.Minute,
+	}).ResolveNZB(ctx, body.ReleaseID)
+	if err == nil || !strings.Contains(err.Error(), "event expired") {
+		t.Fatalf("expected expired manifest event rejection, got %v", err)
+	}
+	if store.stored != nil {
+		t.Fatalf("expired manifest should not be cached")
+	}
+	if store.failures != 1 {
+		t.Fatalf("expected manifest source failure to be recorded, got %d", store.failures)
+	}
+}
+
 func testManifestEvent(t *testing.T) (*identity.Identity, *events.SignedEvent) {
+	return testManifestEventWithTimes(t, time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC), nil)
+}
+
+func testManifestEventWithTimes(t *testing.T, createdAt time.Time, expiresAt *time.Time) (*identity.Identity, *events.SignedEvent) {
 	t.Helper()
 	node, err := identity.LoadOrCreate(t.TempDir())
 	if err != nil {
@@ -134,7 +199,8 @@ func testManifestEvent(t *testing.T) (*identity.Identity, *events.SignedEvent) {
 	event, validation, err := events.Create(context.Background(), node, events.CreateOptions{
 		EventType:  manifest.Type,
 		Sequence:   1,
-		CreatedAt:  time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC),
+		CreatedAt:  createdAt,
+		ExpiresAt:  expiresAt,
 		PoolIDs:    []string{"pool.local"},
 		Visibility: "pool",
 		BodySchema: manifest.BodySchema,
@@ -150,8 +216,9 @@ func testManifestEvent(t *testing.T) (*identity.Identity, *events.SignedEvent) {
 }
 
 type fakeResolverStore struct {
-	source *pgindex.FederatedManifestSource
-	stored *pgindex.ResolutionManifestRecord
+	source   *pgindex.FederatedManifestSource
+	stored   *pgindex.ResolutionManifestRecord
+	failures int
 }
 
 func (s *fakeResolverStore) GetCachedFederatedNZBByReleaseID(context.Context, string) ([]byte, bool, error) {
@@ -177,6 +244,7 @@ func (s *fakeResolverStore) RecordFederatedManifestSourceSuccess(context.Context
 }
 
 func (s *fakeResolverStore) RecordFederatedManifestSourceFailure(context.Context, pgindex.FederatedManifestSource) error {
+	s.failures++
 	return nil
 }
 

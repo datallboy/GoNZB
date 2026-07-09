@@ -190,6 +190,41 @@ func Verify(event *SignedEvent) (*ValidationResult, error) {
 	return result, nil
 }
 
+func VerifyAt(event *SignedEvent, now time.Time, futureTolerance time.Duration) (*ValidationResult, error) {
+	result, err := Verify(event)
+	if err != nil || result == nil || !result.OK {
+		return result, err
+	}
+	if err := ValidateTimeWindow(event, now, futureTolerance); err != nil {
+		result.OK = false
+		result.Reason = err.Error()
+	}
+	return result, nil
+}
+
+func ValidateTimeWindow(event *SignedEvent, now time.Time, futureTolerance time.Duration) error {
+	if event == nil {
+		return fmt.Errorf("event is required")
+	}
+	if now.IsZero() {
+		return nil
+	}
+	now = now.UTC()
+	if futureTolerance <= 0 {
+		futureTolerance = 2 * time.Minute
+	}
+	if event.CreatedAt.After(now.Add(futureTolerance)) {
+		return fmt.Errorf("created_at is in the future")
+	}
+	if event.NotBefore != nil && event.NotBefore.After(now.Add(futureTolerance)) {
+		return fmt.Errorf("not_before is in the future")
+	}
+	if event.ExpiresAt != nil && !event.ExpiresAt.After(now) {
+		return fmt.Errorf("event expired")
+	}
+	return nil
+}
+
 func (e *SignedEvent) CanonicalUnsigned() ([]byte, error) {
 	if e == nil {
 		return nil, fmt.Errorf("event is required")

@@ -3,6 +3,7 @@ package wiring
 import (
 	"context"
 	"fmt"
+	"time"
 
 	aggregatorpkg "github.com/datallboy/gonzb/internal/aggregator"
 	gonzbnetsource "github.com/datallboy/gonzb/internal/aggregator/sources/gonzbnet"
@@ -115,6 +116,7 @@ func buildAggregator(appCtx *app.Context, effective *config.Config) app.IndexerA
 			if err == nil {
 				manager.AddSource(gonzbnetsource.NewWithResolver(store, manifestresolver.NewWithOptions(nodeIdentity, store, manifestresolver.Options{
 					AllowInsecurePeerHTTP: effective.GoNZBNet.AllowInsecurePeerHTTP,
+					EventTimeTolerance:    time.Duration(effective.GoNZBNet.TimeToleranceSeconds) * time.Second,
 				})))
 			} else if appCtx.Logger != nil {
 				appCtx.Logger.Warn("gonzbnet aggregator source disabled: %v", err)

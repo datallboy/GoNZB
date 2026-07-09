@@ -640,7 +640,8 @@ func (ctrl *GoNZBNetController) acceptInboxEvent(ctx context.Context, store gonz
 	} else if exists {
 		return inboxEventResult{EventID: event.EventID, Status: "duplicate"}
 	}
-	validation, err := events.Verify(event)
+	cfg := ctrl.appCtx.Config.GoNZBNet
+	validation, err := events.VerifyAt(event, time.Now(), time.Duration(cfg.TimeToleranceSeconds)*time.Second)
 	if err != nil || validation == nil || !validation.OK {
 		reason := "verification failed"
 		if validation != nil && validation.Reason != "" {
