@@ -173,9 +173,9 @@ func NodeProfileFor(ctx context.Context, identity Identity, cfg Config, now time
 			WS:        baseURL + "/ws",
 		},
 		Capabilities: Capabilities{
-			ReleaseCards:        true,
-			ResolutionManifests: true,
-			HealthAttestations:  true,
+			ReleaseCards:        cfg.Scanner || cfg.Indexer,
+			ResolutionManifests: cfg.ManifestBuilder || cfg.ManifestCache,
+			HealthAttestations:  cfg.HealthChecker || cfg.Validator,
 			TrustPools:          true,
 			PoolWitness:         false,
 			WebSocketGossip:     cfg.WebSocketGossip,
