@@ -93,6 +93,7 @@ type Config struct {
 	LiveQueryEnabled bool
 	WebSocketGossip  bool
 	PeerExchange     bool
+	RelayMode        bool
 	MaxEventBytes    int
 	MaxManifestBytes int
 	MaxBatchEvents   int
@@ -157,7 +158,7 @@ func NodeProfileFor(ctx context.Context, identity Identity, cfg Config, now time
 			PoolWitness:         false,
 			WebSocketGossip:     cfg.WebSocketGossip,
 			PeerExchange:        cfg.PeerExchange,
-			RelayMode:           false,
+			RelayMode:           cfg.RelayMode,
 		},
 		Limits: Limits{
 			MaxEventBytes:         cfg.MaxEventBytes,

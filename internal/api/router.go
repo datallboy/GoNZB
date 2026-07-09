@@ -135,17 +135,19 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 	}
 
 	if modules.API.Enabled && modules.GoNZBNet.Enabled {
-		e.GET("/.well-known/gonzbnet", gonzbnetCtrl.WellKnown)
-		fed := e.Group("/gonzbnet/v1", bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit))
-		fed.GET("/node", gonzbnetCtrl.Node)
-		fed.GET("/caps", gonzbnetCtrl.Caps)
-		fed.POST("/handshake", gonzbnetCtrl.Handshake)
-		fed.GET("/outbox", gonzbnetCtrl.Outbox)
-		fed.GET("/events/:event_id", gonzbnetCtrl.Event)
-		fed.POST("/inbox", gonzbnetCtrl.Inbox)
-		fed.POST("/manifests/:manifest_id/request", gonzbnetCtrl.RequestManifest)
-		fed.GET("/manifests/:manifest_id", gonzbnetCtrl.GetManifest)
-		fed.GET("/ws", gonzbnetCtrl.GossipWS)
+		if appCtx.Config.GoNZBNet.HTTPEnabled {
+			e.GET("/.well-known/gonzbnet", gonzbnetCtrl.WellKnown)
+			fed := e.Group("/gonzbnet/v1", bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit))
+			fed.GET("/node", gonzbnetCtrl.Node)
+			fed.GET("/caps", gonzbnetCtrl.Caps)
+			fed.POST("/handshake", gonzbnetCtrl.Handshake)
+			fed.GET("/outbox", gonzbnetCtrl.Outbox)
+			fed.GET("/events/:event_id", gonzbnetCtrl.Event)
+			fed.POST("/inbox", gonzbnetCtrl.Inbox)
+			fed.POST("/manifests/:manifest_id/request", gonzbnetCtrl.RequestManifest)
+			fed.GET("/manifests/:manifest_id", gonzbnetCtrl.GetManifest)
+			fed.GET("/ws", gonzbnetCtrl.GossipWS)
+		}
 
 		v1AdminGoNZBNet := e.Group("/api/v1/admin/gonzbnet", bodyLimitMiddleware(adminJSONBodyLimit, defaultMultipartBodyLimit))
 		v1AdminGoNZBNet.Use(authMiddleware(authSvc, false, auth.PermissionGoNZBNetAdminPools))
