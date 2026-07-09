@@ -28,6 +28,7 @@ import {
   getGoNZBNetValidationGaps,
   materializeGoNZBNetStalePenalties,
   revokeGoNZBNetPoolMember,
+  resolveGoNZBNetManifest,
   runGoNZBNetGossipSync,
   runGoNZBNetPullSync,
   runGoNZBNetPushSync,
@@ -124,6 +125,10 @@ type TombstoneForm = {
   expires_at: string
 }
 
+type ManifestResolveForm = {
+  release_id: string
+}
+
 const defaultPoolID = 'pool.local'
 
 const defaultAssignmentForm: AssignmentForm = {
@@ -183,6 +188,10 @@ const defaultTombstoneForm: TombstoneForm = {
   evidence_event_ids: '',
   effective_at: '',
   expires_at: '',
+}
+
+const defaultManifestResolveForm: ManifestResolveForm = {
+  release_id: '',
 }
 
 function optionalNumber(value: string) {
@@ -430,6 +439,7 @@ export function AdminGoNZBNetPage() {
   const [poolForm, setPoolForm] = useState<PoolForm>(defaultPoolForm)
   const [memberForm, setMemberForm] = useState<MemberForm>(defaultMemberForm)
   const [tombstoneForm, setTombstoneForm] = useState<TombstoneForm>(defaultTombstoneForm)
+  const [manifestResolveForm, setManifestResolveForm] = useState<ManifestResolveForm>(defaultManifestResolveForm)
   const [peerURL, setPeerURL] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -437,6 +447,9 @@ export function AdminGoNZBNetPage() {
 
   const effectivePoolID = poolID.trim() || defaultPoolID
   const suggestedNodeID = useMemo(() => firstNodeID(nodes), [nodes])
+  const suggestedReleaseID = useMemo(() => {
+    return validationGaps.find((item) => item.release_id)?.release_id ?? releaseSourceDiagnostics.find((item) => item.release_id)?.release_id ?? ''
+  }, [validationGaps, releaseSourceDiagnostics])
 
   async function refresh() {
     setLoading(true)
@@ -710,6 +723,19 @@ export function AdminGoNZBNetPage() {
       await refresh()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to materialize stale penalties')
+    }
+  }
+
+  async function handleManifestResolve(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    try {
+      const releaseID = manifestResolveForm.release_id.trim() || suggestedReleaseID
+      const response = await resolveGoNZBNetManifest({ release_id: releaseID })
+      setActionStatus(`Resolved ${shortID(response.release_id)} (${formatNumber(response.nzb_bytes)} bytes)`)
+      setManifestResolveForm(defaultManifestResolveForm)
+      await refresh()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to resolve manifest')
     }
   }
 
@@ -1280,6 +1306,21 @@ export function AdminGoNZBNetPage() {
           <button className="secondary-button" type="button" onClick={() => void handleSync('gossip')}>Gossip</button>
         </div>
       </div>
+
+      <form className="page-card stack" onSubmit={handleManifestResolve}>
+        <h2 className="section-title">Manifest resolve</h2>
+        <div className="release-table-search">
+          <input
+            className="table-input"
+            placeholder={suggestedReleaseID || 'release_id'}
+            value={manifestResolveForm.release_id}
+            onChange={(event) => setManifestResolveForm({ release_id: event.target.value })}
+          />
+          <button className="primary-button" type="submit" disabled={!manifestResolveForm.release_id.trim() && !suggestedReleaseID}>
+            Resolve
+          </button>
+        </div>
+      </form>
 
       <SectionTable title="Peer diagnostics" count={peerDiagnostics.length}>
         <table className="data-table data-table--compact">
