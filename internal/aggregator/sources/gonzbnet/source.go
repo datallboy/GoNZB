@@ -23,11 +23,20 @@ type Store interface {
 }
 
 type Source struct {
-	store Store
+	store    Store
+	resolver interface {
+		ResolveNZB(ctx context.Context, releaseID string) (io.ReadCloser, error)
+	}
 }
 
 func New(s Store) *Source {
 	return &Source{store: s}
+}
+
+func NewWithResolver(s Store, resolver interface {
+	ResolveNZB(ctx context.Context, releaseID string) (io.ReadCloser, error)
+}) *Source {
+	return &Source{store: s, resolver: resolver}
 }
 
 func (s *Source) Name() string {
@@ -72,7 +81,13 @@ func (s *Source) GetNZB(ctx context.Context, rel *domain.Release) (io.ReadCloser
 	if !ok || principal == nil || !principal.Has(auth.PermissionGoNZBNetGet) {
 		return nil, fmt.Errorf("gonzbnet get permission is required")
 	}
-	return nil, fmt.Errorf("gonzbnet manifest resolution is not implemented yet")
+	if !principal.Has(auth.PermissionGoNZBNetResolveManifest) {
+		return nil, fmt.Errorf("gonzbnet resolve manifest permission is required")
+	}
+	if s == nil || s.resolver == nil {
+		return nil, fmt.Errorf("gonzbnet manifest resolver is not configured")
+	}
+	return s.resolver.ResolveNZB(ctx, rel.GUID)
 }
 
 func federatedReleaseToDomain(item pgindex.FederatedReleaseCardSummary) *domain.Release {
