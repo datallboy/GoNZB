@@ -1756,3 +1756,65 @@ export type GoNZBNetSyncActionResponse = {
   status: string
   result: GoNZBNetSyncResult
 }
+
+export type GoNZBNetReleaseSourceDiagnostic = {
+  release_id: string
+  manifest_id: string
+  title: string
+  source_node_id: string
+  source_event_id: string
+  pool_id: string
+  trust_score: number
+  availability_score: number
+  manifest_confidence_score: number
+  resolvable: boolean
+  posted_at?: string
+  first_seen_at: string
+  last_seen_at: string
+}
+
+export type GoNZBNetManifestSourceDiagnostic = {
+  manifest_id: string
+  release_id: string
+  source_node_id: string
+  pool_id: string
+  advertised: boolean
+  last_success_at?: string
+  last_failure_at?: string
+  failure_count: number
+  avg_latency_ms: number
+  trust_score: number
+  updated_at: string
+}
+
+export type GoNZBNetHealthAttestationDiagnostic = {
+  attestation_id: string
+  manifest_id: string
+  release_id: string
+  author_node_id: string
+  pool_id: string
+  checked_at: string
+  status: string
+  articles_total: number
+  articles_available: number
+  missing_articles: number
+  repair_available: boolean
+  repair_confidence: number
+  retention_days_observed: number
+  confidence: number
+  availability_score: number
+  method: string
+  source_event_id: string
+  updated_at: string
+}
+
+export type GoNZBNetReputationDiagnostic = {
+  id: number
+  node_id: string
+  pool_id: string
+  event_id: string
+  delta: number
+  reason: string
+  local_trust_score: number
+  created_at: string
+}

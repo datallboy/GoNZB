@@ -11,11 +11,15 @@ import {
   getGoNZBNetCoveragePlan,
   getGoNZBNetCoverageSuggestions,
   getGoNZBNetEventDiagnostics,
+  getGoNZBNetHealthDiagnostics,
+  getGoNZBNetManifestSourceDiagnostics,
   getGoNZBNetNodeCapabilities,
   getGoNZBNetPoolMembers,
   getGoNZBNetPeerDeliveryDiagnostics,
   getGoNZBNetPeerDiagnostics,
   getGoNZBNetRejectedEventDiagnostics,
+  getGoNZBNetReleaseSourceDiagnostics,
+  getGoNZBNetReputationDiagnostics,
   getGoNZBNetTombstones,
   getGoNZBNetTrustPools,
   getGoNZBNetValidationTaskDiagnostics,
@@ -40,11 +44,15 @@ import type {
   GoNZBNetCoverageSuggestion,
   GoNZBNetEventDiagnostic,
   GoNZBNetGroupCatalogItem,
+  GoNZBNetHealthAttestationDiagnostic,
+  GoNZBNetManifestSourceDiagnostic,
   GoNZBNetNodeCapability,
   GoNZBNetPeerDeliveryDiagnostic,
   GoNZBNetPeerDiagnostic,
   GoNZBNetPoolMember,
   GoNZBNetRejectedEventDiagnostic,
+  GoNZBNetReleaseSourceDiagnostic,
+  GoNZBNetReputationDiagnostic,
   GoNZBNetTombstone,
   GoNZBNetTrustPool,
   GoNZBNetValidationTaskDiagnostic,
@@ -217,6 +225,13 @@ function rangeLabel(item: { range_start?: number; range_end?: number }) {
   return `${formatNumber(item.range_start ?? 0)} - ${formatNumber(item.range_end ?? 0)}`
 }
 
+function scorePercent(value?: number | null) {
+  if (value === undefined || value === null || !Number.isFinite(value)) {
+    return 'n/a'
+  }
+  return `${Math.round(value * 100)}%`
+}
+
 function capabilityKeys(value?: Record<string, unknown> | null) {
   if (!value) {
     return []
@@ -378,6 +393,10 @@ export function AdminGoNZBNetPage() {
   const [rejectedDiagnostics, setRejectedDiagnostics] = useState<GoNZBNetRejectedEventDiagnostic[]>([])
   const [deliveryDiagnostics, setDeliveryDiagnostics] = useState<GoNZBNetPeerDeliveryDiagnostic[]>([])
   const [validationTaskDiagnostics, setValidationTaskDiagnostics] = useState<GoNZBNetValidationTaskDiagnostic[]>([])
+  const [releaseSourceDiagnostics, setReleaseSourceDiagnostics] = useState<GoNZBNetReleaseSourceDiagnostic[]>([])
+  const [manifestSourceDiagnostics, setManifestSourceDiagnostics] = useState<GoNZBNetManifestSourceDiagnostic[]>([])
+  const [healthDiagnostics, setHealthDiagnostics] = useState<GoNZBNetHealthAttestationDiagnostic[]>([])
+  const [reputationDiagnostics, setReputationDiagnostics] = useState<GoNZBNetReputationDiagnostic[]>([])
   const [trustPools, setTrustPools] = useState<GoNZBNetTrustPool[]>([])
   const [poolMembers, setPoolMembers] = useState<GoNZBNetPoolMember[]>([])
   const [tombstones, setTombstones] = useState<GoNZBNetTombstone[]>([])
@@ -414,6 +433,10 @@ export function AdminGoNZBNetPage() {
         nextTrustPools,
         nextPoolMembers,
         nextTombstones,
+        nextReleaseSources,
+        nextManifestSources,
+        nextHealth,
+        nextReputation,
       ] =
         await Promise.all([
           getGoNZBNetNodeCapabilities(),
@@ -430,6 +453,10 @@ export function AdminGoNZBNetPage() {
           getGoNZBNetTrustPools(),
           getGoNZBNetPoolMembers(effectivePoolID),
           getGoNZBNetTombstones(false).catch(() => ({ items: [], count: 0 })),
+          getGoNZBNetReleaseSourceDiagnostics(effectivePoolID, 100),
+          getGoNZBNetManifestSourceDiagnostics(effectivePoolID, 100),
+          getGoNZBNetHealthDiagnostics(effectivePoolID, 100),
+          getGoNZBNetReputationDiagnostics(100),
         ])
       setNodes(nextNodes.items ?? [])
       setDashboard(nextDashboard)
@@ -445,6 +472,10 @@ export function AdminGoNZBNetPage() {
       setTrustPools(nextTrustPools.items ?? [])
       setPoolMembers(nextPoolMembers.items ?? [])
       setTombstones(nextTombstones.items ?? [])
+      setReleaseSourceDiagnostics(nextReleaseSources.items ?? [])
+      setManifestSourceDiagnostics(nextManifestSources.items ?? [])
+      setHealthDiagnostics(nextHealth.items ?? [])
+      setReputationDiagnostics(nextReputation.items ?? [])
       setError(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load GoNZBNet admin state')
@@ -697,6 +728,8 @@ export function AdminGoNZBNetPage() {
           <StatCard label="Event log" value={formatNumber(eventDiagnostics.length)} detail={`${formatNumber(rejectedDiagnostics.length)} rejected events`} />
           <StatCard label="Trust pools" value={formatNumber(trustPools.length)} detail={`${formatNumber(poolMembers.length)} selected-pool members`} />
           <StatCard label="Tombstones" value={formatNumber(tombstones.length)} detail={`${formatNumber(tombstones.filter((item) => item.active).length)} active`} />
+          <StatCard label="Release sources" value={formatNumber(releaseSourceDiagnostics.length)} detail={`${formatNumber(manifestSourceDiagnostics.length)} manifest sources`} />
+          <StatCard label="Health" value={formatNumber(healthDiagnostics.length)} detail={`${formatNumber(reputationDiagnostics.length)} reputation events`} />
         </div>
       </div>
 
@@ -1237,6 +1270,167 @@ export function AdminGoNZBNetPage() {
                 <td>{formatNumber(item.attempts)}</td>
                 <td>{formatDateTime(item.due_at)}</td>
                 <td>{formatDateTime(item.updated_at)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </SectionTable>
+
+      <SectionTable title="Release source diagnostics" count={releaseSourceDiagnostics.length}>
+        <table className="data-table data-table--compact">
+          <thead>
+            <tr>
+              <th>Release</th>
+              <th>Manifest</th>
+              <th>Source</th>
+              <th>Pool</th>
+              <th>Scores</th>
+              <th>Status</th>
+              <th>Last seen</th>
+            </tr>
+          </thead>
+          <tbody>
+            {releaseSourceDiagnostics.map((item) => (
+              <tr key={`${item.release_id}-${item.source_node_id}-${item.pool_id}`}>
+                <td className="breakable-value" title={item.release_id}>
+                  {label(item.title, shortID(item.release_id))}
+                  <div className="muted-copy mono-cell">{shortID(item.release_id)}</div>
+                </td>
+                <td className="mono-cell breakable-value" title={item.manifest_id}>{shortID(item.manifest_id)}</td>
+                <td className="mono-cell breakable-value" title={item.source_node_id}>
+                  {shortID(item.source_node_id)}
+                  <div className="muted-copy" title={item.source_event_id}>{shortID(item.source_event_id)}</div>
+                </td>
+                <td>{label(item.pool_id, 'local')}</td>
+                <td>
+                  trust {scorePercent(item.trust_score)}
+                  <div className="muted-copy">avail {scorePercent(item.availability_score)}</div>
+                  <div className="muted-copy">manifest {scorePercent(item.manifest_confidence_score)}</div>
+                </td>
+                <td><span className="status-pill status-pill--table">{item.resolvable ? 'resolvable' : 'pending'}</span></td>
+                <td>
+                  {formatDateTime(item.last_seen_at)}
+                  <div className="muted-copy">posted {formatDateTime(item.posted_at)}</div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </SectionTable>
+
+      <SectionTable title="Manifest source diagnostics" count={manifestSourceDiagnostics.length}>
+        <table className="data-table data-table--compact">
+          <thead>
+            <tr>
+              <th>Manifest</th>
+              <th>Release</th>
+              <th>Source</th>
+              <th>Pool</th>
+              <th>Status</th>
+              <th>Failures</th>
+              <th>Updated</th>
+            </tr>
+          </thead>
+          <tbody>
+            {manifestSourceDiagnostics.map((item) => (
+              <tr key={`${item.manifest_id}-${item.source_node_id}-${item.pool_id}`}>
+                <td className="mono-cell breakable-value" title={item.manifest_id}>{shortID(item.manifest_id)}</td>
+                <td className="mono-cell breakable-value" title={item.release_id}>{shortID(item.release_id)}</td>
+                <td className="mono-cell breakable-value" title={item.source_node_id}>{shortID(item.source_node_id)}</td>
+                <td>{label(item.pool_id, 'local')}</td>
+                <td>
+                  <span className="status-pill status-pill--table">{item.advertised ? 'advertised' : 'hidden'}</span>
+                  <div className="muted-copy">trust {scorePercent(item.trust_score)}</div>
+                </td>
+                <td>
+                  {formatNumber(item.failure_count)}
+                  <div className="muted-copy">{formatNumber(item.avg_latency_ms)} ms avg</div>
+                  <div className="muted-copy">last failure {formatDateTime(item.last_failure_at)}</div>
+                </td>
+                <td>
+                  {formatDateTime(item.updated_at)}
+                  <div className="muted-copy">last success {formatDateTime(item.last_success_at)}</div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </SectionTable>
+
+      <SectionTable title="Health attestations" count={healthDiagnostics.length}>
+        <table className="data-table data-table--compact">
+          <thead>
+            <tr>
+              <th>Attestation</th>
+              <th>Release</th>
+              <th>Author</th>
+              <th>Pool</th>
+              <th>Status</th>
+              <th>Articles</th>
+              <th>Scores</th>
+              <th>Checked</th>
+            </tr>
+          </thead>
+          <tbody>
+            {healthDiagnostics.map((item) => (
+              <tr key={item.attestation_id}>
+                <td className="mono-cell breakable-value" title={item.attestation_id}>
+                  {shortID(item.attestation_id)}
+                  <div className="muted-copy" title={item.source_event_id}>{shortID(item.source_event_id)}</div>
+                </td>
+                <td className="mono-cell breakable-value" title={item.release_id}>
+                  {shortID(item.release_id)}
+                  <div className="muted-copy" title={item.manifest_id}>{shortID(item.manifest_id)}</div>
+                </td>
+                <td className="mono-cell breakable-value" title={item.author_node_id}>{shortID(item.author_node_id)}</td>
+                <td>{label(item.pool_id, 'local')}</td>
+                <td>
+                  <span className="status-pill status-pill--table">{item.status}</span>
+                  <div className="muted-copy">{label(item.method)}</div>
+                </td>
+                <td>
+                  {formatNumber(item.articles_available)} / {formatNumber(item.articles_total)}
+                  <div className="muted-copy">{formatNumber(item.missing_articles)} missing</div>
+                  <div className="muted-copy">{formatNumber(item.retention_days_observed)}d retention</div>
+                </td>
+                <td>
+                  avail {scorePercent(item.availability_score)}
+                  <div className="muted-copy">confidence {scorePercent(item.confidence)}</div>
+                  <div className="muted-copy">repair {item.repair_available ? scorePercent(item.repair_confidence) : 'no'}</div>
+                </td>
+                <td>
+                  {formatDateTime(item.checked_at)}
+                  <div className="muted-copy">updated {formatDateTime(item.updated_at)}</div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </SectionTable>
+
+      <SectionTable title="Reputation diagnostics" count={reputationDiagnostics.length}>
+        <table className="data-table data-table--compact">
+          <thead>
+            <tr>
+              <th>Node</th>
+              <th>Pool</th>
+              <th>Delta</th>
+              <th>Trust</th>
+              <th>Reason</th>
+              <th>Event</th>
+              <th>Created</th>
+            </tr>
+          </thead>
+          <tbody>
+            {reputationDiagnostics.map((item) => (
+              <tr key={item.id}>
+                <td className="mono-cell breakable-value" title={item.node_id}>{shortID(item.node_id)}</td>
+                <td>{label(item.pool_id, 'local')}</td>
+                <td>{item.delta > 0 ? '+' : ''}{item.delta.toFixed(3)}</td>
+                <td>{scorePercent(item.local_trust_score)}</td>
+                <td className="breakable-value">{item.reason}</td>
+                <td className="mono-cell breakable-value" title={item.event_id}>{shortID(item.event_id)}</td>
+                <td>{formatDateTime(item.created_at)}</td>
               </tr>
             ))}
           </tbody>
