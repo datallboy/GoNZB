@@ -24,6 +24,9 @@ Current implementation state:
 - Phase 7 adds signed ResolutionManifest retrieval, verified manifest/NZB
   caching, and Newznab get integration through the local GoNZBNet aggregator
   source.
+- Phase 8 adds signed HealthAttestation events, optional local health
+  publishing, health-based availability aggregation, reputation deltas, and
+  search ranking that uses health-adjusted scores.
 
 Maintained pages:
 
@@ -34,3 +37,4 @@ Maintained pages:
 - [Phase 5 RBAC And Aggregator Integration](./phase-5-rbac-aggregator.md)
 - [Phase 6 Trust Pools](./phase-6-trust-pools.md)
 - [Phase 7 Resolution Manifests](./phase-7-resolution-manifests.md)
+- [Phase 8 Health Attestations](./phase-8-health-attestations.md)

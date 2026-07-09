@@ -148,9 +148,9 @@ func NodeProfileFor(ctx context.Context, identity Identity, cfg Config, now time
 		},
 		Capabilities: Capabilities{
 			ReleaseCards:        true,
-			ResolutionManifests: false,
-			HealthAttestations:  false,
-			TrustPools:          false,
+			ResolutionManifests: true,
+			HealthAttestations:  true,
+			TrustPools:          true,
 			PoolWitness:         false,
 			WebSocketGossip:     false,
 			PeerExchange:        false,

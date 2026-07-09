@@ -13,6 +13,7 @@ import (
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/gonzbnet/canonical"
 	"github.com/datallboy/gonzb/internal/gonzbnet/events"
+	"github.com/datallboy/gonzb/internal/gonzbnet/health"
 	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
 	"github.com/datallboy/gonzb/internal/gonzbnet/manifest"
 	"github.com/datallboy/gonzb/internal/gonzbnet/pools"
@@ -44,6 +45,7 @@ type gonzbnetStore interface {
 	GetResolutionManifest(ctx context.Context, manifestID string) (*manifest.ResolutionManifest, error)
 	GetResolutionManifestEvent(ctx context.Context, manifestID string) (*events.SignedEvent, error)
 	CanFetchResolutionManifest(ctx context.Context, manifestID, nodeID string) (bool, error)
+	ProjectHealthAttestation(ctx context.Context, projection pgindex.HealthAttestationProjection) error
 }
 
 type outboxResponse struct {
@@ -442,7 +444,7 @@ func (ctrl *GoNZBNetController) acceptInboxEvent(ctx context.Context, store gonz
 		}
 	}
 	var releaseProjection *releasecard.Projection
-	if event.EventType == "ReleaseCard" {
+	if event.EventType == pools.EventTypeReleaseCard {
 		var card releasecard.ReleaseCard
 		if err := json.Unmarshal(event.Body, &card); err != nil {
 			_ = store.AppendRejectedFederationEvent(ctx, event.EventID, event.AuthorNodeID, event.EventType, raw, "invalid release card body")
@@ -459,6 +461,24 @@ func (ctrl *GoNZBNetController) acceptInboxEvent(ctx context.Context, store gonz
 			PoolID:       poolID,
 		}
 	}
+	var healthProjection *pgindex.HealthAttestationProjection
+	if event.EventType == pools.EventTypeHealthAttestation {
+		var attestation health.Attestation
+		if err := json.Unmarshal(event.Body, &attestation); err != nil {
+			_ = store.AppendRejectedFederationEvent(ctx, event.EventID, event.AuthorNodeID, event.EventType, raw, "invalid health attestation body")
+			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "invalid_body", Message: "invalid health attestation body"}
+		}
+		poolID := ""
+		if len(event.PoolIDs) > 0 {
+			poolID = event.PoolIDs[0]
+		}
+		healthProjection = &pgindex.HealthAttestationProjection{
+			Attestation:  attestation,
+			EventID:      event.EventID,
+			AuthorNodeID: event.AuthorNodeID,
+			PoolID:       poolID,
+		}
+	}
 	if err := store.AppendVerifiedFederationEvent(ctx, event, validation); err != nil {
 		return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "store_error", Message: err.Error()}
 	}
@@ -469,6 +489,11 @@ func (ctrl *GoNZBNetController) acceptInboxEvent(ctx context.Context, store gonz
 	}
 	if releaseProjection != nil {
 		if err := store.UpsertFederatedReleaseCardProjection(ctx, *releaseProjection); err != nil {
+			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "projection_failed", Message: err.Error()}
+		}
+	}
+	if healthProjection != nil {
+		if err := store.ProjectHealthAttestation(ctx, *healthProjection); err != nil {
 			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "projection_failed", Message: err.Error()}
 		}
 	}

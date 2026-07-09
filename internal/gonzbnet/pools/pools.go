@@ -10,6 +10,9 @@ import (
 )
 
 const (
+	EventTypeReleaseCard       = "ReleaseCard"
+	EventTypeHealthAttestation = "HealthAttestation"
+
 	EventTypePoolGenesis        = "PoolGenesis"
 	EventTypePoolJoinRequest    = "PoolJoinRequest"
 	EventTypePoolMemberApproved = "PoolMemberApproved"
@@ -123,7 +126,7 @@ func NormalizePolicy(policy Policy, adminCount int) Policy {
 		out.AcceptMode = "pool_member"
 	}
 	if len(out.AcceptedEventTypes) == 0 {
-		out.AcceptedEventTypes = []string{"ReleaseCard"}
+		out.AcceptedEventTypes = []string{EventTypeReleaseCard, EventTypeHealthAttestation}
 	}
 	return out
 }

@@ -62,9 +62,10 @@ func (m *gonzbnetRuntimeModule) Start(ctx context.Context) error {
 		return nil
 	}
 	publishEnabled := m.publisher != nil && m.appCtx.Config.GoNZBNet.PublishReleaseCardsEnabled
+	healthEnabled := m.publisher != nil && m.appCtx.Config.GoNZBNet.HealthAttestationsEnabled
 	pullEnabled := m.pullSync != nil && m.appCtx.Config.GoNZBNet.PullSyncEnabled
 	pushEnabled := m.pullSync != nil && m.appCtx.Config.GoNZBNet.PushSyncEnabled
-	if !publishEnabled && !pullEnabled && !pushEnabled {
+	if !publishEnabled && !healthEnabled && !pullEnabled && !pushEnabled {
 		return nil
 	}
 	if m.running {
@@ -81,6 +82,16 @@ func (m *gonzbnetRuntimeModule) Start(ctx context.Context) error {
 		go func() {
 			if err := m.publisher.Run(childCtx, interval, batchSize); err != nil && childCtx.Err() == nil {
 				m.appCtx.Logger.Error("gonzbnet release-card publisher failed: %v", err)
+			}
+		}()
+	}
+	if healthEnabled {
+		interval := time.Duration(m.appCtx.Config.GoNZBNet.HealthAttestationsIntervalMin * float64(time.Minute))
+		batchSize := m.appCtx.Config.GoNZBNet.HealthAttestationsBatchSize
+		m.appCtx.Logger.Info("starting gonzbnet health attestation publisher interval=%s batch_size=%d", interval, batchSize)
+		go func() {
+			if err := m.publisher.RunHealth(childCtx, interval, batchSize); err != nil && childCtx.Err() == nil {
+				m.appCtx.Logger.Error("gonzbnet health attestation publisher failed: %v", err)
 			}
 		}()
 	}
