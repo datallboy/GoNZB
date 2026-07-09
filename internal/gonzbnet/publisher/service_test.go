@@ -54,6 +54,37 @@ func TestPublishOnceSignsStoresAndSkipsUnchangedReleaseCards(t *testing.T) {
 	}
 }
 
+func TestPublishOnceUsesScanOutputWithoutIndexerCandidates(t *testing.T) {
+	ctx := context.Background()
+	node, err := identity.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("load identity: %v", err)
+	}
+	scanRelease := testPublisherRelease()
+	scanRelease.LocalReleaseID = "scan-1"
+	scanRelease.SourceKind = "local_scan_output"
+	store := &fakeStore{
+		scanCandidates:   []releasecard.LocalRelease{scanRelease},
+		eventsByBodyHash: make(map[string]string),
+	}
+	svc := New(node, store, "pool.local")
+	svc.now = func() time.Time { return time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC) }
+
+	result, err := svc.PublishOnce(ctx, 10)
+	if err != nil {
+		t.Fatalf("publish scan output: %v", err)
+	}
+	if result.Scanned != 1 || result.Published != 1 || result.Projected != 1 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if store.publishedScanOutputs["scan-1"] == "" {
+		t.Fatalf("expected scan output to be marked published")
+	}
+	if len(store.projections) != 1 || store.projections[0].Card.Source.Kind != "local_scan_output" {
+		t.Fatalf("expected local_scan_output projection, got %+v", store.projections)
+	}
+}
+
 func TestPublishHealthOnceSignsCompleteAndIncompleteAttestations(t *testing.T) {
 	ctx := context.Background()
 	node, err := identity.LoadOrCreate(t.TempDir())
@@ -142,6 +173,7 @@ func TestPublishValidationOnceSignsAvailabilityWithoutIndexer(t *testing.T) {
 }
 
 type fakeStore struct {
+	scanCandidates          []releasecard.LocalRelease
 	candidates              []releasecard.LocalRelease
 	events                  []*events.SignedEvent
 	eventsByBodyHash        map[string]string
@@ -152,13 +184,27 @@ type fakeStore struct {
 	capacityProjections     []pgindex.ValidatorCapacityProjection
 	availabilityProjections []pgindex.ArticleAvailabilityProjection
 	checksumProjections     []pgindex.ChecksumAttestationProjection
+	manifestAvailability    []pgindex.ManifestAvailabilityProjection
+	publishedScanOutputs    map[string]string
 	completedTasks          map[int64]string
 	nodeID                  string
 	publicKey               ed25519.PublicKey
 }
 
+func (s *fakeStore) ListGoNZBNetScanOutputCandidates(context.Context, int) ([]releasecard.LocalRelease, error) {
+	return s.scanCandidates, nil
+}
+
 func (s *fakeStore) ListGoNZBNetLocalReleaseCandidates(context.Context, int) ([]releasecard.LocalRelease, error) {
 	return s.candidates, nil
+}
+
+func (s *fakeStore) MarkGoNZBNetScanOutputPublished(_ context.Context, scanID, eventID string) error {
+	if s.publishedScanOutputs == nil {
+		s.publishedScanOutputs = map[string]string{}
+	}
+	s.publishedScanOutputs[scanID] = eventID
+	return nil
 }
 
 func (s *fakeStore) UpsertFederationNodeIdentity(_ context.Context, nodeID string, publicKey ed25519.PublicKey) error {
@@ -187,6 +233,11 @@ func (s *fakeStore) AppendVerifiedFederationEvent(_ context.Context, event *even
 
 func (s *fakeStore) UpsertFederatedReleaseCardProjection(_ context.Context, projection releasecard.Projection) error {
 	s.projections = append(s.projections, projection)
+	return nil
+}
+
+func (s *fakeStore) ProjectManifestAvailability(_ context.Context, projection pgindex.ManifestAvailabilityProjection) error {
+	s.manifestAvailability = append(s.manifestAvailability, projection)
 	return nil
 }
 

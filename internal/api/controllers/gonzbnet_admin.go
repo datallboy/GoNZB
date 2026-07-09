@@ -109,6 +109,7 @@ func (ctrl *GoNZBNetAdminController) UpsertPool(c *echo.Context) error {
 			pools.EventTypeValidatorCapacity,
 			pools.EventTypeArticleAvailabilityAttestation,
 			pools.EventTypeChecksumAttestation,
+			pools.EventTypeManifestAvailability,
 		}
 	}
 	policy := pools.Policy{

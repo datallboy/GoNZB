@@ -51,6 +51,7 @@ gonzbnet:
   publish_release_cards_enabled: false
   publish_release_cards_batch_size: 50
   publish_release_cards_interval_minutes: 10
+  manifest_availability_enabled: false
   health_attestations_enabled: false
   health_attestations_batch_size: 50
   health_attestations_interval_minutes: 30
