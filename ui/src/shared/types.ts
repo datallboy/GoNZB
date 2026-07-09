@@ -1582,3 +1582,76 @@ export type GoNZBNetActionResponse = {
   event_id?: string
   created?: number
 }
+
+export type GoNZBNetPeerDiagnostic = {
+  id: number
+  node_id: string
+  peer_url: string
+  source: string
+  enabled: boolean
+  status: string
+  cursor: string
+  last_event_id: string
+  failure_count: number
+  last_error: string
+  last_connected_at?: string
+  last_sync_at?: string
+  updated_at: string
+}
+
+export type GoNZBNetEventDiagnostic = {
+  event_id: string
+  event_type: string
+  author_node_id: string
+  sequence: number
+  body_hash: string
+  pool_ids: string[]
+  visibility: string
+  created_at: string
+  received_at: string
+  validation_status: string
+  rejection_reason?: string
+  projected: boolean
+  projected_at?: string
+}
+
+export type GoNZBNetRejectedEventDiagnostic = {
+  id: number
+  event_id: string
+  author_node_id: string
+  event_type: string
+  rejection_reason: string
+  received_at: string
+}
+
+export type GoNZBNetPeerDeliveryDiagnostic = {
+  peer_id: number
+  peer_url: string
+  event_id: string
+  event_type: string
+  status: string
+  attempts: number
+  last_attempt_at?: string
+  delivered_at?: string
+  last_error: string
+  updated_at: string
+}
+
+export type GoNZBNetValidationTaskDiagnostic = {
+  task_id: number
+  manifest_id: string
+  release_id: string
+  source_node_id: string
+  source_event_id: string
+  pool_id: string
+  status: string
+  priority: number
+  attempts: number
+  last_error: string
+  claimed_by_node_id: string
+  claimed_at?: string
+  due_at: string
+  completed_at?: string
+  created_at: string
+  updated_at: string
+}
