@@ -202,6 +202,12 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		v1AdminGoNZBNetModeration.Use(auditLogMiddleware(appCtx, "admin.gonzbnet.moderation"))
 		v1AdminGoNZBNetModeration.GET("/moderation/tombstones", gonzbnetAdminCtrl.ListTombstones)
 		v1AdminGoNZBNetModeration.POST("/moderation/tombstones", gonzbnetAdminCtrl.CreateTombstone)
+
+		v1AdminGoNZBNetKeys := e.Group("/api/v1/admin/gonzbnet", bodyLimitMiddleware(adminJSONBodyLimit, defaultMultipartBodyLimit))
+		v1AdminGoNZBNetKeys.Use(authMiddleware(authSvc, false, auth.PermissionGoNZBNetAdminKeys))
+		v1AdminGoNZBNetKeys.Use(csrfProtectionMiddleware())
+		v1AdminGoNZBNetKeys.Use(auditLogMiddleware(appCtx, "admin.gonzbnet.keys"))
+		v1AdminGoNZBNetKeys.POST("/keys/export", gonzbnetAdminCtrl.ExportKey)
 	}
 
 	var (

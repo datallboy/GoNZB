@@ -72,6 +72,8 @@ Current implementation state:
   outside named phases, including local node block/unblock controls.
 - Security cleanup adds optional encrypted node-key storage when
   `gonzbnet.key_password` is configured.
+- Security cleanup adds explicit encrypted node-key export guarded by
+  `gonzbnet.admin.keys`.
 
 Maintained pages:
 
@@ -104,3 +106,4 @@ Maintained pages:
 - [Phase P Remove Peer](./phase-p-remove-peer.md)
 - [Admin Requirements Cleanup](./admin-requirements-cleanup.md)
 - [Security: Node Key Encryption](./security-key-encryption.md)
+- [Security: Key Export](./security-key-export.md)

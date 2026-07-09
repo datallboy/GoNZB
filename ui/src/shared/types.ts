@@ -1882,3 +1882,17 @@ export type GoNZBNetManifestResolveResponse = {
   nzb_bytes: number
   resolved: boolean
 }
+
+export type GoNZBNetKeyExportRequest = {
+  backup_password: string
+  confirmation: string
+}
+
+export type GoNZBNetKeyExportResponse = {
+  status: string
+  node_id: string
+  public_key: string
+  format: string
+  encrypted_key: string
+  created_at: string
+}

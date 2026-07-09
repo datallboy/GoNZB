@@ -120,6 +120,16 @@ func (i *Identity) Sign(_ context.Context, payload []byte) ([]byte, error) {
 	return ed25519.Sign(i.privateKey, payload), nil
 }
 
+func (i *Identity) ExportEncryptedPrivateKey(backupPassword string) (string, error) {
+	if i == nil || len(i.privateKey) != ed25519.PrivateKeySize {
+		return "", fmt.Errorf("node identity is not initialized")
+	}
+	if strings.TrimSpace(backupPassword) == "" {
+		return "", fmt.Errorf("backup password is required")
+	}
+	return encryptPrivateKey(i.privateKey, backupPassword)
+}
+
 func Verify(publicKey ed25519.PublicKey, payload, signature []byte) bool {
 	if len(publicKey) != ed25519.PublicKeySize || len(signature) != ed25519.SignatureSize {
 		return false

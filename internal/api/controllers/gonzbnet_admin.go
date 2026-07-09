@@ -100,6 +100,20 @@ type manifestResolveResponse struct {
 	Resolved  bool   `json:"resolved"`
 }
 
+type keyExportRequest struct {
+	BackupPassword string `json:"backup_password"`
+	Confirmation   string `json:"confirmation"`
+}
+
+type keyExportResponse struct {
+	Status       string `json:"status"`
+	NodeID       string `json:"node_id"`
+	PublicKey    string `json:"public_key"`
+	Format       string `json:"format"`
+	EncryptedKey string `json:"encrypted_key"`
+	CreatedAt    string `json:"created_at"`
+}
+
 type gonzbnetAdminNodeProfileResponse struct {
 	NodeID    string              `json:"node_id"`
 	PublicKey string              `json:"public_key"`
@@ -312,6 +326,43 @@ func (ctrl *GoNZBNetAdminController) ResolveManifest(c *echo.Context) error {
 		ReleaseID: releaseID,
 		NZBBytes:  len(payload),
 		Resolved:  len(payload) > 0,
+	})
+}
+
+func (ctrl *GoNZBNetAdminController) ExportKey(c *echo.Context) error {
+	var req keyExportRequest
+	if err := decodeJSONBody(c, &req); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	if strings.TrimSpace(req.Confirmation) != "export-gonzbnet-node-key" {
+		return jsonError(c, http.StatusBadRequest, "confirmation must be export-gonzbnet-node-key")
+	}
+	if strings.TrimSpace(req.BackupPassword) == "" {
+		return jsonError(c, http.StatusBadRequest, "backup_password is required")
+	}
+	nodeIdentity, err := ctrl.localIdentity()
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	nodeID, err := nodeIdentity.NodeID(c.Request().Context())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	publicKey, err := nodeIdentity.PublicKeyBase64URL(c.Request().Context())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	encryptedKey, err := nodeIdentity.ExportEncryptedPrivateKey(req.BackupPassword)
+	if err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	return c.JSON(http.StatusOK, keyExportResponse{
+		Status:       "ok",
+		NodeID:       nodeID,
+		PublicKey:    publicKey,
+		Format:       "gonzbnet.ed25519.private.v1",
+		EncryptedKey: encryptedKey,
+		CreatedAt:    time.Now().UTC().Format(time.RFC3339),
 	})
 }
 
