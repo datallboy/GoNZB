@@ -83,6 +83,19 @@ func (s *Store) UpsertFederationNode(ctx context.Context, node FederationNodeRec
 	if err != nil {
 		return fmt.Errorf("upsert federation node: %w", err)
 	}
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO federation_node_capabilities (
+			node_id, capabilities, module_status, updated_at
+		)
+		VALUES ($1, $2::jsonb, '{}'::jsonb, NOW())
+		ON CONFLICT (node_id) DO UPDATE SET
+			capabilities = EXCLUDED.capabilities,
+			updated_at = NOW()`,
+		node.NodeID,
+		string(capabilities),
+	); err != nil {
+		return fmt.Errorf("upsert federation node capabilities: %w", err)
+	}
 	return nil
 }
 

@@ -107,7 +107,9 @@ func buildAggregator(appCtx *app.Context, effective *config.Config) app.IndexerA
 		manager.AddSource(usenetindex.New(appCtx.PGIndexStore, appCtx.SettingsAdmin, appCtx.IndexerArchiveStore))
 	}
 
-	if effective.Aggregator.Sources.GoNZBNet.Enabled && appCtx.PGIndexStore != nil {
+	if effective.Aggregator.Sources.GoNZBNet.Enabled &&
+		effective.GoNZBNet.IndexProjectionEnabled &&
+		appCtx.PGIndexStore != nil {
 		if store, ok := appCtx.PGIndexStore.(gonzbnetAggregatorStore); ok {
 			nodeIdentity, err := identity.LoadOrCreate(effective.GoNZBNet.KeysDir)
 			if err == nil {
