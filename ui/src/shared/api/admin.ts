@@ -42,6 +42,8 @@ import type {
   GoNZBNetHealthAttestationDiagnostic,
   GoNZBNetListResponse,
   GoNZBNetManifestSourceDiagnostic,
+  GoNZBNetManifestResolveRequest,
+  GoNZBNetManifestResolveResponse,
   GoNZBNetNodeCapability,
   GoNZBNetNodeProfileResponse,
   GoNZBNetOutcomeRequest,
@@ -582,6 +584,13 @@ export function getGoNZBNetHealthDiagnostics(poolID?: string, limit = 100) {
 export function getGoNZBNetReputationDiagnostics(limit = 100) {
   return apiRequest<GoNZBNetListResponse<GoNZBNetReputationDiagnostic>>(
     `/api/v1/admin/gonzbnet/diagnostics/reputation${goNZBNetQuery({ limit })}`,
+  )
+}
+
+export function resolveGoNZBNetManifest(body: GoNZBNetManifestResolveRequest) {
+  return apiRequest<GoNZBNetManifestResolveResponse>(
+    "/api/v1/admin/gonzbnet/manifests/resolve",
+    { method: "POST", body },
   )
 }
 
