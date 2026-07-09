@@ -16,6 +16,21 @@ function canOpenAdminPortal(permissions: string[]) {
   )
 }
 
+function canOpenGoNZBNetAdmin(hasPermission: (permission: string) => boolean) {
+  return [
+    'gonzbnet.admin.read',
+    'gonzbnet.admin.write',
+    'gonzbnet.admin.peers',
+    'gonzbnet.admin.pools',
+    'gonzbnet.admin.moderation',
+    'gonzbnet.admin.keys',
+    'gonzbnet.admin.coverage',
+    'gonzbnet.admin.scanner',
+    'gonzbnet.admin.validator',
+    'gonzbnet.admin.scheduler',
+  ].some((permission) => hasPermission(permission))
+}
+
 function AccountMenu({ viewerLink }: { viewerLink?: boolean }) {
   const { session, logout } = useAuth()
   const [open, setOpen] = useState(false)
@@ -126,7 +141,7 @@ export function AdminAppShell() {
               <NavLink to="/admin/indexer/binaries">Binaries</NavLink>
             </>
           ) : null}
-          {moduleVisible('gonzbnet') && hasPermission('gonzbnet.admin.pools') ? (
+          {moduleVisible('gonzbnet') && canOpenGoNZBNetAdmin(hasPermission) ? (
             <NavLink to="/admin/gonzbnet">GoNZBNet</NavLink>
           ) : null}
           {hasPermission('admin.settings.write') || hasPermission('admin.settings.read') ? (
