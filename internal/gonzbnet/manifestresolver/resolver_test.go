@@ -162,6 +162,49 @@ func TestResolveNZBRejectsExpiredManifestEvent(t *testing.T) {
 	}
 }
 
+func TestResolveNZBRejectsOversizedManifestResponse(t *testing.T) {
+	ctx := context.Background()
+	localIdentity, err := identity.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("local identity: %v", err)
+	}
+	_, manifestEvent := testManifestEvent(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/gonzbnet+json")
+		_, _ = w.Write([]byte(strings.Repeat("x", 65)))
+	}))
+	defer server.Close()
+
+	var body manifest.ResolutionManifest
+	if err := json.Unmarshal(manifestEvent.Body, &body); err != nil {
+		t.Fatalf("manifest body: %v", err)
+	}
+	store := &fakeResolverStore{
+		source: &pgindex.FederatedManifestSource{
+			ManifestID:   body.ManifestID,
+			ReleaseID:    body.ReleaseID,
+			SourceNodeID: manifestEvent.AuthorNodeID,
+			PoolID:       "pool.local",
+			BaseURL:      server.URL,
+			TrustScore:   1,
+		},
+	}
+
+	_, err = NewWithOptions(localIdentity, store, Options{
+		AllowInsecurePeerHTTP: true,
+		MaxManifestBytes:      64,
+	}).ResolveNZB(ctx, body.ReleaseID)
+	if err == nil || !strings.Contains(err.Error(), "max_manifest_bytes") {
+		t.Fatalf("expected oversized manifest response rejection, got %v", err)
+	}
+	if store.stored != nil {
+		t.Fatalf("oversized manifest response should not be cached")
+	}
+	if store.failures != 1 {
+		t.Fatalf("expected manifest source failure to be recorded, got %d", store.failures)
+	}
+}
+
 func testManifestEvent(t *testing.T) (*identity.Identity, *events.SignedEvent) {
 	return testManifestEventWithTimes(t, time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC), nil)
 }

@@ -40,12 +40,14 @@ type Resolver struct {
 	allowInsecurePeerHTTP bool
 	eventTimeTolerance    time.Duration
 	maxEventAge           time.Duration
+	maxManifestBytes      int64
 }
 
 type Options struct {
 	AllowInsecurePeerHTTP bool
 	EventTimeTolerance    time.Duration
 	MaxEventAge           time.Duration
+	MaxManifestBytes      int64
 }
 
 func New(identity Identity, store Store) *Resolver {
@@ -57,12 +59,17 @@ func NewWithOptions(identity Identity, store Store, opts Options) *Resolver {
 	if eventTimeTolerance <= 0 {
 		eventTimeTolerance = 2 * time.Minute
 	}
+	maxManifestBytes := opts.MaxManifestBytes
+	if maxManifestBytes <= 0 {
+		maxManifestBytes = 10485760
+	}
 	return &Resolver{
 		identity:              identity,
 		store:                 store,
 		allowInsecurePeerHTTP: opts.AllowInsecurePeerHTTP,
 		eventTimeTolerance:    eventTimeTolerance,
 		maxEventAge:           opts.MaxEventAge,
+		maxManifestBytes:      maxManifestBytes,
 		client: &http.Client{
 			Timeout: 20 * time.Second,
 		},
@@ -185,7 +192,10 @@ func (r *Resolver) fetchManifest(ctx context.Context, source pgindex.FederatedMa
 		return nil, err
 	}
 	defer resp.Body.Close()
-	payload, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	payload, err := readLimited(resp.Body, r.maxManifestBytes)
+	if err != nil {
+		return nil, err
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("manifest request status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(payload)))
 	}
@@ -197,6 +207,20 @@ func (r *Resolver) fetchManifest(ctx context.Context, source pgindex.FederatedMa
 		return nil, fmt.Errorf("manifest response error: %s", firstNonBlank(out.Message, out.Code, "missing manifest_event"))
 	}
 	return out.ManifestEvent, nil
+}
+
+func readLimited(reader io.Reader, maxBytes int64) ([]byte, error) {
+	if maxBytes <= 0 {
+		maxBytes = 10485760
+	}
+	payload, err := io.ReadAll(io.LimitReader(reader, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(payload)) > maxBytes {
+		return nil, fmt.Errorf("manifest response exceeds max_manifest_bytes")
+	}
+	return payload, nil
 }
 
 func randomRequestID() (string, error) {

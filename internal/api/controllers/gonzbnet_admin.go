@@ -1739,6 +1739,7 @@ func (ctrl *GoNZBNetAdminController) manifestResolver() (*manifestresolver.Resol
 		AllowInsecurePeerHTTP: ctrl.appCtx.Config.GoNZBNet.AllowInsecurePeerHTTP,
 		EventTimeTolerance:    time.Duration(ctrl.appCtx.Config.GoNZBNet.TimeToleranceSeconds) * time.Second,
 		MaxEventAge:           time.Duration(ctrl.appCtx.Config.GoNZBNet.MaxEventAgeHours) * time.Hour,
+		MaxManifestBytes:      int64(ctrl.appCtx.Config.GoNZBNet.MaxManifestBytes),
 	}), nil
 }
 
