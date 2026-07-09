@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/datallboy/gonzb/internal/gonzbnet/canonical"
+	"github.com/datallboy/gonzb/internal/gonzbnet/coverage"
 	"github.com/datallboy/gonzb/internal/gonzbnet/events"
 	"github.com/datallboy/gonzb/internal/gonzbnet/gossip"
 	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
@@ -43,6 +44,7 @@ type Store interface {
 	ProjectArticleAvailabilityAttestation(ctx context.Context, projection pgindex.ArticleAvailabilityProjection) error
 	ProjectChecksumAttestation(ctx context.Context, projection pgindex.ChecksumAttestationProjection) error
 	ProjectManifestAvailability(ctx context.Context, projection pgindex.ManifestAvailabilityProjection) error
+	ProjectCoverageEvent(ctx context.Context, event *events.SignedEvent) error
 	MarkFederationPeerSyncSuccess(ctx context.Context, peerID int64, nodeID, cursor, lastEventID string) error
 	MarkFederationPeerSyncFailure(ctx context.Context, peerID int64, errText string) error
 	ListUndeliveredFederationEvents(ctx context.Context, peerID int64, limit int) ([]*events.SignedEvent, error)
@@ -405,6 +407,12 @@ func (s *Service) syncPeer(ctx context.Context, peer pgindex.FederationPeerRecor
 			}
 			if err := s.projectValidationEvent(ctx, &event, raw); err != nil {
 				return result, err
+			}
+			if isSyncCoverageEvent(event.EventType) {
+				if err := s.store.ProjectCoverageEvent(ctx, &event); err != nil {
+					return result, err
+				}
+				result.Projected++
 			}
 		}
 		if page.NextCursor != "" {
@@ -879,6 +887,15 @@ func (s *Service) projectValidationEvent(ctx context.Context, event *events.Sign
 	default:
 		return nil
 	}
+}
+
+func isSyncCoverageEvent(eventType string) bool {
+	for _, candidate := range coverage.EventTypes() {
+		if eventType == candidate {
+			return true
+		}
+	}
+	return false
 }
 
 func wellKnownURL(peerURL string) (string, error) {
