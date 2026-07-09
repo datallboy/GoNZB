@@ -57,6 +57,8 @@ Current implementation state:
   events, peer deliveries, and validation task state.
 - Addendum Phase J adds local trust-pool, pool-member, and tombstone moderation
   workflows to the GoNZBNet admin WebUI.
+- Addendum Phase K adds local peer management, peer enable/disable, and manual
+  pull/push/gossip sync triggers.
 
 Maintained pages:
 
@@ -81,3 +83,4 @@ Maintained pages:
 - [Phase H Admin UI](./phase-h-admin-ui.md)
 - [Phase I Admin Diagnostics](./phase-i-admin-diagnostics.md)
 - [Phase J Pool And Moderation UI](./phase-j-pool-moderation-ui.md)
+- [Phase K Peer Management](./phase-k-peer-management.md)

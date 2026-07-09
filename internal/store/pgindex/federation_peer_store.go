@@ -67,6 +67,28 @@ func (s *Store) UpsertFederationPeerURL(ctx context.Context, peerURL string) (in
 	return id, nil
 }
 
+func (s *Store) SetFederationPeerEnabled(ctx context.Context, peerID int64, enabled bool) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("pgindex store is not initialized")
+	}
+	if peerID <= 0 {
+		return fmt.Errorf("peer_id is required")
+	}
+	status := "disabled"
+	if enabled {
+		status = "pending"
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE federation_peers
+		SET enabled = $2,
+		    status = CASE WHEN $2 THEN $3 ELSE 'disabled' END,
+		    updated_at = NOW()
+		WHERE id = $1`, peerID, enabled, status); err != nil {
+		return fmt.Errorf("set federation peer enabled: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) ListEnabledFederationPeers(ctx context.Context) ([]FederationPeerRecord, error) {
 	if s == nil || s.db == nil {
 		return nil, fmt.Errorf("pgindex store is not initialized")
