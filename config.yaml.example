@@ -39,6 +39,15 @@ gonzbnet:
   network_id: "default"
   local_pool_id: "pool.local"
   manual_peers: []
+  consumer_enabled: true
+  scanner_enabled: false
+  index_projection_enabled: true
+  manifest_builder_enabled: false
+  manifest_cache_enabled: true
+  validator_enabled: false
+  health_checker_enabled: false
+  coverage_enabled: false
+  scheduler_enabled: false
   publish_release_cards_enabled: false
   publish_release_cards_batch_size: 50
   publish_release_cards_interval_minutes: 10

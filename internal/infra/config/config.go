@@ -103,6 +103,15 @@ type GoNZBNetConfig struct {
 	NetworkID                      string   `mapstructure:"network_id" yaml:"network_id"`
 	LocalPoolID                    string   `mapstructure:"local_pool_id" yaml:"local_pool_id"`
 	ManualPeers                    []string `mapstructure:"manual_peers" yaml:"manual_peers"`
+	ConsumerEnabled                bool     `mapstructure:"consumer_enabled" yaml:"consumer_enabled"`
+	ScannerEnabled                 bool     `mapstructure:"scanner_enabled" yaml:"scanner_enabled"`
+	IndexProjectionEnabled         bool     `mapstructure:"index_projection_enabled" yaml:"index_projection_enabled"`
+	ManifestBuilderEnabled         bool     `mapstructure:"manifest_builder_enabled" yaml:"manifest_builder_enabled"`
+	ManifestCacheEnabled           bool     `mapstructure:"manifest_cache_enabled" yaml:"manifest_cache_enabled"`
+	ValidatorEnabled               bool     `mapstructure:"validator_enabled" yaml:"validator_enabled"`
+	HealthCheckerEnabled           bool     `mapstructure:"health_checker_enabled" yaml:"health_checker_enabled"`
+	CoverageEnabled                bool     `mapstructure:"coverage_enabled" yaml:"coverage_enabled"`
+	SchedulerEnabled               bool     `mapstructure:"scheduler_enabled" yaml:"scheduler_enabled"`
 	PublishReleaseCardsEnabled     bool     `mapstructure:"publish_release_cards_enabled" yaml:"publish_release_cards_enabled"`
 	PublishReleaseCardsBatchSize   int      `mapstructure:"publish_release_cards_batch_size" yaml:"publish_release_cards_batch_size"`
 	PublishReleaseCardsIntervalMin float64  `mapstructure:"publish_release_cards_interval_minutes" yaml:"publish_release_cards_interval_minutes"`
@@ -512,6 +521,15 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("gonzbnet.network_id", "default")
 	v.SetDefault("gonzbnet.local_pool_id", "pool.local")
 	v.SetDefault("gonzbnet.manual_peers", []string{})
+	v.SetDefault("gonzbnet.consumer_enabled", true)
+	v.SetDefault("gonzbnet.scanner_enabled", false)
+	v.SetDefault("gonzbnet.index_projection_enabled", true)
+	v.SetDefault("gonzbnet.manifest_builder_enabled", false)
+	v.SetDefault("gonzbnet.manifest_cache_enabled", true)
+	v.SetDefault("gonzbnet.validator_enabled", false)
+	v.SetDefault("gonzbnet.health_checker_enabled", false)
+	v.SetDefault("gonzbnet.coverage_enabled", false)
+	v.SetDefault("gonzbnet.scheduler_enabled", false)
 	v.SetDefault("gonzbnet.publish_release_cards_enabled", false)
 	v.SetDefault("gonzbnet.publish_release_cards_batch_size", 50)
 	v.SetDefault("gonzbnet.publish_release_cards_interval_minutes", 10.0)
