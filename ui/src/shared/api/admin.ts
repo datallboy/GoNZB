@@ -38,7 +38,9 @@ import type {
   GoNZBNetCoverageSuggestionParams,
   GoNZBNetEventDiagnostic,
   GoNZBNetGroupCatalogItem,
+  GoNZBNetHealthAttestationDiagnostic,
   GoNZBNetListResponse,
+  GoNZBNetManifestSourceDiagnostic,
   GoNZBNetNodeCapability,
   GoNZBNetOutcomeRequest,
   GoNZBNetPeerActionResponse,
@@ -48,6 +50,8 @@ import type {
   GoNZBNetPoolMember,
   GoNZBNetPoolMemberRequest,
   GoNZBNetRejectedEventDiagnostic,
+  GoNZBNetReleaseSourceDiagnostic,
+  GoNZBNetReputationDiagnostic,
   GoNZBNetSyncActionResponse,
   GoNZBNetTombstone,
   GoNZBNetTombstoneRequest,
@@ -540,6 +544,30 @@ export function getGoNZBNetPeerDeliveryDiagnostics(limit = 100) {
 export function getGoNZBNetValidationTaskDiagnostics(limit = 100) {
   return apiRequest<GoNZBNetListResponse<GoNZBNetValidationTaskDiagnostic>>(
     `/api/v1/admin/gonzbnet/diagnostics/validation-tasks${goNZBNetQuery({ limit })}`,
+  )
+}
+
+export function getGoNZBNetReleaseSourceDiagnostics(poolID?: string, limit = 100) {
+  return apiRequest<GoNZBNetListResponse<GoNZBNetReleaseSourceDiagnostic>>(
+    `/api/v1/admin/gonzbnet/diagnostics/release-sources${goNZBNetQuery({ pool_id: poolID, limit })}`,
+  )
+}
+
+export function getGoNZBNetManifestSourceDiagnostics(poolID?: string, limit = 100) {
+  return apiRequest<GoNZBNetListResponse<GoNZBNetManifestSourceDiagnostic>>(
+    `/api/v1/admin/gonzbnet/diagnostics/manifest-sources${goNZBNetQuery({ pool_id: poolID, limit })}`,
+  )
+}
+
+export function getGoNZBNetHealthDiagnostics(poolID?: string, limit = 100) {
+  return apiRequest<GoNZBNetListResponse<GoNZBNetHealthAttestationDiagnostic>>(
+    `/api/v1/admin/gonzbnet/diagnostics/health${goNZBNetQuery({ pool_id: poolID, limit })}`,
+  )
+}
+
+export function getGoNZBNetReputationDiagnostics(limit = 100) {
+  return apiRequest<GoNZBNetListResponse<GoNZBNetReputationDiagnostic>>(
+    `/api/v1/admin/gonzbnet/diagnostics/reputation${goNZBNetQuery({ limit })}`,
   )
 }
 
