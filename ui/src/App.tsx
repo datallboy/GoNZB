@@ -6,6 +6,7 @@ import { AdminArticleCohortsPage } from './modules/admin/AdminArticleCohortsPage
 import { AdminDashboardPage } from './modules/admin/AdminDashboardPage'
 import { AdminBinaryDetailPage } from './modules/admin/AdminBinaryDetailPage'
 import { AdminBinariesPage } from './modules/admin/AdminBinariesPage'
+import { AdminGoNZBNetPage } from './modules/admin/AdminGoNZBNetPage'
 import { AdminIndexerWorkPage } from './modules/admin/AdminIndexerWorkPage'
 import { AdminMaintenancePage } from './modules/admin/AdminMaintenancePage'
 import { AdminReleaseDetailPage } from './modules/admin/AdminReleaseDetailPage'
@@ -169,6 +170,14 @@ export default function App() {
             element={
               <RequireAuth permission="indexer.runtime.read">
                 <AdminScrapePage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="gonzbnet"
+            element={
+              <RequireAuth permission="gonzbnet.admin.pools">
+                <AdminGoNZBNetPage />
               </RequireAuth>
             }
           />

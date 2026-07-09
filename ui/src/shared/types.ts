@@ -1419,3 +1419,166 @@ export type ControlPlaneCapabilities = {
   }
   revision?: number
 }
+
+export type GoNZBNetListResponse<T> = {
+  items: T[]
+  count: number
+}
+
+export type GoNZBNetNodeCapability = {
+  node_id: string
+  alias: string
+  base_url: string
+  status: string
+  capabilities: Record<string, unknown>
+  module_status: Record<string, unknown>
+  scanner_capacity?: Record<string, unknown> | null
+  validator_capacity?: Record<string, unknown> | null
+  updated_at: string
+}
+
+export type GoNZBNetCoverageAssignment = {
+  assignment_id: string
+  pool_id: string
+  group: string
+  assigned_node_id: string
+  range_start?: number
+  range_end?: number
+  window_start?: string
+  window_end?: string
+  priority: number
+  due_at?: string
+  status: string
+  created_at: string
+}
+
+export type GoNZBNetCoverageClaim = {
+  claim_id: string
+  claim_type: string
+  assignment_id?: string
+  pool_id: string
+  group: string
+  node_id: string
+  range_start?: number
+  range_end?: number
+  claimed_at: string
+  expires_at: string
+  status: string
+}
+
+export type GoNZBNetCoverageOutcome = {
+  outcome_id: string
+  outcome_type: string
+  claim_id?: string
+  assignment_id?: string
+  pool_id: string
+  group: string
+  node_id: string
+  range_start: number
+  range_end: number
+  release_count?: number
+  reason?: string
+  occurred_at: string
+}
+
+export type GoNZBNetCoverageDuplicate = {
+  pool_id: string
+  group: string
+  range_start: number
+  range_end: number
+  claim_count: number
+  node_ids: string[]
+}
+
+export type GoNZBNetCoverageDashboard = {
+  assignments: GoNZBNetCoverageAssignment[]
+  claims: GoNZBNetCoverageClaim[]
+  stale_claims: GoNZBNetCoverageClaim[]
+  outcomes: GoNZBNetCoverageOutcome[]
+  gaps: GoNZBNetCoverageAssignment[]
+  duplicates: GoNZBNetCoverageDuplicate[]
+  coverage_score: number
+}
+
+export type GoNZBNetGroupCatalogItem = {
+  pool_id: string
+  group: string
+  observed_at: string
+  low_watermark: number
+  high_watermark: number
+  retention_days: number
+  confidence: number
+  author_node_id: string
+}
+
+export type GoNZBNetValidationGap = {
+  release_id: string
+  manifest_id: string
+  pool_id: string
+  source_node_id: string
+  last_validation_task_at?: string
+  validation_attestation_count: number
+}
+
+export type GoNZBNetCoverageSuggestion = {
+  assignment: GoNZBNetCoverageAssignment
+  reason: string
+}
+
+export type GoNZBNetCoveragePlan = {
+  suggestions: GoNZBNetCoverageSuggestion[]
+  stale_claims: GoNZBNetCoverageClaim[]
+  mode: string
+}
+
+export type GoNZBNetCoverageSuggestionParams = {
+  pool_id?: string
+  node_id?: string
+  mode?: string
+  limit?: number
+  min_blocking_trust?: number
+}
+
+export type GoNZBNetAssignmentRequest = {
+  assignment_id?: string
+  plan_id?: string
+  pool_id?: string
+  group: string
+  assigned_node_id: string
+  range_start?: number
+  range_end?: number
+  window_start?: string
+  window_end?: string
+  priority?: number
+  due_at?: string
+}
+
+export type GoNZBNetClaimRequest = {
+  claim_id?: string
+  assignment_id?: string
+  pool_id?: string
+  group: string
+  range_start?: number
+  range_end?: number
+  window_start?: string
+  window_end?: string
+  expires_at?: string
+}
+
+export type GoNZBNetOutcomeRequest = {
+  outcome_id?: string
+  claim_id?: string
+  assignment_id?: string
+  pool_id?: string
+  group: string
+  range_start: number
+  range_end: number
+  release_count?: number
+  reason?: string
+}
+
+export type GoNZBNetActionResponse = {
+  status: string
+  event_id?: string
+  created?: number
+}

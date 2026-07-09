@@ -51,6 +51,8 @@ Current implementation state:
   read-only coverage plans for stale-claim failover review.
 - Addendum Phase G adds ScannerHeartbeat, node capability admin reads, group
   catalog reads, validation-gap reads, and stale-claim penalty materialization.
+- Addendum Phase H adds the local GoNZBNet admin WebUI for capability,
+  coverage, scheduler, validation-gap, and manual signed coverage workflows.
 
 Maintained pages:
 
@@ -72,3 +74,4 @@ Maintained pages:
 - [Phase E Dedup-Aware Local Scheduler](./phase-e-dedup-scheduler.md)
 - [Phase F Automated Coverage Improvements](./phase-f-coverage-scheduler.md)
 - [Phase G Addendum Checklist Gaps](./phase-g-addendum-checklist-gaps.md)
+- [Phase H Admin UI](./phase-h-admin-ui.md)
