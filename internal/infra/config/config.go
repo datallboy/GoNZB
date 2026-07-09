@@ -120,6 +120,8 @@ type GoNZBNetConfig struct {
 	GossipTTL                      int      `mapstructure:"gossip_ttl" yaml:"gossip_ttl"`
 	GossipFanout                   int      `mapstructure:"gossip_fanout" yaml:"gossip_fanout"`
 	PeerExchangeEnabled            bool     `mapstructure:"peer_exchange_enabled" yaml:"peer_exchange_enabled"`
+	RelayEnabled                   bool     `mapstructure:"relay_enabled" yaml:"relay_enabled"`
+	RelayAPIKey                    string   `mapstructure:"relay_api_key" yaml:"relay_api_key"`
 	MaxEventBytes                  int      `mapstructure:"max_event_bytes" yaml:"max_event_bytes"`
 	MaxManifestBytes               int      `mapstructure:"max_manifest_bytes" yaml:"max_manifest_bytes"`
 	MaxBatchEvents                 int      `mapstructure:"max_batch_events" yaml:"max_batch_events"`
@@ -527,6 +529,8 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("gonzbnet.gossip_ttl", 4)
 	v.SetDefault("gonzbnet.gossip_fanout", 4)
 	v.SetDefault("gonzbnet.peer_exchange_enabled", false)
+	v.SetDefault("gonzbnet.relay_enabled", false)
+	v.SetDefault("gonzbnet.relay_api_key", "")
 	v.SetDefault("gonzbnet.max_event_bytes", 262144)
 	v.SetDefault("gonzbnet.max_manifest_bytes", 10485760)
 	v.SetDefault("gonzbnet.max_batch_events", 100)
