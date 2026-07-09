@@ -72,6 +72,8 @@ Current implementation state:
   outside named phases, including local node block/unblock controls.
 - Admin requirements cleanup adds a local signed `PoolJoinRequest` action for
   requesting trust-pool membership without mutating membership directly.
+- Admin requirements cleanup adds a local signed `PoolMemberApproved` action for
+  promoting reviewed join requests into active pool membership.
 - Security cleanup adds optional encrypted node-key storage when
   `gonzbnet.key_password` is configured.
 - Security cleanup adds explicit encrypted node-key export guarded by
@@ -115,6 +117,7 @@ Maintained pages:
 - [Phase P Remove Peer](./phase-p-remove-peer.md)
 - [Admin Requirements Cleanup](./admin-requirements-cleanup.md)
 - [Admin: Pool Join Request](./admin-pool-join-request.md)
+- [Admin: Pool Member Approval](./admin-pool-member-approval.md)
 - [Security: Node Key Encryption](./security-key-encryption.md)
 - [Security: Key Export](./security-key-export.md)
 - [Security: Node Key Rotation](./security-key-rotation.md)

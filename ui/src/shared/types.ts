@@ -1720,6 +1720,29 @@ export type GoNZBNetPoolJoinResponse = {
   requested_roles: string[]
 }
 
+export type GoNZBNetPoolApproval = {
+  node_id: string
+  approved_at?: string
+  signature: string
+}
+
+export type GoNZBNetPoolMemberApprovalRequest = {
+  role?: string
+  proposal_event_id: string
+  approvals_required?: number
+  approvals?: GoNZBNetPoolApproval[]
+}
+
+export type GoNZBNetPoolMemberApprovalResponse = {
+  status: string
+  event_id: string
+  pool_id: string
+  subject_node_id: string
+  role: string
+  approvals_required: number
+  approval_count: number
+}
+
 export type GoNZBNetTombstone = {
   id: number
   target_type: string

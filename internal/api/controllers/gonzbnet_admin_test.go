@@ -291,6 +291,69 @@ func TestGoNZBNetAdminRequestPoolJoinSignsAndStoresEvent(t *testing.T) {
 	}
 }
 
+func TestGoNZBNetAdminApprovePoolMemberSignsAppendsAndProjectsEvent(t *testing.T) {
+	cfg := testGoNZBNetAdminConfig(t)
+	store := &fakeGoNZBNetAdminStore{
+		policy: pools.PoolPolicy{
+			PoolID:              "pool.remote",
+			MembershipThreshold: 1,
+		},
+	}
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/gonzbnet/pools/pool.remote/members/node_candidate/approve", bytes.NewReader([]byte(`{"role":"member","proposal_event_id":"evt_join"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.SetPathValues(echo.PathValues{
+		{Name: "pool_id", Value: "pool.remote"},
+		{Name: "node_id", Value: "node_candidate"},
+	})
+	ctrl := &GoNZBNetAdminController{appCtx: &app.Context{Config: cfg}, storeOverride: store}
+
+	if err := ctrl.ApprovePoolMember(c); err != nil {
+		t.Fatalf("ApprovePoolMember returned error: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if store.appended == nil {
+		t.Fatal("expected signed approval event to be appended")
+	}
+	if store.projected == nil || store.projected.EventID != store.appended.EventID {
+		t.Fatalf("expected appended event to be projected, appended=%v projected=%v", store.appended != nil, store.projected != nil)
+	}
+	validation, err := events.Verify(store.appended)
+	if err != nil {
+		t.Fatalf("verify event: %v", err)
+	}
+	if validation == nil || !validation.OK {
+		t.Fatalf("expected event signature to verify, got %+v", validation)
+	}
+	if store.appended.EventType != pools.EventTypePoolMemberApproved {
+		t.Fatalf("expected PoolMemberApproved event, got %q", store.appended.EventType)
+	}
+	var body pools.MemberApproved
+	if err := json.Unmarshal(store.appended.Body, &body); err != nil {
+		t.Fatalf("decode event body: %v", err)
+	}
+	if body.PoolID != "pool.remote" || body.SubjectNodeID != "node_candidate" || body.ProposalEventID != "evt_join" {
+		t.Fatalf("unexpected approval body: %+v", body)
+	}
+	if body.ApprovalsRequired != 1 || len(body.Approvals) != 1 {
+		t.Fatalf("expected one required local approval, got %+v", body)
+	}
+	if err := pools.ValidateMemberApproval(body, map[string]ed25519.PublicKey{store.nodeID: store.publicKey}); err != nil {
+		t.Fatalf("expected local approval to validate: %v", err)
+	}
+	var response poolMemberApprovalResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.EventID != store.appended.EventID || response.SubjectNodeID != "node_candidate" || response.ApprovalCount != 1 {
+		t.Fatalf("unexpected response: %+v", response)
+	}
+}
+
 const encryptedKeyEnvelopeMarker = "gonzbnet.ed25519.private.v1"
 
 func testGoNZBNetAdminConfig(t *testing.T) *config.Config {
@@ -339,7 +402,9 @@ type fakeGoNZBNetAdminStore struct {
 	publicKey       ed25519.PublicKey
 	nextSequence    int64
 	previousEventID *string
+	policy          pools.PoolPolicy
 	appended        *events.SignedEvent
+	projected       *events.SignedEvent
 }
 
 func (s *fakeGoNZBNetAdminStore) ListTrustPools(context.Context) ([]pgindex.TrustPoolRecord, error) {
@@ -360,6 +425,13 @@ func (s *fakeGoNZBNetAdminStore) UpsertPoolMember(context.Context, pgindex.PoolM
 
 func (s *fakeGoNZBNetAdminStore) RevokePoolMember(context.Context, string, string, string, *time.Time) error {
 	return nil
+}
+
+func (s *fakeGoNZBNetAdminStore) GetTrustPoolPolicy(context.Context, string) (pools.PoolPolicy, error) {
+	if s.policy.PoolID == "" {
+		return pools.PoolPolicy{MembershipThreshold: 1}, nil
+	}
+	return s.policy, nil
 }
 
 func (s *fakeGoNZBNetAdminStore) UpsertFederationNodeIdentity(_ context.Context, nodeID string, publicKey ed25519.PublicKey) error {
@@ -383,15 +455,25 @@ func (s *fakeGoNZBNetAdminStore) ValidateFederationPoolControlEvent(_ context.Co
 	if event == nil {
 		return fmt.Errorf("event is required")
 	}
-	if event.EventType != pools.EventTypePoolJoinRequest {
+	switch event.EventType {
+	case pools.EventTypePoolJoinRequest:
+		var body pools.JoinRequest
+		if err := json.Unmarshal(event.Body, &body); err != nil {
+			return err
+		}
+		if body.PoolID == "" || body.CandidateNodeID == "" {
+			return fmt.Errorf("join request requires pool_id and candidate_node_id")
+		}
+	case pools.EventTypePoolMemberApproved:
+		var body pools.MemberApproved
+		if err := json.Unmarshal(event.Body, &body); err != nil {
+			return err
+		}
+		if err := pools.ValidateMemberApproval(body, map[string]ed25519.PublicKey{s.nodeID: s.publicKey}); err != nil {
+			return err
+		}
+	default:
 		return fmt.Errorf("unexpected event type %q", event.EventType)
-	}
-	var body pools.JoinRequest
-	if err := json.Unmarshal(event.Body, &body); err != nil {
-		return err
-	}
-	if body.PoolID == "" || body.CandidateNodeID == "" {
-		return fmt.Errorf("join request requires pool_id and candidate_node_id")
 	}
 	return nil
 }
@@ -401,6 +483,11 @@ func (s *fakeGoNZBNetAdminStore) AppendVerifiedFederationEvent(_ context.Context
 		return fmt.Errorf("validation failed")
 	}
 	s.appended = event
+	return nil
+}
+
+func (s *fakeGoNZBNetAdminStore) ProjectFederationPoolEvent(_ context.Context, event *events.SignedEvent) error {
+	s.projected = event
 	return nil
 }
 
