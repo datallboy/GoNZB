@@ -818,6 +818,10 @@ func (s *fakeGoNZBNetAdminStore) ListFederationRejectedEventDiagnostics(context.
 	return nil, nil
 }
 
+func (s *fakeGoNZBNetAdminStore) ListFederationRejectedEventSummary(context.Context, int) ([]pgindex.FederationRejectedEventSummary, error) {
+	return nil, nil
+}
+
 func (s *fakeGoNZBNetAdminStore) ListFederationPeerDeliveryDiagnostics(context.Context, int) ([]pgindex.FederationPeerDeliveryDiagnostic, error) {
 	return nil, nil
 }

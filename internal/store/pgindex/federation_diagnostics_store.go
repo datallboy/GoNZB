@@ -49,6 +49,16 @@ type FederationRejectedEventDiagnostic struct {
 	ReceivedAt      time.Time `json:"received_at"`
 }
 
+type FederationRejectedEventSummary struct {
+	AuthorNodeID    string    `json:"author_node_id"`
+	RejectionReason string    `json:"rejection_reason"`
+	Total           int       `json:"total"`
+	LastHour        int       `json:"last_hour"`
+	LastDay         int       `json:"last_day"`
+	FirstSeenAt     time.Time `json:"first_seen_at"`
+	LastSeenAt      time.Time `json:"last_seen_at"`
+}
+
 type FederationPeerDeliveryDiagnostic struct {
 	PeerID        int64      `json:"peer_id"`
 	PeerURL       string     `json:"peer_url"`
@@ -228,6 +238,38 @@ func (s *Store) ListFederationRejectedEventDiagnostics(ctx context.Context, limi
 	for rows.Next() {
 		var item FederationRejectedEventDiagnostic
 		if err := rows.Scan(&item.ID, &item.EventID, &item.AuthorNodeID, &item.EventType, &item.RejectionReason, &item.ReceivedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ListFederationRejectedEventSummary(ctx context.Context, limit int) ([]FederationRejectedEventSummary, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("pgindex store is not initialized")
+	}
+	limit = clampDiagnosticsLimit(limit, 100)
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT COALESCE(author_node_id, ''), rejection_reason,
+		       COUNT(*)::integer,
+		       COUNT(*) FILTER (WHERE received_at >= now() - interval '1 hour')::integer,
+		       COUNT(*) FILTER (WHERE received_at >= now() - interval '1 day')::integer,
+		       MIN(received_at), MAX(received_at)
+		FROM federation_rejected_events
+		GROUP BY COALESCE(author_node_id, ''), rejection_reason
+		ORDER BY COUNT(*) FILTER (WHERE received_at >= now() - interval '1 day') DESC,
+		         COUNT(*) DESC,
+		         MAX(received_at) DESC
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list rejected federation event summary: %w", err)
+	}
+	defer rows.Close()
+	out := []FederationRejectedEventSummary{}
+	for rows.Next() {
+		var item FederationRejectedEventSummary
+		if err := rows.Scan(&item.AuthorNodeID, &item.RejectionReason, &item.Total, &item.LastHour, &item.LastDay, &item.FirstSeenAt, &item.LastSeenAt); err != nil {
 			return nil, err
 		}
 		out = append(out, item)

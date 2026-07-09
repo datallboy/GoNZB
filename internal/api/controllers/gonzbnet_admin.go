@@ -67,6 +67,7 @@ type gonzbnetAdminStore interface {
 	ListFederationPeerDiagnostics(ctx context.Context, limit int) ([]pgindex.FederationPeerDiagnostic, error)
 	ListFederationEventDiagnostics(ctx context.Context, limit int) ([]pgindex.FederationEventDiagnostic, error)
 	ListFederationRejectedEventDiagnostics(ctx context.Context, limit int) ([]pgindex.FederationRejectedEventDiagnostic, error)
+	ListFederationRejectedEventSummary(ctx context.Context, limit int) ([]pgindex.FederationRejectedEventSummary, error)
 	ListFederationPeerDeliveryDiagnostics(ctx context.Context, limit int) ([]pgindex.FederationPeerDeliveryDiagnostic, error)
 	ListValidationTaskDiagnostics(ctx context.Context, limit int) ([]pgindex.ValidationTaskDiagnostic, error)
 	ListFederatedReleaseSourceDiagnostics(ctx context.Context, poolID string, limit int) ([]pgindex.FederatedReleaseSourceDiagnostic, error)
@@ -1406,11 +1407,16 @@ func (ctrl *GoNZBNetAdminController) RejectedEventDiagnostics(c *echo.Context) e
 	if !ok {
 		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
 	}
-	items, err := store.ListFederationRejectedEventDiagnostics(c.Request().Context(), parseIntDefault(queryParamTrimmed(c, "limit"), 100))
+	limit := parseIntDefault(queryParamTrimmed(c, "limit"), 100)
+	items, err := store.ListFederationRejectedEventDiagnostics(c.Request().Context(), limit)
 	if err != nil {
 		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}
-	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items)})
+	summary, err := store.ListFederationRejectedEventSummary(c.Request().Context(), limit)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items), "summary": summary})
 }
 
 func (ctrl *GoNZBNetAdminController) PeerDeliveryDiagnostics(c *echo.Context) error {
