@@ -36,12 +36,14 @@ import type {
   GoNZBNetCoveragePlan,
   GoNZBNetCoverageSuggestion,
   GoNZBNetCoverageSuggestionParams,
+  GoNZBNetConfigValidation,
   GoNZBNetEventDiagnostic,
   GoNZBNetGroupCatalogItem,
   GoNZBNetHealthAttestationDiagnostic,
   GoNZBNetListResponse,
   GoNZBNetManifestSourceDiagnostic,
   GoNZBNetNodeCapability,
+  GoNZBNetNodeProfileResponse,
   GoNZBNetOutcomeRequest,
   GoNZBNetPeerActionResponse,
   GoNZBNetPeerDeliveryDiagnostic,
@@ -441,6 +443,18 @@ function goNZBNetQuery(params: Record<string, string | number | undefined> = {})
 export function getGoNZBNetNodeCapabilities() {
   return apiRequest<GoNZBNetListResponse<GoNZBNetNodeCapability>>(
     "/api/v1/admin/gonzbnet/nodes/capabilities",
+  )
+}
+
+export function getGoNZBNetNodeProfile() {
+  return apiRequest<GoNZBNetNodeProfileResponse>(
+    "/api/v1/admin/gonzbnet/node/profile",
+  )
+}
+
+export function getGoNZBNetConfigValidation() {
+  return apiRequest<GoNZBNetConfigValidation>(
+    "/api/v1/admin/gonzbnet/config/validation",
   )
 }
 

@@ -1818,3 +1818,56 @@ export type GoNZBNetReputationDiagnostic = {
   local_trust_score: number
   created_at: string
 }
+
+export type GoNZBNetNodeProfileResponse = {
+  node_id: string
+  public_key: string
+  profile: GoNZBNetNodeProfile
+}
+
+export type GoNZBNetNodeProfile = {
+  schema_version: string
+  type: string
+  node_id: string
+  alias?: string
+  software: string
+  software_version: string
+  protocols: string[]
+  public_key: string
+  endpoints: Record<string, string>
+  capabilities: Record<string, boolean>
+  limits: Record<string, number>
+  policy: Record<string, boolean>
+  created_at: string
+  updated_at: string
+}
+
+export type GoNZBNetConfigValidation = {
+  valid: boolean
+  summary: GoNZBNetConfigSummary
+  issues: GoNZBNetConfigIssue[]
+}
+
+export type GoNZBNetConfigSummary = {
+  mode: string
+  http_enabled: boolean
+  advertise_url: string
+  http_base_path: string
+  private_network: boolean
+  network_id: string
+  local_pool_id: string
+  manual_peers: number
+  module_enabled: Record<string, boolean>
+  limits: Record<string, number>
+  privacy: Record<string, boolean>
+  publisher: Record<string, unknown>
+  sync: Record<string, unknown>
+  gossip: Record<string, unknown>
+  redacted_sensitive_config_names: string[]
+}
+
+export type GoNZBNetConfigIssue = {
+  severity: string
+  field: string
+  message: string
+}
