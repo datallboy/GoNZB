@@ -70,6 +70,7 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 	indexerCtrl := controllers.NewIndexerController(appCtx)
 	indexerAdminCtrl := controllers.NewIndexerAdminController(indexerCtrl.Service)
 	indexerScrapeAdminCtrl := controllers.NewIndexerScrapeAdminController(appCtx)
+	gonzbnetCtrl := controllers.NewGoNZBNetController(appCtx)
 	var authSvc *auth.Service
 	if store, ok := any(appCtx.SettingsStore).(auth.Store); ok {
 		authSvc = auth.NewService(store)
@@ -130,6 +131,16 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 			code, report := telemetry.Readiness(c.Request().Context(), appCtx)
 			return c.JSON(code, report)
 		})
+	}
+
+	if modules.API.Enabled && modules.GoNZBNet.Enabled {
+		e.GET("/.well-known/gonzbnet", gonzbnetCtrl.WellKnown)
+		fed := e.Group("/gonzbnet/v1", bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit))
+		fed.GET("/node", gonzbnetCtrl.Node)
+		fed.GET("/caps", gonzbnetCtrl.Caps)
+		fed.POST("/handshake", gonzbnetCtrl.Handshake)
+		fed.GET("/outbox", gonzbnetCtrl.Outbox)
+		fed.GET("/events/:event_id", gonzbnetCtrl.Event)
 	}
 
 	var (
