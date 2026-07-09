@@ -59,6 +59,8 @@ Current implementation state:
   workflows to the GoNZBNet admin WebUI.
 - Addendum Phase K adds local peer management, peer enable/disable, and manual
   pull/push/gossip sync triggers.
+- Addendum Phase L aligns local RBAC with the remaining core and optional-module
+  GoNZBNet permission names.
 
 Maintained pages:
 
@@ -84,3 +86,4 @@ Maintained pages:
 - [Phase I Admin Diagnostics](./phase-i-admin-diagnostics.md)
 - [Phase J Pool And Moderation UI](./phase-j-pool-moderation-ui.md)
 - [Phase K Peer Management](./phase-k-peer-management.md)
+- [Phase L RBAC Alignment](./phase-l-rbac-alignment.md)
