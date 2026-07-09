@@ -1707,6 +1707,19 @@ export type GoNZBNetPoolMemberRequest = {
   limits?: Record<string, unknown>
 }
 
+export type GoNZBNetPoolJoinRequest = {
+  requested_roles?: string[]
+  message?: string
+}
+
+export type GoNZBNetPoolJoinResponse = {
+  status: string
+  event_id: string
+  pool_id: string
+  candidate_node_id: string
+  requested_roles: string[]
+}
+
 export type GoNZBNetTombstone = {
   id: number
   target_type: string

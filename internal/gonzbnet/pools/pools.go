@@ -39,6 +39,9 @@ const (
 
 	StatusActive  = "active"
 	StatusRevoked = "revoked"
+
+	bodySchemaPrefix = "gonzbnet."
+	bodySchemaSuffix = "/1.0"
 )
 
 type Policy struct {
@@ -171,6 +174,14 @@ func EventIsPoolControl(eventType string) bool {
 	default:
 		return false
 	}
+}
+
+func BodySchema(eventType string) string {
+	eventType = strings.TrimSpace(eventType)
+	if eventType == "" {
+		return bodySchemaPrefix + "PoolControl" + bodySchemaSuffix
+	}
+	return bodySchemaPrefix + eventType + bodySchemaSuffix
 }
 
 func AuthorizeEvent(policy PoolPolicy, activeMember bool, trustScore float64, eventType string) (bool, string) {

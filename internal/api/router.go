@@ -162,6 +162,7 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		v1AdminGoNZBNet.GET("/pools/:pool_id/members", gonzbnetAdminCtrl.ListPoolMembers)
 		v1AdminGoNZBNet.POST("/pools/:pool_id/members", gonzbnetAdminCtrl.UpsertPoolMember)
 		v1AdminGoNZBNet.POST("/pools/:pool_id/members/:node_id/revoke", gonzbnetAdminCtrl.RevokePoolMember)
+		v1AdminGoNZBNet.POST("/pools/:pool_id/join-requests", gonzbnetAdminCtrl.RequestPoolJoin)
 		v1AdminGoNZBNet.GET("/nodes/capabilities", gonzbnetAdminCtrl.ListNodeCapabilities)
 		v1AdminGoNZBNet.GET("/coverage", gonzbnetAdminCtrl.CoverageDashboard)
 		v1AdminGoNZBNet.GET("/coverage/groups", gonzbnetAdminCtrl.CoverageGroupCatalog)

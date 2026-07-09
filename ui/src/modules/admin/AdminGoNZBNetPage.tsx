@@ -29,6 +29,7 @@ import {
   getGoNZBNetValidationTaskDiagnostics,
   getGoNZBNetValidationGaps,
   materializeGoNZBNetStalePenalties,
+  requestGoNZBNetPoolJoin,
   revokeGoNZBNetPoolMember,
   resolveGoNZBNetManifest,
   rotateGoNZBNetKey,
@@ -118,6 +119,11 @@ type MemberForm = {
   allowed_capabilities: string
 }
 
+type PoolJoinForm = {
+  requested_roles: string
+  message: string
+}
+
 type TombstoneForm = {
   target_type: string
   target_id: string
@@ -190,6 +196,11 @@ const defaultMemberForm: MemberForm = {
   role: 'member',
   status: 'active',
   allowed_capabilities: 'consumer',
+}
+
+const defaultPoolJoinForm: PoolJoinForm = {
+  requested_roles: 'member',
+  message: '',
 }
 
 const defaultTombstoneForm: TombstoneForm = {
@@ -460,6 +471,7 @@ export function AdminGoNZBNetPage() {
   const [failedForm, setFailedForm] = useState<OutcomeForm>(defaultOutcomeForm)
   const [poolForm, setPoolForm] = useState<PoolForm>(defaultPoolForm)
   const [memberForm, setMemberForm] = useState<MemberForm>(defaultMemberForm)
+  const [poolJoinForm, setPoolJoinForm] = useState<PoolJoinForm>(defaultPoolJoinForm)
   const [tombstoneForm, setTombstoneForm] = useState<TombstoneForm>(defaultTombstoneForm)
   const [manifestResolveForm, setManifestResolveForm] = useState<ManifestResolveForm>(defaultManifestResolveForm)
   const [keyExportForm, setKeyExportForm] = useState<KeyExportForm>(defaultKeyExportForm)
@@ -678,6 +690,21 @@ export function AdminGoNZBNetPage() {
       await refresh()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to revoke pool member')
+    }
+  }
+
+  async function handlePoolJoin(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    try {
+      const response = await requestGoNZBNetPoolJoin(effectivePoolID, {
+        requested_roles: csvList(poolJoinForm.requested_roles),
+        message: poolJoinForm.message.trim() || undefined,
+      })
+      setActionStatus(`Pool join requested ${shortID(response.event_id)}`)
+      setPoolJoinForm(defaultPoolJoinForm)
+      await refresh()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to request pool join')
     }
   }
 
@@ -1108,6 +1135,25 @@ export function AdminGoNZBNetPage() {
             </label>
           </div>
           <button className="primary-button align-end" type="submit">Save member</button>
+        </form>
+
+        <form className="page-card stack" onSubmit={handlePoolJoin}>
+          <h2 className="section-title">Request pool join</h2>
+          <div className="toolbar-grid">
+            <label className="field">
+              <span>Pool ID</span>
+              <input className="table-input" readOnly value={effectivePoolID} />
+            </label>
+            <label className="field">
+              <span>Roles</span>
+              <input className="table-input" value={poolJoinForm.requested_roles} onChange={(event) => setPoolJoinForm({ ...poolJoinForm, requested_roles: event.target.value })} />
+            </label>
+            <label className="field">
+              <span>Message</span>
+              <input className="table-input" value={poolJoinForm.message} onChange={(event) => setPoolJoinForm({ ...poolJoinForm, message: event.target.value })} />
+            </label>
+          </div>
+          <button className="primary-button align-end" type="submit">Request join</button>
         </form>
       </div>
 

@@ -55,6 +55,8 @@ import type {
   GoNZBNetPeerDeliveryDiagnostic,
   GoNZBNetPeerDiagnostic,
   GoNZBNetPeerRequest,
+  GoNZBNetPoolJoinRequest,
+  GoNZBNetPoolJoinResponse,
   GoNZBNetPoolMember,
   GoNZBNetPoolMemberRequest,
   GoNZBNetRejectedEventDiagnostic,
@@ -631,6 +633,16 @@ export function revokeGoNZBNetPoolMember(poolID: string, nodeID: string) {
   return apiRequest<GoNZBNetActionResponse>(
     `/api/v1/admin/gonzbnet/pools/${encodeURIComponent(poolID)}/members/${encodeURIComponent(nodeID)}/revoke`,
     { method: "POST" },
+  )
+}
+
+export function requestGoNZBNetPoolJoin(
+  poolID: string,
+  body: GoNZBNetPoolJoinRequest,
+) {
+  return apiRequest<GoNZBNetPoolJoinResponse>(
+    `/api/v1/admin/gonzbnet/pools/${encodeURIComponent(poolID)}/join-requests`,
+    { method: "POST", body },
   )
 }
 
