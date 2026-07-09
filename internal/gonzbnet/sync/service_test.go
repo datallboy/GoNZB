@@ -186,6 +186,34 @@ func TestSyncOnceRejectsUnsupportedRemoteEventType(t *testing.T) {
 	}
 }
 
+func TestSyncOnceDeadLettersSequenceConflict(t *testing.T) {
+	ctx := context.Background()
+	localIdentity, err := identity.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("local identity: %v", err)
+	}
+	remoteIdentity, event := testRemoteReleaseCardEvent(t)
+	server := testPeerServer(t, remoteIdentity, []events.SignedEvent{*event})
+	store := &fakeSyncStore{
+		peers:     []pgindex.FederationPeerRecord{{ID: 1, PeerURL: server.URL}},
+		appendErr: pgindex.ErrFederationSequenceConflict,
+	}
+
+	result, err := NewWithOptions(localIdentity, store, nil, Options{AllowInsecurePeerHTTP: true}).SyncOnce(ctx)
+	if err != nil {
+		t.Fatalf("sync once: %v", err)
+	}
+	if result.Accepted != 0 || result.Projected != 0 || result.Rejected != 1 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if len(store.projections) != 0 {
+		t.Fatalf("sequence conflict should not be projected")
+	}
+	if len(store.rejected) != 1 || store.rejected[0] != "sequence_conflict" {
+		t.Fatalf("expected sequence_conflict rejection, got %+v", store.rejected)
+	}
+}
+
 func TestPushOnceSendsSignedEventBatchAndRecordsDelivery(t *testing.T) {
 	ctx := context.Background()
 	localIdentity, event := testRemoteReleaseCardEvent(t)
@@ -453,6 +481,7 @@ type fakeSyncStore struct {
 	successCursor string
 	failures      []string
 	authorization *pgindex.PoolAuthorizationResult
+	appendErr     error
 }
 
 func (s *fakeSyncStore) UpsertFederationPeerURL(context.Context, string) (int64, error) {
@@ -469,6 +498,9 @@ func (s *fakeSyncStore) UpsertFederationNode(_ context.Context, node pgindex.Fed
 }
 
 func (s *fakeSyncStore) AppendVerifiedFederationEvent(_ context.Context, event *events.SignedEvent, _ *events.ValidationResult) error {
+	if s.appendErr != nil {
+		return s.appendErr
+	}
 	s.events = append(s.events, event)
 	return nil
 }

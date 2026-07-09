@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -404,6 +405,11 @@ func (s *Service) syncPeer(ctx context.Context, peer pgindex.FederationPeerRecor
 				}
 			}
 			if err := s.store.AppendVerifiedFederationEvent(ctx, &event, validation); err != nil {
+				if errors.Is(err, pgindex.ErrFederationSequenceConflict) {
+					_ = s.store.AppendRejectedFederationEvent(ctx, event.EventID, event.AuthorNodeID, event.EventType, raw, "sequence_conflict")
+					result.Rejected++
+					continue
+				}
 				return result, err
 			}
 			result.Accepted++

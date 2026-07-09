@@ -103,6 +103,8 @@ Current implementation state:
   `gonzbnet.max_event_age_hours`.
 - Security cleanup rejects unknown signed event types before accepted-event
   storage unless explicit compatibility support is added.
+- Security cleanup dead-letters same-author sequence conflicts before accepted
+  event projection.
 - Test cleanup adds direct coverage for non-member event rejection and local
   GoNZBNet RBAC denial paths.
 
@@ -153,3 +155,4 @@ Maintained pages:
 - [Security: Peer TLS Policy](./security-peer-tls-policy.md)
 - [Security: Event Time Windows](./security-event-time-windows.md)
 - [Security: Event Type Compatibility](./security-event-type-compatibility.md)
+- [Security: Sequence Conflicts](./security-sequence-conflicts.md)

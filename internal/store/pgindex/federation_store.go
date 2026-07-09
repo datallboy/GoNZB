@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -12,6 +13,8 @@ import (
 	"github.com/datallboy/gonzb/internal/gonzbnet/canonical"
 	"github.com/datallboy/gonzb/internal/gonzbnet/events"
 )
+
+var ErrFederationSequenceConflict = errors.New("federation sequence conflict")
 
 type FederationNodeRecord struct {
 	NodeID          string
@@ -311,6 +314,18 @@ func (s *Store) AppendFederationEvent(ctx context.Context, record FederationEven
 		}
 		canonicalEventJSON = unsigned
 	}
+	existingEventID, err := s.findFederationEventByAuthorSequence(ctx, event.AuthorNodeID, event.Sequence)
+	if err != nil {
+		return err
+	}
+	if existingEventID != "" && existingEventID != event.EventID {
+		return fmt.Errorf("%w: author_node_id=%s sequence=%d existing_event_id=%s",
+			ErrFederationSequenceConflict,
+			event.AuthorNodeID,
+			event.Sequence,
+			existingEventID,
+		)
+	}
 
 	publicKey, err := canonical.DecodeBase64URL(event.AuthorPublicKey)
 	if err != nil {
@@ -364,6 +379,23 @@ func (s *Store) AppendFederationEvent(ctx context.Context, record FederationEven
 		return fmt.Errorf("append federation event: %w", err)
 	}
 	return nil
+}
+
+func (s *Store) findFederationEventByAuthorSequence(ctx context.Context, authorNodeID string, sequence int64) (string, error) {
+	var eventID string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT event_id
+		FROM federation_events
+		WHERE author_node_id = $1
+		  AND sequence = $2
+		LIMIT 1`, strings.TrimSpace(authorNodeID), sequence).Scan(&eventID)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("find federation event by author sequence: %w", err)
+	}
+	return eventID, nil
 }
 
 func (s *Store) AppendRejectedFederationEvent(ctx context.Context, eventID, authorNodeID, eventType string, rawEventJSON []byte, reason string) error {
