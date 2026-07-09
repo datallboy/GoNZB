@@ -7,8 +7,10 @@ import (
 	"time"
 
 	"github.com/datallboy/gonzb/internal/gonzbnet/events"
+	"github.com/datallboy/gonzb/internal/gonzbnet/health"
 	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
 	"github.com/datallboy/gonzb/internal/gonzbnet/releasecard"
+	"github.com/datallboy/gonzb/internal/store/pgindex"
 )
 
 func TestPublishOnceSignsStoresAndSkipsUnchangedReleaseCards(t *testing.T) {
@@ -50,13 +52,58 @@ func TestPublishOnceSignsStoresAndSkipsUnchangedReleaseCards(t *testing.T) {
 	}
 }
 
+func TestPublishHealthOnceSignsCompleteAndIncompleteAttestations(t *testing.T) {
+	ctx := context.Background()
+	node, err := identity.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("load identity: %v", err)
+	}
+	complete := testPublisherRelease()
+	incomplete := testPublisherRelease()
+	incomplete.LocalReleaseID = "release-2"
+	incomplete.Title = "Example.Release.2026.720p.WEB-DL"
+	incomplete.Files[0].ArticleCount = 1
+	incomplete.Files[0].TotalParts = 3
+	incomplete.Files[0].Segments = incomplete.Files[0].Segments[:1]
+
+	store := &fakeStore{
+		candidates:       []releasecard.LocalRelease{complete, incomplete},
+		eventsByBodyHash: make(map[string]string),
+	}
+	svc := New(node, store, "pool.local")
+	svc.now = func() time.Time { return time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC) }
+
+	result, err := svc.PublishHealthOnce(ctx, 10)
+	if err != nil {
+		t.Fatalf("publish health: %v", err)
+	}
+	if result.Scanned != 2 || result.Published != 2 || result.Projected != 2 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if len(store.healthProjections) != 2 {
+		t.Fatalf("expected two health projections, got %d", len(store.healthProjections))
+	}
+	if store.healthProjections[0].Attestation.Status != health.StatusComplete {
+		t.Fatalf("expected complete status, got %q", store.healthProjections[0].Attestation.Status)
+	}
+	if store.healthProjections[1].Attestation.Status != health.StatusIncomplete {
+		t.Fatalf("expected incomplete status, got %q", store.healthProjections[1].Attestation.Status)
+	}
+	for _, event := range store.events {
+		if event.EventType != "HealthAttestation" {
+			t.Fatalf("expected HealthAttestation event, got %q", event.EventType)
+		}
+	}
+}
+
 type fakeStore struct {
-	candidates       []releasecard.LocalRelease
-	events           []*events.SignedEvent
-	eventsByBodyHash map[string]string
-	projections      []releasecard.Projection
-	nodeID           string
-	publicKey        ed25519.PublicKey
+	candidates        []releasecard.LocalRelease
+	events            []*events.SignedEvent
+	eventsByBodyHash  map[string]string
+	projections       []releasecard.Projection
+	healthProjections []pgindex.HealthAttestationProjection
+	nodeID            string
+	publicKey         ed25519.PublicKey
 }
 
 func (s *fakeStore) ListGoNZBNetLocalReleaseCandidates(context.Context, int) ([]releasecard.LocalRelease, error) {
@@ -89,6 +136,11 @@ func (s *fakeStore) AppendVerifiedFederationEvent(_ context.Context, event *even
 
 func (s *fakeStore) UpsertFederatedReleaseCardProjection(_ context.Context, projection releasecard.Projection) error {
 	s.projections = append(s.projections, projection)
+	return nil
+}
+
+func (s *fakeStore) ProjectHealthAttestation(_ context.Context, projection pgindex.HealthAttestationProjection) error {
+	s.healthProjections = append(s.healthProjections, projection)
 	return nil
 }
 

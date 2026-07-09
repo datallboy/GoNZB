@@ -42,6 +42,9 @@ gonzbnet:
   publish_release_cards_enabled: false
   publish_release_cards_batch_size: 50
   publish_release_cards_interval_minutes: 10
+  health_attestations_enabled: false
+  health_attestations_batch_size: 50
+  health_attestations_interval_minutes: 30
   pull_sync_enabled: false
   pull_sync_interval_minutes: 10
   push_sync_enabled: false
