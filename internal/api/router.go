@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/datallboy/gonzb/internal/api/controllers"
@@ -371,22 +372,110 @@ func federationRateLimitMiddleware(eventsPerMinute int) echo.MiddlewareFunc {
 	if ratePerSecond <= 0 {
 		ratePerSecond = 1
 	}
-	return middleware.RateLimiterWithConfig(middleware.RateLimiterConfig{
+	throttle := newFederationFloodThrottle(3, 15*time.Minute, 5*time.Minute)
+	limiter := middleware.RateLimiterWithConfig(middleware.RateLimiterConfig{
 		Store: middleware.NewRateLimiterMemoryStoreWithConfig(middleware.RateLimiterMemoryStoreConfig{
 			Rate:      ratePerSecond,
 			Burst:     eventsPerMinute,
 			ExpiresIn: 15 * time.Minute,
 		}),
 		IdentifierExtractor: func(c *echo.Context) (string, error) {
-			if nodeID := federationAuthorizationNodeID(c); nodeID != "" {
-				return "node:" + nodeID, nil
-			}
-			return "ip:" + c.RealIP(), nil
+			return federationRateLimitIdentifier(c), nil
 		},
 		DenyHandler: func(c *echo.Context, identifier string, err error) error {
+			if throttle.recordViolation(identifier, time.Now()) {
+				return federationTransportError(c, http.StatusTooManyRequests, "temporarily_throttled", "temporary throttle active")
+			}
 			return federationTransportError(c, http.StatusTooManyRequests, "rate_limited", "rate limit exceeded")
 		},
 	})
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		limited := limiter(next)
+		return func(c *echo.Context) error {
+			if throttle.isThrottled(federationRateLimitIdentifier(c), time.Now()) {
+				return federationTransportError(c, http.StatusTooManyRequests, "temporarily_throttled", "temporary throttle active")
+			}
+			return limited(c)
+		}
+	}
+}
+
+type federationFloodThrottle struct {
+	mu          sync.Mutex
+	threshold   int
+	window      time.Duration
+	duration    time.Duration
+	violations  map[string]int
+	firstSeen   map[string]time.Time
+	throttledTo map[string]time.Time
+}
+
+func newFederationFloodThrottle(threshold int, window, duration time.Duration) *federationFloodThrottle {
+	if threshold <= 0 {
+		threshold = 3
+	}
+	if window <= 0 {
+		window = 15 * time.Minute
+	}
+	if duration <= 0 {
+		duration = 5 * time.Minute
+	}
+	return &federationFloodThrottle{
+		threshold:   threshold,
+		window:      window,
+		duration:    duration,
+		violations:  map[string]int{},
+		firstSeen:   map[string]time.Time{},
+		throttledTo: map[string]time.Time{},
+	}
+}
+
+func (t *federationFloodThrottle) isThrottled(identifier string, now time.Time) bool {
+	if t == nil {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	until, ok := t.throttledTo[identifier]
+	if !ok {
+		return false
+	}
+	if now.Before(until) {
+		return true
+	}
+	delete(t.throttledTo, identifier)
+	delete(t.violations, identifier)
+	delete(t.firstSeen, identifier)
+	return false
+}
+
+func (t *federationFloodThrottle) recordViolation(identifier string, now time.Time) bool {
+	if t == nil {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if until, ok := t.throttledTo[identifier]; ok && now.Before(until) {
+		return true
+	}
+	first, ok := t.firstSeen[identifier]
+	if !ok || now.Sub(first) > t.window {
+		t.firstSeen[identifier] = now
+		t.violations[identifier] = 0
+	}
+	t.violations[identifier]++
+	if t.violations[identifier] < t.threshold {
+		return false
+	}
+	t.throttledTo[identifier] = now.Add(t.duration)
+	return true
+}
+
+func federationRateLimitIdentifier(c *echo.Context) string {
+	if nodeID := federationAuthorizationNodeID(c); nodeID != "" {
+		return "node:" + nodeID
+	}
+	return "ip:" + c.RealIP()
 }
 
 func federationAuthorizationNodeID(c *echo.Context) string {

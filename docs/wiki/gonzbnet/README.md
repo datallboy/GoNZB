@@ -115,6 +115,8 @@ Current implementation state:
   checkpoint convenience endpoints.
 - Config addendum alignment adds typed scanner, coverage, validation, and
   manifest-cache settings with direct `GONZBNET_*` aliases.
+- Security cleanup adds temporary in-memory throttling after repeated
+  federation rate-limit violations.
 - Security cleanup rejects remote signed events with future `created_at` /
   `not_before` windows, expired `expires_at` values, or event ages beyond
   `gonzbnet.max_event_age_hours`.
@@ -181,6 +183,7 @@ Maintained pages:
 - [Security: Key Export](./security-key-export.md)
 - [Security: Node Key Rotation](./security-key-rotation.md)
 - [Security: Federation Transport Hardening](./security-transport-hardening.md)
+- [Security: Flood Throttle](./security-flood-throttle.md)
 - [Security: Peer TLS Policy](./security-peer-tls-policy.md)
 - [Security: Event Time Windows](./security-event-time-windows.md)
 - [Security: Event Type Compatibility](./security-event-type-compatibility.md)
