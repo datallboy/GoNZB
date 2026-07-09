@@ -97,6 +97,89 @@ func TestRegisterRoutesIndexerOnly(t *testing.T) {
 	assertRouteMissing(t, routes, "/api/v1/queue")
 }
 
+func TestRegisterRoutesGoNZBNetOnly(t *testing.T) {
+	e := echo.New()
+	appCtx := &app.Context{
+		Config: &config.Config{
+			API: config.APIConfig{
+				CORSAllowedOrigins: []string{"http://localhost:5173"},
+			},
+			Modules: config.ModulesConfig{
+				API:      config.ModuleToggle{Enabled: true},
+				GoNZBNet: config.ModuleToggle{Enabled: true},
+			},
+			GoNZBNet: config.GoNZBNetConfig{
+				HTTPEnabled: true,
+			},
+		},
+	}
+
+	RegisterRoutes(e, appCtx)
+	routes := routePaths(e)
+
+	assertRoutePresent(t, routes, "/.well-known/gonzbnet")
+	assertRoutePresent(t, routes, "/gonzbnet/v1/node")
+	assertRoutePresent(t, routes, "/gonzbnet/v1/inbox")
+	assertRoutePresent(t, routes, "/api/v1/admin/gonzbnet/node/profile")
+	assertRoutePresent(t, routes, "/api/v1/admin/gonzbnet/config/validation")
+	assertRouteMissing(t, routes, "/api/v1/releases/search")
+	assertRouteMissing(t, routes, "/api/v1/queue")
+}
+
+func TestRegisterRoutesGoNZBNetHTTPDisabledKeepsLocalAdmin(t *testing.T) {
+	e := echo.New()
+	appCtx := &app.Context{
+		Config: &config.Config{
+			API: config.APIConfig{
+				CORSAllowedOrigins: []string{"http://localhost:5173"},
+			},
+			Modules: config.ModulesConfig{
+				API:      config.ModuleToggle{Enabled: true},
+				GoNZBNet: config.ModuleToggle{Enabled: true},
+			},
+			GoNZBNet: config.GoNZBNetConfig{
+				HTTPEnabled: false,
+			},
+		},
+	}
+
+	RegisterRoutes(e, appCtx)
+	routes := routePaths(e)
+
+	assertRouteMissing(t, routes, "/.well-known/gonzbnet")
+	assertRouteMissing(t, routes, "/gonzbnet/v1/node")
+	assertRouteMissing(t, routes, "/gonzbnet/v1/inbox")
+	assertRoutePresent(t, routes, "/api/v1/admin/gonzbnet/node/profile")
+	assertRoutePresent(t, routes, "/api/v1/admin/gonzbnet/config/validation")
+}
+
+func TestRegisterRoutesGoNZBNetDisabledOmitsFederationRoutes(t *testing.T) {
+	e := echo.New()
+	appCtx := &app.Context{
+		Config: &config.Config{
+			API: config.APIConfig{
+				CORSAllowedOrigins: []string{"http://localhost:5173"},
+			},
+			Modules: config.ModulesConfig{
+				API:      config.ModuleToggle{Enabled: true},
+				GoNZBNet: config.ModuleToggle{Enabled: false},
+			},
+			GoNZBNet: config.GoNZBNetConfig{
+				HTTPEnabled: true,
+			},
+		},
+	}
+
+	RegisterRoutes(e, appCtx)
+	routes := routePaths(e)
+
+	assertRouteMissing(t, routes, "/.well-known/gonzbnet")
+	assertRouteMissing(t, routes, "/gonzbnet/v1/node")
+	assertRouteMissing(t, routes, "/gonzbnet/v1/inbox")
+	assertRouteMissing(t, routes, "/api/v1/admin/gonzbnet/node/profile")
+	assertRouteMissing(t, routes, "/api/v1/admin/gonzbnet/config/validation")
+}
+
 func TestFederationRateLimitReturnsStableErrorCode(t *testing.T) {
 	e := echo.New()
 	mw := federationRateLimitMiddleware(1)
