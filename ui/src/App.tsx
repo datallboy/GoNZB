@@ -176,7 +176,7 @@ export default function App() {
           <Route
             path="gonzbnet"
             element={
-              <RequireAuth permission="gonzbnet.admin.pools">
+              <RequireAuth permission="gonzbnet.admin.read">
                 <AdminGoNZBNetPage />
               </RequireAuth>
             }
