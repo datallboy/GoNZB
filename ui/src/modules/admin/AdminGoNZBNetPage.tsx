@@ -6,6 +6,7 @@ import {
   createGoNZBNetCoverageComplete,
   createGoNZBNetCoverageFailed,
   createGoNZBNetTombstone,
+  deleteGoNZBNetPeer,
   getGoNZBNetConfigValidation,
   getGoNZBNetCoverageDashboard,
   getGoNZBNetCoverageGroups,
@@ -592,6 +593,16 @@ export function AdminGoNZBNetPage() {
       await refresh()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update peer')
+    }
+  }
+
+  async function handlePeerDelete(peerID: number) {
+    try {
+      const response = await deleteGoNZBNetPeer(peerID)
+      setActionStatus(`Peer removed ${response.status}`)
+      await refresh()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to remove peer')
     }
   }
 
@@ -1352,6 +1363,9 @@ export function AdminGoNZBNetPage() {
                 <td>
                   <button className="secondary-button secondary-button--small" type="button" onClick={() => void handlePeerEnabled(item.id, !item.enabled)}>
                     {item.enabled ? 'Disable' : 'Enable'}
+                  </button>
+                  <button className="secondary-button secondary-button--small" type="button" onClick={() => void handlePeerDelete(item.id)}>
+                    Remove
                   </button>
                 </td>
               </tr>

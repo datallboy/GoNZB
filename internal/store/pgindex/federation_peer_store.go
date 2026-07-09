@@ -89,6 +89,26 @@ func (s *Store) SetFederationPeerEnabled(ctx context.Context, peerID int64, enab
 	return nil
 }
 
+func (s *Store) DeleteFederationPeer(ctx context.Context, peerID int64) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, fmt.Errorf("pgindex store is not initialized")
+	}
+	if peerID <= 0 {
+		return false, fmt.Errorf("peer_id is required")
+	}
+	result, err := s.db.ExecContext(ctx, `
+		DELETE FROM federation_peers
+		WHERE id = $1`, peerID)
+	if err != nil {
+		return false, fmt.Errorf("delete federation peer: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("read deleted federation peer count: %w", err)
+	}
+	return rows > 0, nil
+}
+
 func (s *Store) ListEnabledFederationPeers(ctx context.Context) ([]FederationPeerRecord, error) {
 	if s == nil || s.db == nil {
 		return nil, fmt.Errorf("pgindex store is not initialized")
