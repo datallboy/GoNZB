@@ -71,6 +71,7 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 	indexerAdminCtrl := controllers.NewIndexerAdminController(indexerCtrl.Service)
 	indexerScrapeAdminCtrl := controllers.NewIndexerScrapeAdminController(appCtx)
 	gonzbnetCtrl := controllers.NewGoNZBNetController(appCtx)
+	gonzbnetAdminCtrl := controllers.NewGoNZBNetAdminController(appCtx)
 	var authSvc *auth.Service
 	if store, ok := any(appCtx.SettingsStore).(auth.Store); ok {
 		authSvc = auth.NewService(store)
@@ -142,6 +143,16 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		fed.GET("/outbox", gonzbnetCtrl.Outbox)
 		fed.GET("/events/:event_id", gonzbnetCtrl.Event)
 		fed.POST("/inbox", gonzbnetCtrl.Inbox)
+
+		v1AdminGoNZBNet := e.Group("/api/v1/admin/gonzbnet", bodyLimitMiddleware(adminJSONBodyLimit, defaultMultipartBodyLimit))
+		v1AdminGoNZBNet.Use(authMiddleware(authSvc, false, auth.PermissionGoNZBNetAdminPools))
+		v1AdminGoNZBNet.Use(csrfProtectionMiddleware())
+		v1AdminGoNZBNet.Use(auditLogMiddleware(appCtx, "admin.gonzbnet"))
+		v1AdminGoNZBNet.GET("/pools", gonzbnetAdminCtrl.ListPools)
+		v1AdminGoNZBNet.POST("/pools", gonzbnetAdminCtrl.UpsertPool)
+		v1AdminGoNZBNet.GET("/pools/:pool_id/members", gonzbnetAdminCtrl.ListPoolMembers)
+		v1AdminGoNZBNet.POST("/pools/:pool_id/members", gonzbnetAdminCtrl.UpsertPoolMember)
+		v1AdminGoNZBNet.POST("/pools/:pool_id/members/:node_id/revoke", gonzbnetAdminCtrl.RevokePoolMember)
 	}
 
 	var (

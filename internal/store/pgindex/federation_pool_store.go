@@ -1,0 +1,525 @@
+package pgindex
+
+import (
+	"context"
+	"crypto/ed25519"
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/datallboy/gonzb/internal/gonzbnet/events"
+	"github.com/datallboy/gonzb/internal/gonzbnet/pools"
+)
+
+type TrustPoolRecord struct {
+	PoolID                     string
+	DisplayName                string
+	Description                string
+	GenesisEventID             string
+	PolicyJSON                 json.RawMessage
+	MembershipThreshold        int
+	ModerationThreshold        int
+	CheckpointWitnessThreshold int
+	AcceptMode                 string
+	MinNodeTrustScore          float64
+	AcceptedEventTypes         []string
+	Enabled                    bool
+	CreatedAt                  time.Time
+	UpdatedAt                  time.Time
+}
+
+type PoolMemberRecord struct {
+	PoolID          string
+	NodeID          string
+	Role            string
+	Status          string
+	ApprovedEventID string
+	RevokedEventID  string
+	JoinedAt        *time.Time
+	RevokedAt       *time.Time
+}
+
+type PoolAuthorizationResult struct {
+	Allowed bool
+	Reason  string
+}
+
+func (s *Store) ValidateFederationPoolControlEvent(ctx context.Context, event *events.SignedEvent) error {
+	if event == nil {
+		return fmt.Errorf("event is required")
+	}
+	switch event.EventType {
+	case pools.EventTypePoolGenesis:
+		var body pools.Genesis
+		if err := json.Unmarshal(event.Body, &body); err != nil {
+			return fmt.Errorf("invalid pool genesis body: %w", err)
+		}
+		if strings.TrimSpace(body.PoolID) == "" || strings.TrimSpace(body.DisplayName) == "" {
+			return fmt.Errorf("pool genesis requires pool_id and display_name")
+		}
+		if len(body.Admins) == 0 {
+			return fmt.Errorf("pool genesis requires at least one admin")
+		}
+		if !containsString(body.Admins, event.AuthorNodeID) {
+			return fmt.Errorf("pool genesis author must be an admin")
+		}
+		return nil
+	case pools.EventTypePoolJoinRequest:
+		var body pools.JoinRequest
+		if err := json.Unmarshal(event.Body, &body); err != nil {
+			return fmt.Errorf("invalid pool join request body: %w", err)
+		}
+		if strings.TrimSpace(body.PoolID) == "" || strings.TrimSpace(body.CandidateNodeID) == "" {
+			return fmt.Errorf("pool join request requires pool_id and candidate_node_id")
+		}
+		return nil
+	case pools.EventTypePoolMemberApproved:
+		var body pools.MemberApproved
+		if err := json.Unmarshal(event.Body, &body); err != nil {
+			return fmt.Errorf("invalid pool member approval body: %w", err)
+		}
+		policy, err := s.GetTrustPoolPolicy(ctx, body.PoolID)
+		if err != nil {
+			return err
+		}
+		if body.ApprovalsRequired <= 0 {
+			body.ApprovalsRequired = policy.MembershipThreshold
+		}
+		adminKeys, err := s.ActivePoolAdminPublicKeys(ctx, body.PoolID)
+		if err != nil {
+			return err
+		}
+		return pools.ValidateMemberApproval(body, adminKeys)
+	case pools.EventTypePoolMemberRevoked:
+		var body pools.MemberRevoked
+		if err := json.Unmarshal(event.Body, &body); err != nil {
+			return fmt.Errorf("invalid pool member revocation body: %w", err)
+		}
+		policy, err := s.GetTrustPoolPolicy(ctx, body.PoolID)
+		if err != nil {
+			return err
+		}
+		if body.ApprovalsRequired <= 0 {
+			body.ApprovalsRequired = policy.ModerationThreshold
+		}
+		adminKeys, err := s.ActivePoolAdminPublicKeys(ctx, body.PoolID)
+		if err != nil {
+			return err
+		}
+		return pools.ValidateMemberRevocation(body, adminKeys)
+	default:
+		return nil
+	}
+}
+
+func (s *Store) ProjectFederationPoolEvent(ctx context.Context, event *events.SignedEvent) error {
+	if event == nil {
+		return fmt.Errorf("event is required")
+	}
+	switch event.EventType {
+	case pools.EventTypePoolGenesis:
+		var body pools.Genesis
+		if err := json.Unmarshal(event.Body, &body); err != nil {
+			return err
+		}
+		policy := pools.NormalizePolicy(body.Policy, len(body.Admins))
+		policyJSON, _ := json.Marshal(policy)
+		acceptedTypes := policy.AcceptedEventTypes
+		if len(acceptedTypes) == 0 {
+			acceptedTypes = []string{"ReleaseCard"}
+		}
+		if err := s.UpsertTrustPool(ctx, TrustPoolRecord{
+			PoolID:                     body.PoolID,
+			DisplayName:                body.DisplayName,
+			Description:                body.Description,
+			GenesisEventID:             event.EventID,
+			PolicyJSON:                 policyJSON,
+			MembershipThreshold:        policy.MembershipThreshold,
+			ModerationThreshold:        policy.ModerationThreshold,
+			CheckpointWitnessThreshold: policy.CheckpointWitnessThreshold,
+			AcceptMode:                 policy.AcceptMode,
+			MinNodeTrustScore:          policy.MinNodeTrustScore,
+			AcceptedEventTypes:         acceptedTypes,
+			Enabled:                    true,
+		}); err != nil {
+			return err
+		}
+		for _, nodeID := range body.Admins {
+			_ = s.UpsertPoolMember(ctx, PoolMemberRecord{
+				PoolID:          body.PoolID,
+				NodeID:          nodeID,
+				Role:            pools.RoleAdmin,
+				Status:          pools.StatusActive,
+				ApprovedEventID: event.EventID,
+			})
+		}
+		for _, nodeID := range body.Witnesses {
+			_ = s.UpsertPoolMember(ctx, PoolMemberRecord{
+				PoolID:          body.PoolID,
+				NodeID:          nodeID,
+				Role:            pools.RoleWitness,
+				Status:          pools.StatusActive,
+				ApprovedEventID: event.EventID,
+			})
+		}
+		return nil
+	case pools.EventTypePoolMemberApproved:
+		var body pools.MemberApproved
+		if err := json.Unmarshal(event.Body, &body); err != nil {
+			return err
+		}
+		role := strings.TrimSpace(body.Role)
+		if role == "" {
+			role = pools.RoleMember
+		}
+		return s.UpsertPoolMember(ctx, PoolMemberRecord{
+			PoolID:          body.PoolID,
+			NodeID:          body.SubjectNodeID,
+			Role:            role,
+			Status:          pools.StatusActive,
+			ApprovedEventID: event.EventID,
+		})
+	case pools.EventTypePoolMemberRevoked:
+		var body pools.MemberRevoked
+		if err := json.Unmarshal(event.Body, &body); err != nil {
+			return err
+		}
+		return s.RevokePoolMember(ctx, body.PoolID, body.SubjectNodeID, event.EventID, parsePoolTime(body.EffectiveAt))
+	default:
+		return nil
+	}
+}
+
+func (s *Store) CanAcceptFederationEventForPools(ctx context.Context, authorNodeID string, poolIDs []string, eventType string) (PoolAuthorizationResult, error) {
+	for _, poolID := range normalizeStrings(poolIDs) {
+		policy, err := s.GetTrustPoolPolicy(ctx, poolID)
+		if err == sql.ErrNoRows {
+			continue
+		}
+		if err != nil {
+			return PoolAuthorizationResult{}, err
+		}
+		activeMember := true
+		if strings.TrimSpace(policy.AcceptMode) == "pool_member" {
+			ok, err := s.IsActivePoolMember(ctx, poolID, authorNodeID)
+			if err != nil {
+				return PoolAuthorizationResult{}, err
+			}
+			activeMember = ok
+		}
+		trustScore := 0.0
+		if policy.MinNodeTrustScore > 0 {
+			score, err := s.FederationNodeTrustScore(ctx, authorNodeID)
+			if err != nil {
+				return PoolAuthorizationResult{}, err
+			}
+			trustScore = score
+		}
+		if ok, reason := pools.AuthorizeEvent(policy, activeMember, trustScore, eventType); !ok {
+			return PoolAuthorizationResult{Allowed: false, Reason: reason}, nil
+		}
+	}
+	return PoolAuthorizationResult{Allowed: true}, nil
+}
+
+func (s *Store) UpsertTrustPool(ctx context.Context, pool TrustPoolRecord) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("pgindex store is not initialized")
+	}
+	acceptedTypesJSON, _ := json.Marshal(normalizeStrings(pool.AcceptedEventTypes))
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO trust_pools (
+			pool_id, display_name, description, genesis_event_id, policy_json,
+			membership_threshold, moderation_threshold, checkpoint_witness_threshold,
+			accept_mode, min_node_trust_score, accepted_event_types, enabled, updated_at
+		)
+		VALUES ($1, $2, $3, NULLIF($4, ''), $5::jsonb, $6, $7, $8, $9, $10, $11::jsonb, $12, NOW())
+		ON CONFLICT (pool_id) DO UPDATE SET
+			display_name = EXCLUDED.display_name,
+			description = EXCLUDED.description,
+			genesis_event_id = COALESCE(EXCLUDED.genesis_event_id, trust_pools.genesis_event_id),
+			policy_json = EXCLUDED.policy_json,
+			membership_threshold = EXCLUDED.membership_threshold,
+			moderation_threshold = EXCLUDED.moderation_threshold,
+			checkpoint_witness_threshold = EXCLUDED.checkpoint_witness_threshold,
+			accept_mode = EXCLUDED.accept_mode,
+			min_node_trust_score = EXCLUDED.min_node_trust_score,
+			accepted_event_types = EXCLUDED.accepted_event_types,
+			enabled = EXCLUDED.enabled,
+			updated_at = NOW()`,
+		pool.PoolID,
+		pool.DisplayName,
+		pool.Description,
+		pool.GenesisEventID,
+		string(defaultJSON(pool.PolicyJSON, `{}`)),
+		positivePoolInt(pool.MembershipThreshold, 1),
+		positivePoolInt(pool.ModerationThreshold, 1),
+		positivePoolInt(pool.CheckpointWitnessThreshold, 1),
+		firstNonBlank(pool.AcceptMode, "pool_member"),
+		pool.MinNodeTrustScore,
+		string(acceptedTypesJSON),
+		pool.Enabled,
+	)
+	if err != nil {
+		return fmt.Errorf("upsert trust pool: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) ListTrustPools(ctx context.Context) ([]TrustPoolRecord, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("pgindex store is not initialized")
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT pool_id, display_name, COALESCE(description, ''), COALESCE(genesis_event_id, ''),
+		       policy_json, membership_threshold, moderation_threshold,
+		       checkpoint_witness_threshold, accept_mode, min_node_trust_score,
+		       accepted_event_types, enabled, created_at, updated_at
+		FROM trust_pools
+		ORDER BY pool_id`)
+	if err != nil {
+		return nil, fmt.Errorf("list trust pools: %w", err)
+	}
+	defer rows.Close()
+	out := []TrustPoolRecord{}
+	for rows.Next() {
+		var item TrustPoolRecord
+		var acceptedTypesJSON []byte
+		if err := rows.Scan(
+			&item.PoolID,
+			&item.DisplayName,
+			&item.Description,
+			&item.GenesisEventID,
+			&item.PolicyJSON,
+			&item.MembershipThreshold,
+			&item.ModerationThreshold,
+			&item.CheckpointWitnessThreshold,
+			&item.AcceptMode,
+			&item.MinNodeTrustScore,
+			&acceptedTypesJSON,
+			&item.Enabled,
+			&item.CreatedAt,
+			&item.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal(acceptedTypesJSON, &item.AcceptedEventTypes)
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ListPoolMembers(ctx context.Context, poolID string) ([]PoolMemberRecord, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("pgindex store is not initialized")
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT pool_id, node_id, role, status, COALESCE(approved_event_id, ''),
+		       COALESCE(revoked_event_id, ''), joined_at, revoked_at
+		FROM pool_members
+		WHERE pool_id = $1
+		ORDER BY role, node_id`, strings.TrimSpace(poolID))
+	if err != nil {
+		return nil, fmt.Errorf("list pool members: %w", err)
+	}
+	defer rows.Close()
+	out := []PoolMemberRecord{}
+	for rows.Next() {
+		var item PoolMemberRecord
+		var joinedAt sql.NullTime
+		var revokedAt sql.NullTime
+		if err := rows.Scan(
+			&item.PoolID,
+			&item.NodeID,
+			&item.Role,
+			&item.Status,
+			&item.ApprovedEventID,
+			&item.RevokedEventID,
+			&joinedAt,
+			&revokedAt,
+		); err != nil {
+			return nil, err
+		}
+		if joinedAt.Valid {
+			value := joinedAt.Time.UTC()
+			item.JoinedAt = &value
+		}
+		if revokedAt.Valid {
+			value := revokedAt.Time.UTC()
+			item.RevokedAt = &value
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) UpsertPoolMember(ctx context.Context, member PoolMemberRecord) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("pgindex store is not initialized")
+	}
+	joinedAt := member.JoinedAt
+	if joinedAt == nil {
+		now := time.Now().UTC()
+		joinedAt = &now
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO pool_members (
+			pool_id, node_id, role, status, approved_event_id, joined_at, updated_at
+		)
+		VALUES ($1, $2, $3, $4, NULLIF($5, ''), $6, NOW())
+		ON CONFLICT (pool_id, node_id, role) DO UPDATE SET
+			status = EXCLUDED.status,
+			approved_event_id = COALESCE(EXCLUDED.approved_event_id, pool_members.approved_event_id),
+			revoked_event_id = NULL,
+			joined_at = COALESCE(pool_members.joined_at, EXCLUDED.joined_at),
+			revoked_at = NULL,
+			updated_at = NOW()`,
+		member.PoolID,
+		member.NodeID,
+		firstNonBlank(member.Role, pools.RoleMember),
+		firstNonBlank(member.Status, pools.StatusActive),
+		member.ApprovedEventID,
+		joinedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("upsert pool member: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) RevokePoolMember(ctx context.Context, poolID, nodeID, eventID string, effectiveAt *time.Time) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("pgindex store is not initialized")
+	}
+	if effectiveAt == nil {
+		now := time.Now().UTC()
+		effectiveAt = &now
+	}
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE pool_members
+		SET status = 'revoked',
+		    revoked_event_id = NULLIF($3, ''),
+		    revoked_at = $4,
+		    updated_at = NOW()
+		WHERE pool_id = $1
+		  AND node_id = $2`,
+		poolID,
+		nodeID,
+		eventID,
+		effectiveAt,
+	)
+	if err != nil {
+		return fmt.Errorf("revoke pool member: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) GetTrustPoolPolicy(ctx context.Context, poolID string) (pools.PoolPolicy, error) {
+	var policy pools.PoolPolicy
+	if s == nil || s.db == nil {
+		return policy, fmt.Errorf("pgindex store is not initialized")
+	}
+	var acceptedTypesJSON []byte
+	err := s.db.QueryRowContext(ctx, `
+		SELECT pool_id, membership_threshold, moderation_threshold, accept_mode,
+		       min_node_trust_score, accepted_event_types
+		FROM trust_pools
+		WHERE pool_id = $1
+		  AND enabled = TRUE`, strings.TrimSpace(poolID)).Scan(
+		&policy.PoolID,
+		&policy.MembershipThreshold,
+		&policy.ModerationThreshold,
+		&policy.AcceptMode,
+		&policy.MinNodeTrustScore,
+		&acceptedTypesJSON,
+	)
+	if err != nil {
+		return policy, err
+	}
+	_ = json.Unmarshal(acceptedTypesJSON, &policy.AcceptedEventTypes)
+	return policy, nil
+}
+
+func (s *Store) ActivePoolAdminPublicKeys(ctx context.Context, poolID string) (map[string]ed25519.PublicKey, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("pgindex store is not initialized")
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT n.node_id, n.public_key
+		FROM pool_members m
+		JOIN federation_nodes n ON n.node_id = m.node_id
+		WHERE m.pool_id = $1
+		  AND m.role = 'admin'
+		  AND m.status = 'active'`, strings.TrimSpace(poolID))
+	if err != nil {
+		return nil, fmt.Errorf("list active pool admins: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]ed25519.PublicKey{}
+	for rows.Next() {
+		var nodeID string
+		var publicKey []byte
+		if err := rows.Scan(&nodeID, &publicKey); err != nil {
+			return nil, err
+		}
+		if len(publicKey) == ed25519.PublicKeySize {
+			out[nodeID] = ed25519.PublicKey(publicKey)
+		}
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) IsActivePoolMember(ctx context.Context, poolID, nodeID string) (bool, error) {
+	var ok bool
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM pool_members
+			WHERE pool_id = $1
+			  AND node_id = $2
+			  AND status = 'active'
+		)`, strings.TrimSpace(poolID), strings.TrimSpace(nodeID)).Scan(&ok); err != nil {
+		return false, fmt.Errorf("check pool membership: %w", err)
+	}
+	return ok, nil
+}
+
+func (s *Store) FederationNodeTrustScore(ctx context.Context, nodeID string) (float64, error) {
+	var score float64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT local_trust_score
+		FROM federation_nodes
+		WHERE node_id = $1`, strings.TrimSpace(nodeID)).Scan(&score)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	return score, err
+}
+
+func parsePoolTime(value string) *time.Time {
+	parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(value))
+	if err != nil {
+		return nil
+	}
+	utc := parsed.UTC()
+	return &utc
+}
+
+func positivePoolInt(value, fallback int) int {
+	if value > 0 {
+		return value
+	}
+	return fallback
+}
+
+func containsString(values []string, needle string) bool {
+	needle = strings.TrimSpace(needle)
+	for _, value := range values {
+		if strings.TrimSpace(value) == needle {
+			return true
+		}
+	}
+	return false
+}
