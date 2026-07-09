@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/datallboy/gonzb/internal/app"
+	"github.com/datallboy/gonzb/internal/gonzbnet/canonical"
 	"github.com/datallboy/gonzb/internal/gonzbnet/capability"
 	"github.com/datallboy/gonzb/internal/gonzbnet/coverage"
 	"github.com/datallboy/gonzb/internal/gonzbnet/events"
@@ -37,11 +38,13 @@ type gonzbnetAdminStore interface {
 	UpsertTrustPool(ctx context.Context, pool pgindex.TrustPoolRecord) error
 	UpsertPoolMember(ctx context.Context, member pgindex.PoolMemberRecord) error
 	RevokePoolMember(ctx context.Context, poolID, nodeID, eventID string, effectiveAt *time.Time) error
+	GetTrustPoolPolicy(ctx context.Context, poolID string) (pools.PoolPolicy, error)
 	UpsertFederationNodeIdentity(ctx context.Context, nodeID string, publicKey ed25519.PublicKey) error
 	NextFederationEventSequence(ctx context.Context, authorNodeID string) (int64, *string, error)
 	FindFederationEventByBodyHash(ctx context.Context, authorNodeID, eventType, bodyHash string) (string, error)
 	ValidateFederationPoolControlEvent(ctx context.Context, event *events.SignedEvent) error
 	AppendVerifiedFederationEvent(ctx context.Context, event *events.SignedEvent, validation *events.ValidationResult) error
+	ProjectFederationPoolEvent(ctx context.Context, event *events.SignedEvent) error
 	ProjectTombstone(ctx context.Context, projection pgindex.TombstoneProjection) error
 	ListTombstones(ctx context.Context, activeOnly bool) ([]pgindex.TombstoneRecord, error)
 	ProjectCoverageEvent(ctx context.Context, event *events.SignedEvent) error
@@ -99,6 +102,23 @@ type poolJoinResponse struct {
 	PoolID          string   `json:"pool_id"`
 	CandidateNodeID string   `json:"candidate_node_id"`
 	RequestedRoles  []string `json:"requested_roles"`
+}
+
+type poolMemberApprovalRequest struct {
+	Role              string           `json:"role"`
+	ProposalEventID   string           `json:"proposal_event_id"`
+	ApprovalsRequired int              `json:"approvals_required"`
+	Approvals         []pools.Approval `json:"approvals"`
+}
+
+type poolMemberApprovalResponse struct {
+	Status            string `json:"status"`
+	EventID           string `json:"event_id"`
+	PoolID            string `json:"pool_id"`
+	SubjectNodeID     string `json:"subject_node_id"`
+	Role              string `json:"role"`
+	ApprovalsRequired int    `json:"approvals_required"`
+	ApprovalCount     int    `json:"approval_count"`
 }
 
 type peerRequest struct {
@@ -568,6 +588,107 @@ func (ctrl *GoNZBNetAdminController) UpsertPoolMember(c *echo.Context) error {
 		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}
 	return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (ctrl *GoNZBNetAdminController) ApprovePoolMember(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	var req poolMemberApprovalRequest
+	if err := decodeJSONBody(c, &req); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	poolID := pathParamTrimmed(c, "pool_id")
+	subjectNodeID := pathParamTrimmed(c, "node_id")
+	if poolID == "" || subjectNodeID == "" {
+		return jsonError(c, http.StatusBadRequest, "pool_id and node_id are required")
+	}
+	proposalEventID := strings.TrimSpace(req.ProposalEventID)
+	if proposalEventID == "" {
+		return jsonError(c, http.StatusBadRequest, "proposal_event_id is required")
+	}
+	role := firstNonBlank(req.Role, pools.RoleMember)
+	policy, err := store.GetTrustPoolPolicy(c.Request().Context(), poolID)
+	if err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	required := req.ApprovalsRequired
+	if required < policy.MembershipThreshold {
+		required = policy.MembershipThreshold
+	}
+	if required <= 0 {
+		required = 1
+	}
+	nodeIdentity, err := ctrl.localIdentity()
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	nodeID, err := nodeIdentity.NodeID(c.Request().Context())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	publicKey, err := nodeIdentity.PublicKey(c.Request().Context())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if err := store.UpsertFederationNodeIdentity(c.Request().Context(), nodeID, publicKey); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	sequence, previousEventID, err := store.NextFederationEventSequence(c.Request().Context(), nodeID)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	now := time.Now().UTC()
+	body := pools.MemberApproved{
+		SchemaVersion:     "1.0",
+		Type:              pools.EventTypePoolMemberApproved,
+		PoolID:            poolID,
+		SubjectNodeID:     subjectNodeID,
+		Role:              role,
+		ProposalEventID:   proposalEventID,
+		ApprovalsRequired: required,
+		Approvals:         append([]pools.Approval(nil), req.Approvals...),
+	}
+	approval, err := signPoolMemberApproval(c.Request().Context(), nodeIdentity, body, now.Format(time.RFC3339))
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	body.Approvals = append(body.Approvals, approval)
+	event, validation, err := events.Create(c.Request().Context(), nodeIdentity, events.CreateOptions{
+		EventType:       pools.EventTypePoolMemberApproved,
+		Sequence:        sequence,
+		PreviousEventID: previousEventID,
+		CreatedAt:       now,
+		PoolIDs:         []string{poolID},
+		Visibility:      "pool",
+		BodySchema:      pools.BodySchema(pools.EventTypePoolMemberApproved),
+		Body:            body,
+	})
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if validation == nil || !validation.OK {
+		return jsonError(c, http.StatusInternalServerError, "signed pool member approval did not verify")
+	}
+	if err := store.ValidateFederationPoolControlEvent(c.Request().Context(), event); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	if err := store.AppendVerifiedFederationEvent(c.Request().Context(), event, validation); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if err := store.ProjectFederationPoolEvent(c.Request().Context(), event); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, poolMemberApprovalResponse{
+		Status:            "ok",
+		EventID:           event.EventID,
+		PoolID:            poolID,
+		SubjectNodeID:     subjectNodeID,
+		Role:              role,
+		ApprovalsRequired: required,
+		ApprovalCount:     len(body.Approvals),
+	})
 }
 
 func (ctrl *GoNZBNetAdminController) RevokePoolMember(c *echo.Context) error {
@@ -1370,6 +1491,35 @@ func (ctrl *GoNZBNetAdminController) manifestResolver() (*manifestresolver.Resol
 	return manifestresolver.NewWithOptions(nodeIdentity, resolverStore, manifestresolver.Options{
 		AllowInsecurePeerHTTP: ctrl.appCtx.Config.GoNZBNet.AllowInsecurePeerHTTP,
 	}), nil
+}
+
+func signPoolMemberApproval(ctx context.Context, signer events.Identity, body pools.MemberApproved, approvedAt string) (pools.Approval, error) {
+	if signer == nil {
+		return pools.Approval{}, fmt.Errorf("identity is required")
+	}
+	nodeID, err := signer.NodeID(ctx)
+	if err != nil {
+		return pools.Approval{}, err
+	}
+	payload, err := canonical.Marshal(map[string]any{
+		"pool_id":           body.PoolID,
+		"proposal_event_id": body.ProposalEventID,
+		"subject_node_id":   body.SubjectNodeID,
+		"role":              body.Role,
+		"approved_at":       approvedAt,
+	})
+	if err != nil {
+		return pools.Approval{}, fmt.Errorf("canonical approval: %w", err)
+	}
+	signature, err := signer.Sign(ctx, payload)
+	if err != nil {
+		return pools.Approval{}, err
+	}
+	return pools.Approval{
+		NodeID:     nodeID,
+		ApprovedAt: approvedAt,
+		Signature:  canonical.Base64URL(signature),
+	}, nil
 }
 
 func normalizeRequestedRoles(values []string) []string {

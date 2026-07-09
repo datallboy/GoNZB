@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import {
+  approveGoNZBNetPoolMember,
   createGoNZBNetCoverageAssignment,
   createGoNZBNetCoverageClaim,
   createGoNZBNetCoverageComplete,
@@ -124,6 +125,13 @@ type PoolJoinForm = {
   message: string
 }
 
+type MemberApprovalForm = {
+  node_id: string
+  role: string
+  proposal_event_id: string
+  approvals_required: string
+}
+
 type TombstoneForm = {
   target_type: string
   target_id: string
@@ -201,6 +209,13 @@ const defaultMemberForm: MemberForm = {
 const defaultPoolJoinForm: PoolJoinForm = {
   requested_roles: 'member',
   message: '',
+}
+
+const defaultMemberApprovalForm: MemberApprovalForm = {
+  node_id: '',
+  role: 'member',
+  proposal_event_id: '',
+  approvals_required: '',
 }
 
 const defaultTombstoneForm: TombstoneForm = {
@@ -472,6 +487,7 @@ export function AdminGoNZBNetPage() {
   const [poolForm, setPoolForm] = useState<PoolForm>(defaultPoolForm)
   const [memberForm, setMemberForm] = useState<MemberForm>(defaultMemberForm)
   const [poolJoinForm, setPoolJoinForm] = useState<PoolJoinForm>(defaultPoolJoinForm)
+  const [memberApprovalForm, setMemberApprovalForm] = useState<MemberApprovalForm>(defaultMemberApprovalForm)
   const [tombstoneForm, setTombstoneForm] = useState<TombstoneForm>(defaultTombstoneForm)
   const [manifestResolveForm, setManifestResolveForm] = useState<ManifestResolveForm>(defaultManifestResolveForm)
   const [keyExportForm, setKeyExportForm] = useState<KeyExportForm>(defaultKeyExportForm)
@@ -705,6 +721,23 @@ export function AdminGoNZBNetPage() {
       await refresh()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to request pool join')
+    }
+  }
+
+  async function handleMemberApproval(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    try {
+      const nodeID = memberApprovalForm.node_id.trim()
+      const response = await approveGoNZBNetPoolMember(effectivePoolID, nodeID, {
+        role: memberApprovalForm.role.trim() || undefined,
+        proposal_event_id: memberApprovalForm.proposal_event_id.trim(),
+        approvals_required: optionalNumber(memberApprovalForm.approvals_required),
+      })
+      setActionStatus(`Pool member approved ${shortID(response.event_id)}`)
+      setMemberApprovalForm(defaultMemberApprovalForm)
+      await refresh()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to approve pool member')
     }
   }
 
@@ -1154,6 +1187,33 @@ export function AdminGoNZBNetPage() {
             </label>
           </div>
           <button className="primary-button align-end" type="submit">Request join</button>
+        </form>
+
+        <form className="page-card stack" onSubmit={handleMemberApproval}>
+          <h2 className="section-title">Approve member</h2>
+          <div className="toolbar-grid">
+            <label className="field">
+              <span>Node ID</span>
+              <input className="table-input" required value={memberApprovalForm.node_id} onChange={(event) => setMemberApprovalForm({ ...memberApprovalForm, node_id: event.target.value })} />
+            </label>
+            <label className="field">
+              <span>Role</span>
+              <select className="table-input" value={memberApprovalForm.role} onChange={(event) => setMemberApprovalForm({ ...memberApprovalForm, role: event.target.value })}>
+                <option value="member">member</option>
+                <option value="admin">admin</option>
+                <option value="witness">witness</option>
+              </select>
+            </label>
+            <label className="field">
+              <span>Join event</span>
+              <input className="table-input" required value={memberApprovalForm.proposal_event_id} onChange={(event) => setMemberApprovalForm({ ...memberApprovalForm, proposal_event_id: event.target.value })} />
+            </label>
+            <label className="field">
+              <span>Required</span>
+              <input className="table-input" inputMode="numeric" value={memberApprovalForm.approvals_required} onChange={(event) => setMemberApprovalForm({ ...memberApprovalForm, approvals_required: event.target.value })} />
+            </label>
+          </div>
+          <button className="primary-button align-end" type="submit">Sign approval</button>
         </form>
       </div>
 
