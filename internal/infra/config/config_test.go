@@ -134,6 +134,89 @@ modules:
 	}
 }
 
+func TestGoNZBNetAddendumConfigDefaults(t *testing.T) {
+	cfgPath := writeMinimalConfig(t, `
+modules:
+  downloader:
+    enabled: false
+  aggregator:
+    enabled: true
+  usenet_indexer:
+    enabled: false
+  api:
+    enabled: true
+  web_ui:
+    enabled: false
+`)
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.GoNZBNet.ScannerMaxGroups != 25 {
+		t.Fatalf("expected default scanner max groups 25, got %d", cfg.GoNZBNet.ScannerMaxGroups)
+	}
+	if cfg.GoNZBNet.CoverageMinTrustForClaim != 0.65 {
+		t.Fatalf("expected default coverage min trust 0.65, got %f", cfg.GoNZBNet.CoverageMinTrustForClaim)
+	}
+	if cfg.GoNZBNet.ManifestCacheMaxBytes != 10737418240 {
+		t.Fatalf("expected default manifest cache bytes, got %d", cfg.GoNZBNet.ManifestCacheMaxBytes)
+	}
+	if len(cfg.GoNZBNet.ValidationTiers) != 3 {
+		t.Fatalf("expected default validation tiers, got %#v", cfg.GoNZBNet.ValidationTiers)
+	}
+}
+
+func TestGoNZBNetAddendumEnvAliases(t *testing.T) {
+	cfgPath := writeMinimalConfig(t, `
+modules:
+  downloader:
+    enabled: false
+  aggregator:
+    enabled: true
+  usenet_indexer:
+    enabled: false
+  api:
+    enabled: true
+  web_ui:
+    enabled: false
+`)
+	t.Setenv("GONZBNET_SCANNER_MAX_GROUPS", "7")
+	t.Setenv("GONZBNET_COVERAGE_MIN_TRUST_FOR_CLAIM", "0.8")
+	t.Setenv("GONZBNET_MANIFEST_CACHE_MAX_BYTES", "1024")
+	t.Setenv("GONZBNET_SCANNER_PUBLISH_RELEASE_CARDS", "true")
+	t.Setenv("GONZBNET_MANIFEST_CACHE_ENABLED", "false")
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.GoNZBNet.ScannerMaxGroups != 7 {
+		t.Fatalf("expected scanner max groups env alias, got %d", cfg.GoNZBNet.ScannerMaxGroups)
+	}
+	if cfg.GoNZBNet.CoverageMinTrustForClaim != 0.8 {
+		t.Fatalf("expected coverage trust env alias, got %f", cfg.GoNZBNet.CoverageMinTrustForClaim)
+	}
+	if cfg.GoNZBNet.ManifestCacheMaxBytes != 1024 {
+		t.Fatalf("expected manifest cache bytes env alias, got %d", cfg.GoNZBNet.ManifestCacheMaxBytes)
+	}
+	if !cfg.GoNZBNet.PublishReleaseCardsEnabled {
+		t.Fatal("expected scanner publish release cards alias to enable publisher")
+	}
+	if cfg.GoNZBNet.ManifestCacheEnabled {
+		t.Fatal("expected manifest cache env alias to disable manifest cache")
+	}
+}
+
+func TestGoNZBNetAddendumConfigValidation(t *testing.T) {
+	cfg := minimalAggregatorConfig()
+	cfg.GoNZBNet.CoverageMinTrustForClaim = 1.1
+
+	if err := cfg.ValidateEffective(); err == nil {
+		t.Fatal("expected coverage min trust validation error")
+	}
+}
+
 func minimalAggregatorConfig() *Config {
 	return &Config{
 		Modules: ModulesConfig{

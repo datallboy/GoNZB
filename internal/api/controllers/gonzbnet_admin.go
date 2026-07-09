@@ -231,6 +231,10 @@ type gonzbnetAdminConfigSummary struct {
 	Limits                       map[string]int  `json:"limits"`
 	Privacy                      map[string]bool `json:"privacy"`
 	Publisher                    map[string]any  `json:"publisher"`
+	Scanner                      map[string]any  `json:"scanner"`
+	Coverage                     map[string]any  `json:"coverage"`
+	Validation                   map[string]any  `json:"validation"`
+	ManifestCache                map[string]any  `json:"manifest_cache"`
 	Sync                         map[string]any  `json:"sync"`
 	Gossip                       map[string]any  `json:"gossip"`
 	RedactedSensitiveConfigNames []string        `json:"redacted_sensitive_config_names"`
@@ -1947,6 +1951,40 @@ func (ctrl *GoNZBNetAdminController) adminConfigSummary() gonzbnetAdminConfigSum
 			"publish_release_cards_interval_min": cfg.PublishReleaseCardsIntervalMin,
 			"validation_batch_size":              cfg.ValidationBatchSize,
 			"validation_interval_min":            cfg.ValidationIntervalMin,
+		},
+		Scanner: map[string]any{
+			"allow_unassigned_work":         cfg.ScannerAllowUnassignedWork,
+			"checkpoint_interval_seconds":   cfg.ScannerCheckpointIntervalSecs,
+			"claim_ttl_minutes":             cfg.ScannerClaimTTLMinutes,
+			"max_articles_per_hour":         cfg.ScannerMaxArticlesPerHour,
+			"max_groups":                    cfg.ScannerMaxGroups,
+			"respect_remote_claims":         cfg.ScannerRespectRemoteClaims,
+			"project_to_local_index":        cfg.IndexProjectionEnabled,
+			"publish_manifest_availability": cfg.ManifestAvailabilityEnabled,
+			"publish_release_cards":         cfg.PublishReleaseCardsEnabled,
+		},
+		Coverage: map[string]any{
+			"mode":                       cfg.CoverageMode,
+			"min_trust_for_claim":        cfg.CoverageMinTrustForClaim,
+			"provider_scope_mode":        cfg.CoverageProviderScopeMode,
+			"stale_claim_penalty":        cfg.CoverageStaleClaimPenalty,
+			"validation_overlap_percent": cfg.CoverageValidationOverlapPct,
+		},
+		Validation: map[string]any{
+			"allow_par2_validation":       cfg.ValidationAllowPAR2,
+			"allow_sample_payload_fetch":  cfg.ValidationAllowSamplePayload,
+			"max_manifests_per_hour":      cfg.ValidationMaxManifestsPerHour,
+			"publish_provider_scope_hash": cfg.ValidationPublishProviderScope,
+			"sample_percent":              cfg.ValidationSamplePercent,
+			"tiers":                       cfg.ValidationTiers,
+			"checksum_validation_enabled": cfg.ChecksumValidationEnabled,
+			"validation_batch_size":       cfg.ValidationBatchSize,
+			"validation_interval_min":     cfg.ValidationIntervalMin,
+		},
+		ManifestCache: map[string]any{
+			"max_bytes":              cfg.ManifestCacheMaxBytes,
+			"serve_to_trusted_pools": cfg.ManifestCacheServeTrustedPools,
+			"ttl_days":               cfg.ManifestCacheTTLDays,
 		},
 		Sync: map[string]any{
 			"pull_sync_enabled":      cfg.PullSyncEnabled,
