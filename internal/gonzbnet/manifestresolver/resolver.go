@@ -16,6 +16,7 @@ import (
 	"github.com/datallboy/gonzb/internal/gonzbnet/events"
 	"github.com/datallboy/gonzb/internal/gonzbnet/manifest"
 	"github.com/datallboy/gonzb/internal/gonzbnet/requestauth"
+	"github.com/datallboy/gonzb/internal/gonzbnet/transportpolicy"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
 )
 
@@ -33,15 +34,25 @@ type Store interface {
 }
 
 type Resolver struct {
-	identity Identity
-	store    Store
-	client   *http.Client
+	identity              Identity
+	store                 Store
+	client                *http.Client
+	allowInsecurePeerHTTP bool
+}
+
+type Options struct {
+	AllowInsecurePeerHTTP bool
 }
 
 func New(identity Identity, store Store) *Resolver {
+	return NewWithOptions(identity, store, Options{})
+}
+
+func NewWithOptions(identity Identity, store Store, opts Options) *Resolver {
 	return &Resolver{
-		identity: identity,
-		store:    store,
+		identity:              identity,
+		store:                 store,
+		allowInsecurePeerHTTP: opts.AllowInsecurePeerHTTP,
 		client: &http.Client{
 			Timeout: 20 * time.Second,
 		},
@@ -139,6 +150,9 @@ func (r *Resolver) fetchManifest(ctx context.Context, source pgindex.FederatedMa
 		return nil, err
 	}
 	endpoint := strings.TrimRight(source.BaseURL, "/") + "/manifests/" + url.PathEscape(source.ManifestID) + "/request"
+	if err := transportpolicy.ValidateHTTPURL(endpoint, r.allowInsecurePeerHTTP); err != nil {
+		return nil, err
+	}
 	parsed, err := url.Parse(endpoint)
 	if err != nil {
 		return nil, err

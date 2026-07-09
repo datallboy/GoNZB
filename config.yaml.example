@@ -35,6 +35,7 @@ gonzbnet:
   spec_version: "gonzbnet/1.0"
   http_enabled: true
   http_base_path: "/gonzbnet/v1"
+  allow_insecure_peer_http: false
   private_network: true
   network_id: "default"
   local_pool_id: "pool.local"

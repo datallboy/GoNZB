@@ -51,7 +51,9 @@ func (m *gonzbnetRuntimeModule) Build(ctx context.Context) error {
 	if !ok {
 		return fmt.Errorf("pgindex store does not support gonzbnet pull sync")
 	}
-	m.pullSync = gonzbnetsync.New(nodeIdentity, syncStore, m.appCtx.Logger)
+	m.pullSync = gonzbnetsync.NewWithOptions(nodeIdentity, syncStore, m.appCtx.Logger, gonzbnetsync.Options{
+		AllowInsecurePeerHTTP: m.appCtx.Config.GoNZBNet.AllowInsecurePeerHTTP,
+	})
 	if err := m.pullSync.UpsertManualPeers(ctx, m.appCtx.Config.GoNZBNet.ManualPeers); err != nil {
 		return err
 	}

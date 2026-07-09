@@ -21,6 +21,7 @@ import (
 	"github.com/datallboy/gonzb/internal/gonzbnet/pools"
 	"github.com/datallboy/gonzb/internal/gonzbnet/profile"
 	gonzbnetsync "github.com/datallboy/gonzb/internal/gonzbnet/sync"
+	"github.com/datallboy/gonzb/internal/gonzbnet/transportpolicy"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
 	"github.com/labstack/echo/v5"
 )
@@ -269,6 +270,14 @@ func (ctrl *GoNZBNetAdminController) ConfigValidation(c *echo.Context) error {
 	}
 	if cfg.HTTPEnabled && strings.TrimSpace(cfg.HTTPBasePath) != "" && !strings.HasPrefix(strings.TrimSpace(cfg.HTTPBasePath), "/") {
 		issue("warning", "gonzbnet.http_base_path", "should start with /")
+	}
+	if cfg.AllowInsecurePeerHTTP {
+		issue("warning", "gonzbnet.allow_insecure_peer_http", "local development only; non-local HTTP peers are still rejected")
+	}
+	for i, peerURL := range cfg.ManualPeers {
+		if err := transportpolicy.ValidateHTTPURL(peerURL, cfg.AllowInsecurePeerHTTP); err != nil {
+			issue("error", fmt.Sprintf("gonzbnet.manual_peers[%d]", i), err.Error())
+		}
 	}
 	if !cfg.HTTPEnabled && (cfg.PushSyncEnabled || cfg.WebSocketGossipEnabled || cfg.RelayEnabled) {
 		issue("warning", "gonzbnet.http_enabled", "disabled while inbound push, gossip, or relay features are enabled")
@@ -728,6 +737,9 @@ func (ctrl *GoNZBNetAdminController) UpsertPeer(c *echo.Context) error {
 	}
 	var req peerRequest
 	if err := decodeJSONBody(c, &req); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	if err := transportpolicy.ValidateHTTPURL(req.PeerURL, ctrl.appCtx.Config.GoNZBNet.AllowInsecurePeerHTTP); err != nil {
 		return jsonError(c, http.StatusBadRequest, err.Error())
 	}
 	peerID, err := store.UpsertFederationPeerURL(c.Request().Context(), req.PeerURL)
@@ -1190,7 +1202,9 @@ func (ctrl *GoNZBNetAdminController) syncService() (*gonzbnetsync.Service, error
 	if err != nil {
 		return nil, err
 	}
-	return gonzbnetsync.New(nodeIdentity, syncStore, ctrl.appCtx.Logger), nil
+	return gonzbnetsync.NewWithOptions(nodeIdentity, syncStore, ctrl.appCtx.Logger, gonzbnetsync.Options{
+		AllowInsecurePeerHTTP: ctrl.appCtx.Config.GoNZBNet.AllowInsecurePeerHTTP,
+	}), nil
 }
 
 func (ctrl *GoNZBNetAdminController) manifestResolver() (*manifestresolver.Resolver, error) {
@@ -1205,7 +1219,9 @@ func (ctrl *GoNZBNetAdminController) manifestResolver() (*manifestresolver.Resol
 	if err != nil {
 		return nil, err
 	}
-	return manifestresolver.New(nodeIdentity, resolverStore), nil
+	return manifestresolver.NewWithOptions(nodeIdentity, resolverStore, manifestresolver.Options{
+		AllowInsecurePeerHTTP: ctrl.appCtx.Config.GoNZBNet.AllowInsecurePeerHTTP,
+	}), nil
 }
 
 func coverageID(prefix string, now time.Time) string {
@@ -1303,6 +1319,7 @@ func (ctrl *GoNZBNetAdminController) adminConfigSummary() gonzbnetAdminConfigSum
 			"time_tolerance_seconds":       cfg.TimeToleranceSeconds,
 		},
 		Privacy: map[string]bool{
+			"allow_insecure_peer_http":   cfg.AllowInsecurePeerHTTP,
 			"live_query_enabled":         cfg.LiveQueryEnabled,
 			"manifest_trusted_pool_only": true,
 			"private_network":            cfg.PrivateNetwork,
