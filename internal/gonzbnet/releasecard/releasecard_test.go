@@ -1,0 +1,120 @@
+package releasecard
+
+import (
+	"testing"
+	"time"
+)
+
+func TestMapLocalReleaseIsDeterministicAcrossInputOrdering(t *testing.T) {
+	first := testLocalRelease()
+	second := testLocalRelease()
+	second.Groups = []string{"alt.binaries.movies", "alt.binaries.example"}
+	second.Files = []LocalFile{second.Files[1], second.Files[0]}
+
+	firstCard, err := MapLocalRelease(first)
+	if err != nil {
+		t.Fatalf("map first release: %v", err)
+	}
+	secondCard, err := MapLocalRelease(second)
+	if err != nil {
+		t.Fatalf("map second release: %v", err)
+	}
+
+	if firstCard.ReleaseID == "" {
+		t.Fatalf("expected release id")
+	}
+	if firstCard.ManifestID == "" {
+		t.Fatalf("expected manifest id")
+	}
+	if firstCard.ReleaseID != secondCard.ReleaseID {
+		t.Fatalf("expected stable release id %q, got %q", firstCard.ReleaseID, secondCard.ReleaseID)
+	}
+	if firstCard.ManifestID != secondCard.ManifestID {
+		t.Fatalf("expected stable manifest id %q, got %q", firstCard.ManifestID, secondCard.ManifestID)
+	}
+
+	firstHash, err := HashBody(firstCard)
+	if err != nil {
+		t.Fatalf("hash first card: %v", err)
+	}
+	secondHash, err := HashBody(secondCard)
+	if err != nil {
+		t.Fatalf("hash second card: %v", err)
+	}
+	if firstHash != secondHash {
+		t.Fatalf("expected stable body hash %q, got %q", firstHash, secondHash)
+	}
+}
+
+func TestMapLocalReleaseDoesNotGenerateManifestIDWithoutSegments(t *testing.T) {
+	in := testLocalRelease()
+	in.Files[0].Segments = nil
+
+	card, err := MapLocalRelease(in)
+	if err != nil {
+		t.Fatalf("map release: %v", err)
+	}
+	if card.ManifestID != "" {
+		t.Fatalf("expected no manifest id without complete segment metadata, got %q", card.ManifestID)
+	}
+	if card.Resolution.Status != "metadata_only" {
+		t.Fatalf("expected metadata_only resolution, got %q", card.Resolution.Status)
+	}
+}
+
+func testLocalRelease() LocalRelease {
+	posted := time.Date(2026, 7, 7, 10, 55, 0, 0, time.UTC)
+	file1Posted := time.Date(2026, 7, 7, 10, 56, 0, 0, time.UTC)
+	file2Posted := time.Date(2026, 7, 7, 10, 57, 0, 0, time.UTC)
+	return LocalRelease{
+		LocalReleaseID:    "local-release-1",
+		GUID:              "guid-1",
+		Title:             "Example.Release.2026.2160p.WEB-DL",
+		Category:          "movies",
+		CategoryID:        2040,
+		Classification:    "movies",
+		SizeBytes:         3000,
+		PostedAt:          &posted,
+		FileCount:         2,
+		CompletionPct:     100,
+		Groups:            []string{"alt.binaries.example", "alt.binaries.movies"},
+		HasPAR2:           true,
+		PasswordState:     "not_passworded",
+		Availability:      0.92,
+		TMDBID:            12345,
+		ExternalMedia:     "movie",
+		ExternalYear:      2026,
+		PrimaryResolution: "2160p",
+		PrimaryVideoCodec: "HEVC",
+		PrimaryAudioCodec: "Atmos",
+		Files: []LocalFile{
+			{
+				Name:         "example.part001.rar",
+				Subject:      "Example.Release.2026.part001.rar yEnc",
+				Poster:       "poster@example.invalid",
+				PostedAt:     &file1Posted,
+				SizeBytes:    1000,
+				FileIndex:    1,
+				ArticleCount: 2,
+				TotalParts:   2,
+				Segments: []LocalSegment{
+					{Number: 2, Bytes: 500, MessageID: "<seg2@example.invalid>"},
+					{Number: 1, Bytes: 500, MessageID: "<seg1@example.invalid>"},
+				},
+			},
+			{
+				Name:         "example.part002.rar",
+				Subject:      "Example.Release.2026.part002.rar yEnc",
+				Poster:       "poster@example.invalid",
+				PostedAt:     &file2Posted,
+				SizeBytes:    2000,
+				FileIndex:    2,
+				ArticleCount: 1,
+				TotalParts:   1,
+				Segments: []LocalSegment{
+					{Number: 1, Bytes: 2000, MessageID: "<seg3@example.invalid>"},
+				},
+			},
+		},
+	}
+}

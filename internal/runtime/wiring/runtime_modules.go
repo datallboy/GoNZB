@@ -354,6 +354,7 @@ func registerRuntimeModules(appCtx *app.Context) {
 		&downloaderRuntimeModule{appCtx: appCtx},
 		&aggregatorRuntimeModule{appCtx: appCtx},
 		&usenetIndexerRuntimeModule{appCtx: appCtx},
+		&gonzbnetRuntimeModule{appCtx: appCtx},
 		&arrNotifierRuntimeModule{appCtx: appCtx},
 	)
 }
