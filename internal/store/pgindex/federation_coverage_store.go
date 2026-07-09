@@ -87,6 +87,12 @@ type CoverageWorkSuggestion struct {
 	Reason     string                   `json:"reason"`
 }
 
+type CoverageSchedulerPlan struct {
+	Suggestions []CoverageWorkSuggestion `json:"suggestions"`
+	StaleClaims []CoverageClaimRecord    `json:"stale_claims"`
+	Mode        string                   `json:"mode"`
+}
+
 func (s *Store) ProjectCoverageEvent(ctx context.Context, event *events.SignedEvent) error {
 	if s == nil || s.db == nil {
 		return fmt.Errorf("pgindex store is not initialized")
@@ -353,6 +359,23 @@ func (s *Store) SuggestCoverageWork(ctx context.Context, params CoverageWorkSugg
 		out = append(out, CoverageWorkSuggestion{Assignment: item, Reason: "dedup_clear"})
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) BuildCoverageSchedulerPlan(ctx context.Context, params CoverageWorkSuggestionParams) (CoverageSchedulerPlan, error) {
+	var out CoverageSchedulerPlan
+	suggestions, err := s.SuggestCoverageWork(ctx, params)
+	if err != nil {
+		return out, err
+	}
+	poolID := firstNonBlank(params.PoolID, "pool.local")
+	staleClaims, err := s.listCoverageClaims(ctx, poolID, true)
+	if err != nil {
+		return out, err
+	}
+	out.Suggestions = suggestions
+	out.StaleClaims = staleClaims
+	out.Mode = firstNonBlank(params.Mode, "scanner")
+	return out, nil
 }
 
 func (s *Store) projectCoveragePlan(ctx context.Context, body coverage.CoveragePlan, event *events.SignedEvent) error {
