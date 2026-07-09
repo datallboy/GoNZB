@@ -1743,6 +1743,24 @@ export type GoNZBNetPoolMemberApprovalResponse = {
   approval_count: number
 }
 
+export type GoNZBNetPoolMemberRevocationRequest = {
+  reason: string
+  effective_at?: string
+  approvals_required?: number
+  approvals?: GoNZBNetPoolApproval[]
+}
+
+export type GoNZBNetPoolMemberRevocationResponse = {
+  status: string
+  event_id: string
+  pool_id: string
+  subject_node_id: string
+  reason: string
+  effective_at: string
+  approvals_required: number
+  approval_count: number
+}
+
 export type GoNZBNetTombstone = {
   id: number
   target_type: string

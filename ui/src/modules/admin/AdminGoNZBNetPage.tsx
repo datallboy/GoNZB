@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import {
   approveGoNZBNetPoolMember,
+  createGoNZBNetPoolMemberRevocation,
   createGoNZBNetCoverageAssignment,
   createGoNZBNetCoverageClaim,
   createGoNZBNetCoverageComplete,
@@ -132,6 +133,13 @@ type MemberApprovalForm = {
   approvals_required: string
 }
 
+type MemberRevocationForm = {
+  node_id: string
+  reason: string
+  effective_at: string
+  approvals_required: string
+}
+
 type TombstoneForm = {
   target_type: string
   target_id: string
@@ -215,6 +223,13 @@ const defaultMemberApprovalForm: MemberApprovalForm = {
   node_id: '',
   role: 'member',
   proposal_event_id: '',
+  approvals_required: '',
+}
+
+const defaultMemberRevocationForm: MemberRevocationForm = {
+  node_id: '',
+  reason: '',
+  effective_at: '',
   approvals_required: '',
 }
 
@@ -488,6 +503,7 @@ export function AdminGoNZBNetPage() {
   const [memberForm, setMemberForm] = useState<MemberForm>(defaultMemberForm)
   const [poolJoinForm, setPoolJoinForm] = useState<PoolJoinForm>(defaultPoolJoinForm)
   const [memberApprovalForm, setMemberApprovalForm] = useState<MemberApprovalForm>(defaultMemberApprovalForm)
+  const [memberRevocationForm, setMemberRevocationForm] = useState<MemberRevocationForm>(defaultMemberRevocationForm)
   const [tombstoneForm, setTombstoneForm] = useState<TombstoneForm>(defaultTombstoneForm)
   const [manifestResolveForm, setManifestResolveForm] = useState<ManifestResolveForm>(defaultManifestResolveForm)
   const [keyExportForm, setKeyExportForm] = useState<KeyExportForm>(defaultKeyExportForm)
@@ -738,6 +754,23 @@ export function AdminGoNZBNetPage() {
       await refresh()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to approve pool member')
+    }
+  }
+
+  async function handleMemberRevocation(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    try {
+      const nodeID = memberRevocationForm.node_id.trim()
+      const response = await createGoNZBNetPoolMemberRevocation(effectivePoolID, nodeID, {
+        reason: memberRevocationForm.reason.trim(),
+        effective_at: memberRevocationForm.effective_at.trim() || undefined,
+        approvals_required: optionalNumber(memberRevocationForm.approvals_required),
+      })
+      setActionStatus(`Pool member revoked ${shortID(response.event_id)}`)
+      setMemberRevocationForm(defaultMemberRevocationForm)
+      await refresh()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to sign pool member revocation')
     }
   }
 
@@ -1214,6 +1247,29 @@ export function AdminGoNZBNetPage() {
             </label>
           </div>
           <button className="primary-button align-end" type="submit">Sign approval</button>
+        </form>
+
+        <form className="page-card stack" onSubmit={handleMemberRevocation}>
+          <h2 className="section-title">Revoke member</h2>
+          <div className="toolbar-grid">
+            <label className="field">
+              <span>Node ID</span>
+              <input className="table-input" required value={memberRevocationForm.node_id} onChange={(event) => setMemberRevocationForm({ ...memberRevocationForm, node_id: event.target.value })} />
+            </label>
+            <label className="field">
+              <span>Reason</span>
+              <input className="table-input" required value={memberRevocationForm.reason} onChange={(event) => setMemberRevocationForm({ ...memberRevocationForm, reason: event.target.value })} />
+            </label>
+            <label className="field">
+              <span>Effective at</span>
+              <input className="table-input" value={memberRevocationForm.effective_at} onChange={(event) => setMemberRevocationForm({ ...memberRevocationForm, effective_at: event.target.value })} />
+            </label>
+            <label className="field">
+              <span>Required</span>
+              <input className="table-input" inputMode="numeric" value={memberRevocationForm.approvals_required} onChange={(event) => setMemberRevocationForm({ ...memberRevocationForm, approvals_required: event.target.value })} />
+            </label>
+          </div>
+          <button className="secondary-button align-end" type="submit">Sign revocation</button>
         </form>
       </div>
 
