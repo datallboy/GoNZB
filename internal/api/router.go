@@ -190,6 +190,8 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		v1AdminGoNZBNetPeers.POST("/peers/:peer_id/enable", gonzbnetAdminCtrl.EnablePeer)
 		v1AdminGoNZBNetPeers.POST("/peers/:peer_id/disable", gonzbnetAdminCtrl.DisablePeer)
 		v1AdminGoNZBNetPeers.DELETE("/peers/:peer_id", gonzbnetAdminCtrl.DeletePeer)
+		v1AdminGoNZBNetPeers.POST("/nodes/:node_id/block", gonzbnetAdminCtrl.BlockNode)
+		v1AdminGoNZBNetPeers.POST("/nodes/:node_id/unblock", gonzbnetAdminCtrl.UnblockNode)
 		v1AdminGoNZBNetPeers.POST("/sync/pull", gonzbnetAdminCtrl.PullSync)
 		v1AdminGoNZBNetPeers.POST("/sync/push", gonzbnetAdminCtrl.PushSync)
 		v1AdminGoNZBNetPeers.POST("/sync/gossip", gonzbnetAdminCtrl.GossipSync)

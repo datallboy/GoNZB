@@ -33,6 +33,7 @@ import {
   runGoNZBNetGossipSync,
   runGoNZBNetPullSync,
   runGoNZBNetPushSync,
+  setGoNZBNetNodeBlocked,
   setGoNZBNetPeerEnabled,
   upsertGoNZBNetPoolMember,
   upsertGoNZBNetPeer,
@@ -603,6 +604,16 @@ export function AdminGoNZBNetPage() {
       await refresh()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to remove peer')
+    }
+  }
+
+  async function handleNodeBlocked(nodeID: string, blocked: boolean) {
+    try {
+      const response = await setGoNZBNetNodeBlocked(nodeID, blocked)
+      setActionStatus(`Node ${blocked ? 'blocked' : 'unblocked'} ${response.status}`)
+      await refresh()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update node')
     }
   }
 
@@ -1192,6 +1203,7 @@ export function AdminGoNZBNetPage() {
               <th>Capabilities</th>
               <th>Modules</th>
               <th>Updated</th>
+              <th>Action</th>
             </tr>
           </thead>
           <tbody>
@@ -1205,6 +1217,15 @@ export function AdminGoNZBNetPage() {
                 <td>{capabilityKeys(node.capabilities).map((key) => <span className="status-pill status-pill--table" key={key}>{key}</span>)}</td>
                 <td>{Object.entries(node.module_status ?? {}).map(([key, value]) => <div key={key}>{key}: {String(value)}</div>)}</td>
                 <td>{formatDateTime(node.updated_at)}</td>
+                <td>
+                  {node.status === 'local' ? (
+                    <span className="muted-copy">local</span>
+                  ) : (
+                    <button className="secondary-button secondary-button--small" type="button" onClick={() => void handleNodeBlocked(node.node_id, node.status !== 'blocked')}>
+                      {node.status === 'blocked' ? 'Unblock' : 'Block'}
+                    </button>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>

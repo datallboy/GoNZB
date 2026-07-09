@@ -68,6 +68,8 @@ Current implementation state:
 - Addendum Phase O adds a local admin action to resolve federated manifests
   through the existing signed manifest resolver path.
 - Addendum Phase P adds local peer removal to the peer-management admin API/UI.
+- Admin requirements cleanup tracks spec admin requirements that are implemented
+  outside named phases, including local node block/unblock controls.
 
 Maintained pages:
 
@@ -98,3 +100,4 @@ Maintained pages:
 - [Phase N Node Profile And Config Admin](./phase-n-node-config-admin.md)
 - [Phase O Force Resolve Manifest](./phase-o-force-resolve-manifest.md)
 - [Phase P Remove Peer](./phase-p-remove-peer.md)
+- [Admin Requirements Cleanup](./admin-requirements-cleanup.md)

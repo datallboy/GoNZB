@@ -664,6 +664,13 @@ export function deleteGoNZBNetPeer(peerID: number) {
   )
 }
 
+export function setGoNZBNetNodeBlocked(nodeID: string, blocked: boolean) {
+  return apiRequest<GoNZBNetActionResponse>(
+    `/api/v1/admin/gonzbnet/nodes/${encodeURIComponent(nodeID)}/${blocked ? "block" : "unblock"}`,
+    { method: "POST" },
+  )
+}
+
 export function runGoNZBNetPullSync() {
   return apiRequest<GoNZBNetSyncActionResponse>(
     "/api/v1/admin/gonzbnet/sync/pull",
