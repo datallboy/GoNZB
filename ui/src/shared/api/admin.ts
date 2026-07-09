@@ -41,11 +41,14 @@ import type {
   GoNZBNetListResponse,
   GoNZBNetNodeCapability,
   GoNZBNetOutcomeRequest,
+  GoNZBNetPeerActionResponse,
   GoNZBNetPeerDeliveryDiagnostic,
   GoNZBNetPeerDiagnostic,
+  GoNZBNetPeerRequest,
   GoNZBNetPoolMember,
   GoNZBNetPoolMemberRequest,
   GoNZBNetRejectedEventDiagnostic,
+  GoNZBNetSyncActionResponse,
   GoNZBNetTombstone,
   GoNZBNetTombstoneRequest,
   GoNZBNetTrustPool,
@@ -586,5 +589,40 @@ export function createGoNZBNetTombstone(body: GoNZBNetTombstoneRequest) {
   return apiRequest<GoNZBNetActionResponse>(
     "/api/v1/admin/gonzbnet/moderation/tombstones",
     { method: "POST", body },
+  )
+}
+
+export function upsertGoNZBNetPeer(body: GoNZBNetPeerRequest) {
+  return apiRequest<GoNZBNetPeerActionResponse>(
+    "/api/v1/admin/gonzbnet/peers",
+    { method: "POST", body },
+  )
+}
+
+export function setGoNZBNetPeerEnabled(peerID: number, enabled: boolean) {
+  return apiRequest<GoNZBNetPeerActionResponse>(
+    `/api/v1/admin/gonzbnet/peers/${peerID}/${enabled ? "enable" : "disable"}`,
+    { method: "POST" },
+  )
+}
+
+export function runGoNZBNetPullSync() {
+  return apiRequest<GoNZBNetSyncActionResponse>(
+    "/api/v1/admin/gonzbnet/sync/pull",
+    { method: "POST" },
+  )
+}
+
+export function runGoNZBNetPushSync(limit?: number) {
+  return apiRequest<GoNZBNetSyncActionResponse>(
+    `/api/v1/admin/gonzbnet/sync/push${goNZBNetQuery({ limit })}`,
+    { method: "POST" },
+  )
+}
+
+export function runGoNZBNetGossipSync() {
+  return apiRequest<GoNZBNetSyncActionResponse>(
+    "/api/v1/admin/gonzbnet/sync/gossip",
+    { method: "POST" },
   )
 }
