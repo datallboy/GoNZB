@@ -16,6 +16,23 @@ func TestValidateManifestIDAndRejectTamper(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsMalformedMessageIDs(t *testing.T) {
+	for _, messageID := range []string{
+		"",
+		"seg1@example.invalid",
+		"<seg1>",
+		"<@example.invalid>",
+		"<seg1@>",
+		"<seg 1@example.invalid>",
+		"<seg1@example.invalid><extra@example.invalid>",
+	} {
+		item := testManifestWithMessageID(t, messageID)
+		if _, err := Validate(item); err == nil {
+			t.Fatalf("expected malformed Message-ID %q to fail validation", messageID)
+		}
+	}
+}
+
 func TestGenerateNZBProducesParsableXML(t *testing.T) {
 	payload, err := GenerateNZB(testManifest(t))
 	if err != nil {
@@ -45,6 +62,11 @@ func TestGenerateNZBProducesParsableXML(t *testing.T) {
 
 func testManifest(t *testing.T) ResolutionManifest {
 	t.Helper()
+	return testManifestWithMessageID(t, "<seg1@example.invalid>")
+}
+
+func testManifestWithMessageID(t *testing.T, messageID string) ResolutionManifest {
+	t.Helper()
 	core := ManifestCore{
 		Groups:   []string{"alt.binaries.example"},
 		Poster:   "poster@example.invalid",
@@ -57,7 +79,7 @@ func testManifest(t *testing.T) ResolutionManifest {
 			Segments: []ManifestSegment{{
 				Number:    1,
 				Bytes:     1000,
-				MessageID: "<seg1@example.invalid>",
+				MessageID: messageID,
 			}},
 		}},
 		NZB: NZBInfo{Generator: "GoNZBNet", XMLCharset: "utf-8"},

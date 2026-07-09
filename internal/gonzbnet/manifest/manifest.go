@@ -130,7 +130,7 @@ func Validate(in ResolutionManifest) ([]byte, error) {
 			return nil, fmt.Errorf("manifest file requires segments")
 		}
 		for _, segment := range file.Segments {
-			if segment.Number <= 0 || segment.Bytes < 0 || strings.TrimSpace(segment.MessageID) == "" {
+			if segment.Number <= 0 || segment.Bytes < 0 || !validMessageID(segment.MessageID) {
 				return nil, fmt.Errorf("manifest segment is invalid")
 			}
 		}
@@ -208,6 +208,27 @@ func normalizeStrings(values []string) []string {
 		}
 	}
 	return out
+}
+
+func validMessageID(value string) bool {
+	value = strings.TrimSpace(value)
+	if len(value) < 5 || !strings.HasPrefix(value, "<") || !strings.HasSuffix(value, ">") {
+		return false
+	}
+	inner := strings.TrimSuffix(strings.TrimPrefix(value, "<"), ">")
+	if strings.ContainsAny(inner, "<>") {
+		return false
+	}
+	parts := strings.Split(inner, "@")
+	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
+		return false
+	}
+	for _, r := range inner {
+		if r <= 32 || r == 127 {
+			return false
+		}
+	}
+	return true
 }
 
 func firstNonBlank(values ...string) string {

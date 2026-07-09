@@ -107,6 +107,8 @@ Current implementation state:
   event projection.
 - Security cleanup limits fetched peer manifest responses with
   `gonzbnet.max_manifest_bytes`.
+- Security cleanup rejects malformed ResolutionManifest segment Message-IDs
+  before caching or NZB generation.
 - Test cleanup adds direct coverage for non-member event rejection and local
   GoNZBNet RBAC denial paths.
 
@@ -159,3 +161,4 @@ Maintained pages:
 - [Security: Event Type Compatibility](./security-event-type-compatibility.md)
 - [Security: Sequence Conflicts](./security-sequence-conflicts.md)
 - [Security: Manifest Response Limit](./security-manifest-response-limit.md)
+- [Security: Manifest Message-IDs](./security-manifest-message-ids.md)
