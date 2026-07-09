@@ -101,6 +101,8 @@ Current implementation state:
 - Security cleanup rejects remote signed events with future `created_at` /
   `not_before` windows, expired `expires_at` values, or event ages beyond
   `gonzbnet.max_event_age_hours`.
+- Security cleanup rejects unknown signed event types before accepted-event
+  storage unless explicit compatibility support is added.
 - Test cleanup adds direct coverage for non-member event rejection and local
   GoNZBNet RBAC denial paths.
 
@@ -150,3 +152,4 @@ Maintained pages:
 - [Security: Federation Transport Hardening](./security-transport-hardening.md)
 - [Security: Peer TLS Policy](./security-peer-tls-policy.md)
 - [Security: Event Time Windows](./security-event-time-windows.md)
+- [Security: Event Type Compatibility](./security-event-type-compatibility.md)

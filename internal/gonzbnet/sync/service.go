@@ -381,6 +381,11 @@ func (s *Service) syncPeer(ctx context.Context, peer pgindex.FederationPeerRecor
 				result.Rejected++
 				continue
 			}
+			if !pools.EventTypeSupported(event.EventType) {
+				_ = s.store.AppendRejectedFederationEvent(ctx, event.EventID, event.AuthorNodeID, event.EventType, raw, "unsupported event_type")
+				result.Rejected++
+				continue
+			}
 			if pools.EventIsPoolControl(event.EventType) {
 				if err := s.store.ValidateFederationPoolControlEvent(ctx, &event); err != nil {
 					_ = s.store.AppendRejectedFederationEvent(ctx, event.EventID, event.AuthorNodeID, event.EventType, raw, err.Error())

@@ -17,9 +17,9 @@ Public `/gonzbnet/v1/*` handlers now return stable machine-readable errors:
 
 Inbox and gossip item-level rejection codes are normalized to the same spec
 vocabulary where possible, including `invalid_event_id`, `invalid_body_hash`,
-`invalid_signature`, `not_pool_member`, `insufficient_pool_role`,
-`insufficient_pool_quorum`, `replayed_nonce`, `expired_event`,
-`future_timestamp`, `payload_too_large`, `rate_limited`, and
+`invalid_signature`, `unsupported_event_type`, `not_pool_member`,
+`insufficient_pool_role`, `insufficient_pool_quorum`, `replayed_nonce`,
+`expired_event`, `future_timestamp`, `payload_too_large`, `rate_limited`, and
 `internal_error`.
 
 ## Body Limits

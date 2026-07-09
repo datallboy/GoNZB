@@ -664,6 +664,11 @@ func (ctrl *GoNZBNetController) acceptInboxEvent(ctx context.Context, store gonz
 		_ = store.AppendRejectedFederationEvent(ctx, eventID, event.AuthorNodeID, event.EventType, raw, reason)
 		return inboxEventResult{EventID: eventID, Status: "rejected", Code: federationVerificationCode(reason), Message: reason}
 	}
+	if !pools.EventTypeSupported(event.EventType) {
+		reason := "unsupported event_type"
+		_ = store.AppendRejectedFederationEvent(ctx, event.EventID, event.AuthorNodeID, event.EventType, raw, reason)
+		return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: federationVerificationCode(reason), Message: reason}
+	}
 	if pools.EventIsPoolControl(event.EventType) {
 		if err := store.ValidateFederationPoolControlEvent(ctx, event); err != nil {
 			_ = store.AppendRejectedFederationEvent(ctx, event.EventID, event.AuthorNodeID, event.EventType, raw, err.Error())

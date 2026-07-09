@@ -176,6 +176,35 @@ func EventIsPoolControl(eventType string) bool {
 	}
 }
 
+func EventTypeSupported(eventType string) bool {
+	switch strings.TrimSpace(eventType) {
+	case EventTypeReleaseCard,
+		EventTypeHealthAttestation,
+		EventTypeTombstone,
+		EventTypeValidatorCapacity,
+		EventTypeArticleAvailabilityAttestation,
+		EventTypeChecksumAttestation,
+		EventTypeManifestAvailability,
+		EventTypeScannerCapacity,
+		EventTypeScannerHeartbeat,
+		EventTypeGroupObservation,
+		EventTypeCoveragePlan,
+		EventTypeCoverageAssignment,
+		EventTypeRangeClaim,
+		EventTypeTimeWindowClaim,
+		EventTypeCoverageCheckpoint,
+		EventTypeRangeComplete,
+		EventTypeRangeFailed,
+		EventTypePoolGenesis,
+		EventTypePoolJoinRequest,
+		EventTypePoolMemberApproved,
+		EventTypePoolMemberRevoked:
+		return true
+	default:
+		return false
+	}
+}
+
 func BodySchema(eventType string) string {
 	eventType = strings.TrimSpace(eventType)
 	if eventType == "" {

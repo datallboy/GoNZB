@@ -159,6 +159,33 @@ func TestSyncOnceRejectsNonMemberRemoteEvent(t *testing.T) {
 	}
 }
 
+func TestSyncOnceRejectsUnsupportedRemoteEventType(t *testing.T) {
+	ctx := context.Background()
+	localIdentity, err := identity.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("local identity: %v", err)
+	}
+	remoteIdentity, event := testRemoteUnsupportedEvent(t)
+	server := testPeerServer(t, remoteIdentity, []events.SignedEvent{*event})
+	store := &fakeSyncStore{
+		peers: []pgindex.FederationPeerRecord{{ID: 1, PeerURL: server.URL}},
+	}
+
+	result, err := NewWithOptions(localIdentity, store, nil, Options{AllowInsecurePeerHTTP: true}).SyncOnce(ctx)
+	if err != nil {
+		t.Fatalf("sync once: %v", err)
+	}
+	if result.Accepted != 0 || result.Projected != 0 || result.Rejected != 1 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if len(store.events) != 0 || len(store.projections) != 0 {
+		t.Fatalf("unsupported event should not be stored or projected")
+	}
+	if len(store.rejected) != 1 || store.rejected[0] != "unsupported event_type" {
+		t.Fatalf("expected unsupported event_type rejection, got %+v", store.rejected)
+	}
+}
+
 func TestPushOnceSendsSignedEventBatchAndRecordsDelivery(t *testing.T) {
 	ctx := context.Background()
 	localIdentity, event := testRemoteReleaseCardEvent(t)
@@ -356,6 +383,33 @@ func testRemoteReleaseCardEventAt(t *testing.T, createdAt time.Time, expiresAt *
 	}
 	if !validation.OK {
 		t.Fatalf("event validation failed: %s", validation.Reason)
+	}
+	return nodeIdentity, event
+}
+
+func testRemoteUnsupportedEvent(t *testing.T) (*identity.Identity, *events.SignedEvent) {
+	t.Helper()
+	nodeIdentity, err := identity.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("remote identity: %v", err)
+	}
+	event, validation, err := events.Create(context.Background(), nodeIdentity, events.CreateOptions{
+		EventType:  "UnknownFutureEvent",
+		Sequence:   1,
+		CreatedAt:  time.Now().UTC(),
+		PoolIDs:    []string{"pool.local"},
+		Visibility: "pool",
+		BodySchema: "gonzbnet.UnknownFutureEvent/1.0",
+		Body: map[string]any{
+			"schema_version": "1.0",
+			"type":           "UnknownFutureEvent",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create unsupported event: %v", err)
+	}
+	if !validation.OK {
+		t.Fatalf("unsupported event validation failed: %s", validation.Reason)
 	}
 	return nodeIdentity, event
 }

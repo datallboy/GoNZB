@@ -65,6 +65,24 @@ func TestAuthorizeEventRejectsNonMemberAndRevokedMember(t *testing.T) {
 	}
 }
 
+func TestEventTypeSupportedRejectsUnknownTypes(t *testing.T) {
+	for _, eventType := range []string{
+		EventTypeReleaseCard,
+		EventTypeManifestAvailability,
+		EventTypeCoverageAssignment,
+		EventTypePoolMemberApproved,
+	} {
+		if !EventTypeSupported(eventType) {
+			t.Fatalf("expected %s to be supported", eventType)
+		}
+	}
+	for _, eventType := range []string{"", "UnknownFutureEvent", "PoolCheckpoint", "TrustAttestation"} {
+		if EventTypeSupported(eventType) {
+			t.Fatalf("expected %s to be rejected", eventType)
+		}
+	}
+}
+
 func testIdentity(t *testing.T) *identity.Identity {
 	t.Helper()
 	node, err := identity.LoadOrCreate(t.TempDir())
