@@ -193,7 +193,11 @@ func (s *Store) ProjectFederationPoolEvent(ctx context.Context, event *events.Si
 }
 
 func (s *Store) CanAcceptFederationEventForPools(ctx context.Context, authorNodeID string, poolIDs []string, eventType string) (PoolAuthorizationResult, error) {
-	for _, poolID := range normalizeStrings(poolIDs) {
+	normalizedPools := normalizeStrings(poolIDs)
+	if len(normalizedPools) == 0 {
+		return PoolAuthorizationResult{Allowed: false, Reason: "missing_pool"}, nil
+	}
+	for _, poolID := range normalizedPools {
 		policy, err := s.GetTrustPoolPolicy(ctx, poolID)
 		if err == sql.ErrNoRows {
 			continue

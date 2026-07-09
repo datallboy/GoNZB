@@ -407,6 +407,19 @@ func (s *Store) SearchFederatedReleaseCards(ctx context.Context, params Federate
 		"c.status = 'accepted'",
 		"(c.expires_at IS NULL OR c.expires_at > NOW())",
 		"s.trust_score > 0",
+		`NOT EXISTS (
+			SELECT 1
+			FROM tombstones t
+			WHERE t.active = TRUE
+			  AND t.severity IN ('hide', 'reject', 'local_only')
+			  AND (t.expires_at IS NULL OR t.expires_at > NOW())
+			  AND t.effective_at <= NOW()
+			  AND (
+			    (t.target_type = 'release' AND t.target_id = c.release_id)
+			    OR (t.target_type = 'manifest' AND t.target_id = COALESCE(c.manifest_id, ''))
+			  )
+			  AND (t.pool_id IS NULL OR t.pool_id = s.pool_id)
+		)`,
 		`EXISTS (
 			SELECT 1
 			FROM jsonb_array_elements_text($1::jsonb) pools(pool_id)

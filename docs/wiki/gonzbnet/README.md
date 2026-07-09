@@ -27,6 +27,9 @@ Current implementation state:
 - Phase 8 adds signed HealthAttestation events, optional local health
   publishing, health-based availability aggregation, reputation deltas, and
   search ranking that uses health-adjusted scores.
+- Phase 9 adds signed Tombstone moderation events, local-only blocklisting,
+  pool-threshold tombstone activation, search hiding, and manifest/NZB cache
+  invalidation.
 
 Maintained pages:
 
@@ -38,3 +41,4 @@ Maintained pages:
 - [Phase 6 Trust Pools](./phase-6-trust-pools.md)
 - [Phase 7 Resolution Manifests](./phase-7-resolution-manifests.md)
 - [Phase 8 Health Attestations](./phase-8-health-attestations.md)
+- [Phase 9 Moderation And Tombstones](./phase-9-moderation-tombstones.md)
