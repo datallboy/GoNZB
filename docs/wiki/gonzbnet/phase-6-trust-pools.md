@@ -41,6 +41,11 @@ Local admin API:
 
 The admin routes require `gonzbnet.admin.pools`.
 
+Public federation API:
+
+- `GET /gonzbnet/v1/pools/:pool_id/members` returns the local node-level
+  member projection for federation peer discovery.
+
 Out of scope:
 
 - Pool checkpoints and Merkle roots.

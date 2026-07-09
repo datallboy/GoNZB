@@ -7,6 +7,8 @@ authorization, or manifest exchange.
 Endpoint:
 
 - `POST /gonzbnet/v1/inbox` accepts a single signed event or an `EventBatch`.
+- `POST /gonzbnet/v1/events/batch` is a spec-compatible alias for the same
+  handler.
 - The request must include `Authorization: GoNZBNet ...`.
 - The response is an `InboxResponse` with separate `accepted`, `duplicate`,
   and `rejected` arrays.
