@@ -18,6 +18,7 @@ const (
 	EventTypeChecksumAttestation            = "ChecksumAttestation"
 	EventTypeManifestAvailability           = "ManifestAvailability"
 	EventTypeScannerCapacity                = "ScannerCapacity"
+	EventTypeScannerHeartbeat               = "ScannerHeartbeat"
 	EventTypeGroupObservation               = "GroupObservation"
 	EventTypeCoveragePlan                   = "CoveragePlan"
 	EventTypeCoverageAssignment             = "CoverageAssignment"
@@ -149,6 +150,7 @@ func NormalizePolicy(policy Policy, adminCount int) Policy {
 			EventTypeChecksumAttestation,
 			EventTypeManifestAvailability,
 			EventTypeScannerCapacity,
+			EventTypeScannerHeartbeat,
 			EventTypeGroupObservation,
 			EventTypeCoveragePlan,
 			EventTypeCoverageAssignment,

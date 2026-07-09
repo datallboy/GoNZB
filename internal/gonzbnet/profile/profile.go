@@ -222,6 +222,7 @@ func CapsFor(maxEventBytes, maxManifestBytes int) Caps {
 			"ChecksumAttestation",
 			"ManifestAvailability",
 			"ScannerCapacity",
+			"ScannerHeartbeat",
 			"GroupObservation",
 			"CoveragePlan",
 			"CoverageAssignment",

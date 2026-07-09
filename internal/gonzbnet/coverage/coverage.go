@@ -10,6 +10,7 @@ import (
 
 const (
 	TypeScannerCapacity    = "ScannerCapacity"
+	TypeScannerHeartbeat   = "ScannerHeartbeat"
 	TypeGroupObservation   = "GroupObservation"
 	TypeCoveragePlan       = "CoveragePlan"
 	TypeCoverageAssignment = "CoverageAssignment"
@@ -20,6 +21,7 @@ const (
 	TypeRangeFailed        = "RangeFailed"
 
 	ScannerCapacityBodySchema    = "gonzbnet.ScannerCapacity/1.0"
+	ScannerHeartbeatBodySchema   = "gonzbnet.ScannerHeartbeat/1.0"
 	GroupObservationBodySchema   = "gonzbnet.GroupObservation/1.0"
 	CoveragePlanBodySchema       = "gonzbnet.CoveragePlan/1.0"
 	CoverageAssignmentBodySchema = "gonzbnet.CoverageAssignment/1.0"
@@ -38,6 +40,17 @@ type ScannerCapacity struct {
 	Groups           []string `json:"groups"`
 	MaxRangesPerHour int      `json:"max_ranges_per_hour"`
 	MaxBytesPerHour  int64    `json:"max_bytes_per_hour"`
+}
+
+type ScannerHeartbeat struct {
+	SchemaVersion string   `json:"schema_version"`
+	Type          string   `json:"type"`
+	NodeID        string   `json:"node_id"`
+	PoolID        string   `json:"pool_id"`
+	PublishedAt   string   `json:"published_at"`
+	Groups        []string `json:"groups"`
+	ActiveClaims  []string `json:"active_claims"`
+	Status        string   `json:"status"`
 }
 
 type GroupObservation struct {
@@ -161,6 +174,12 @@ func Validate(eventType string, body any, now time.Time, futureTolerance time.Du
 			return fmt.Errorf("invalid scanner capacity body")
 		}
 		return validateScannerCapacity(item, now, futureTolerance)
+	case TypeScannerHeartbeat:
+		item, ok := body.(ScannerHeartbeat)
+		if !ok {
+			return fmt.Errorf("invalid scanner heartbeat body")
+		}
+		return validateScannerHeartbeat(item, now, futureTolerance)
 	case TypeGroupObservation:
 		item, ok := body.(GroupObservation)
 		if !ok {
@@ -223,6 +242,8 @@ func BodySchema(eventType string) string {
 	switch eventType {
 	case TypeScannerCapacity:
 		return ScannerCapacityBodySchema
+	case TypeScannerHeartbeat:
+		return ScannerHeartbeatBodySchema
 	case TypeGroupObservation:
 		return GroupObservationBodySchema
 	case TypeCoveragePlan:
@@ -247,6 +268,7 @@ func BodySchema(eventType string) string {
 func EventTypes() []string {
 	return []string{
 		TypeScannerCapacity,
+		TypeScannerHeartbeat,
 		TypeGroupObservation,
 		TypeCoveragePlan,
 		TypeCoverageAssignment,
@@ -272,6 +294,28 @@ func validateScannerCapacity(in ScannerCapacity, now time.Time, tolerance time.D
 		return fmt.Errorf("capacity values must not be negative")
 	}
 	return nil
+}
+
+func validateScannerHeartbeat(in ScannerHeartbeat, now time.Time, tolerance time.Duration) error {
+	if err := base(in.SchemaVersion, in.Type, TypeScannerHeartbeat); err != nil {
+		return err
+	}
+	if strings.TrimSpace(in.NodeID) == "" || strings.TrimSpace(in.PoolID) == "" {
+		return fmt.Errorf("node_id and pool_id are required")
+	}
+	if err := validateTimestamp("published_at", in.PublishedAt, now, tolerance); err != nil {
+		return err
+	}
+	status := strings.TrimSpace(in.Status)
+	if status == "" {
+		return fmt.Errorf("status is required")
+	}
+	switch status {
+	case "online", "degraded", "paused", "offline":
+		return nil
+	default:
+		return fmt.Errorf("unsupported scanner heartbeat status")
+	}
 }
 
 func validateGroupObservation(in GroupObservation, now time.Time, tolerance time.Duration) error {

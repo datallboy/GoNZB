@@ -41,6 +41,10 @@ type gonzbnetAdminStore interface {
 	ListCoverageDashboard(ctx context.Context, poolID string) (pgindex.CoverageDashboard, error)
 	SuggestCoverageWork(ctx context.Context, params pgindex.CoverageWorkSuggestionParams) ([]pgindex.CoverageWorkSuggestion, error)
 	BuildCoverageSchedulerPlan(ctx context.Context, params pgindex.CoverageWorkSuggestionParams) (pgindex.CoverageSchedulerPlan, error)
+	ListFederationNodeCapabilities(ctx context.Context) ([]pgindex.NodeCapabilityView, error)
+	ListCoverageGroupCatalog(ctx context.Context, poolID string) ([]pgindex.CoverageGroupCatalogItem, error)
+	ListValidationGaps(ctx context.Context, poolID string, limit int) ([]pgindex.ValidationGap, error)
+	MaterializeCoverageStaleClaimPenalties(ctx context.Context, poolID string) (int64, error)
 }
 
 type trustPoolRequest struct {
@@ -156,6 +160,7 @@ func (ctrl *GoNZBNetAdminController) UpsertPool(c *echo.Context) error {
 			pools.EventTypeChecksumAttestation,
 			pools.EventTypeManifestAvailability,
 			pools.EventTypeScannerCapacity,
+			pools.EventTypeScannerHeartbeat,
 			pools.EventTypeGroupObservation,
 			pools.EventTypeCoveragePlan,
 			pools.EventTypeCoverageAssignment,
@@ -369,6 +374,58 @@ func (ctrl *GoNZBNetAdminController) CoverageDashboard(c *echo.Context) error {
 		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}
 	return c.JSON(http.StatusOK, dashboard)
+}
+
+func (ctrl *GoNZBNetAdminController) ListNodeCapabilities(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	items, err := store.ListFederationNodeCapabilities(c.Request().Context())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
+func (ctrl *GoNZBNetAdminController) CoverageGroupCatalog(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	poolID := firstNonBlank(queryParamTrimmed(c, "pool_id"), ctrl.appCtx.Config.GoNZBNet.LocalPoolID, "pool.local")
+	items, err := store.ListCoverageGroupCatalog(c.Request().Context(), poolID)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
+func (ctrl *GoNZBNetAdminController) ValidationGaps(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	poolID := firstNonBlank(queryParamTrimmed(c, "pool_id"), ctrl.appCtx.Config.GoNZBNet.LocalPoolID, "pool.local")
+	limit := parseIntDefault(queryParamTrimmed(c, "limit"), 100)
+	items, err := store.ListValidationGaps(c.Request().Context(), poolID, limit)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
+func (ctrl *GoNZBNetAdminController) MaterializeStaleClaimPenalties(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	poolID := firstNonBlank(queryParamTrimmed(c, "pool_id"), ctrl.appCtx.Config.GoNZBNet.LocalPoolID, "pool.local")
+	count, err := store.MaterializeCoverageStaleClaimPenalties(c.Request().Context(), poolID)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"status": "ok", "created": count})
 }
 
 func (ctrl *GoNZBNetAdminController) CoverageSuggestions(c *echo.Context) error {
