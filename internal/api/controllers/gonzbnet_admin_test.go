@@ -354,6 +354,69 @@ func TestGoNZBNetAdminApprovePoolMemberSignsAppendsAndProjectsEvent(t *testing.T
 	}
 }
 
+func TestGoNZBNetAdminCreatePoolMemberRevocationSignsAppendsAndProjectsEvent(t *testing.T) {
+	cfg := testGoNZBNetAdminConfig(t)
+	store := &fakeGoNZBNetAdminStore{
+		policy: pools.PoolPolicy{
+			PoolID:              "pool.remote",
+			ModerationThreshold: 1,
+		},
+	}
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/gonzbnet/pools/pool.remote/members/node_candidate/revocations", bytes.NewReader([]byte(`{"reason":"compromised_key","effective_at":"2026-07-09T18:00:00Z"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.SetPathValues(echo.PathValues{
+		{Name: "pool_id", Value: "pool.remote"},
+		{Name: "node_id", Value: "node_candidate"},
+	})
+	ctrl := &GoNZBNetAdminController{appCtx: &app.Context{Config: cfg}, storeOverride: store}
+
+	if err := ctrl.CreatePoolMemberRevocation(c); err != nil {
+		t.Fatalf("CreatePoolMemberRevocation returned error: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if store.appended == nil {
+		t.Fatal("expected signed revocation event to be appended")
+	}
+	if store.projected == nil || store.projected.EventID != store.appended.EventID {
+		t.Fatalf("expected appended event to be projected, appended=%v projected=%v", store.appended != nil, store.projected != nil)
+	}
+	validation, err := events.Verify(store.appended)
+	if err != nil {
+		t.Fatalf("verify event: %v", err)
+	}
+	if validation == nil || !validation.OK {
+		t.Fatalf("expected event signature to verify, got %+v", validation)
+	}
+	if store.appended.EventType != pools.EventTypePoolMemberRevoked {
+		t.Fatalf("expected PoolMemberRevoked event, got %q", store.appended.EventType)
+	}
+	var body pools.MemberRevoked
+	if err := json.Unmarshal(store.appended.Body, &body); err != nil {
+		t.Fatalf("decode event body: %v", err)
+	}
+	if body.PoolID != "pool.remote" || body.SubjectNodeID != "node_candidate" || body.Reason != "compromised_key" {
+		t.Fatalf("unexpected revocation body: %+v", body)
+	}
+	if body.EffectiveAt != "2026-07-09T18:00:00Z" || body.ApprovalsRequired != 1 || len(body.Approvals) != 1 {
+		t.Fatalf("expected one required local revocation approval, got %+v", body)
+	}
+	if err := pools.ValidateMemberRevocation(body, map[string]ed25519.PublicKey{store.nodeID: store.publicKey}); err != nil {
+		t.Fatalf("expected local revocation approval to validate: %v", err)
+	}
+	var response poolMemberRevocationResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.EventID != store.appended.EventID || response.SubjectNodeID != "node_candidate" || response.ApprovalCount != 1 {
+		t.Fatalf("unexpected response: %+v", response)
+	}
+}
+
 const encryptedKeyEnvelopeMarker = "gonzbnet.ed25519.private.v1"
 
 func testGoNZBNetAdminConfig(t *testing.T) *config.Config {
@@ -470,6 +533,14 @@ func (s *fakeGoNZBNetAdminStore) ValidateFederationPoolControlEvent(_ context.Co
 			return err
 		}
 		if err := pools.ValidateMemberApproval(body, map[string]ed25519.PublicKey{s.nodeID: s.publicKey}); err != nil {
+			return err
+		}
+	case pools.EventTypePoolMemberRevoked:
+		var body pools.MemberRevoked
+		if err := json.Unmarshal(event.Body, &body); err != nil {
+			return err
+		}
+		if err := pools.ValidateMemberRevocation(body, map[string]ed25519.PublicKey{s.nodeID: s.publicKey}); err != nil {
 			return err
 		}
 	default:

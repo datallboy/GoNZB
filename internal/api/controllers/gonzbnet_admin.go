@@ -121,6 +121,24 @@ type poolMemberApprovalResponse struct {
 	ApprovalCount     int    `json:"approval_count"`
 }
 
+type poolMemberRevocationRequest struct {
+	Reason            string           `json:"reason"`
+	EffectiveAt       string           `json:"effective_at"`
+	ApprovalsRequired int              `json:"approvals_required"`
+	Approvals         []pools.Approval `json:"approvals"`
+}
+
+type poolMemberRevocationResponse struct {
+	Status            string `json:"status"`
+	EventID           string `json:"event_id"`
+	PoolID            string `json:"pool_id"`
+	SubjectNodeID     string `json:"subject_node_id"`
+	Reason            string `json:"reason"`
+	EffectiveAt       string `json:"effective_at"`
+	ApprovalsRequired int    `json:"approvals_required"`
+	ApprovalCount     int    `json:"approval_count"`
+}
+
 type peerRequest struct {
 	PeerURL string `json:"peer_url"`
 }
@@ -686,6 +704,111 @@ func (ctrl *GoNZBNetAdminController) ApprovePoolMember(c *echo.Context) error {
 		PoolID:            poolID,
 		SubjectNodeID:     subjectNodeID,
 		Role:              role,
+		ApprovalsRequired: required,
+		ApprovalCount:     len(body.Approvals),
+	})
+}
+
+func (ctrl *GoNZBNetAdminController) CreatePoolMemberRevocation(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	var req poolMemberRevocationRequest
+	if err := decodeJSONBody(c, &req); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	poolID := pathParamTrimmed(c, "pool_id")
+	subjectNodeID := pathParamTrimmed(c, "node_id")
+	if poolID == "" || subjectNodeID == "" {
+		return jsonError(c, http.StatusBadRequest, "pool_id and node_id are required")
+	}
+	reason := strings.TrimSpace(req.Reason)
+	if reason == "" {
+		return jsonError(c, http.StatusBadRequest, "reason is required")
+	}
+	policy, err := store.GetTrustPoolPolicy(c.Request().Context(), poolID)
+	if err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	required := req.ApprovalsRequired
+	if required < policy.ModerationThreshold {
+		required = policy.ModerationThreshold
+	}
+	if required <= 0 {
+		required = 1
+	}
+	nodeIdentity, err := ctrl.localIdentity()
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	nodeID, err := nodeIdentity.NodeID(c.Request().Context())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	publicKey, err := nodeIdentity.PublicKey(c.Request().Context())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if err := store.UpsertFederationNodeIdentity(c.Request().Context(), nodeID, publicKey); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	sequence, previousEventID, err := store.NextFederationEventSequence(c.Request().Context(), nodeID)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	now := time.Now().UTC()
+	effectiveAt := strings.TrimSpace(req.EffectiveAt)
+	if effectiveAt == "" {
+		effectiveAt = now.Format(time.RFC3339)
+	}
+	body := pools.MemberRevoked{
+		SchemaVersion:     "1.0",
+		Type:              pools.EventTypePoolMemberRevoked,
+		PoolID:            poolID,
+		SubjectNodeID:     subjectNodeID,
+		Reason:            reason,
+		EffectiveAt:       effectiveAt,
+		ApprovalsRequired: required,
+		Approvals:         append([]pools.Approval(nil), req.Approvals...),
+	}
+	approval, err := signPoolMemberRevocation(c.Request().Context(), nodeIdentity, body)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	body.Approvals = append(body.Approvals, approval)
+	event, validation, err := events.Create(c.Request().Context(), nodeIdentity, events.CreateOptions{
+		EventType:       pools.EventTypePoolMemberRevoked,
+		Sequence:        sequence,
+		PreviousEventID: previousEventID,
+		CreatedAt:       now,
+		PoolIDs:         []string{poolID},
+		Visibility:      "pool",
+		BodySchema:      pools.BodySchema(pools.EventTypePoolMemberRevoked),
+		Body:            body,
+	})
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if validation == nil || !validation.OK {
+		return jsonError(c, http.StatusInternalServerError, "signed pool member revocation did not verify")
+	}
+	if err := store.ValidateFederationPoolControlEvent(c.Request().Context(), event); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	if err := store.AppendVerifiedFederationEvent(c.Request().Context(), event, validation); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if err := store.ProjectFederationPoolEvent(c.Request().Context(), event); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, poolMemberRevocationResponse{
+		Status:            "ok",
+		EventID:           event.EventID,
+		PoolID:            poolID,
+		SubjectNodeID:     subjectNodeID,
+		Reason:            reason,
+		EffectiveAt:       effectiveAt,
 		ApprovalsRequired: required,
 		ApprovalCount:     len(body.Approvals),
 	})
@@ -1519,6 +1642,33 @@ func signPoolMemberApproval(ctx context.Context, signer events.Identity, body po
 		NodeID:     nodeID,
 		ApprovedAt: approvedAt,
 		Signature:  canonical.Base64URL(signature),
+	}, nil
+}
+
+func signPoolMemberRevocation(ctx context.Context, signer events.Identity, body pools.MemberRevoked) (pools.Approval, error) {
+	if signer == nil {
+		return pools.Approval{}, fmt.Errorf("identity is required")
+	}
+	nodeID, err := signer.NodeID(ctx)
+	if err != nil {
+		return pools.Approval{}, err
+	}
+	payload, err := canonical.Marshal(map[string]any{
+		"pool_id":         body.PoolID,
+		"subject_node_id": body.SubjectNodeID,
+		"reason":          body.Reason,
+		"effective_at":    body.EffectiveAt,
+	})
+	if err != nil {
+		return pools.Approval{}, fmt.Errorf("canonical revocation: %w", err)
+	}
+	signature, err := signer.Sign(ctx, payload)
+	if err != nil {
+		return pools.Approval{}, err
+	}
+	return pools.Approval{
+		NodeID:    nodeID,
+		Signature: canonical.Base64URL(signature),
 	}, nil
 }
 
