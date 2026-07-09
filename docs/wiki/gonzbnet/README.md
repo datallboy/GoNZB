@@ -32,6 +32,8 @@ Current implementation state:
   invalidation.
 - Phase 10 adds optional signed WebSocket gossip, TTL/fanout limits, delivery
   dedupe, peer exchange controls, and connection backoff.
+- Phase 11 adds relay-ready controls inside the modular monolith: public
+  federation HTTP isolation and relay capability advertising.
 
 Maintained pages:
 
@@ -45,3 +47,4 @@ Maintained pages:
 - [Phase 8 Health Attestations](./phase-8-health-attestations.md)
 - [Phase 9 Moderation And Tombstones](./phase-9-moderation-tombstones.md)
 - [Phase 10 WebSocket Gossip](./phase-10-websocket-gossip.md)
+- [Phase 11 Relay Mode Controls](./phase-11-relay-mode.md)
