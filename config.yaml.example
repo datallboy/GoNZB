@@ -50,6 +50,12 @@ gonzbnet:
   push_sync_enabled: false
   push_sync_interval_minutes: 10
   push_sync_batch_size: 100
+  websocket_gossip_enabled: false
+  gossip_interval_minutes: 1
+  gossip_batch_size: 100
+  gossip_ttl: 4
+  gossip_fanout: 4
+  peer_exchange_enabled: false
   max_event_bytes: 262144
   max_manifest_bytes: 10485760
   max_batch_events: 100

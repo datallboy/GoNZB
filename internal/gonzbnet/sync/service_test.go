@@ -107,6 +107,26 @@ func TestPushOnceSendsSignedEventBatchAndRecordsDelivery(t *testing.T) {
 	}
 }
 
+func TestPeerBackoffSkipsRecentFailures(t *testing.T) {
+	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
+	peer := pgindex.FederationPeerRecord{
+		Status:       "error",
+		FailureCount: 3,
+		UpdatedAt:    now.Add(-2 * time.Minute),
+	}
+	if peerBackoffReady(peer, now) {
+		t.Fatalf("expected recent failed peer to be backed off")
+	}
+	peer.UpdatedAt = now.Add(-3 * time.Minute)
+	if !peerBackoffReady(peer, now) {
+		t.Fatalf("expected peer to be ready after backoff")
+	}
+	peer.Status = "connected"
+	if !peerBackoffReady(peer, now) {
+		t.Fatalf("expected connected peer to be ready")
+	}
+}
+
 func testPeerServer(t *testing.T, nodeIdentity *identity.Identity, outbox []events.SignedEvent) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()

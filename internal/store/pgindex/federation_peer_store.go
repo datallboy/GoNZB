@@ -23,6 +23,7 @@ type FederationPeerRecord struct {
 	LastEventID  string
 	FailureCount int
 	LastError    string
+	UpdatedAt    time.Time
 }
 
 type FederationOutboxParams struct {
@@ -81,7 +82,8 @@ func (s *Store) ListEnabledFederationPeers(ctx context.Context) ([]FederationPee
 			COALESCE(c.cursor, ''),
 			COALESCE(c.last_event_id, ''),
 			p.failure_count,
-			COALESCE(p.last_error, '')
+			COALESCE(p.last_error, ''),
+			p.updated_at
 		FROM federation_peers p
 		LEFT JOIN federation_peer_cursors c
 		  ON c.peer_id = p.id
@@ -108,6 +110,7 @@ func (s *Store) ListEnabledFederationPeers(ctx context.Context) ([]FederationPee
 			&item.LastEventID,
 			&item.FailureCount,
 			&item.LastError,
+			&item.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan federation peer: %w", err)
 		}
@@ -188,7 +191,7 @@ func (s *Store) ListUndeliveredFederationEvents(ctx context.Context, peerID int6
 		  ON d.peer_id = $1
 		 AND d.event_id = e.event_id
 		WHERE e.validation_status = 'accepted'
-		  AND e.event_type = 'ReleaseCard'
+		  AND e.visibility <> 'local'
 		  AND (
 		    d.event_id IS NULL
 		    OR (

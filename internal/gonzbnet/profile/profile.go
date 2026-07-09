@@ -91,6 +91,8 @@ type Config struct {
 	HTTPBasePath     string
 	PrivateNetwork   bool
 	LiveQueryEnabled bool
+	WebSocketGossip  bool
+	PeerExchange     bool
 	MaxEventBytes    int
 	MaxManifestBytes int
 	MaxBatchEvents   int
@@ -145,6 +147,7 @@ func NodeProfileFor(ctx context.Context, identity Identity, cfg Config, now time
 			Outbox:    baseURL + "/outbox",
 			Events:    baseURL + "/events/{event_id}",
 			Manifests: baseURL + "/manifests/{manifest_id}",
+			WS:        baseURL + "/ws",
 		},
 		Capabilities: Capabilities{
 			ReleaseCards:        true,
@@ -152,8 +155,8 @@ func NodeProfileFor(ctx context.Context, identity Identity, cfg Config, now time
 			HealthAttestations:  true,
 			TrustPools:          true,
 			PoolWitness:         false,
-			WebSocketGossip:     false,
-			PeerExchange:        false,
+			WebSocketGossip:     cfg.WebSocketGossip,
+			PeerExchange:        cfg.PeerExchange,
 			RelayMode:           false,
 		},
 		Limits: Limits{
