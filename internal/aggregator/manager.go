@@ -10,8 +10,11 @@ import (
 	"time"
 
 	"github.com/datallboy/gonzb/internal/app"
+	"github.com/datallboy/gonzb/internal/auth"
 	"github.com/datallboy/gonzb/internal/domain"
 )
+
+const gonzbnetSourceName = "gonzbnet"
 
 type Manager struct {
 	mu                       sync.RWMutex
@@ -83,6 +86,9 @@ func (m *Manager) SearchAllWithRequest(ctx context.Context, req app.SearchReques
 			m.logger.Warn("Failed to search aggregator_release_cache: %v", err)
 		} else {
 			for _, rel := range cacheResults {
+				if isGoNZBNetRelease(rel) && !principalHas(ctx, auth.PermissionGoNZBNetSearch) {
+					continue
+				}
 				addOrMerge(rel, false)
 			}
 		}
@@ -162,6 +168,9 @@ func (m *Manager) GetNZB(ctx context.Context, rel *domain.Release) (io.ReadClose
 	if rel == nil {
 		return nil, fmt.Errorf("release is required")
 	}
+	if isGoNZBNetRelease(rel) && !principalHas(ctx, auth.PermissionGoNZBNetGet) {
+		return nil, fmt.Errorf("gonzbnet get permission is required")
+	}
 
 	// Check the file store
 	if m.cacheEnabled && m.store.Exists(rel.ID) {
@@ -223,6 +232,15 @@ func (m *Manager) GetNZB(ctx context.Context, rel *domain.Release) (io.ReadClose
 	}
 
 	return m.store.GetNZBReader(rel.ID)
+}
+
+func isGoNZBNetRelease(rel *domain.Release) bool {
+	return rel != nil && strings.TrimSpace(rel.Source) == gonzbnetSourceName
+}
+
+func principalHas(ctx context.Context, permission string) bool {
+	principal, ok := auth.PrincipalFromContext(ctx)
+	return ok && principal != nil && principal.Has(permission)
 }
 
 // GetResultByID resolves a release by id.

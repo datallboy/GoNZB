@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	aggregatorpkg "github.com/datallboy/gonzb/internal/aggregator"
+	gonzbnetsource "github.com/datallboy/gonzb/internal/aggregator/sources/gonzbnet"
 	"github.com/datallboy/gonzb/internal/aggregator/sources/localblob"
 	"github.com/datallboy/gonzb/internal/aggregator/sources/newznab"
 	"github.com/datallboy/gonzb/internal/aggregator/sources/usenetindex"
@@ -19,6 +20,10 @@ type aggregatorCacheStore interface {
 	UpsertAggregatorReleaseCache(ctx context.Context, releases []*domain.Release) error
 	SearchAggregatorReleaseCache(ctx context.Context, query string, limit int) ([]*domain.Release, error)
 	GetAggregatorReleaseCacheByID(ctx context.Context, id string) (*domain.Release, error)
+}
+
+type gonzbnetAggregatorStore interface {
+	gonzbnetsource.Store
 }
 
 func LoadAndApplyEffectiveConfig(ctx context.Context, appCtx *app.Context) error {
@@ -97,6 +102,12 @@ func buildAggregator(appCtx *app.Context, effective *config.Config) app.IndexerA
 
 	if effective.Aggregator.Sources.UsenetIndexer.Enabled && appCtx.PGIndexStore != nil {
 		manager.AddSource(usenetindex.New(appCtx.PGIndexStore, appCtx.SettingsAdmin, appCtx.IndexerArchiveStore))
+	}
+
+	if effective.Aggregator.Sources.GoNZBNet.Enabled && appCtx.PGIndexStore != nil {
+		if store, ok := appCtx.PGIndexStore.(gonzbnetAggregatorStore); ok {
+			manager.AddSource(gonzbnetsource.New(store))
+		}
 	}
 
 	for _, idxCfg := range effective.Indexers {

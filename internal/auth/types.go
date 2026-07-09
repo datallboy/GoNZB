@@ -16,6 +16,11 @@ const (
 	PermissionAggregatorReleasesRead     = "aggregator.releases.read"
 	PermissionAggregatorRuntimeRead      = "aggregator.runtime.read"
 	PermissionAggregatorRuntimeConfigure = "aggregator.runtime.configure"
+	PermissionGoNZBNetSearch             = "gonzbnet.search"
+	PermissionGoNZBNetGet                = "gonzbnet.get"
+	PermissionGoNZBNetResolveManifest    = "gonzbnet.resolve_manifest"
+	PermissionGoNZBNetAdminRead          = "gonzbnet.admin.read"
+	PermissionGoNZBNetAdminWrite         = "gonzbnet.admin.write"
 	PermissionDownloaderRuntimeRead      = "downloader.runtime.read"
 	PermissionDownloaderRuntimeConfigure = "downloader.runtime.configure"
 	PermissionAuthUsersRead              = "auth.users.read"
@@ -58,6 +63,7 @@ type Token struct {
 type Principal struct {
 	UserID      string
 	Username    string
+	RoleIDs     []string
 	Permissions map[string]struct{}
 }
 
@@ -113,6 +119,11 @@ func DefaultRoles() []Role {
 				PermissionAggregatorReleasesRead,
 				PermissionAggregatorRuntimeRead,
 				PermissionAggregatorRuntimeConfigure,
+				PermissionGoNZBNetSearch,
+				PermissionGoNZBNetGet,
+				PermissionGoNZBNetResolveManifest,
+				PermissionGoNZBNetAdminRead,
+				PermissionGoNZBNetAdminWrite,
 				PermissionDownloaderRuntimeRead,
 				PermissionDownloaderRuntimeConfigure,
 				PermissionAuthUsersRead,

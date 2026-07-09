@@ -59,7 +59,7 @@ gonzbnet:
 # The legacy YAML keys below are intentionally omitted from the normal bootstrap example:
 # - servers
 # - indexers
-# - aggregator.sources
+# - aggregator.sources, including optional GoNZBNet federated cache search
 # - download paths/options
 # - indexing stage schedules/newsgroups/enrichment settings
 # - release public-ready policy thresholds and release_generate_nzb/archive/purge stage controls
