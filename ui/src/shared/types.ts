@@ -1871,3 +1871,14 @@ export type GoNZBNetConfigIssue = {
   field: string
   message: string
 }
+
+export type GoNZBNetManifestResolveRequest = {
+  release_id: string
+}
+
+export type GoNZBNetManifestResolveResponse = {
+  status: string
+  release_id: string
+  nzb_bytes: number
+  resolved: boolean
+}

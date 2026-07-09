@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/datallboy/gonzb/internal/gonzbnet/coverage"
 	"github.com/datallboy/gonzb/internal/gonzbnet/events"
 	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
+	"github.com/datallboy/gonzb/internal/gonzbnet/manifestresolver"
 	"github.com/datallboy/gonzb/internal/gonzbnet/moderation"
 	"github.com/datallboy/gonzb/internal/gonzbnet/pools"
 	"github.com/datallboy/gonzb/internal/gonzbnet/profile"
@@ -83,6 +85,17 @@ type poolMemberRequest struct {
 
 type peerRequest struct {
 	PeerURL string `json:"peer_url"`
+}
+
+type manifestResolveRequest struct {
+	ReleaseID string `json:"release_id"`
+}
+
+type manifestResolveResponse struct {
+	Status    string `json:"status"`
+	ReleaseID string `json:"release_id"`
+	NZBBytes  int    `json:"nzb_bytes"`
+	Resolved  bool   `json:"resolved"`
 }
 
 type gonzbnetAdminNodeProfileResponse struct {
@@ -267,6 +280,36 @@ func (ctrl *GoNZBNetAdminController) ConfigValidation(c *echo.Context) error {
 		Valid:   valid,
 		Summary: ctrl.adminConfigSummary(),
 		Issues:  issues,
+	})
+}
+
+func (ctrl *GoNZBNetAdminController) ResolveManifest(c *echo.Context) error {
+	var req manifestResolveRequest
+	if err := decodeJSONBody(c, &req); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	releaseID := strings.TrimSpace(req.ReleaseID)
+	if releaseID == "" {
+		return jsonError(c, http.StatusBadRequest, "release_id is required")
+	}
+	resolver, err := ctrl.manifestResolver()
+	if err != nil {
+		return jsonError(c, http.StatusServiceUnavailable, err.Error())
+	}
+	reader, err := resolver.ResolveNZB(c.Request().Context(), releaseID)
+	if err != nil {
+		return jsonError(c, http.StatusBadGateway, err.Error())
+	}
+	defer reader.Close()
+	payload, err := io.ReadAll(io.LimitReader(reader, int64(ctrl.appCtx.Config.GoNZBNet.MaxManifestBytes)))
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, manifestResolveResponse{
+		Status:    "ok",
+		ReleaseID: releaseID,
+		NZBBytes:  len(payload),
+		Resolved:  len(payload) > 0,
 	})
 }
 
@@ -1031,6 +1074,21 @@ func (ctrl *GoNZBNetAdminController) syncService() (*gonzbnetsync.Service, error
 		return nil, err
 	}
 	return gonzbnetsync.New(nodeIdentity, syncStore, ctrl.appCtx.Logger), nil
+}
+
+func (ctrl *GoNZBNetAdminController) manifestResolver() (*manifestresolver.Resolver, error) {
+	if ctrl == nil || ctrl.appCtx == nil || ctrl.appCtx.PGIndexStore == nil {
+		return nil, fmt.Errorf("gonzbnet manifest resolver store is unavailable")
+	}
+	resolverStore, ok := ctrl.appCtx.PGIndexStore.(manifestresolver.Store)
+	if !ok {
+		return nil, fmt.Errorf("gonzbnet manifest resolver store is unavailable")
+	}
+	nodeIdentity, err := identity.LoadOrCreate(ctrl.appCtx.Config.GoNZBNet.KeysDir)
+	if err != nil {
+		return nil, err
+	}
+	return manifestresolver.New(nodeIdentity, resolverStore), nil
 }
 
 func coverageID(prefix string, now time.Time) string {
