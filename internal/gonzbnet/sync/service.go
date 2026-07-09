@@ -18,6 +18,7 @@ import (
 	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
 	"github.com/datallboy/gonzb/internal/gonzbnet/profile"
 	"github.com/datallboy/gonzb/internal/gonzbnet/releasecard"
+	"github.com/datallboy/gonzb/internal/gonzbnet/requestauth"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
 )
 
@@ -35,6 +36,8 @@ type Store interface {
 	UpsertFederatedReleaseCardProjection(ctx context.Context, projection releasecard.Projection) error
 	MarkFederationPeerSyncSuccess(ctx context.Context, peerID int64, nodeID, cursor, lastEventID string) error
 	MarkFederationPeerSyncFailure(ctx context.Context, peerID int64, errText string) error
+	ListUndeliveredFederationEvents(ctx context.Context, peerID int64, limit int) ([]*events.SignedEvent, error)
+	RecordFederationPeerDelivery(ctx context.Context, result pgindex.FederationDeliveryResult) error
 }
 
 type Logger interface {
@@ -64,6 +67,28 @@ type OutboxPage struct {
 	Events        []events.SignedEvent `json:"events"`
 	NextCursor    string               `json:"next_cursor"`
 	HasMore       bool                 `json:"has_more"`
+}
+
+type EventBatch struct {
+	SchemaVersion string                `json:"schema_version"`
+	Type          string                `json:"type"`
+	Events        []*events.SignedEvent `json:"events"`
+}
+
+type InboxEventResult struct {
+	EventID string `json:"event_id"`
+	Status  string `json:"status"`
+	Code    string `json:"code,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
+type InboxResponse struct {
+	SchemaVersion string             `json:"schema_version"`
+	Type          string             `json:"type"`
+	Accepted      []InboxEventResult `json:"accepted"`
+	Duplicate     []InboxEventResult `json:"duplicate"`
+	Rejected      []InboxEventResult `json:"rejected"`
+	Cursor        string             `json:"cursor,omitempty"`
 }
 
 func New(identity Identity, store Store, logger Logger) *Service {
@@ -120,6 +145,32 @@ func (s *Service) SyncOnce(ctx context.Context) (Result, error) {
 	return result, nil
 }
 
+func (s *Service) PushOnce(ctx context.Context, limit int) (Result, error) {
+	var result Result
+	if s == nil || s.identity == nil || s.store == nil {
+		return result, fmt.Errorf("sync dependencies are required")
+	}
+	peers, err := s.store.ListEnabledFederationPeers(ctx)
+	if err != nil {
+		return result, err
+	}
+	result.Peers = len(peers)
+	for _, peer := range peers {
+		peerResult, err := s.pushPeer(ctx, peer, limit)
+		if err != nil {
+			_ = s.store.MarkFederationPeerSyncFailure(ctx, peer.ID, err.Error())
+			if s.logger != nil {
+				s.logger.Warn("gonzbnet peer push failed peer=%s: %v", peer.PeerURL, err)
+			}
+			continue
+		}
+		result.Accepted += peerResult.Accepted
+		result.Duplicate += peerResult.Duplicate
+		result.Rejected += peerResult.Rejected
+	}
+	return result, nil
+}
+
 func (s *Service) Run(ctx context.Context, interval time.Duration) error {
 	if interval <= 0 {
 		_, err := s.SyncOnce(ctx)
@@ -130,6 +181,25 @@ func (s *Service) Run(ctx context.Context, interval time.Duration) error {
 	for {
 		if _, err := s.SyncOnce(ctx); err != nil && s.logger != nil {
 			s.logger.Warn("gonzbnet pull sync pass failed: %v", err)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func (s *Service) RunPush(ctx context.Context, interval time.Duration, limit int) error {
+	if interval <= 0 {
+		_, err := s.PushOnce(ctx, limit)
+		return err
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		if _, err := s.PushOnce(ctx, limit); err != nil && s.logger != nil {
+			s.logger.Warn("gonzbnet push sync pass failed: %v", err)
 		}
 		select {
 		case <-ctx.Done():
@@ -239,6 +309,135 @@ func (s *Service) syncPeer(ctx context.Context, peer pgindex.FederationPeerRecor
 		return result, err
 	}
 	return result, nil
+}
+
+func (s *Service) pushPeer(ctx context.Context, peer pgindex.FederationPeerRecord, limit int) (Result, error) {
+	var result Result
+	if limit <= 0 || limit > 100 {
+		limit = 100
+	}
+	wellKnown, err := s.fetchWellKnown(ctx, peer.PeerURL)
+	if err != nil {
+		return result, err
+	}
+	nodeProfile, err := s.fetchNodeProfile(ctx, wellKnown.BaseURL)
+	if err != nil {
+		return result, err
+	}
+	if err := s.validatePeerIdentity(wellKnown, nodeProfile); err != nil {
+		return result, err
+	}
+	publicKey, err := canonical.DecodeBase64URL(nodeProfile.PublicKey)
+	if err != nil {
+		return result, fmt.Errorf("decode peer public key: %w", err)
+	}
+	profileJSON, _ := json.Marshal(nodeProfile)
+	capabilitiesJSON, _ := json.Marshal(nodeProfile.Capabilities)
+	if err := s.store.UpsertFederationNode(ctx, pgindex.FederationNodeRecord{
+		NodeID:          nodeProfile.NodeID,
+		PublicKey:       ed25519.PublicKey(publicKey),
+		Alias:           nodeProfile.Alias,
+		Software:        nodeProfile.Software,
+		SoftwareVersion: nodeProfile.SoftwareVersion,
+		BaseURL:         wellKnown.BaseURL,
+		Capabilities:    capabilitiesJSON,
+		ProfileJSON:     profileJSON,
+		Status:          "connected",
+	}); err != nil {
+		return result, err
+	}
+	items, err := s.store.ListUndeliveredFederationEvents(ctx, peer.ID, limit)
+	if err != nil {
+		return result, err
+	}
+	if len(items) == 0 {
+		return result, nil
+	}
+
+	response, err := s.pushEvents(ctx, wellKnown.BaseURL, items)
+	if err != nil {
+		for _, event := range items {
+			_ = s.store.RecordFederationPeerDelivery(ctx, pgindex.FederationDeliveryResult{
+				PeerID:  peer.ID,
+				EventID: event.EventID,
+				Status:  "error",
+				Error:   err.Error(),
+			})
+		}
+		return result, err
+	}
+	for _, item := range response.Accepted {
+		result.Accepted++
+		if err := s.store.RecordFederationPeerDelivery(ctx, pgindex.FederationDeliveryResult{
+			PeerID:  peer.ID,
+			EventID: item.EventID,
+			Status:  "accepted",
+		}); err != nil {
+			return result, err
+		}
+	}
+	for _, item := range response.Duplicate {
+		result.Duplicate++
+		if err := s.store.RecordFederationPeerDelivery(ctx, pgindex.FederationDeliveryResult{
+			PeerID:  peer.ID,
+			EventID: item.EventID,
+			Status:  "duplicate",
+		}); err != nil {
+			return result, err
+		}
+	}
+	for _, item := range response.Rejected {
+		result.Rejected++
+		if err := s.store.RecordFederationPeerDelivery(ctx, pgindex.FederationDeliveryResult{
+			PeerID:  peer.ID,
+			EventID: item.EventID,
+			Status:  "rejected",
+			Error:   firstNonBlank(item.Message, item.Code),
+		}); err != nil {
+			return result, err
+		}
+	}
+	return result, nil
+}
+
+func (s *Service) pushEvents(ctx context.Context, baseURL string, items []*events.SignedEvent) (InboxResponse, error) {
+	var out InboxResponse
+	payload, err := json.Marshal(EventBatch{
+		SchemaVersion: "1.0",
+		Type:          "EventBatch",
+		Events:        items,
+	})
+	if err != nil {
+		return out, err
+	}
+	endpoint := strings.TrimRight(baseURL, "/") + "/inbox"
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return out, err
+	}
+	authorization, err := requestauth.Sign(ctx, s.identity, http.MethodPost, u.Path, u.RawQuery, payload, time.Now())
+	if err != nil {
+		return out, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return out, err
+	}
+	req.Header.Set("Content-Type", "application/gonzbnet+json")
+	req.Header.Set("Authorization", authorization)
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return out, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return out, fmt.Errorf("inbox status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return out, fmt.Errorf("decode inbox response: %w", err)
+	}
+	return out, nil
 }
 
 func (s *Service) fetchWellKnown(ctx context.Context, peerURL string) (profile.WellKnown, error) {
@@ -393,4 +592,13 @@ func wellKnownURL(peerURL string) (string, error) {
 	root.RawQuery = ""
 	root.Fragment = ""
 	return strings.TrimRight(root.String(), "/") + "/.well-known/gonzbnet", nil
+}
+
+func firstNonBlank(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }

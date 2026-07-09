@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -14,6 +15,8 @@ import (
 	"github.com/datallboy/gonzb/internal/gonzbnet/events"
 	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
 	"github.com/datallboy/gonzb/internal/gonzbnet/profile"
+	"github.com/datallboy/gonzb/internal/gonzbnet/releasecard"
+	"github.com/datallboy/gonzb/internal/gonzbnet/requestauth"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
 	"github.com/labstack/echo/v5"
 )
@@ -26,7 +29,13 @@ type GoNZBNetController struct {
 type gonzbnetStore interface {
 	ListFederationOutboxEvents(ctx context.Context, params pgindex.FederationOutboxParams) (pgindex.FederationOutboxPage, error)
 	GetFederationEvent(ctx context.Context, eventID string) (*events.SignedEvent, error)
+	FederationEventExists(ctx context.Context, eventID string) (bool, error)
+	GetFederationNodePublicKey(ctx context.Context, nodeID string) (ed25519.PublicKey, error)
+	StoreFederationNonce(ctx context.Context, nodeID, nonce string, expiresAt time.Time) (bool, error)
 	UpsertFederationNode(ctx context.Context, node pgindex.FederationNodeRecord) error
+	AppendVerifiedFederationEvent(ctx context.Context, event *events.SignedEvent, validation *events.ValidationResult) error
+	AppendRejectedFederationEvent(ctx context.Context, eventID, authorNodeID, eventType string, rawEventJSON []byte, reason string) error
+	UpsertFederatedReleaseCardProjection(ctx context.Context, projection releasecard.Projection) error
 }
 
 type outboxResponse struct {
@@ -35,6 +44,28 @@ type outboxResponse struct {
 	Events        []*events.SignedEvent `json:"events"`
 	NextCursor    string                `json:"next_cursor"`
 	HasMore       bool                  `json:"has_more"`
+}
+
+type inboxEventBatch struct {
+	SchemaVersion string               `json:"schema_version"`
+	Type          string               `json:"type"`
+	Events        []events.SignedEvent `json:"events"`
+}
+
+type inboxEventResult struct {
+	EventID string `json:"event_id"`
+	Status  string `json:"status"`
+	Code    string `json:"code,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
+type inboxResponse struct {
+	SchemaVersion string             `json:"schema_version"`
+	Type          string             `json:"type"`
+	Accepted      []inboxEventResult `json:"accepted"`
+	Duplicate     []inboxEventResult `json:"duplicate"`
+	Rejected      []inboxEventResult `json:"rejected"`
+	Cursor        string             `json:"cursor,omitempty"`
 }
 
 func NewGoNZBNetController(appCtx *app.Context) *GoNZBNetController {
@@ -172,6 +203,143 @@ func (ctrl *GoNZBNetController) Handshake(c *echo.Context) error {
 	}
 	body["signature"] = canonical.Base64URL(responseSig)
 	return c.JSON(http.StatusOK, body)
+}
+
+func (ctrl *GoNZBNetController) Inbox(c *echo.Context) error {
+	store, ok := ctrl.appCtx.PGIndexStore.(gonzbnetStore)
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet store is unavailable")
+	}
+	body, err := io.ReadAll(c.Request().Body)
+	if err != nil {
+		return jsonError(c, http.StatusBadRequest, "read inbox body")
+	}
+	cfg := ctrl.appCtx.Config.GoNZBNet
+	if _, err := requestauth.Verify(
+		c.Request().Context(),
+		store,
+		requestauth.HeaderFromRequest(c.Request()),
+		c.Request().Method,
+		c.Request().URL.Path,
+		c.Request().URL.RawQuery,
+		body,
+		time.Now(),
+		time.Duration(cfg.TimeToleranceSeconds)*time.Second,
+		time.Duration(cfg.NonceTTLSeconds)*time.Second,
+	); err != nil {
+		return jsonError(c, http.StatusUnauthorized, err.Error())
+	}
+
+	eventsIn, err := decodeInboxEvents(body)
+	if err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	maxBatch := cfg.MaxBatchEvents
+	if maxBatch <= 0 {
+		maxBatch = 100
+	}
+	if len(eventsIn) > maxBatch {
+		return jsonError(c, http.StatusBadRequest, "event batch exceeds max_batch_events")
+	}
+
+	resp := inboxResponse{
+		SchemaVersion: "1.0",
+		Type:          "InboxResponse",
+		Accepted:      []inboxEventResult{},
+		Duplicate:     []inboxEventResult{},
+		Rejected:      []inboxEventResult{},
+	}
+	for i := range eventsIn {
+		event := eventsIn[i]
+		item := ctrl.acceptInboxEvent(c.Request().Context(), store, &event)
+		switch item.Status {
+		case "accepted":
+			resp.Accepted = append(resp.Accepted, item)
+			resp.Cursor = item.EventID
+		case "duplicate":
+			resp.Duplicate = append(resp.Duplicate, item)
+			resp.Cursor = item.EventID
+		default:
+			resp.Rejected = append(resp.Rejected, item)
+		}
+	}
+	return c.JSON(http.StatusOK, resp)
+}
+
+func (ctrl *GoNZBNetController) acceptInboxEvent(ctx context.Context, store gonzbnetStore, event *events.SignedEvent) inboxEventResult {
+	eventID := ""
+	if event != nil {
+		eventID = event.EventID
+	}
+	raw, _ := json.Marshal(event)
+	if event == nil {
+		return inboxEventResult{Status: "rejected", Code: "invalid_event", Message: "event is required"}
+	}
+	if exists, err := store.FederationEventExists(ctx, event.EventID); err != nil {
+		return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "store_error", Message: err.Error()}
+	} else if exists {
+		return inboxEventResult{EventID: event.EventID, Status: "duplicate"}
+	}
+	validation, err := events.Verify(event)
+	if err != nil || validation == nil || !validation.OK {
+		reason := "verification failed"
+		if validation != nil && validation.Reason != "" {
+			reason = validation.Reason
+		}
+		if err != nil {
+			reason = err.Error()
+		}
+		_ = store.AppendRejectedFederationEvent(ctx, eventID, event.AuthorNodeID, event.EventType, raw, reason)
+		return inboxEventResult{EventID: eventID, Status: "rejected", Code: "verification_failed", Message: reason}
+	}
+	var releaseProjection *releasecard.Projection
+	if event.EventType == "ReleaseCard" {
+		var card releasecard.ReleaseCard
+		if err := json.Unmarshal(event.Body, &card); err != nil {
+			_ = store.AppendRejectedFederationEvent(ctx, event.EventID, event.AuthorNodeID, event.EventType, raw, "invalid release card body")
+			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "invalid_body", Message: "invalid release card body"}
+		}
+		poolID := ""
+		if len(event.PoolIDs) > 0 {
+			poolID = event.PoolIDs[0]
+		}
+		releaseProjection = &releasecard.Projection{
+			Card:         card,
+			EventID:      event.EventID,
+			SourceNodeID: event.AuthorNodeID,
+			PoolID:       poolID,
+		}
+	}
+	if err := store.AppendVerifiedFederationEvent(ctx, event, validation); err != nil {
+		return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "store_error", Message: err.Error()}
+	}
+	if releaseProjection != nil {
+		if err := store.UpsertFederatedReleaseCardProjection(ctx, *releaseProjection); err != nil {
+			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "projection_failed", Message: err.Error()}
+		}
+	}
+	return inboxEventResult{EventID: event.EventID, Status: "accepted"}
+}
+
+func decodeInboxEvents(body []byte) ([]events.SignedEvent, error) {
+	var batch inboxEventBatch
+	if err := json.Unmarshal(body, &batch); err != nil {
+		return nil, fmt.Errorf("invalid inbox json")
+	}
+	if strings.TrimSpace(batch.Type) == "EventBatch" {
+		if len(batch.Events) == 0 {
+			return nil, fmt.Errorf("event batch is empty")
+		}
+		return batch.Events, nil
+	}
+	var single events.SignedEvent
+	if err := json.Unmarshal(body, &single); err != nil {
+		return nil, fmt.Errorf("invalid inbox event")
+	}
+	if strings.TrimSpace(single.EventID) == "" {
+		return nil, fmt.Errorf("missing event batch")
+	}
+	return []events.SignedEvent{single}, nil
 }
 
 func (ctrl *GoNZBNetController) localIdentity() (*identity.Identity, error) {

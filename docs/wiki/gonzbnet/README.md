@@ -15,9 +15,12 @@ Current implementation state:
   events and separate federated release-card projections.
 - Phase 3 adds read-only node discovery/outbox endpoints and manual pull sync
   for trusted peer URLs.
+- Phase 4 adds signed inbox push sync with nonce replay protection and peer
+  delivery tracking.
 
 Maintained pages:
 
 - [Phase 1 Identity And Events](./phase-1-identity-and-events.md)
 - [Phase 2 ReleaseCard Publishing](./phase-2-releasecard-publishing.md)
 - [Phase 3 Manual Pull Sync](./phase-3-manual-pull-sync.md)
+- [Phase 4 Inbox Push Sync](./phase-4-inbox-push-sync.md)
