@@ -220,6 +220,7 @@ func CapsFor(maxEventBytes, maxManifestBytes int) Caps {
 			"ValidatorCapacity",
 			"ArticleAvailabilityAttestation",
 			"ChecksumAttestation",
+			"ManifestAvailability",
 			"PoolGenesis",
 			"PoolJoinRequest",
 			"PoolMemberApproved",

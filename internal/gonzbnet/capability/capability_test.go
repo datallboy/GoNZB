@@ -15,6 +15,9 @@ func TestRequiredForEvent(t *testing.T) {
 	if !HasAny([]string{Validator}, RequiredForEvent("ArticleAvailabilityAttestation")...) {
 		t.Fatalf("expected validator to satisfy ArticleAvailabilityAttestation")
 	}
+	if !HasAny([]string{Scanner}, RequiredForEvent("ManifestAvailability")...) {
+		t.Fatalf("expected scanner to satisfy ManifestAvailability")
+	}
 }
 
 func TestNormalizeDeduplicates(t *testing.T) {

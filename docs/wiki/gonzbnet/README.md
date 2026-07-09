@@ -40,6 +40,9 @@ Current implementation state:
 - Addendum Phase B adds validator-only signed attestations, validation task
   queueing, checksum-attestation schema support, and validation score
   projection.
+- Addendum Phase C adds scanner scan-output publishing, optional manifest
+  availability events, and search isolation when local index projection is
+  disabled.
 
 Maintained pages:
 
@@ -56,3 +59,4 @@ Maintained pages:
 - [Phase 11 Relay Mode Controls](./phase-11-relay-mode.md)
 - [Phase A Capability Registry](./phase-a-capabilities.md)
 - [Phase B Validation-Only Contribution](./phase-b-validation.md)
+- [Phase C Scan-Without-Index Contribution](./phase-c-scan-output.md)

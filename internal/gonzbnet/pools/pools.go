@@ -16,6 +16,7 @@ const (
 	EventTypeValidatorCapacity              = "ValidatorCapacity"
 	EventTypeArticleAvailabilityAttestation = "ArticleAvailabilityAttestation"
 	EventTypeChecksumAttestation            = "ChecksumAttestation"
+	EventTypeManifestAvailability           = "ManifestAvailability"
 
 	EventTypePoolGenesis        = "PoolGenesis"
 	EventTypePoolJoinRequest    = "PoolJoinRequest"
@@ -137,6 +138,7 @@ func NormalizePolicy(policy Policy, adminCount int) Policy {
 			EventTypeValidatorCapacity,
 			EventTypeArticleAvailabilityAttestation,
 			EventTypeChecksumAttestation,
+			EventTypeManifestAvailability,
 		}
 	}
 	return out

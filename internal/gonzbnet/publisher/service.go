@@ -10,6 +10,7 @@ import (
 	"github.com/datallboy/gonzb/internal/gonzbnet/events"
 	"github.com/datallboy/gonzb/internal/gonzbnet/health"
 	"github.com/datallboy/gonzb/internal/gonzbnet/manifest"
+	"github.com/datallboy/gonzb/internal/gonzbnet/manifestavailability"
 	"github.com/datallboy/gonzb/internal/gonzbnet/pools"
 	"github.com/datallboy/gonzb/internal/gonzbnet/releasecard"
 	"github.com/datallboy/gonzb/internal/gonzbnet/validation"
@@ -22,12 +23,15 @@ type Identity interface {
 }
 
 type Store interface {
+	ListGoNZBNetScanOutputCandidates(ctx context.Context, limit int) ([]releasecard.LocalRelease, error)
 	ListGoNZBNetLocalReleaseCandidates(ctx context.Context, limit int) ([]releasecard.LocalRelease, error)
+	MarkGoNZBNetScanOutputPublished(ctx context.Context, scanID, eventID string) error
 	UpsertFederationNodeIdentity(ctx context.Context, nodeID string, publicKey ed25519.PublicKey) error
 	NextFederationEventSequence(ctx context.Context, authorNodeID string) (int64, *string, error)
 	FindFederationEventByBodyHash(ctx context.Context, authorNodeID, eventType, bodyHash string) (string, error)
 	AppendVerifiedFederationEvent(ctx context.Context, event *events.SignedEvent, validation *events.ValidationResult) error
 	UpsertFederatedReleaseCardProjection(ctx context.Context, projection releasecard.Projection) error
+	ProjectManifestAvailability(ctx context.Context, projection pgindex.ManifestAvailabilityProjection) error
 	ProjectHealthAttestation(ctx context.Context, projection pgindex.HealthAttestationProjection) error
 	ClaimValidationTasks(ctx context.Context, nodeID string, limit int) ([]pgindex.ValidationTask, error)
 	GetResolutionManifest(ctx context.Context, manifestID string) (*manifest.ResolutionManifest, error)
@@ -38,10 +42,11 @@ type Store interface {
 }
 
 type Service struct {
-	identity Identity
-	store    Store
-	poolID   string
-	now      func() time.Time
+	identity                    Identity
+	store                       Store
+	poolID                      string
+	now                         func() time.Time
+	publishManifestAvailability bool
 }
 
 type Result struct {
@@ -85,6 +90,12 @@ func New(identity Identity, store Store, poolID string) *Service {
 	}
 }
 
+func (s *Service) SetManifestAvailabilityPublishing(enabled bool) {
+	if s != nil {
+		s.publishManifestAvailability = enabled
+	}
+}
+
 func (s *Service) PublishOnce(ctx context.Context, limit int) (Result, error) {
 	var result Result
 	if s == nil || s.identity == nil || s.store == nil {
@@ -102,10 +113,19 @@ func (s *Service) PublishOnce(ctx context.Context, limit int) (Result, error) {
 		return result, err
 	}
 
-	candidates, err := s.store.ListGoNZBNetLocalReleaseCandidates(ctx, limit)
+	scanCandidates, err := s.store.ListGoNZBNetScanOutputCandidates(ctx, limit)
 	if err != nil {
 		return result, err
 	}
+	remaining := limit - len(scanCandidates)
+	if remaining < 0 {
+		remaining = 0
+	}
+	indexerCandidates, err := s.store.ListGoNZBNetLocalReleaseCandidates(ctx, remaining)
+	if err != nil {
+		return result, err
+	}
+	candidates := append(scanCandidates, indexerCandidates...)
 	result.Scanned = len(candidates)
 
 	for _, candidate := range candidates {
@@ -131,6 +151,9 @@ func (s *Service) PublishOnce(ctx context.Context, limit int) (Result, error) {
 				PoolID:       s.poolID,
 			}); err != nil {
 				return result, err
+			}
+			if candidate.SourceKind == "local_scan_output" {
+				_ = s.store.MarkGoNZBNetScanOutputPublished(ctx, candidate.LocalReleaseID, existingEventID)
 			}
 			result.Projected++
 			continue
@@ -167,6 +190,16 @@ func (s *Service) PublishOnce(ctx context.Context, limit int) (Result, error) {
 			PoolID:       s.poolID,
 		}); err != nil {
 			return result, err
+		}
+		if candidate.SourceKind == "local_scan_output" {
+			if err := s.store.MarkGoNZBNetScanOutputPublished(ctx, candidate.LocalReleaseID, event.EventID); err != nil {
+				return result, err
+			}
+			if s.publishManifestAvailability && strings.TrimSpace(card.ManifestID) != "" {
+				if err := s.publishManifestAvailabilityOnce(ctx, nodeID, card); err != nil {
+					return result, err
+				}
+			}
 		}
 		result.Projected++
 	}
@@ -508,6 +541,60 @@ func (s *Service) publishArticleAvailability(ctx context.Context, nodeID string,
 		return "", false, err
 	}
 	return event.EventID, true, nil
+}
+
+func (s *Service) publishManifestAvailabilityOnce(ctx context.Context, nodeID string, card releasecard.ReleaseCard) error {
+	attestation := manifestavailability.Attestation{
+		SchemaVersion: "1.0",
+		Type:          manifestavailability.Type,
+		ReleaseID:     card.ReleaseID,
+		ManifestID:    card.ManifestID,
+		CheckedAt:     s.now().UTC().Format(time.RFC3339),
+		Status:        manifestavailability.StatusAvailable,
+		Confidence:    0.9,
+		Method:        "scan_output",
+	}
+	bodyHash, err := manifestavailability.HashBody(attestation)
+	if err != nil {
+		return err
+	}
+	existingEventID, err := s.store.FindFederationEventByBodyHash(ctx, nodeID, pools.EventTypeManifestAvailability, bodyHash)
+	if err != nil {
+		return err
+	}
+	eventID := existingEventID
+	if eventID == "" {
+		sequence, previousEventID, err := s.store.NextFederationEventSequence(ctx, nodeID)
+		if err != nil {
+			return err
+		}
+		event, validationResult, err := events.Create(ctx, s.identity, events.CreateOptions{
+			EventType:       pools.EventTypeManifestAvailability,
+			Sequence:        sequence,
+			PreviousEventID: previousEventID,
+			CreatedAt:       s.now().UTC(),
+			PoolIDs:         []string{s.poolID},
+			Visibility:      "pool",
+			BodySchema:      manifestavailability.BodySchema,
+			Body:            attestation,
+		})
+		if err != nil {
+			return err
+		}
+		if validationResult == nil || !validationResult.OK {
+			return fmt.Errorf("signed manifest availability did not verify: %s", validationReason(validationResult))
+		}
+		if err := s.store.AppendVerifiedFederationEvent(ctx, event, validationResult); err != nil {
+			return err
+		}
+		eventID = event.EventID
+	}
+	return s.store.ProjectManifestAvailability(ctx, pgindex.ManifestAvailabilityProjection{
+		Attestation:  attestation,
+		EventID:      eventID,
+		AuthorNodeID: nodeID,
+		PoolID:       s.poolID,
+	})
 }
 
 func (s *Service) publishChecksumAttestation(ctx context.Context, nodeID string, attestation validation.ChecksumAttestation, poolID string) (string, bool, error) {

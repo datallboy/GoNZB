@@ -115,6 +115,7 @@ type GoNZBNetConfig struct {
 	PublishReleaseCardsEnabled     bool     `mapstructure:"publish_release_cards_enabled" yaml:"publish_release_cards_enabled"`
 	PublishReleaseCardsBatchSize   int      `mapstructure:"publish_release_cards_batch_size" yaml:"publish_release_cards_batch_size"`
 	PublishReleaseCardsIntervalMin float64  `mapstructure:"publish_release_cards_interval_minutes" yaml:"publish_release_cards_interval_minutes"`
+	ManifestAvailabilityEnabled    bool     `mapstructure:"manifest_availability_enabled" yaml:"manifest_availability_enabled"`
 	HealthAttestationsEnabled      bool     `mapstructure:"health_attestations_enabled" yaml:"health_attestations_enabled"`
 	HealthAttestationsBatchSize    int      `mapstructure:"health_attestations_batch_size" yaml:"health_attestations_batch_size"`
 	HealthAttestationsIntervalMin  float64  `mapstructure:"health_attestations_interval_minutes" yaml:"health_attestations_interval_minutes"`
@@ -536,6 +537,7 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("gonzbnet.publish_release_cards_enabled", false)
 	v.SetDefault("gonzbnet.publish_release_cards_batch_size", 50)
 	v.SetDefault("gonzbnet.publish_release_cards_interval_minutes", 10.0)
+	v.SetDefault("gonzbnet.manifest_availability_enabled", false)
 	v.SetDefault("gonzbnet.health_attestations_enabled", false)
 	v.SetDefault("gonzbnet.health_attestations_batch_size", 50)
 	v.SetDefault("gonzbnet.health_attestations_interval_minutes", 30.0)

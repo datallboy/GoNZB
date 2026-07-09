@@ -46,6 +46,7 @@ func (m *gonzbnetRuntimeModule) Build(ctx context.Context) error {
 		return err
 	}
 	m.publisher = publisher.New(nodeIdentity, store, m.appCtx.Config.GoNZBNet.LocalPoolID)
+	m.publisher.SetManifestAvailabilityPublishing(m.appCtx.Config.GoNZBNet.ManifestAvailabilityEnabled)
 	syncStore, ok := m.appCtx.PGIndexStore.(gonzbnetsync.Store)
 	if !ok {
 		return fmt.Errorf("pgindex store does not support gonzbnet pull sync")

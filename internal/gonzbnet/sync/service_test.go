@@ -333,6 +333,10 @@ func (s *fakeSyncStore) ProjectChecksumAttestation(context.Context, pgindex.Chec
 	return nil
 }
 
+func (s *fakeSyncStore) ProjectManifestAvailability(context.Context, pgindex.ManifestAvailabilityProjection) error {
+	return nil
+}
+
 func (s *fakeSyncStore) MarkFederationPeerSyncSuccess(_ context.Context, _ int64, _, cursor, _ string) error {
 	s.successCursor = cursor
 	return nil
