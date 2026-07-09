@@ -67,6 +67,8 @@ import type {
   GoNZBNetRejectedEventDiagnostic,
   GoNZBNetReleaseSourceDiagnostic,
   GoNZBNetReputationDiagnostic,
+  GoNZBNetRolePoolAccess,
+  GoNZBNetRolePoolAccessRequest,
   GoNZBNetScoreRecomputeRequest,
   GoNZBNetScoreRecomputeResponse,
   GoNZBNetSyncActionResponse,
@@ -636,6 +638,29 @@ export function getGoNZBNetPoolMembers(poolID: string) {
 export function getGoNZBNetPoolControlEvents(poolID: string, limit = 100) {
   return apiRequest<GoNZBNetListResponse<GoNZBNetPoolControlEvent>>(
     `/api/v1/admin/gonzbnet/pools/${encodeURIComponent(poolID)}/control-events${goNZBNetQuery({ limit })}`,
+  )
+}
+
+export function getGoNZBNetRolePoolAccess(poolID: string) {
+  return apiRequest<GoNZBNetListResponse<GoNZBNetRolePoolAccess>>(
+    `/api/v1/admin/gonzbnet/pools/${encodeURIComponent(poolID)}/role-access`,
+  )
+}
+
+export function upsertGoNZBNetRolePoolAccess(
+  poolID: string,
+  body: GoNZBNetRolePoolAccessRequest,
+) {
+  return apiRequest<GoNZBNetActionResponse>(
+    `/api/v1/admin/gonzbnet/pools/${encodeURIComponent(poolID)}/role-access`,
+    { method: "POST", body },
+  )
+}
+
+export function deleteGoNZBNetRolePoolAccess(poolID: string, roleID: string) {
+  return apiRequest<GoNZBNetActionResponse>(
+    `/api/v1/admin/gonzbnet/pools/${encodeURIComponent(poolID)}/role-access/${encodeURIComponent(roleID)}`,
+    { method: "DELETE" },
   )
 }
 

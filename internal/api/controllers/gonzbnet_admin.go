@@ -36,6 +36,9 @@ type gonzbnetAdminStore interface {
 	ListTrustPools(ctx context.Context) ([]pgindex.TrustPoolRecord, error)
 	ListPoolMembers(ctx context.Context, poolID string) ([]pgindex.PoolMemberRecord, error)
 	ListPoolControlEvents(ctx context.Context, poolID string, limit int) ([]pgindex.PoolControlEventRecord, error)
+	ListFederationRolePoolAccess(ctx context.Context, poolID string) ([]pgindex.FederationRolePoolAccessRecord, error)
+	UpsertFederationRolePoolAccess(ctx context.Context, record pgindex.FederationRolePoolAccessRecord) error
+	DeleteFederationRolePoolAccess(ctx context.Context, poolID, roleID string) (bool, error)
 	UpsertTrustPool(ctx context.Context, pool pgindex.TrustPoolRecord) error
 	UpsertPoolMember(ctx context.Context, member pgindex.PoolMemberRecord) error
 	RevokePoolMember(ctx context.Context, poolID, nodeID, eventID string, effectiveAt *time.Time) error
@@ -91,6 +94,13 @@ type poolMemberRequest struct {
 	Status              string          `json:"status"`
 	AllowedCapabilities []string        `json:"allowed_capabilities"`
 	Limits              json.RawMessage `json:"limits"`
+}
+
+type rolePoolAccessRequest struct {
+	RoleID             string `json:"role_id"`
+	CanSearch          *bool  `json:"can_search"`
+	CanGet             *bool  `json:"can_get"`
+	CanResolveManifest *bool  `json:"can_resolve_manifest"`
 }
 
 type poolJoinRequest struct {
@@ -618,6 +628,59 @@ func (ctrl *GoNZBNetAdminController) ListPoolControlEvents(c *echo.Context) erro
 		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}
 	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
+func (ctrl *GoNZBNetAdminController) ListRolePoolAccess(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	items, err := store.ListFederationRolePoolAccess(c.Request().Context(), pathParamTrimmed(c, "pool_id"))
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
+func (ctrl *GoNZBNetAdminController) UpsertRolePoolAccess(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	var req rolePoolAccessRequest
+	if err := decodeJSONBody(c, &req); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	roleID := strings.TrimSpace(req.RoleID)
+	poolID := pathParamTrimmed(c, "pool_id")
+	if roleID == "" || poolID == "" {
+		return jsonError(c, http.StatusBadRequest, "role_id and pool_id are required")
+	}
+	if err := store.UpsertFederationRolePoolAccess(c.Request().Context(), pgindex.FederationRolePoolAccessRecord{
+		RoleID:             roleID,
+		PoolID:             poolID,
+		CanSearch:          boolDefault(req.CanSearch, true),
+		CanGet:             boolDefault(req.CanGet, true),
+		CanResolveManifest: boolDefault(req.CanResolveManifest, false),
+	}); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (ctrl *GoNZBNetAdminController) DeleteRolePoolAccess(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	deleted, err := store.DeleteFederationRolePoolAccess(c.Request().Context(), pathParamTrimmed(c, "pool_id"), pathParamTrimmed(c, "role_id"))
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if !deleted {
+		return jsonError(c, http.StatusNotFound, "role pool access grant was not found")
+	}
+	return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (ctrl *GoNZBNetAdminController) UpsertPoolMember(c *echo.Context) error {
@@ -1730,6 +1793,13 @@ func normalizeRequestedRoles(values []string) []string {
 		return []string{pools.RoleMember}
 	}
 	return out
+}
+
+func boolDefault(value *bool, fallback bool) bool {
+	if value == nil {
+		return fallback
+	}
+	return *value
 }
 
 func coverageID(prefix string, now time.Time) string {
