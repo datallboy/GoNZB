@@ -16,6 +16,7 @@ import (
 	"github.com/datallboy/gonzb/internal/gonzbnet/canonical"
 	"github.com/datallboy/gonzb/internal/gonzbnet/events"
 	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
+	"github.com/datallboy/gonzb/internal/gonzbnet/pools"
 	"github.com/datallboy/gonzb/internal/gonzbnet/profile"
 	"github.com/datallboy/gonzb/internal/gonzbnet/releasecard"
 	"github.com/datallboy/gonzb/internal/gonzbnet/requestauth"
@@ -38,6 +39,9 @@ type Store interface {
 	MarkFederationPeerSyncFailure(ctx context.Context, peerID int64, errText string) error
 	ListUndeliveredFederationEvents(ctx context.Context, peerID int64, limit int) ([]*events.SignedEvent, error)
 	RecordFederationPeerDelivery(ctx context.Context, result pgindex.FederationDeliveryResult) error
+	ValidateFederationPoolControlEvent(ctx context.Context, event *events.SignedEvent) error
+	ProjectFederationPoolEvent(ctx context.Context, event *events.SignedEvent) error
+	CanAcceptFederationEventForPools(ctx context.Context, authorNodeID string, poolIDs []string, eventType string) (pgindex.PoolAuthorizationResult, error)
 }
 
 type Logger interface {
@@ -271,11 +275,33 @@ func (s *Service) syncPeer(ctx context.Context, peer pgindex.FederationPeerRecor
 				result.Rejected++
 				continue
 			}
+			if pools.EventIsPoolControl(event.EventType) {
+				if err := s.store.ValidateFederationPoolControlEvent(ctx, &event); err != nil {
+					_ = s.store.AppendRejectedFederationEvent(ctx, event.EventID, event.AuthorNodeID, event.EventType, raw, err.Error())
+					result.Rejected++
+					continue
+				}
+			} else {
+				authorization, err := s.store.CanAcceptFederationEventForPools(ctx, event.AuthorNodeID, event.PoolIDs, event.EventType)
+				if err != nil {
+					return result, err
+				}
+				if !authorization.Allowed {
+					_ = s.store.AppendRejectedFederationEvent(ctx, event.EventID, event.AuthorNodeID, event.EventType, raw, authorization.Reason)
+					result.Rejected++
+					continue
+				}
+			}
 			if err := s.store.AppendVerifiedFederationEvent(ctx, &event, validation); err != nil {
 				return result, err
 			}
 			result.Accepted++
 			lastEventID = event.EventID
+			if pools.EventIsPoolControl(event.EventType) {
+				if err := s.store.ProjectFederationPoolEvent(ctx, &event); err != nil {
+					return result, err
+				}
+			}
 			if event.EventType == "ReleaseCard" {
 				var card releasecard.ReleaseCard
 				if err := json.Unmarshal(event.Body, &card); err != nil {

@@ -19,6 +19,8 @@ Current implementation state:
   delivery tracking.
 - Phase 5 adds local RBAC and aggregator/Newznab search integration over the
   local federated ReleaseCard cache.
+- Phase 6 adds trust pool projections, M-of-N membership validation, protected
+  pool event authorization, and local pool administration APIs.
 
 Maintained pages:
 
@@ -27,3 +29,4 @@ Maintained pages:
 - [Phase 3 Manual Pull Sync](./phase-3-manual-pull-sync.md)
 - [Phase 4 Inbox Push Sync](./phase-4-inbox-push-sync.md)
 - [Phase 5 RBAC And Aggregator Integration](./phase-5-rbac-aggregator.md)
+- [Phase 6 Trust Pools](./phase-6-trust-pools.md)
