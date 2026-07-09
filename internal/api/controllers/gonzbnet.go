@@ -46,6 +46,7 @@ type gonzbnetStore interface {
 	UpsertFederationNode(ctx context.Context, node pgindex.FederationNodeRecord) error
 	AppendVerifiedFederationEvent(ctx context.Context, event *events.SignedEvent, validation *events.ValidationResult) error
 	AppendRejectedFederationEvent(ctx context.Context, eventID, authorNodeID, eventType string, rawEventJSON []byte, reason string) error
+	GetPoolCheckpointEvent(ctx context.Context, poolID string) (*events.SignedEvent, error)
 	ListPoolMembers(ctx context.Context, poolID string) ([]pgindex.PoolMemberRecord, error)
 	UpsertFederatedReleaseCardProjection(ctx context.Context, projection releasecard.Projection) error
 	ValidateFederationPoolControlEvent(ctx context.Context, event *events.SignedEvent) error
@@ -79,6 +80,13 @@ type poolMembersResponse struct {
 	Type          string                     `json:"type"`
 	PoolID        string                     `json:"pool_id"`
 	Members       []pgindex.PoolMemberRecord `json:"members"`
+}
+
+type poolCheckpointResponse struct {
+	SchemaVersion   string              `json:"schema_version"`
+	Type            string              `json:"type"`
+	PoolID          string              `json:"pool_id"`
+	CheckpointEvent *events.SignedEvent `json:"checkpoint_event"`
 }
 
 type peersResponse struct {
@@ -293,6 +301,30 @@ func (ctrl *GoNZBNetController) PoolMembers(c *echo.Context) error {
 		Type:          "PoolMembers",
 		PoolID:        poolID,
 		Members:       members,
+	})
+}
+
+func (ctrl *GoNZBNetController) PoolCheckpoint(c *echo.Context) error {
+	store, ok := ctrl.appCtx.PGIndexStore.(gonzbnetStore)
+	if !ok {
+		return federationJSONError(c, http.StatusServiceUnavailable, "internal_error", "gonzbnet store is unavailable")
+	}
+	poolID := pathParamTrimmed(c, "pool_id")
+	if poolID == "" {
+		return federationJSONError(c, http.StatusBadRequest, "invalid_schema", "pool_id is required")
+	}
+	event, err := store.GetPoolCheckpointEvent(c.Request().Context(), poolID)
+	if err != nil {
+		return federationJSONError(c, http.StatusInternalServerError, "internal_error", err.Error())
+	}
+	if event == nil {
+		return federationJSONError(c, http.StatusNotFound, "checkpoint_not_found", "pool checkpoint not found")
+	}
+	return c.JSON(http.StatusOK, poolCheckpointResponse{
+		SchemaVersion:   "1.0",
+		Type:            "PoolCheckpoint",
+		PoolID:          poolID,
+		CheckpointEvent: event,
 	})
 }
 

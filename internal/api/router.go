@@ -149,6 +149,7 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 			fed.POST("/inbox", gonzbnetCtrl.Inbox, federationRateLimit)
 			fed.POST("/manifests/:manifest_id/request", gonzbnetCtrl.RequestManifest, federationRateLimit)
 			fed.GET("/manifests/:manifest_id", gonzbnetCtrl.GetManifest, federationRateLimit)
+			fed.GET("/pools/:pool_id/checkpoint", gonzbnetCtrl.PoolCheckpoint)
 			fed.GET("/pools/:pool_id/members", gonzbnetCtrl.PoolMembers)
 			fed.GET("/peers", gonzbnetCtrl.Peers)
 			fed.GET("/ws", gonzbnetCtrl.GossipWS)
