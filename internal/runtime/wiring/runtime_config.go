@@ -11,6 +11,8 @@ import (
 	"github.com/datallboy/gonzb/internal/aggregator/sources/usenetindex"
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/domain"
+	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
+	"github.com/datallboy/gonzb/internal/gonzbnet/manifestresolver"
 	"github.com/datallboy/gonzb/internal/infra/config"
 	"github.com/datallboy/gonzb/internal/resolver"
 	"github.com/datallboy/gonzb/internal/store/adapters"
@@ -24,6 +26,7 @@ type aggregatorCacheStore interface {
 
 type gonzbnetAggregatorStore interface {
 	gonzbnetsource.Store
+	manifestresolver.Store
 }
 
 func LoadAndApplyEffectiveConfig(ctx context.Context, appCtx *app.Context) error {
@@ -106,7 +109,12 @@ func buildAggregator(appCtx *app.Context, effective *config.Config) app.IndexerA
 
 	if effective.Aggregator.Sources.GoNZBNet.Enabled && appCtx.PGIndexStore != nil {
 		if store, ok := appCtx.PGIndexStore.(gonzbnetAggregatorStore); ok {
-			manager.AddSource(gonzbnetsource.New(store))
+			nodeIdentity, err := identity.LoadOrCreate(effective.GoNZBNet.KeysDir)
+			if err == nil {
+				manager.AddSource(gonzbnetsource.NewWithResolver(store, manifestresolver.New(nodeIdentity, store)))
+			} else if appCtx.Logger != nil {
+				appCtx.Logger.Warn("gonzbnet aggregator source disabled: %v", err)
+			}
 		}
 	}
 

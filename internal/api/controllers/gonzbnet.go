@@ -14,6 +14,7 @@ import (
 	"github.com/datallboy/gonzb/internal/gonzbnet/canonical"
 	"github.com/datallboy/gonzb/internal/gonzbnet/events"
 	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
+	"github.com/datallboy/gonzb/internal/gonzbnet/manifest"
 	"github.com/datallboy/gonzb/internal/gonzbnet/pools"
 	"github.com/datallboy/gonzb/internal/gonzbnet/profile"
 	"github.com/datallboy/gonzb/internal/gonzbnet/releasecard"
@@ -40,6 +41,9 @@ type gonzbnetStore interface {
 	ValidateFederationPoolControlEvent(ctx context.Context, event *events.SignedEvent) error
 	ProjectFederationPoolEvent(ctx context.Context, event *events.SignedEvent) error
 	CanAcceptFederationEventForPools(ctx context.Context, authorNodeID string, poolIDs []string, eventType string) (pgindex.PoolAuthorizationResult, error)
+	GetResolutionManifest(ctx context.Context, manifestID string) (*manifest.ResolutionManifest, error)
+	GetResolutionManifestEvent(ctx context.Context, manifestID string) (*events.SignedEvent, error)
+	CanFetchResolutionManifest(ctx context.Context, manifestID, nodeID string) (bool, error)
 }
 
 type outboxResponse struct {
@@ -268,6 +272,132 @@ func (ctrl *GoNZBNetController) Inbox(c *echo.Context) error {
 		}
 	}
 	return c.JSON(http.StatusOK, resp)
+}
+
+func (ctrl *GoNZBNetController) RequestManifest(c *echo.Context) error {
+	store, ok := ctrl.appCtx.PGIndexStore.(gonzbnetStore)
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet store is unavailable")
+	}
+	body, err := io.ReadAll(c.Request().Body)
+	if err != nil {
+		return jsonError(c, http.StatusBadRequest, "read manifest request body")
+	}
+	cfg := ctrl.appCtx.Config.GoNZBNet
+	verified, err := requestauth.Verify(
+		c.Request().Context(),
+		store,
+		requestauth.HeaderFromRequest(c.Request()),
+		c.Request().Method,
+		c.Request().URL.Path,
+		c.Request().URL.RawQuery,
+		body,
+		time.Now(),
+		time.Duration(cfg.TimeToleranceSeconds)*time.Second,
+		time.Duration(cfg.NonceTTLSeconds)*time.Second,
+	)
+	if err != nil {
+		return jsonError(c, http.StatusUnauthorized, err.Error())
+	}
+	var req manifest.Request
+	if err := json.Unmarshal(body, &req); err != nil {
+		return jsonError(c, http.StatusBadRequest, "invalid manifest request json")
+	}
+	manifestID := pathParamTrimmed(c, "manifest_id")
+	if req.ManifestID != manifestID {
+		return c.JSON(http.StatusBadRequest, manifest.Response{
+			SchemaVersion: "1.0",
+			Type:          "ManifestResponse",
+			RequestID:     req.RequestID,
+			Status:        "error",
+			Code:          "manifest_id_mismatch",
+			Message:       "manifest_id does not match path",
+		})
+	}
+	if req.RequestingNodeID != verified.NodeID {
+		return c.JSON(http.StatusForbidden, manifest.Response{
+			SchemaVersion: "1.0",
+			Type:          "ManifestResponse",
+			RequestID:     req.RequestID,
+			Status:        "error",
+			Code:          "requesting_node_mismatch",
+			Message:       "requesting node does not match request signature",
+		})
+	}
+	allowed, err := store.CanFetchResolutionManifest(c.Request().Context(), manifestID, verified.NodeID)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if !allowed {
+		return c.JSON(http.StatusForbidden, manifest.Response{
+			SchemaVersion: "1.0",
+			Type:          "ManifestResponse",
+			RequestID:     req.RequestID,
+			Status:        "error",
+			Code:          "not_pool_member",
+			Message:       "Requesting node is not authorized for this manifest",
+		})
+	}
+	event, err := store.GetResolutionManifestEvent(c.Request().Context(), manifestID)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if event == nil {
+		return c.JSON(http.StatusNotFound, manifest.Response{
+			SchemaVersion: "1.0",
+			Type:          "ManifestResponse",
+			RequestID:     req.RequestID,
+			Status:        "error",
+			Code:          "manifest_not_found",
+			Message:       "manifest not found",
+		})
+	}
+	return c.JSON(http.StatusOK, manifest.Response{
+		SchemaVersion: "1.0",
+		Type:          "ManifestResponse",
+		RequestID:     req.RequestID,
+		Status:        "ok",
+		ManifestEvent: event,
+	})
+}
+
+func (ctrl *GoNZBNetController) GetManifest(c *echo.Context) error {
+	store, ok := ctrl.appCtx.PGIndexStore.(gonzbnetStore)
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet store is unavailable")
+	}
+	cfg := ctrl.appCtx.Config.GoNZBNet
+	verified, err := requestauth.Verify(
+		c.Request().Context(),
+		store,
+		requestauth.HeaderFromRequest(c.Request()),
+		c.Request().Method,
+		c.Request().URL.Path,
+		c.Request().URL.RawQuery,
+		nil,
+		time.Now(),
+		time.Duration(cfg.TimeToleranceSeconds)*time.Second,
+		time.Duration(cfg.NonceTTLSeconds)*time.Second,
+	)
+	if err != nil {
+		return jsonError(c, http.StatusUnauthorized, err.Error())
+	}
+	manifestID := pathParamTrimmed(c, "manifest_id")
+	allowed, err := store.CanFetchResolutionManifest(c.Request().Context(), manifestID, verified.NodeID)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if !allowed {
+		return jsonError(c, http.StatusForbidden, "not_pool_member")
+	}
+	item, err := store.GetResolutionManifest(c.Request().Context(), manifestID)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if item == nil {
+		return jsonError(c, http.StatusNotFound, "manifest not found")
+	}
+	return c.JSON(http.StatusOK, item)
 }
 
 func (ctrl *GoNZBNetController) acceptInboxEvent(ctx context.Context, store gonzbnetStore, event *events.SignedEvent) inboxEventResult {
