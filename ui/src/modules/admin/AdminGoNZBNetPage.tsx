@@ -6,6 +6,7 @@ import {
   createGoNZBNetCoverageComplete,
   createGoNZBNetCoverageFailed,
   createGoNZBNetTombstone,
+  getGoNZBNetConfigValidation,
   getGoNZBNetCoverageDashboard,
   getGoNZBNetCoverageGroups,
   getGoNZBNetCoveragePlan,
@@ -14,6 +15,7 @@ import {
   getGoNZBNetHealthDiagnostics,
   getGoNZBNetManifestSourceDiagnostics,
   getGoNZBNetNodeCapabilities,
+  getGoNZBNetNodeProfile,
   getGoNZBNetPoolMembers,
   getGoNZBNetPeerDeliveryDiagnostics,
   getGoNZBNetPeerDiagnostics,
@@ -38,6 +40,7 @@ import { formatDateTime, formatNumber } from '../../shared/lib/format'
 import type {
   GoNZBNetCoverageAssignment,
   GoNZBNetCoverageClaim,
+  GoNZBNetConfigValidation,
   GoNZBNetCoverageDashboard,
   GoNZBNetCoverageOutcome,
   GoNZBNetCoveragePlan,
@@ -47,6 +50,7 @@ import type {
   GoNZBNetHealthAttestationDiagnostic,
   GoNZBNetManifestSourceDiagnostic,
   GoNZBNetNodeCapability,
+  GoNZBNetNodeProfileResponse,
   GoNZBNetPeerDeliveryDiagnostic,
   GoNZBNetPeerDiagnostic,
   GoNZBNetPoolMember,
@@ -232,6 +236,23 @@ function scorePercent(value?: number | null) {
   return `${Math.round(value * 100)}%`
 }
 
+function mapEntries<T>(value?: Record<string, T> | null) {
+  return Object.entries(value ?? {}).sort(([left], [right]) => left.localeCompare(right))
+}
+
+function displayConfigValue(value: unknown) {
+  if (typeof value === 'boolean') {
+    return value ? 'enabled' : 'disabled'
+  }
+  if (typeof value === 'number') {
+    return formatNumber(value)
+  }
+  if (value === undefined || value === null || value === '') {
+    return 'n/a'
+  }
+  return String(value)
+}
+
 function capabilityKeys(value?: Record<string, unknown> | null) {
   if (!value) {
     return []
@@ -382,6 +403,8 @@ function OutcomeRows({ rows }: { rows: GoNZBNetCoverageOutcome[] }) {
 export function AdminGoNZBNetPage() {
   const [poolID, setPoolID] = useState(defaultPoolID)
   const [mode, setMode] = useState<ActionMode>('scanner')
+  const [nodeProfile, setNodeProfile] = useState<GoNZBNetNodeProfileResponse | null>(null)
+  const [configValidation, setConfigValidation] = useState<GoNZBNetConfigValidation | null>(null)
   const [nodes, setNodes] = useState<GoNZBNetNodeCapability[]>([])
   const [dashboard, setDashboard] = useState<GoNZBNetCoverageDashboard | null>(null)
   const [groups, setGroups] = useState<GoNZBNetGroupCatalogItem[]>([])
@@ -420,6 +443,8 @@ export function AdminGoNZBNetPage() {
     try {
       const [
         nextNodes,
+        nextNodeProfile,
+        nextConfigValidation,
         nextDashboard,
         nextGroups,
         nextValidationGaps,
@@ -440,6 +465,8 @@ export function AdminGoNZBNetPage() {
       ] =
         await Promise.all([
           getGoNZBNetNodeCapabilities(),
+          getGoNZBNetNodeProfile(),
+          getGoNZBNetConfigValidation(),
           getGoNZBNetCoverageDashboard(effectivePoolID),
           getGoNZBNetCoverageGroups(effectivePoolID),
           getGoNZBNetValidationGaps(effectivePoolID, 100),
@@ -459,6 +486,8 @@ export function AdminGoNZBNetPage() {
           getGoNZBNetReputationDiagnostics(100),
         ])
       setNodes(nextNodes.items ?? [])
+      setNodeProfile(nextNodeProfile)
+      setConfigValidation(nextConfigValidation)
       setDashboard(nextDashboard)
       setGroups(nextGroups.items ?? [])
       setValidationGaps(nextValidationGaps.items ?? [])
@@ -730,7 +759,144 @@ export function AdminGoNZBNetPage() {
           <StatCard label="Tombstones" value={formatNumber(tombstones.length)} detail={`${formatNumber(tombstones.filter((item) => item.active).length)} active`} />
           <StatCard label="Release sources" value={formatNumber(releaseSourceDiagnostics.length)} detail={`${formatNumber(manifestSourceDiagnostics.length)} manifest sources`} />
           <StatCard label="Health" value={formatNumber(healthDiagnostics.length)} detail={`${formatNumber(reputationDiagnostics.length)} reputation events`} />
+          <StatCard label="Config" value={configValidation?.valid ? 'Valid' : 'Review'} detail={`${formatNumber(configValidation?.issues.length ?? 0)} issues`} />
         </div>
+      </div>
+
+      <div className="two-column-grid">
+        <SectionTable title="Local node profile">
+          <table className="data-table data-table--compact">
+            <tbody>
+              <tr>
+                <th>Node</th>
+                <td className="mono-cell breakable-value" title={nodeProfile?.node_id}>{shortID(nodeProfile?.node_id)}</td>
+              </tr>
+              <tr>
+                <th>Public key</th>
+                <td className="mono-cell breakable-value" title={nodeProfile?.public_key}>{shortID(nodeProfile?.public_key)}</td>
+              </tr>
+              <tr>
+                <th>Alias</th>
+                <td>{label(nodeProfile?.profile.alias)}</td>
+              </tr>
+              <tr>
+                <th>Software</th>
+                <td>{label(nodeProfile?.profile.software)} {label(nodeProfile?.profile.software_version, '')}</td>
+              </tr>
+              <tr>
+                <th>Base endpoint</th>
+                <td className="breakable-value">{label(nodeProfile?.profile.endpoints?.base)}</td>
+              </tr>
+              <tr>
+                <th>Protocols</th>
+                <td className="breakable-value">{(nodeProfile?.profile.protocols ?? []).join(', ') || 'n/a'}</td>
+              </tr>
+            </tbody>
+          </table>
+        </SectionTable>
+
+        <SectionTable title="Configuration validation" count={configValidation?.issues.length ?? 0}>
+          <table className="data-table data-table--compact">
+            <thead>
+              <tr>
+                <th>Severity</th>
+                <th>Field</th>
+                <th>Message</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(configValidation?.issues ?? []).map((item, index) => (
+                <tr key={`${item.field}-${index}`}>
+                  <td><span className="status-pill status-pill--table">{item.severity}</span></td>
+                  <td className="mono-cell breakable-value">{item.field}</td>
+                  <td className="breakable-value">{item.message}</td>
+                </tr>
+              ))}
+              {configValidation && configValidation.issues.length === 0 ? (
+                <tr>
+                  <td><span className="status-pill status-pill--table">ok</span></td>
+                  <td className="mono-cell">gonzbnet</td>
+                  <td>No configuration issues detected.</td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+        </SectionTable>
+      </div>
+
+      <SectionTable title="Module configuration">
+        <table className="data-table data-table--compact">
+          <thead>
+            <tr>
+              <th>Module</th>
+              <th>Status</th>
+              <th>Limits</th>
+              <th>Privacy</th>
+              <th>Network</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td className="breakable-value">
+                {mapEntries(configValidation?.summary.module_enabled).map(([key, enabled]) => (
+                  <span className="status-pill status-pill--table" key={key}>{key}: {enabled ? 'on' : 'off'}</span>
+                ))}
+              </td>
+              <td>
+                <span className="status-pill status-pill--table">{configValidation?.summary.http_enabled ? 'http' : 'http off'}</span>
+                <div className="muted-copy">mode {label(configValidation?.summary.mode)}</div>
+              </td>
+              <td>
+                {mapEntries(configValidation?.summary.limits).map(([key, value]) => (
+                  <div key={key}>{key}: {formatNumber(value)}</div>
+                ))}
+              </td>
+              <td>
+                {mapEntries(configValidation?.summary.privacy).map(([key, value]) => (
+                  <div key={key}>{key}: {value ? 'true' : 'false'}</div>
+                ))}
+              </td>
+              <td className="breakable-value">
+                pool {label(configValidation?.summary.local_pool_id)}
+                <div className="muted-copy">network {label(configValidation?.summary.network_id)}</div>
+                <div className="muted-copy">peers {formatNumber(configValidation?.summary.manual_peers ?? 0)}</div>
+                <div className="muted-copy">path {label(configValidation?.summary.http_base_path)}</div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </SectionTable>
+
+      <div className="two-column-grid">
+        <SectionTable title="Publisher and validation">
+          <table className="data-table data-table--compact">
+            <tbody>
+              {mapEntries(configValidation?.summary.publisher).map(([key, value]) => (
+                <tr key={key}>
+                  <th className="mono-cell breakable-value">{key}</th>
+                  <td>{displayConfigValue(value)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </SectionTable>
+
+        <SectionTable title="Sync and gossip">
+          <table className="data-table data-table--compact">
+            <tbody>
+              {mapEntries({ ...(configValidation?.summary.sync ?? {}), ...(configValidation?.summary.gossip ?? {}) }).map(([key, value]) => (
+                <tr key={key}>
+                  <th className="mono-cell breakable-value">{key}</th>
+                  <td>{displayConfigValue(value)}</td>
+                </tr>
+              ))}
+              <tr>
+                <th className="mono-cell breakable-value">redacted</th>
+                <td className="breakable-value">{(configValidation?.summary.redacted_sensitive_config_names ?? []).join(', ') || 'n/a'}</td>
+              </tr>
+            </tbody>
+          </table>
+        </SectionTable>
       </div>
 
       <div className="two-column-grid">

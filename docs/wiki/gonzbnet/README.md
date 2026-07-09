@@ -63,6 +63,8 @@ Current implementation state:
   GoNZBNet permission names.
 - Addendum Phase M adds local admin diagnostics for release sources, manifest
   sources, health attestations, and node reputation/trust visibility.
+- Addendum Phase N adds local node profile visibility and redacted GoNZBNet
+  configuration validation to the admin API/UI.
 
 Maintained pages:
 
@@ -90,3 +92,4 @@ Maintained pages:
 - [Phase K Peer Management](./phase-k-peer-management.md)
 - [Phase L RBAC Alignment](./phase-l-rbac-alignment.md)
 - [Phase M Source And Health Diagnostics](./phase-m-source-health-diagnostics.md)
+- [Phase N Node Profile And Config Admin](./phase-n-node-config-admin.md)

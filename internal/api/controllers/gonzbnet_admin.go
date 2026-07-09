@@ -17,6 +17,7 @@ import (
 	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
 	"github.com/datallboy/gonzb/internal/gonzbnet/moderation"
 	"github.com/datallboy/gonzb/internal/gonzbnet/pools"
+	"github.com/datallboy/gonzb/internal/gonzbnet/profile"
 	gonzbnetsync "github.com/datallboy/gonzb/internal/gonzbnet/sync"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
 	"github.com/labstack/echo/v5"
@@ -84,6 +85,42 @@ type peerRequest struct {
 	PeerURL string `json:"peer_url"`
 }
 
+type gonzbnetAdminNodeProfileResponse struct {
+	NodeID    string              `json:"node_id"`
+	PublicKey string              `json:"public_key"`
+	Profile   profile.NodeProfile `json:"profile"`
+}
+
+type gonzbnetAdminConfigValidationResponse struct {
+	Valid   bool                       `json:"valid"`
+	Summary gonzbnetAdminConfigSummary `json:"summary"`
+	Issues  []gonzbnetAdminConfigIssue `json:"issues"`
+}
+
+type gonzbnetAdminConfigSummary struct {
+	Mode                         string          `json:"mode"`
+	HTTPEnabled                  bool            `json:"http_enabled"`
+	AdvertiseURL                 string          `json:"advertise_url"`
+	HTTPBasePath                 string          `json:"http_base_path"`
+	PrivateNetwork               bool            `json:"private_network"`
+	NetworkID                    string          `json:"network_id"`
+	LocalPoolID                  string          `json:"local_pool_id"`
+	ManualPeers                  int             `json:"manual_peers"`
+	ModuleEnabled                map[string]bool `json:"module_enabled"`
+	Limits                       map[string]int  `json:"limits"`
+	Privacy                      map[string]bool `json:"privacy"`
+	Publisher                    map[string]any  `json:"publisher"`
+	Sync                         map[string]any  `json:"sync"`
+	Gossip                       map[string]any  `json:"gossip"`
+	RedactedSensitiveConfigNames []string        `json:"redacted_sensitive_config_names"`
+}
+
+type gonzbnetAdminConfigIssue struct {
+	Severity string `json:"severity"`
+	Field    string `json:"field"`
+	Message  string `json:"message"`
+}
+
 type tombstoneRequest struct {
 	TargetType       string   `json:"target_type"`
 	TargetID         string   `json:"target_id"`
@@ -135,6 +172,102 @@ type coverageOutcomeRequest struct {
 
 func NewGoNZBNetAdminController(appCtx *app.Context) *GoNZBNetAdminController {
 	return &GoNZBNetAdminController{appCtx: appCtx}
+}
+
+func (ctrl *GoNZBNetAdminController) NodeProfile(c *echo.Context) error {
+	if ctrl == nil || ctrl.appCtx == nil || ctrl.appCtx.Config == nil {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin controller is unavailable")
+	}
+	nodeIdentity, err := identity.LoadOrCreate(ctrl.appCtx.Config.GoNZBNet.KeysDir)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	cfg := ctrl.adminProfileConfig(c)
+	nodeProfile, err := profile.NodeProfileFor(c.Request().Context(), nodeIdentity, cfg, time.Now())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, gonzbnetAdminNodeProfileResponse{
+		NodeID:    nodeProfile.NodeID,
+		PublicKey: nodeProfile.PublicKey,
+		Profile:   nodeProfile,
+	})
+}
+
+func (ctrl *GoNZBNetAdminController) ConfigValidation(c *echo.Context) error {
+	if ctrl == nil || ctrl.appCtx == nil || ctrl.appCtx.Config == nil {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin controller is unavailable")
+	}
+	cfg := ctrl.appCtx.Config.GoNZBNet
+	issues := []gonzbnetAdminConfigIssue{}
+	if err := ctrl.appCtx.Config.ValidateEffective(); err != nil {
+		issues = append(issues, gonzbnetAdminConfigIssue{
+			Severity: "error",
+			Field:    "config",
+			Message:  err.Error(),
+		})
+	}
+	issue := func(severity, field, message string) {
+		issues = append(issues, gonzbnetAdminConfigIssue{
+			Severity: severity,
+			Field:    field,
+			Message:  message,
+		})
+	}
+	if cfg.SendUserContext {
+		issue("error", "gonzbnet.send_user_context", "must remain false; federation must not send local user context")
+	}
+	if cfg.MaxEventBytes <= 0 {
+		issue("error", "gonzbnet.max_event_bytes", "must be greater than 0")
+	}
+	if cfg.MaxManifestBytes <= 0 {
+		issue("error", "gonzbnet.max_manifest_bytes", "must be greater than 0")
+	}
+	if cfg.MaxBatchEvents <= 0 {
+		issue("error", "gonzbnet.max_batch_events", "must be greater than 0")
+	}
+	if cfg.TimeToleranceSeconds <= 0 {
+		issue("error", "gonzbnet.time_tolerance_seconds", "must be greater than 0")
+	}
+	if cfg.NonceTTLSeconds <= 0 {
+		issue("error", "gonzbnet.nonce_ttl_seconds", "must be greater than 0")
+	}
+	if cfg.HTTPEnabled && strings.TrimSpace(cfg.AdvertiseURL) == "" {
+		issue("warning", "gonzbnet.advertise_url", "not set; public node profile falls back to the current request host")
+	}
+	if cfg.HTTPEnabled && strings.TrimSpace(cfg.HTTPBasePath) != "" && !strings.HasPrefix(strings.TrimSpace(cfg.HTTPBasePath), "/") {
+		issue("warning", "gonzbnet.http_base_path", "should start with /")
+	}
+	if !cfg.HTTPEnabled && (cfg.PushSyncEnabled || cfg.WebSocketGossipEnabled || cfg.RelayEnabled) {
+		issue("warning", "gonzbnet.http_enabled", "disabled while inbound push, gossip, or relay features are enabled")
+	}
+	if cfg.LiveQueryEnabled {
+		issue("warning", "gonzbnet.live_query_enabled", "live query is enabled; user searches should normally use the local federated cache")
+	}
+	if cfg.PublishReleaseCardsEnabled && !ctrl.appCtx.Config.Modules.UsenetIndexer.Enabled && !cfg.ScannerEnabled {
+		issue("warning", "gonzbnet.publish_release_cards_enabled", "enabled without the local indexer module or scanner capability")
+	}
+	if cfg.ValidatorEnabled && !cfg.ManifestCacheEnabled {
+		issue("warning", "gonzbnet.manifest_cache_enabled", "disabled while validator is enabled; validation can be limited without cached manifests")
+	}
+	if cfg.HealthCheckerEnabled && !cfg.ManifestCacheEnabled {
+		issue("warning", "gonzbnet.manifest_cache_enabled", "disabled while health checker is enabled; health checks can be limited without cached manifests")
+	}
+	if ctrl.appCtx.Config.Aggregator.Sources.GoNZBNet.Enabled && !cfg.ConsumerEnabled {
+		issue("warning", "gonzbnet.consumer_enabled", "disabled while the GoNZBNet aggregator source is enabled")
+	}
+	valid := true
+	for _, item := range issues {
+		if item.Severity == "error" {
+			valid = false
+			break
+		}
+	}
+	return c.JSON(http.StatusOK, gonzbnetAdminConfigValidationResponse{
+		Valid:   valid,
+		Summary: ctrl.adminConfigSummary(),
+		Issues:  issues,
+	})
 }
 
 func (ctrl *GoNZBNetAdminController) ListPools(c *echo.Context) error {
@@ -918,4 +1051,120 @@ func (ctrl *GoNZBNetAdminController) store() (gonzbnetAdminStore, bool) {
 	}
 	store, ok := ctrl.appCtx.PGIndexStore.(gonzbnetAdminStore)
 	return store, ok
+}
+
+func (ctrl *GoNZBNetAdminController) adminProfileConfig(c *echo.Context) profile.Config {
+	cfg := ctrl.appCtx.Config.GoNZBNet
+	return profile.Config{
+		Alias:            cfg.NodeAlias,
+		AdvertiseURL:     ctrl.adminBaseURL(c),
+		HTTPBasePath:     cfg.HTTPBasePath,
+		PrivateNetwork:   cfg.PrivateNetwork,
+		LiveQueryEnabled: cfg.LiveQueryEnabled,
+		WebSocketGossip:  cfg.WebSocketGossipEnabled,
+		PeerExchange:     cfg.PeerExchangeEnabled,
+		RelayMode:        cfg.RelayEnabled,
+		Consumer:         cfg.ConsumerEnabled,
+		Scanner:          cfg.ScannerEnabled,
+		Indexer:          ctrl.appCtx.Config.Modules.UsenetIndexer.Enabled,
+		ManifestBuilder:  cfg.ManifestBuilderEnabled,
+		ManifestCache:    cfg.ManifestCacheEnabled,
+		Validator:        cfg.ValidatorEnabled,
+		HealthChecker:    cfg.HealthCheckerEnabled,
+		Coverage:         cfg.CoverageEnabled,
+		Scheduler:        cfg.SchedulerEnabled,
+		MaxEventBytes:    cfg.MaxEventBytes,
+		MaxManifestBytes: cfg.MaxManifestBytes,
+		MaxBatchEvents:   cfg.MaxBatchEvents,
+	}
+}
+
+func (ctrl *GoNZBNetAdminController) adminBaseURL(c *echo.Context) string {
+	cfg := ctrl.appCtx.Config.GoNZBNet
+	if strings.TrimSpace(cfg.AdvertiseURL) != "" {
+		return strings.TrimRight(strings.TrimSpace(cfg.AdvertiseURL), "/")
+	}
+	basePath := strings.TrimRight(strings.TrimSpace(cfg.HTTPBasePath), "/")
+	if basePath == "" {
+		basePath = "/gonzbnet/v1"
+	}
+	return fmt.Sprintf("%s://%s%s", c.Scheme(), c.Request().Host, basePath)
+}
+
+func (ctrl *GoNZBNetAdminController) adminConfigSummary() gonzbnetAdminConfigSummary {
+	cfg := ctrl.appCtx.Config.GoNZBNet
+	return gonzbnetAdminConfigSummary{
+		Mode:           cfg.Mode,
+		HTTPEnabled:    cfg.HTTPEnabled,
+		AdvertiseURL:   cfg.AdvertiseURL,
+		HTTPBasePath:   cfg.HTTPBasePath,
+		PrivateNetwork: cfg.PrivateNetwork,
+		NetworkID:      cfg.NetworkID,
+		LocalPoolID:    cfg.LocalPoolID,
+		ManualPeers:    len(cfg.ManualPeers),
+		ModuleEnabled: map[string]bool{
+			"aggregator_gonzbnet":  ctrl.appCtx.Config.Aggregator.Sources.GoNZBNet.Enabled,
+			"consumer":             cfg.ConsumerEnabled,
+			"coverage":             cfg.CoverageEnabled,
+			"health_checker":       cfg.HealthCheckerEnabled,
+			"index_projection":     cfg.IndexProjectionEnabled,
+			"manifest_builder":     cfg.ManifestBuilderEnabled,
+			"manifest_cache":       cfg.ManifestCacheEnabled,
+			"peer_exchange":        cfg.PeerExchangeEnabled,
+			"publish_releasecards": cfg.PublishReleaseCardsEnabled,
+			"relay":                cfg.RelayEnabled,
+			"scanner":              cfg.ScannerEnabled,
+			"scheduler":            cfg.SchedulerEnabled,
+			"usenet_indexer":       ctrl.appCtx.Config.Modules.UsenetIndexer.Enabled,
+			"validator":            cfg.ValidatorEnabled,
+			"websocket_gossip":     cfg.WebSocketGossipEnabled,
+		},
+		Limits: map[string]int{
+			"max_batch_events":       cfg.MaxBatchEvents,
+			"max_event_bytes":        cfg.MaxEventBytes,
+			"max_manifest_bytes":     cfg.MaxManifestBytes,
+			"nonce_ttl_seconds":      cfg.NonceTTLSeconds,
+			"time_tolerance_seconds": cfg.TimeToleranceSeconds,
+		},
+		Privacy: map[string]bool{
+			"live_query_enabled":         cfg.LiveQueryEnabled,
+			"manifest_trusted_pool_only": true,
+			"private_network":            cfg.PrivateNetwork,
+			"send_user_context":          cfg.SendUserContext,
+			"share_provider_backbone":    cfg.ShareProviderBackbone,
+			"share_source_indexer_hash":  cfg.ShareSourceIndexer,
+		},
+		Publisher: map[string]any{
+			"checksum_validation_enabled":        cfg.ChecksumValidationEnabled,
+			"health_attestations_batch_size":     cfg.HealthAttestationsBatchSize,
+			"health_attestations_enabled":        cfg.HealthAttestationsEnabled,
+			"health_attestations_interval_min":   cfg.HealthAttestationsIntervalMin,
+			"manifest_availability_enabled":      cfg.ManifestAvailabilityEnabled,
+			"publish_release_cards_batch_size":   cfg.PublishReleaseCardsBatchSize,
+			"publish_release_cards_enabled":      cfg.PublishReleaseCardsEnabled,
+			"publish_release_cards_interval_min": cfg.PublishReleaseCardsIntervalMin,
+			"validation_batch_size":              cfg.ValidationBatchSize,
+			"validation_interval_min":            cfg.ValidationIntervalMin,
+		},
+		Sync: map[string]any{
+			"pull_sync_enabled":      cfg.PullSyncEnabled,
+			"pull_sync_interval_min": cfg.PullSyncIntervalMin,
+			"push_sync_batch_size":   cfg.PushSyncBatchSize,
+			"push_sync_enabled":      cfg.PushSyncEnabled,
+			"push_sync_interval_min": cfg.PushSyncIntervalMin,
+		},
+		Gossip: map[string]any{
+			"gossip_batch_size":        cfg.GossipBatchSize,
+			"gossip_fanout":            cfg.GossipFanout,
+			"gossip_interval_min":      cfg.GossipIntervalMin,
+			"gossip_ttl":               cfg.GossipTTL,
+			"peer_exchange_enabled":    cfg.PeerExchangeEnabled,
+			"websocket_gossip_enabled": cfg.WebSocketGossipEnabled,
+		},
+		RedactedSensitiveConfigNames: []string{
+			"gonzbnet.key_password",
+			"gonzbnet.manual_peers",
+			"gonzbnet.relay_api_key",
+		},
+	}
 }

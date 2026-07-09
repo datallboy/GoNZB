@@ -153,6 +153,8 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		v1AdminGoNZBNet.Use(authMiddleware(authSvc, false, auth.PermissionGoNZBNetAdminPools))
 		v1AdminGoNZBNet.Use(csrfProtectionMiddleware())
 		v1AdminGoNZBNet.Use(auditLogMiddleware(appCtx, "admin.gonzbnet"))
+		v1AdminGoNZBNet.GET("/node/profile", gonzbnetAdminCtrl.NodeProfile)
+		v1AdminGoNZBNet.GET("/config/validation", gonzbnetAdminCtrl.ConfigValidation)
 		v1AdminGoNZBNet.GET("/pools", gonzbnetAdminCtrl.ListPools)
 		v1AdminGoNZBNet.POST("/pools", gonzbnetAdminCtrl.UpsertPool)
 		v1AdminGoNZBNet.GET("/pools/:pool_id/members", gonzbnetAdminCtrl.ListPoolMembers)
