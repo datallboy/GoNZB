@@ -16,6 +16,7 @@ import (
 	"github.com/datallboy/gonzb/internal/gonzbnet/health"
 	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
 	"github.com/datallboy/gonzb/internal/gonzbnet/manifest"
+	"github.com/datallboy/gonzb/internal/gonzbnet/moderation"
 	"github.com/datallboy/gonzb/internal/gonzbnet/pools"
 	"github.com/datallboy/gonzb/internal/gonzbnet/profile"
 	"github.com/datallboy/gonzb/internal/gonzbnet/releasecard"
@@ -46,6 +47,7 @@ type gonzbnetStore interface {
 	GetResolutionManifestEvent(ctx context.Context, manifestID string) (*events.SignedEvent, error)
 	CanFetchResolutionManifest(ctx context.Context, manifestID, nodeID string) (bool, error)
 	ProjectHealthAttestation(ctx context.Context, projection pgindex.HealthAttestationProjection) error
+	ProjectTombstone(ctx context.Context, projection pgindex.TombstoneProjection) error
 }
 
 type outboxResponse struct {
@@ -479,6 +481,19 @@ func (ctrl *GoNZBNetController) acceptInboxEvent(ctx context.Context, store gonz
 			PoolID:       poolID,
 		}
 	}
+	var tombstoneProjection *pgindex.TombstoneProjection
+	if event.EventType == pools.EventTypeTombstone {
+		var tombstone moderation.Tombstone
+		if err := json.Unmarshal(event.Body, &tombstone); err != nil {
+			_ = store.AppendRejectedFederationEvent(ctx, event.EventID, event.AuthorNodeID, event.EventType, raw, "invalid tombstone body")
+			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "invalid_body", Message: "invalid tombstone body"}
+		}
+		tombstoneProjection = &pgindex.TombstoneProjection{
+			Tombstone:    tombstone,
+			EventID:      event.EventID,
+			AuthorNodeID: event.AuthorNodeID,
+		}
+	}
 	if err := store.AppendVerifiedFederationEvent(ctx, event, validation); err != nil {
 		return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "store_error", Message: err.Error()}
 	}
@@ -494,6 +509,11 @@ func (ctrl *GoNZBNetController) acceptInboxEvent(ctx context.Context, store gonz
 	}
 	if healthProjection != nil {
 		if err := store.ProjectHealthAttestation(ctx, *healthProjection); err != nil {
+			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "projection_failed", Message: err.Error()}
+		}
+	}
+	if tombstoneProjection != nil {
+		if err := store.ProjectTombstone(ctx, *tombstoneProjection); err != nil {
 			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "projection_failed", Message: err.Error()}
 		}
 	}

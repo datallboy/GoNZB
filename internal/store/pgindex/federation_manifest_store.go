@@ -42,6 +42,18 @@ func (s *Store) GetCachedFederatedNZBByReleaseID(ctx context.Context, releaseID 
 		WHERE c.release_id = $1
 		  AND rm.validation_status = 'accepted'
 		  AND rm.generated_nzb IS NOT NULL
+		  AND NOT EXISTS (
+		    SELECT 1
+		    FROM tombstones t
+		    WHERE t.active = TRUE
+		      AND t.severity IN ('reject', 'local_only')
+		      AND (t.expires_at IS NULL OR t.expires_at > NOW())
+		      AND t.effective_at <= NOW()
+		      AND (
+		        (t.target_type = 'release' AND t.target_id = c.release_id)
+		        OR (t.target_type = 'manifest' AND t.target_id = rm.manifest_id)
+		      )
+		  )
 		LIMIT 1`, strings.TrimSpace(releaseID)).Scan(&payload)
 	if err == nil {
 		return payload, true, nil
@@ -66,6 +78,19 @@ func (s *Store) FindFederatedManifestSource(ctx context.Context, releaseID strin
 		WHERE c.release_id = $1
 		  AND c.manifest_id IS NOT NULL
 		  AND fs.advertised = TRUE
+		  AND NOT EXISTS (
+		    SELECT 1
+		    FROM tombstones t
+		    WHERE t.active = TRUE
+		      AND t.severity IN ('reject', 'local_only')
+		      AND (t.expires_at IS NULL OR t.expires_at > NOW())
+		      AND t.effective_at <= NOW()
+		      AND (
+		        (t.target_type = 'release' AND t.target_id = c.release_id)
+		        OR (t.target_type = 'manifest' AND t.target_id = c.manifest_id)
+		      )
+		      AND (t.pool_id IS NULL OR t.pool_id = fs.pool_id)
+		  )
 		ORDER BY fs.trust_score DESC, fs.last_success_at DESC NULLS LAST, fs.updated_at DESC
 		LIMIT 1`, strings.TrimSpace(releaseID)).Scan(
 		&out.ManifestID,
@@ -160,7 +185,17 @@ func (s *Store) GetResolutionManifest(ctx context.Context, manifestID string) (*
 		SELECT body_json
 		FROM resolution_manifests
 		WHERE manifest_id = $1
-		  AND validation_status = 'accepted'`, strings.TrimSpace(manifestID)).Scan(&body)
+		  AND validation_status = 'accepted'
+		  AND NOT EXISTS (
+		    SELECT 1
+		    FROM tombstones t
+		    WHERE t.active = TRUE
+		      AND t.severity IN ('reject', 'local_only')
+		      AND (t.expires_at IS NULL OR t.expires_at > NOW())
+		      AND t.effective_at <= NOW()
+		      AND t.target_type = 'manifest'
+		      AND t.target_id = resolution_manifests.manifest_id
+		  )`, strings.TrimSpace(manifestID)).Scan(&body)
 	if isNoRows(err) {
 		return nil, nil
 	}
@@ -203,7 +238,17 @@ func (s *Store) GetResolutionManifestEvent(ctx context.Context, manifestID strin
 		FROM resolution_manifests
 		WHERE manifest_id = $1
 		  AND validation_status = 'accepted'
-		  AND source_event_id IS NOT NULL`, strings.TrimSpace(manifestID)).Scan(&eventID)
+		  AND source_event_id IS NOT NULL
+		  AND NOT EXISTS (
+		    SELECT 1
+		    FROM tombstones t
+		    WHERE t.active = TRUE
+		      AND t.severity IN ('reject', 'local_only')
+		      AND (t.expires_at IS NULL OR t.expires_at > NOW())
+		      AND t.effective_at <= NOW()
+		      AND t.target_type = 'manifest'
+		      AND t.target_id = resolution_manifests.manifest_id
+		  )`, strings.TrimSpace(manifestID)).Scan(&eventID)
 	if isNoRows(err) {
 		return nil, nil
 	}
