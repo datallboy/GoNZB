@@ -61,6 +61,8 @@ Current implementation state:
   pull/push/gossip sync triggers.
 - Addendum Phase L aligns local RBAC with the remaining core and optional-module
   GoNZBNet permission names.
+- Addendum Phase M adds local admin diagnostics for release sources, manifest
+  sources, health attestations, and node reputation/trust visibility.
 
 Maintained pages:
 
@@ -87,3 +89,4 @@ Maintained pages:
 - [Phase J Pool And Moderation UI](./phase-j-pool-moderation-ui.md)
 - [Phase K Peer Management](./phase-k-peer-management.md)
 - [Phase L RBAC Alignment](./phase-l-rbac-alignment.md)
+- [Phase M Source And Health Diagnostics](./phase-m-source-health-diagnostics.md)

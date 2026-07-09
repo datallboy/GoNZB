@@ -81,6 +81,68 @@ type ValidationTaskDiagnostic struct {
 	UpdatedAt       time.Time  `json:"updated_at"`
 }
 
+type FederatedReleaseSourceDiagnostic struct {
+	ReleaseID               string     `json:"release_id"`
+	ManifestID              string     `json:"manifest_id"`
+	Title                   string     `json:"title"`
+	SourceNodeID            string     `json:"source_node_id"`
+	SourceEventID           string     `json:"source_event_id"`
+	PoolID                  string     `json:"pool_id"`
+	TrustScore              float64    `json:"trust_score"`
+	AvailabilityScore       float64    `json:"availability_score"`
+	ManifestConfidenceScore float64    `json:"manifest_confidence_score"`
+	Resolvable              bool       `json:"resolvable"`
+	PostedAt                *time.Time `json:"posted_at,omitempty"`
+	FirstSeenAt             time.Time  `json:"first_seen_at"`
+	LastSeenAt              time.Time  `json:"last_seen_at"`
+}
+
+type FederatedManifestSourceDiagnostic struct {
+	ManifestID    string     `json:"manifest_id"`
+	ReleaseID     string     `json:"release_id"`
+	SourceNodeID  string     `json:"source_node_id"`
+	PoolID        string     `json:"pool_id"`
+	Advertised    bool       `json:"advertised"`
+	LastSuccessAt *time.Time `json:"last_success_at,omitempty"`
+	LastFailureAt *time.Time `json:"last_failure_at,omitempty"`
+	FailureCount  int        `json:"failure_count"`
+	AvgLatencyMS  int        `json:"avg_latency_ms"`
+	TrustScore    float64    `json:"trust_score"`
+	UpdatedAt     time.Time  `json:"updated_at"`
+}
+
+type HealthAttestationDiagnostic struct {
+	AttestationID         string    `json:"attestation_id"`
+	ManifestID            string    `json:"manifest_id"`
+	ReleaseID             string    `json:"release_id"`
+	AuthorNodeID          string    `json:"author_node_id"`
+	PoolID                string    `json:"pool_id"`
+	CheckedAt             time.Time `json:"checked_at"`
+	Status                string    `json:"status"`
+	ArticlesTotal         int       `json:"articles_total"`
+	ArticlesAvailable     int       `json:"articles_available"`
+	MissingArticles       int       `json:"missing_articles"`
+	RepairAvailable       bool      `json:"repair_available"`
+	RepairConfidence      float64   `json:"repair_confidence"`
+	RetentionDaysObserved int       `json:"retention_days_observed"`
+	Confidence            float64   `json:"confidence"`
+	AvailabilityScore     float64   `json:"availability_score"`
+	Method                string    `json:"method"`
+	SourceEventID         string    `json:"source_event_id"`
+	UpdatedAt             time.Time `json:"updated_at"`
+}
+
+type ReputationDiagnostic struct {
+	ID              int64     `json:"id"`
+	NodeID          string    `json:"node_id"`
+	PoolID          string    `json:"pool_id"`
+	EventID         string    `json:"event_id"`
+	Delta           float64   `json:"delta"`
+	Reason          string    `json:"reason"`
+	LocalTrustScore float64   `json:"local_trust_score"`
+	CreatedAt       time.Time `json:"created_at"`
+}
+
 func (s *Store) ListFederationPeerDiagnostics(ctx context.Context, limit int) ([]FederationPeerDiagnostic, error) {
 	if s == nil || s.db == nil {
 		return nil, fmt.Errorf("pgindex store is not initialized")
@@ -231,6 +293,158 @@ func (s *Store) ListValidationTaskDiagnostics(ctx context.Context, limit int) ([
 		}
 		item.ClaimedAt = claimedAt.ptr()
 		item.CompletedAt = completedAt.ptr()
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ListFederatedReleaseSourceDiagnostics(ctx context.Context, poolID string, limit int) ([]FederatedReleaseSourceDiagnostic, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("pgindex store is not initialized")
+	}
+	limit = clampDiagnosticsLimit(limit, 100)
+	poolID = strings.TrimSpace(poolID)
+	clauses := []string{"1=1"}
+	args := []any{}
+	arg := 1
+	if poolID != "" {
+		clauses = append(clauses, fmt.Sprintf("s.pool_id = $%d", arg))
+		args = append(args, poolID)
+		arg++
+	}
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`
+		SELECT s.release_id, COALESCE(s.manifest_id, ''), c.title,
+		       s.source_node_id, s.source_event_id, s.pool_id, s.trust_score,
+		       s.availability_score, s.manifest_confidence_score, s.resolvable,
+		       c.posted_at, s.first_seen_at, s.last_seen_at
+		FROM federated_release_sources s
+		JOIN federated_release_cards c ON c.release_id = s.release_id
+		WHERE %s
+		ORDER BY s.last_seen_at DESC, s.release_id
+		LIMIT $%d`, strings.Join(clauses, " AND "), arg), args...)
+	if err != nil {
+		return nil, fmt.Errorf("list federated release source diagnostics: %w", err)
+	}
+	defer rows.Close()
+	out := []FederatedReleaseSourceDiagnostic{}
+	for rows.Next() {
+		var item FederatedReleaseSourceDiagnostic
+		var postedAt nullableTime
+		if err := rows.Scan(&item.ReleaseID, &item.ManifestID, &item.Title, &item.SourceNodeID, &item.SourceEventID, &item.PoolID, &item.TrustScore, &item.AvailabilityScore, &item.ManifestConfidenceScore, &item.Resolvable, &postedAt, &item.FirstSeenAt, &item.LastSeenAt); err != nil {
+			return nil, err
+		}
+		item.PostedAt = postedAt.ptr()
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ListFederatedManifestSourceDiagnostics(ctx context.Context, poolID string, limit int) ([]FederatedManifestSourceDiagnostic, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("pgindex store is not initialized")
+	}
+	limit = clampDiagnosticsLimit(limit, 100)
+	poolID = strings.TrimSpace(poolID)
+	clauses := []string{"1=1"}
+	args := []any{}
+	arg := 1
+	if poolID != "" {
+		clauses = append(clauses, fmt.Sprintf("pool_id = $%d", arg))
+		args = append(args, poolID)
+		arg++
+	}
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`
+		SELECT manifest_id, COALESCE(release_id, ''), source_node_id, pool_id,
+		       advertised, last_success_at, last_failure_at, failure_count,
+		       COALESCE(avg_latency_ms, 0), trust_score, updated_at
+		FROM federated_manifest_sources
+		WHERE %s
+		ORDER BY updated_at DESC, manifest_id
+		LIMIT $%d`, strings.Join(clauses, " AND "), arg), args...)
+	if err != nil {
+		return nil, fmt.Errorf("list federated manifest source diagnostics: %w", err)
+	}
+	defer rows.Close()
+	out := []FederatedManifestSourceDiagnostic{}
+	for rows.Next() {
+		var item FederatedManifestSourceDiagnostic
+		var lastSuccessAt, lastFailureAt nullableTime
+		if err := rows.Scan(&item.ManifestID, &item.ReleaseID, &item.SourceNodeID, &item.PoolID, &item.Advertised, &lastSuccessAt, &lastFailureAt, &item.FailureCount, &item.AvgLatencyMS, &item.TrustScore, &item.UpdatedAt); err != nil {
+			return nil, err
+		}
+		item.LastSuccessAt = lastSuccessAt.ptr()
+		item.LastFailureAt = lastFailureAt.ptr()
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ListHealthAttestationDiagnostics(ctx context.Context, poolID string, limit int) ([]HealthAttestationDiagnostic, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("pgindex store is not initialized")
+	}
+	limit = clampDiagnosticsLimit(limit, 100)
+	poolID = strings.TrimSpace(poolID)
+	clauses := []string{"1=1"}
+	args := []any{}
+	arg := 1
+	if poolID != "" {
+		clauses = append(clauses, fmt.Sprintf("pool_id = $%d", arg))
+		args = append(args, poolID)
+		arg++
+	}
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`
+		SELECT attestation_id, COALESCE(manifest_id, ''), release_id,
+		       author_node_id, COALESCE(pool_id, ''), checked_at, status,
+		       COALESCE(articles_total, 0), COALESCE(articles_available, 0),
+		       COALESCE(missing_articles, 0), COALESCE(repair_available, FALSE),
+		       repair_confidence, COALESCE(retention_days_observed, 0),
+		       confidence, availability_score, COALESCE(method, ''),
+		       source_event_id, updated_at
+		FROM health_attestations
+		WHERE %s
+		ORDER BY checked_at DESC, attestation_id
+		LIMIT $%d`, strings.Join(clauses, " AND "), arg), args...)
+	if err != nil {
+		return nil, fmt.Errorf("list health attestation diagnostics: %w", err)
+	}
+	defer rows.Close()
+	out := []HealthAttestationDiagnostic{}
+	for rows.Next() {
+		var item HealthAttestationDiagnostic
+		if err := rows.Scan(&item.AttestationID, &item.ManifestID, &item.ReleaseID, &item.AuthorNodeID, &item.PoolID, &item.CheckedAt, &item.Status, &item.ArticlesTotal, &item.ArticlesAvailable, &item.MissingArticles, &item.RepairAvailable, &item.RepairConfidence, &item.RetentionDaysObserved, &item.Confidence, &item.AvailabilityScore, &item.Method, &item.SourceEventID, &item.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ListReputationDiagnostics(ctx context.Context, limit int) ([]ReputationDiagnostic, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("pgindex store is not initialized")
+	}
+	limit = clampDiagnosticsLimit(limit, 100)
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT r.id, r.node_id, COALESCE(r.pool_id, ''), COALESCE(r.event_id, ''),
+		       r.delta, r.reason, COALESCE(n.local_trust_score, 0), r.created_at
+		FROM reputation_events r
+		JOIN federation_nodes n ON n.node_id = r.node_id
+		ORDER BY r.created_at DESC, r.id DESC
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list reputation diagnostics: %w", err)
+	}
+	defer rows.Close()
+	out := []ReputationDiagnostic{}
+	for rows.Next() {
+		var item ReputationDiagnostic
+		if err := rows.Scan(&item.ID, &item.NodeID, &item.PoolID, &item.EventID, &item.Delta, &item.Reason, &item.LocalTrustScore, &item.CreatedAt); err != nil {
+			return nil, err
+		}
 		out = append(out, item)
 	}
 	return out, rows.Err()
