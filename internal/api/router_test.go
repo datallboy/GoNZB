@@ -122,6 +122,7 @@ func TestRegisterRoutesGoNZBNetOnly(t *testing.T) {
 	assertRoutePresent(t, routes, "/gonzbnet/v1/inbox")
 	assertRoutePresent(t, routes, "/gonzbnet/v1/events/batch")
 	assertRoutePresent(t, routes, "/gonzbnet/v1/pools/:pool_id/members")
+	assertRoutePresent(t, routes, "/gonzbnet/v1/peers")
 	assertRoutePresent(t, routes, "/api/v1/admin/gonzbnet/node/profile")
 	assertRoutePresent(t, routes, "/api/v1/admin/gonzbnet/config/validation")
 	assertRouteMissing(t, routes, "/api/v1/releases/search")
@@ -153,6 +154,7 @@ func TestRegisterRoutesGoNZBNetHTTPDisabledKeepsLocalAdmin(t *testing.T) {
 	assertRouteMissing(t, routes, "/gonzbnet/v1/inbox")
 	assertRouteMissing(t, routes, "/gonzbnet/v1/events/batch")
 	assertRouteMissing(t, routes, "/gonzbnet/v1/pools/:pool_id/members")
+	assertRouteMissing(t, routes, "/gonzbnet/v1/peers")
 	assertRoutePresent(t, routes, "/api/v1/admin/gonzbnet/node/profile")
 	assertRoutePresent(t, routes, "/api/v1/admin/gonzbnet/config/validation")
 }
@@ -182,6 +184,7 @@ func TestRegisterRoutesGoNZBNetDisabledOmitsFederationRoutes(t *testing.T) {
 	assertRouteMissing(t, routes, "/gonzbnet/v1/inbox")
 	assertRouteMissing(t, routes, "/gonzbnet/v1/events/batch")
 	assertRouteMissing(t, routes, "/gonzbnet/v1/pools/:pool_id/members")
+	assertRouteMissing(t, routes, "/gonzbnet/v1/peers")
 	assertRouteMissing(t, routes, "/api/v1/admin/gonzbnet/node/profile")
 	assertRouteMissing(t, routes, "/api/v1/admin/gonzbnet/config/validation")
 }
