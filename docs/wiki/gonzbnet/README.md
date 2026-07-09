@@ -55,6 +55,8 @@ Current implementation state:
   coverage, scheduler, validation-gap, and manual signed coverage workflows.
 - Addendum Phase I adds local admin diagnostics for peers, accepted/rejected
   events, peer deliveries, and validation task state.
+- Addendum Phase J adds local trust-pool, pool-member, and tombstone moderation
+  workflows to the GoNZBNet admin WebUI.
 
 Maintained pages:
 
@@ -78,3 +80,4 @@ Maintained pages:
 - [Phase G Addendum Checklist Gaps](./phase-g-addendum-checklist-gaps.md)
 - [Phase H Admin UI](./phase-h-admin-ui.md)
 - [Phase I Admin Diagnostics](./phase-i-admin-diagnostics.md)
+- [Phase J Pool And Moderation UI](./phase-j-pool-moderation-ui.md)

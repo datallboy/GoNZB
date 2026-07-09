@@ -5,18 +5,25 @@ import {
   createGoNZBNetCoverageClaim,
   createGoNZBNetCoverageComplete,
   createGoNZBNetCoverageFailed,
+  createGoNZBNetTombstone,
   getGoNZBNetCoverageDashboard,
   getGoNZBNetCoverageGroups,
   getGoNZBNetCoveragePlan,
   getGoNZBNetCoverageSuggestions,
   getGoNZBNetEventDiagnostics,
   getGoNZBNetNodeCapabilities,
+  getGoNZBNetPoolMembers,
   getGoNZBNetPeerDeliveryDiagnostics,
   getGoNZBNetPeerDiagnostics,
   getGoNZBNetRejectedEventDiagnostics,
+  getGoNZBNetTombstones,
+  getGoNZBNetTrustPools,
   getGoNZBNetValidationTaskDiagnostics,
   getGoNZBNetValidationGaps,
   materializeGoNZBNetStalePenalties,
+  revokeGoNZBNetPoolMember,
+  upsertGoNZBNetPoolMember,
+  upsertGoNZBNetTrustPool,
 } from '../../shared/api/admin'
 import { formatDateTime, formatNumber } from '../../shared/lib/format'
 import type {
@@ -31,7 +38,10 @@ import type {
   GoNZBNetNodeCapability,
   GoNZBNetPeerDeliveryDiagnostic,
   GoNZBNetPeerDiagnostic,
+  GoNZBNetPoolMember,
   GoNZBNetRejectedEventDiagnostic,
+  GoNZBNetTombstone,
+  GoNZBNetTrustPool,
   GoNZBNetValidationTaskDiagnostic,
   GoNZBNetValidationGap,
 } from '../../shared/types'
@@ -66,6 +76,37 @@ type OutcomeForm = {
   reason: string
 }
 
+type PoolForm = {
+  pool_id: string
+  display_name: string
+  description: string
+  membership_threshold: string
+  moderation_threshold: string
+  checkpoint_witness_threshold: string
+  accept_mode: string
+  min_node_trust_score: string
+  accepted_event_types: string
+  enabled: boolean
+}
+
+type MemberForm = {
+  node_id: string
+  role: string
+  status: string
+  allowed_capabilities: string
+}
+
+type TombstoneForm = {
+  target_type: string
+  target_id: string
+  pool_id: string
+  severity: string
+  reason: string
+  evidence_event_ids: string
+  effective_at: string
+  expires_at: string
+}
+
 const defaultPoolID = 'pool.local'
 
 const defaultAssignmentForm: AssignmentForm = {
@@ -96,6 +137,37 @@ const defaultOutcomeForm: OutcomeForm = {
   reason: '',
 }
 
+const defaultPoolForm: PoolForm = {
+  pool_id: defaultPoolID,
+  display_name: 'Local Pool',
+  description: '',
+  membership_threshold: '1',
+  moderation_threshold: '1',
+  checkpoint_witness_threshold: '1',
+  accept_mode: 'pool_member',
+  min_node_trust_score: '0',
+  accepted_event_types: '',
+  enabled: true,
+}
+
+const defaultMemberForm: MemberForm = {
+  node_id: '',
+  role: 'member',
+  status: 'active',
+  allowed_capabilities: 'consumer',
+}
+
+const defaultTombstoneForm: TombstoneForm = {
+  target_type: 'release',
+  target_id: '',
+  pool_id: '',
+  severity: 'local_only',
+  reason: '',
+  evidence_event_ids: '',
+  effective_at: '',
+  expires_at: '',
+}
+
 function optionalNumber(value: string) {
   const trimmed = value.trim()
   if (!trimmed) {
@@ -107,6 +179,13 @@ function optionalNumber(value: string) {
 
 function requiredNumber(value: string) {
   return optionalNumber(value) ?? 0
+}
+
+function csvList(value: string) {
+  return value
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
 }
 
 function label(value?: string | number | null, fallback = 'n/a') {
@@ -294,10 +373,16 @@ export function AdminGoNZBNetPage() {
   const [rejectedDiagnostics, setRejectedDiagnostics] = useState<GoNZBNetRejectedEventDiagnostic[]>([])
   const [deliveryDiagnostics, setDeliveryDiagnostics] = useState<GoNZBNetPeerDeliveryDiagnostic[]>([])
   const [validationTaskDiagnostics, setValidationTaskDiagnostics] = useState<GoNZBNetValidationTaskDiagnostic[]>([])
+  const [trustPools, setTrustPools] = useState<GoNZBNetTrustPool[]>([])
+  const [poolMembers, setPoolMembers] = useState<GoNZBNetPoolMember[]>([])
+  const [tombstones, setTombstones] = useState<GoNZBNetTombstone[]>([])
   const [assignmentForm, setAssignmentForm] = useState<AssignmentForm>(defaultAssignmentForm)
   const [claimForm, setClaimForm] = useState<ClaimForm>(defaultClaimForm)
   const [completeForm, setCompleteForm] = useState<OutcomeForm>(defaultOutcomeForm)
   const [failedForm, setFailedForm] = useState<OutcomeForm>(defaultOutcomeForm)
+  const [poolForm, setPoolForm] = useState<PoolForm>(defaultPoolForm)
+  const [memberForm, setMemberForm] = useState<MemberForm>(defaultMemberForm)
+  const [tombstoneForm, setTombstoneForm] = useState<TombstoneForm>(defaultTombstoneForm)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [actionStatus, setActionStatus] = useState<string | null>(null)
@@ -320,6 +405,9 @@ export function AdminGoNZBNetPage() {
         nextRejected,
         nextDeliveries,
         nextValidationTasks,
+        nextTrustPools,
+        nextPoolMembers,
+        nextTombstones,
       ] =
         await Promise.all([
           getGoNZBNetNodeCapabilities(),
@@ -333,6 +421,9 @@ export function AdminGoNZBNetPage() {
           getGoNZBNetRejectedEventDiagnostics(100),
           getGoNZBNetPeerDeliveryDiagnostics(100),
           getGoNZBNetValidationTaskDiagnostics(100),
+          getGoNZBNetTrustPools(),
+          getGoNZBNetPoolMembers(effectivePoolID),
+          getGoNZBNetTombstones(false).catch(() => ({ items: [], count: 0 })),
         ])
       setNodes(nextNodes.items ?? [])
       setDashboard(nextDashboard)
@@ -345,6 +436,9 @@ export function AdminGoNZBNetPage() {
       setRejectedDiagnostics(nextRejected.items ?? [])
       setDeliveryDiagnostics(nextDeliveries.items ?? [])
       setValidationTaskDiagnostics(nextValidationTasks.items ?? [])
+      setTrustPools(nextTrustPools.items ?? [])
+      setPoolMembers(nextPoolMembers.items ?? [])
+      setTombstones(nextTombstones.items ?? [])
       setError(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load GoNZBNet admin state')
@@ -375,6 +469,76 @@ export function AdminGoNZBNetPage() {
       await refresh()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create coverage assignment')
+    }
+  }
+
+  async function handlePool(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    try {
+      const response = await upsertGoNZBNetTrustPool({
+        pool_id: poolForm.pool_id.trim() || effectivePoolID,
+        display_name: poolForm.display_name.trim(),
+        description: poolForm.description.trim() || undefined,
+        membership_threshold: optionalNumber(poolForm.membership_threshold),
+        moderation_threshold: optionalNumber(poolForm.moderation_threshold),
+        checkpoint_witness_threshold: optionalNumber(poolForm.checkpoint_witness_threshold),
+        accept_mode: poolForm.accept_mode.trim() || undefined,
+        min_node_trust_score: optionalNumber(poolForm.min_node_trust_score),
+        accepted_event_types: csvList(poolForm.accepted_event_types),
+        enabled: poolForm.enabled,
+      })
+      setActionStatus(`Pool saved ${response.status}`)
+      await refresh()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save trust pool')
+    }
+  }
+
+  async function handleMember(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    try {
+      const response = await upsertGoNZBNetPoolMember(effectivePoolID, {
+        node_id: memberForm.node_id.trim(),
+        role: memberForm.role.trim() || undefined,
+        status: memberForm.status.trim() || undefined,
+        allowed_capabilities: csvList(memberForm.allowed_capabilities),
+      })
+      setActionStatus(`Pool member saved ${response.status}`)
+      setMemberForm(defaultMemberForm)
+      await refresh()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save pool member')
+    }
+  }
+
+  async function handleRevokeMember(nodeID: string) {
+    try {
+      const response = await revokeGoNZBNetPoolMember(effectivePoolID, nodeID)
+      setActionStatus(`Pool member revoked ${response.status}`)
+      await refresh()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to revoke pool member')
+    }
+  }
+
+  async function handleTombstone(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    try {
+      const response = await createGoNZBNetTombstone({
+        target_type: tombstoneForm.target_type.trim(),
+        target_id: tombstoneForm.target_id.trim(),
+        pool_id: tombstoneForm.pool_id.trim() || undefined,
+        severity: tombstoneForm.severity.trim() || undefined,
+        reason: tombstoneForm.reason.trim(),
+        evidence_event_ids: csvList(tombstoneForm.evidence_event_ids),
+        effective_at: tombstoneForm.effective_at.trim() || undefined,
+        expires_at: tombstoneForm.expires_at.trim() || undefined,
+      })
+      setActionStatus(`Tombstone signed ${shortID(response.event_id)}`)
+      setTombstoneForm(defaultTombstoneForm)
+      await refresh()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create tombstone')
     }
   }
 
@@ -489,8 +653,141 @@ export function AdminGoNZBNetPage() {
           <StatCard label="Validation gaps" value={formatNumber(validationGaps.length)} detail={`${formatNumber(duplicates.length)} duplicate ranges`} />
           <StatCard label="Peers" value={formatNumber(peerDiagnostics.length)} detail={`${formatNumber(deliveryDiagnostics.length)} delivery records`} />
           <StatCard label="Event log" value={formatNumber(eventDiagnostics.length)} detail={`${formatNumber(rejectedDiagnostics.length)} rejected events`} />
+          <StatCard label="Trust pools" value={formatNumber(trustPools.length)} detail={`${formatNumber(poolMembers.length)} selected-pool members`} />
+          <StatCard label="Tombstones" value={formatNumber(tombstones.length)} detail={`${formatNumber(tombstones.filter((item) => item.active).length)} active`} />
         </div>
       </div>
+
+      <div className="two-column-grid">
+        <form className="page-card stack" onSubmit={handlePool}>
+          <h2 className="section-title">Trust pool</h2>
+          <div className="toolbar-grid">
+            <label className="field">
+              <span>Pool ID</span>
+              <input className="table-input" required value={poolForm.pool_id} onChange={(event) => setPoolForm({ ...poolForm, pool_id: event.target.value })} />
+            </label>
+            <label className="field">
+              <span>Name</span>
+              <input className="table-input" required value={poolForm.display_name} onChange={(event) => setPoolForm({ ...poolForm, display_name: event.target.value })} />
+            </label>
+            <label className="field">
+              <span>Description</span>
+              <input className="table-input" value={poolForm.description} onChange={(event) => setPoolForm({ ...poolForm, description: event.target.value })} />
+            </label>
+            <label className="field">
+              <span>Accept mode</span>
+              <select className="table-input" value={poolForm.accept_mode} onChange={(event) => setPoolForm({ ...poolForm, accept_mode: event.target.value })}>
+                <option value="pool_member">pool_member</option>
+                <option value="known_node">known_node</option>
+              </select>
+            </label>
+            <label className="field">
+              <span>Membership</span>
+              <input className="table-input" inputMode="numeric" value={poolForm.membership_threshold} onChange={(event) => setPoolForm({ ...poolForm, membership_threshold: event.target.value })} />
+            </label>
+            <label className="field">
+              <span>Moderation</span>
+              <input className="table-input" inputMode="numeric" value={poolForm.moderation_threshold} onChange={(event) => setPoolForm({ ...poolForm, moderation_threshold: event.target.value })} />
+            </label>
+            <label className="field">
+              <span>Witnesses</span>
+              <input className="table-input" inputMode="numeric" value={poolForm.checkpoint_witness_threshold} onChange={(event) => setPoolForm({ ...poolForm, checkpoint_witness_threshold: event.target.value })} />
+            </label>
+            <label className="field">
+              <span>Min trust</span>
+              <input className="table-input" inputMode="decimal" value={poolForm.min_node_trust_score} onChange={(event) => setPoolForm({ ...poolForm, min_node_trust_score: event.target.value })} />
+            </label>
+            <label className="field">
+              <span>Event types</span>
+              <input className="table-input" value={poolForm.accepted_event_types} onChange={(event) => setPoolForm({ ...poolForm, accepted_event_types: event.target.value })} />
+            </label>
+            <label className="checkbox-inline align-end">
+              <input type="checkbox" checked={poolForm.enabled} onChange={(event) => setPoolForm({ ...poolForm, enabled: event.target.checked })} />
+              <span>Enabled</span>
+            </label>
+          </div>
+          <button className="primary-button align-end" type="submit">Save pool</button>
+        </form>
+
+        <form className="page-card stack" onSubmit={handleMember}>
+          <h2 className="section-title">Pool member</h2>
+          <div className="toolbar-grid">
+            <label className="field">
+              <span>Node ID</span>
+              <input className="table-input" required value={memberForm.node_id} onChange={(event) => setMemberForm({ ...memberForm, node_id: event.target.value })} />
+            </label>
+            <label className="field">
+              <span>Role</span>
+              <select className="table-input" value={memberForm.role} onChange={(event) => setMemberForm({ ...memberForm, role: event.target.value })}>
+                <option value="member">member</option>
+                <option value="admin">admin</option>
+                <option value="witness">witness</option>
+              </select>
+            </label>
+            <label className="field">
+              <span>Status</span>
+              <select className="table-input" value={memberForm.status} onChange={(event) => setMemberForm({ ...memberForm, status: event.target.value })}>
+                <option value="active">active</option>
+                <option value="pending">pending</option>
+                <option value="revoked">revoked</option>
+              </select>
+            </label>
+            <label className="field">
+              <span>Capabilities</span>
+              <input className="table-input" value={memberForm.allowed_capabilities} onChange={(event) => setMemberForm({ ...memberForm, allowed_capabilities: event.target.value })} />
+            </label>
+          </div>
+          <button className="primary-button align-end" type="submit">Save member</button>
+        </form>
+      </div>
+
+      <form className="page-card stack" onSubmit={handleTombstone}>
+        <h2 className="section-title">Tombstone</h2>
+        <div className="toolbar-grid">
+          <label className="field">
+            <span>Target type</span>
+            <select className="table-input" value={tombstoneForm.target_type} onChange={(event) => setTombstoneForm({ ...tombstoneForm, target_type: event.target.value })}>
+              <option value="release">release</option>
+              <option value="manifest">manifest</option>
+              <option value="node">node</option>
+              <option value="event">event</option>
+            </select>
+          </label>
+          <label className="field">
+            <span>Target ID</span>
+            <input className="table-input" required value={tombstoneForm.target_id} onChange={(event) => setTombstoneForm({ ...tombstoneForm, target_id: event.target.value })} />
+          </label>
+          <label className="field">
+            <span>Pool</span>
+            <input className="table-input" value={tombstoneForm.pool_id} onChange={(event) => setTombstoneForm({ ...tombstoneForm, pool_id: event.target.value })} />
+          </label>
+          <label className="field">
+            <span>Severity</span>
+            <select className="table-input" value={tombstoneForm.severity} onChange={(event) => setTombstoneForm({ ...tombstoneForm, severity: event.target.value })}>
+              <option value="local_only">local_only</option>
+              <option value="reject">reject</option>
+              <option value="hide">hide</option>
+            </select>
+          </label>
+          <label className="field">
+            <span>Reason</span>
+            <input className="table-input" required value={tombstoneForm.reason} onChange={(event) => setTombstoneForm({ ...tombstoneForm, reason: event.target.value })} />
+          </label>
+          <label className="field">
+            <span>Evidence</span>
+            <input className="table-input" value={tombstoneForm.evidence_event_ids} onChange={(event) => setTombstoneForm({ ...tombstoneForm, evidence_event_ids: event.target.value })} />
+          </label>
+          <label className="field">
+            <span>Effective at</span>
+            <input className="table-input" value={tombstoneForm.effective_at} onChange={(event) => setTombstoneForm({ ...tombstoneForm, effective_at: event.target.value })} />
+          </label>
+          <label className="field">
+            <span>Expires at</span>
+            <input className="table-input" value={tombstoneForm.expires_at} onChange={(event) => setTombstoneForm({ ...tombstoneForm, expires_at: event.target.value })} />
+          </label>
+        </div>
+        <button className="primary-button align-end" type="submit">Sign tombstone</button>
+      </form>
 
       <div className="two-column-grid">
         <form className="page-card stack" onSubmit={handleAssignment}>
@@ -630,6 +927,100 @@ export function AdminGoNZBNetPage() {
                 <td>{capabilityKeys(node.capabilities).map((key) => <span className="status-pill status-pill--table" key={key}>{key}</span>)}</td>
                 <td>{Object.entries(node.module_status ?? {}).map(([key, value]) => <div key={key}>{key}: {String(value)}</div>)}</td>
                 <td>{formatDateTime(node.updated_at)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </SectionTable>
+
+      <SectionTable title="Trust pools" count={trustPools.length}>
+        <table className="data-table data-table--compact">
+          <thead>
+            <tr>
+              <th>Pool</th>
+              <th>Policy</th>
+              <th>Events</th>
+              <th>Status</th>
+              <th>Updated</th>
+            </tr>
+          </thead>
+          <tbody>
+            {trustPools.map((item) => (
+              <tr key={item.pool_id}>
+                <td className="breakable-value">
+                  {item.display_name}
+                  <div className="muted-copy mono-cell">{item.pool_id}</div>
+                </td>
+                <td>
+                  m{formatNumber(item.membership_threshold)} / mod{formatNumber(item.moderation_threshold)}
+                  <div className="muted-copy">trust {item.min_node_trust_score}</div>
+                </td>
+                <td className="breakable-value">{(item.accepted_event_types ?? []).join(', ')}</td>
+                <td><span className="status-pill status-pill--table">{item.enabled ? item.accept_mode : 'disabled'}</span></td>
+                <td>{formatDateTime(item.updated_at)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </SectionTable>
+
+      <SectionTable title={`Members: ${effectivePoolID}`} count={poolMembers.length}>
+        <table className="data-table data-table--compact">
+          <thead>
+            <tr>
+              <th>Node</th>
+              <th>Role</th>
+              <th>Status</th>
+              <th>Capabilities</th>
+              <th>Joined</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {poolMembers.map((item) => (
+              <tr key={`${item.pool_id}-${item.node_id}`}>
+                <td className="mono-cell breakable-value" title={item.node_id}>{shortID(item.node_id)}</td>
+                <td><span className="status-pill status-pill--table">{item.role}</span></td>
+                <td><span className="status-pill status-pill--table">{item.status}</span></td>
+                <td className="breakable-value">{(item.allowed_capabilities ?? []).join(', ')}</td>
+                <td>{formatDateTime(item.joined_at)}</td>
+                <td>
+                  <button className="secondary-button secondary-button--small" type="button" onClick={() => void handleRevokeMember(item.node_id)}>
+                    Revoke
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </SectionTable>
+
+      <SectionTable title="Tombstones" count={tombstones.length}>
+        <table className="data-table data-table--compact">
+          <thead>
+            <tr>
+              <th>Target</th>
+              <th>Pool</th>
+              <th>Severity</th>
+              <th>Reason</th>
+              <th>Approval</th>
+              <th>Status</th>
+              <th>Updated</th>
+            </tr>
+          </thead>
+          <tbody>
+            {tombstones.map((item) => (
+              <tr key={item.id}>
+                <td className="mono-cell breakable-value" title={item.target_id}>
+                  {item.target_type}
+                  <div className="muted-copy">{shortID(item.target_id)}</div>
+                </td>
+                <td>{label(item.pool_id, 'local')}</td>
+                <td><span className="status-pill status-pill--table">{item.severity}</span></td>
+                <td className="breakable-value">{item.reason}</td>
+                <td>{formatNumber(item.approval_count)} / {formatNumber(item.approvals_required)}</td>
+                <td><span className="status-pill status-pill--table">{item.active ? 'active' : 'inactive'}</span></td>
+                <td>{formatDateTime(item.updated_at)}</td>
               </tr>
             ))}
           </tbody>
