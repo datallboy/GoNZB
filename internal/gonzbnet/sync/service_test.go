@@ -100,6 +100,37 @@ func TestSyncOnceRejectsFutureRemoteEvent(t *testing.T) {
 	}
 }
 
+func TestSyncOnceRejectsNonMemberRemoteEvent(t *testing.T) {
+	ctx := context.Background()
+	localIdentity, err := identity.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("local identity: %v", err)
+	}
+	remoteIdentity, event := testRemoteReleaseCardEvent(t)
+	server := testPeerServer(t, remoteIdentity, []events.SignedEvent{*event})
+	store := &fakeSyncStore{
+		peers: []pgindex.FederationPeerRecord{{ID: 1, PeerURL: server.URL}},
+		authorization: &pgindex.PoolAuthorizationResult{
+			Allowed: false,
+			Reason:  "not_pool_member",
+		},
+	}
+
+	result, err := NewWithOptions(localIdentity, store, nil, Options{AllowInsecurePeerHTTP: true}).SyncOnce(ctx)
+	if err != nil {
+		t.Fatalf("sync once: %v", err)
+	}
+	if result.Accepted != 0 || result.Projected != 0 || result.Rejected != 1 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if len(store.events) != 0 || len(store.projections) != 0 {
+		t.Fatalf("non-member event should not be stored or projected")
+	}
+	if len(store.rejected) != 1 || store.rejected[0] != "not_pool_member" {
+		t.Fatalf("expected non-member rejection, got %+v", store.rejected)
+	}
+}
+
 func TestPushOnceSendsSignedEventBatchAndRecordsDelivery(t *testing.T) {
 	ctx := context.Background()
 	localIdentity, event := testRemoteReleaseCardEvent(t)
@@ -339,6 +370,7 @@ type fakeSyncStore struct {
 	deliveries    []pgindex.FederationDeliveryResult
 	successCursor string
 	failures      []string
+	authorization *pgindex.PoolAuthorizationResult
 }
 
 func (s *fakeSyncStore) UpsertFederationPeerURL(context.Context, string) (int64, error) {
@@ -417,6 +449,9 @@ func (s *fakeSyncStore) ProjectFederationPoolEvent(_ context.Context, _ *events.
 }
 
 func (s *fakeSyncStore) CanAcceptFederationEventForPools(_ context.Context, _ string, _ []string, _ string) (pgindex.PoolAuthorizationResult, error) {
+	if s.authorization != nil {
+		return *s.authorization, nil
+	}
 	return pgindex.PoolAuthorizationResult{Allowed: true}, nil
 }
 

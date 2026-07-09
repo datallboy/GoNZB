@@ -57,6 +57,26 @@ func TestSearchAllAllowsCachedGoNZBNetResultsWithPermission(t *testing.T) {
 	}
 }
 
+func TestGetNZBDeniesGoNZBNetReleaseWithoutPermission(t *testing.T) {
+	store := &fakeManagerStore{}
+	manager := NewManager(store, fakeLogger{}, false, false)
+	source := &fakeCatalogSource{name: gonzbnetSourceName}
+	manager.AddSource(source)
+
+	_, err := manager.GetNZB(context.Background(), &domain.Release{
+		ID:     "gonzbnet:rel_fed",
+		Source: gonzbnetSourceName,
+		GUID:   "rel_fed",
+		Title:  "Federated",
+	})
+	if err == nil {
+		t.Fatal("expected gonzbnet get permission denial")
+	}
+	if source.gets != 0 {
+		t.Fatalf("source should not be called after permission denial")
+	}
+}
+
 type fakeManagerStore struct {
 	searchResults []*domain.Release
 }
@@ -91,3 +111,21 @@ func (fakeLogger) Debug(string, ...interface{}) {}
 func (fakeLogger) Info(string, ...interface{})  {}
 func (fakeLogger) Warn(string, ...interface{})  {}
 func (fakeLogger) Error(string, ...interface{}) {}
+
+type fakeCatalogSource struct {
+	name string
+	gets int
+}
+
+func (s *fakeCatalogSource) Name() string {
+	return s.name
+}
+
+func (s *fakeCatalogSource) Search(context.Context, SearchRequest) ([]*domain.Release, error) {
+	return nil, nil
+}
+
+func (s *fakeCatalogSource) GetNZB(context.Context, *domain.Release) (io.ReadCloser, error) {
+	s.gets++
+	return io.NopCloser(bytes.NewReader([]byte("<nzb/>"))), nil
+}
