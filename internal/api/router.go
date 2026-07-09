@@ -155,6 +155,13 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		v1AdminGoNZBNet.GET("/pools/:pool_id/members", gonzbnetAdminCtrl.ListPoolMembers)
 		v1AdminGoNZBNet.POST("/pools/:pool_id/members", gonzbnetAdminCtrl.UpsertPoolMember)
 		v1AdminGoNZBNet.POST("/pools/:pool_id/members/:node_id/revoke", gonzbnetAdminCtrl.RevokePoolMember)
+
+		v1AdminGoNZBNetModeration := e.Group("/api/v1/admin/gonzbnet", bodyLimitMiddleware(adminJSONBodyLimit, defaultMultipartBodyLimit))
+		v1AdminGoNZBNetModeration.Use(authMiddleware(authSvc, false, auth.PermissionGoNZBNetAdminModeration))
+		v1AdminGoNZBNetModeration.Use(csrfProtectionMiddleware())
+		v1AdminGoNZBNetModeration.Use(auditLogMiddleware(appCtx, "admin.gonzbnet.moderation"))
+		v1AdminGoNZBNetModeration.GET("/moderation/tombstones", gonzbnetAdminCtrl.ListTombstones)
+		v1AdminGoNZBNetModeration.POST("/moderation/tombstones", gonzbnetAdminCtrl.CreateTombstone)
 	}
 
 	var (
