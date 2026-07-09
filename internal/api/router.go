@@ -175,6 +175,17 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		v1AdminGoNZBNet.POST("/coverage/failed", gonzbnetAdminCtrl.CreateCoverageFailed)
 		v1AdminGoNZBNet.POST("/coverage/stale-penalties", gonzbnetAdminCtrl.MaterializeStaleClaimPenalties)
 
+		v1AdminGoNZBNetPeers := e.Group("/api/v1/admin/gonzbnet", bodyLimitMiddleware(adminJSONBodyLimit, defaultMultipartBodyLimit))
+		v1AdminGoNZBNetPeers.Use(authMiddleware(authSvc, false, auth.PermissionGoNZBNetAdminPeers))
+		v1AdminGoNZBNetPeers.Use(csrfProtectionMiddleware())
+		v1AdminGoNZBNetPeers.Use(auditLogMiddleware(appCtx, "admin.gonzbnet.peers"))
+		v1AdminGoNZBNetPeers.POST("/peers", gonzbnetAdminCtrl.UpsertPeer)
+		v1AdminGoNZBNetPeers.POST("/peers/:peer_id/enable", gonzbnetAdminCtrl.EnablePeer)
+		v1AdminGoNZBNetPeers.POST("/peers/:peer_id/disable", gonzbnetAdminCtrl.DisablePeer)
+		v1AdminGoNZBNetPeers.POST("/sync/pull", gonzbnetAdminCtrl.PullSync)
+		v1AdminGoNZBNetPeers.POST("/sync/push", gonzbnetAdminCtrl.PushSync)
+		v1AdminGoNZBNetPeers.POST("/sync/gossip", gonzbnetAdminCtrl.GossipSync)
+
 		v1AdminGoNZBNetModeration := e.Group("/api/v1/admin/gonzbnet", bodyLimitMiddleware(adminJSONBodyLimit, defaultMultipartBodyLimit))
 		v1AdminGoNZBNetModeration.Use(authMiddleware(authSvc, false, auth.PermissionGoNZBNetAdminModeration))
 		v1AdminGoNZBNetModeration.Use(csrfProtectionMiddleware())

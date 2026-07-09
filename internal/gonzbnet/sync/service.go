@@ -68,11 +68,11 @@ type Service struct {
 }
 
 type Result struct {
-	Peers     int
-	Accepted  int
-	Duplicate int
-	Rejected  int
-	Projected int
+	Peers     int `json:"peers"`
+	Accepted  int `json:"accepted"`
+	Duplicate int `json:"duplicate"`
+	Rejected  int `json:"rejected"`
+	Projected int `json:"projected"`
 }
 
 type OutboxPage struct {

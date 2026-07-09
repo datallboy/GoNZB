@@ -1734,3 +1734,25 @@ export type GoNZBNetTombstoneRequest = {
   effective_at?: string
   expires_at?: string
 }
+
+export type GoNZBNetPeerRequest = {
+  peer_url: string
+}
+
+export type GoNZBNetPeerActionResponse = {
+  status: string
+  peer_id?: number
+}
+
+export type GoNZBNetSyncResult = {
+  peers: number
+  accepted: number
+  duplicate: number
+  rejected: number
+  projected: number
+}
+
+export type GoNZBNetSyncActionResponse = {
+  status: string
+  result: GoNZBNetSyncResult
+}

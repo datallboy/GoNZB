@@ -17,6 +17,7 @@ import (
 	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
 	"github.com/datallboy/gonzb/internal/gonzbnet/moderation"
 	"github.com/datallboy/gonzb/internal/gonzbnet/pools"
+	gonzbnetsync "github.com/datallboy/gonzb/internal/gonzbnet/sync"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
 	"github.com/labstack/echo/v5"
 )
@@ -38,6 +39,8 @@ type gonzbnetAdminStore interface {
 	ProjectTombstone(ctx context.Context, projection pgindex.TombstoneProjection) error
 	ListTombstones(ctx context.Context, activeOnly bool) ([]pgindex.TombstoneRecord, error)
 	ProjectCoverageEvent(ctx context.Context, event *events.SignedEvent) error
+	UpsertFederationPeerURL(ctx context.Context, peerURL string) (int64, error)
+	SetFederationPeerEnabled(ctx context.Context, peerID int64, enabled bool) error
 	ListCoverageDashboard(ctx context.Context, poolID string) (pgindex.CoverageDashboard, error)
 	SuggestCoverageWork(ctx context.Context, params pgindex.CoverageWorkSuggestionParams) ([]pgindex.CoverageWorkSuggestion, error)
 	BuildCoverageSchedulerPlan(ctx context.Context, params pgindex.CoverageWorkSuggestionParams) (pgindex.CoverageSchedulerPlan, error)
@@ -71,6 +74,10 @@ type poolMemberRequest struct {
 	Status              string          `json:"status"`
 	AllowedCapabilities []string        `json:"allowed_capabilities"`
 	Limits              json.RawMessage `json:"limits"`
+}
+
+type peerRequest struct {
+	PeerURL string `json:"peer_url"`
 }
 
 type tombstoneRequest struct {
@@ -478,6 +485,89 @@ func (ctrl *GoNZBNetAdminController) CoverageSchedulerPlan(c *echo.Context) erro
 	return c.JSON(http.StatusOK, plan)
 }
 
+func (ctrl *GoNZBNetAdminController) UpsertPeer(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	var req peerRequest
+	if err := decodeJSONBody(c, &req); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	peerID, err := store.UpsertFederationPeerURL(c.Request().Context(), req.PeerURL)
+	if err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"status": "ok", "peer_id": peerID})
+}
+
+func (ctrl *GoNZBNetAdminController) EnablePeer(c *echo.Context) error {
+	return ctrl.setPeerEnabled(c, true)
+}
+
+func (ctrl *GoNZBNetAdminController) DisablePeer(c *echo.Context) error {
+	return ctrl.setPeerEnabled(c, false)
+}
+
+func (ctrl *GoNZBNetAdminController) PullSync(c *echo.Context) error {
+	service, err := ctrl.syncService()
+	if err != nil {
+		return jsonError(c, http.StatusServiceUnavailable, err.Error())
+	}
+	result, err := service.SyncOnce(c.Request().Context())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"status": "ok", "result": result})
+}
+
+func (ctrl *GoNZBNetAdminController) PushSync(c *echo.Context) error {
+	service, err := ctrl.syncService()
+	if err != nil {
+		return jsonError(c, http.StatusServiceUnavailable, err.Error())
+	}
+	limit := parseIntDefault(queryParamTrimmed(c, "limit"), ctrl.appCtx.Config.GoNZBNet.PushSyncBatchSize)
+	result, err := service.PushOnce(c.Request().Context(), limit)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"status": "ok", "result": result})
+}
+
+func (ctrl *GoNZBNetAdminController) GossipSync(c *echo.Context) error {
+	service, err := ctrl.syncService()
+	if err != nil {
+		return jsonError(c, http.StatusServiceUnavailable, err.Error())
+	}
+	cfg := ctrl.appCtx.Config.GoNZBNet
+	result, err := service.GossipOnce(c.Request().Context(), gonzbnetsync.GossipOptions{
+		NetworkID:           cfg.NetworkID,
+		TTL:                 cfg.GossipTTL,
+		BatchSize:           cfg.GossipBatchSize,
+		Fanout:              cfg.GossipFanout,
+		PeerExchangeEnabled: cfg.PeerExchangeEnabled,
+	})
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"status": "ok", "result": result})
+}
+
+func (ctrl *GoNZBNetAdminController) setPeerEnabled(c *echo.Context, enabled bool) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	peerID, err := strconv.ParseInt(pathParamTrimmed(c, "peer_id"), 10, 64)
+	if err != nil || peerID <= 0 {
+		return jsonError(c, http.StatusBadRequest, "peer_id is required")
+	}
+	if err := store.SetFederationPeerEnabled(c.Request().Context(), peerID, enabled); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
+}
+
 func (ctrl *GoNZBNetAdminController) PeerDiagnostics(c *echo.Context) error {
 	store, ok := ctrl.store()
 	if !ok {
@@ -741,6 +831,21 @@ func (ctrl *GoNZBNetAdminController) localNodeID(c *echo.Context) (string, error
 		return "", err
 	}
 	return nodeIdentity.NodeID(c.Request().Context())
+}
+
+func (ctrl *GoNZBNetAdminController) syncService() (*gonzbnetsync.Service, error) {
+	if ctrl == nil || ctrl.appCtx == nil || ctrl.appCtx.PGIndexStore == nil {
+		return nil, fmt.Errorf("gonzbnet admin store is unavailable")
+	}
+	syncStore, ok := ctrl.appCtx.PGIndexStore.(gonzbnetsync.Store)
+	if !ok {
+		return nil, fmt.Errorf("gonzbnet sync store is unavailable")
+	}
+	nodeIdentity, err := identity.LoadOrCreate(ctrl.appCtx.Config.GoNZBNet.KeysDir)
+	if err != nil {
+		return nil, err
+	}
+	return gonzbnetsync.New(nodeIdentity, syncStore, ctrl.appCtx.Logger), nil
 }
 
 func coverageID(prefix string, now time.Time) string {
