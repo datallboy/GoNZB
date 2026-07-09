@@ -108,6 +108,36 @@ func (s *Store) UpsertFederationNodeIdentity(ctx context.Context, nodeID string,
 	})
 }
 
+func (s *Store) SetFederationNodeStatus(ctx context.Context, nodeID, status string) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, fmt.Errorf("pgindex store is not initialized")
+	}
+	nodeID = strings.TrimSpace(nodeID)
+	status = strings.TrimSpace(status)
+	if nodeID == "" {
+		return false, fmt.Errorf("node_id is required")
+	}
+	switch status {
+	case "known", "blocked":
+	default:
+		return false, fmt.Errorf("unsupported node status %q", status)
+	}
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE federation_nodes
+		SET status = $2,
+		    updated_at = NOW()
+		WHERE node_id = $1
+		  AND status <> 'local'`, nodeID, status)
+	if err != nil {
+		return false, fmt.Errorf("set federation node status: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("read federation node status count: %w", err)
+	}
+	return rows > 0, nil
+}
+
 func (s *Store) NextFederationEventSequence(ctx context.Context, authorNodeID string) (int64, *string, error) {
 	if s == nil || s.db == nil {
 		return 0, nil, fmt.Errorf("pgindex store is not initialized")

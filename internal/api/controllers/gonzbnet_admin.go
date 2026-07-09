@@ -42,6 +42,7 @@ type gonzbnetAdminStore interface {
 	ProjectTombstone(ctx context.Context, projection pgindex.TombstoneProjection) error
 	ListTombstones(ctx context.Context, activeOnly bool) ([]pgindex.TombstoneRecord, error)
 	ProjectCoverageEvent(ctx context.Context, event *events.SignedEvent) error
+	SetFederationNodeStatus(ctx context.Context, nodeID, status string) (bool, error)
 	UpsertFederationPeerURL(ctx context.Context, peerURL string) (int64, error)
 	SetFederationPeerEnabled(ctx context.Context, peerID int64, enabled bool) error
 	DeleteFederationPeer(ctx context.Context, peerID int64) (bool, error)
@@ -709,6 +710,14 @@ func (ctrl *GoNZBNetAdminController) DeletePeer(c *echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]any{"status": "ok", "peer_id": peerID})
 }
 
+func (ctrl *GoNZBNetAdminController) BlockNode(c *echo.Context) error {
+	return ctrl.setNodeStatus(c, "blocked")
+}
+
+func (ctrl *GoNZBNetAdminController) UnblockNode(c *echo.Context) error {
+	return ctrl.setNodeStatus(c, "known")
+}
+
 func (ctrl *GoNZBNetAdminController) PullSync(c *echo.Context) error {
 	service, err := ctrl.syncService()
 	if err != nil {
@@ -766,6 +775,32 @@ func (ctrl *GoNZBNetAdminController) setPeerEnabled(c *echo.Context, enabled boo
 		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}
 	return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (ctrl *GoNZBNetAdminController) setNodeStatus(c *echo.Context, status string) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	nodeID := pathParamTrimmed(c, "node_id")
+	if nodeID == "" {
+		return jsonError(c, http.StatusBadRequest, "node_id is required")
+	}
+	localNodeID, err := ctrl.localNodeID(c)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if nodeID == localNodeID {
+		return jsonError(c, http.StatusBadRequest, "local node status cannot be changed")
+	}
+	updated, err := store.SetFederationNodeStatus(c.Request().Context(), nodeID, status)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if !updated {
+		return jsonError(c, http.StatusNotFound, "node not found")
+	}
+	return c.JSON(http.StatusOK, map[string]any{"status": "ok", "node_id": nodeID})
 }
 
 func (ctrl *GoNZBNetAdminController) PeerDiagnostics(c *echo.Context) error {
