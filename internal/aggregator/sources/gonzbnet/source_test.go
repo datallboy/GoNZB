@@ -2,11 +2,14 @@ package gonzbnet
 
 import (
 	"context"
+	"io"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/datallboy/gonzb/internal/aggregator"
 	"github.com/datallboy/gonzb/internal/auth"
+	"github.com/datallboy/gonzb/internal/domain"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
 )
 
@@ -75,6 +78,27 @@ func TestSearchUsesPrincipalPoolAccess(t *testing.T) {
 	}
 }
 
+func TestGetNZBRequiresResolveManifestPermission(t *testing.T) {
+	resolver := &fakeResolver{}
+	ctx := auth.ContextWithPrincipal(context.Background(), &auth.Principal{
+		UserID: "user-1",
+		Permissions: map[string]struct{}{
+			auth.PermissionGoNZBNetGet: {},
+		},
+	})
+
+	_, err := NewWithResolver(&fakeStore{}, resolver).GetNZB(ctx, &domain.Release{
+		Source: sourceName,
+		GUID:   "rel_1",
+	})
+	if err == nil || !strings.Contains(err.Error(), "resolve manifest permission") {
+		t.Fatalf("expected resolve manifest permission denial, got %v", err)
+	}
+	if resolver.calls != 0 {
+		t.Fatalf("resolver should not be called after permission denial")
+	}
+}
+
 type fakeStore struct {
 	pools       []string
 	cards       []pgindex.FederatedReleaseCardSummary
@@ -96,4 +120,13 @@ func (s *fakeStore) SearchFederatedReleaseCards(_ context.Context, params pginde
 	s.searches++
 	s.lastParams = params
 	return append([]pgindex.FederatedReleaseCardSummary(nil), s.cards...), nil
+}
+
+type fakeResolver struct {
+	calls int
+}
+
+func (r *fakeResolver) ResolveNZB(context.Context, string) (io.ReadCloser, error) {
+	r.calls++
+	return io.NopCloser(strings.NewReader("<nzb/>")), nil
 }

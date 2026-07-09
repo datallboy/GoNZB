@@ -100,6 +100,8 @@ Current implementation state:
   `modules.gonzbnet.enabled` module gate.
 - Security cleanup rejects remote signed events with future `created_at` /
   `not_before` windows or expired `expires_at` values.
+- Test cleanup adds direct coverage for non-member event rejection and local
+  GoNZBNet RBAC denial paths.
 
 Maintained pages:
 
@@ -140,6 +142,7 @@ Maintained pages:
 - [Admin: Role Pool Access](./admin-role-pool-access.md)
 - [Config Validation Cleanup](./config-validation-cleanup.md)
 - [Config Enable Alias](./config-enable-alias.md)
+- [Test Coverage Cleanup](./test-coverage-cleanup.md)
 - [Security: Node Key Encryption](./security-key-encryption.md)
 - [Security: Key Export](./security-key-export.md)
 - [Security: Node Key Rotation](./security-key-rotation.md)
