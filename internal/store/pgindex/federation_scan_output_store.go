@@ -1,0 +1,191 @@
+package pgindex
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/datallboy/gonzb/internal/gonzbnet/manifestavailability"
+	"github.com/datallboy/gonzb/internal/gonzbnet/releasecard"
+)
+
+const scanOutputSourceKind = "local_scan_output"
+
+type ManifestAvailabilityProjection struct {
+	Attestation  manifestavailability.Attestation
+	EventID      string
+	AuthorNodeID string
+	PoolID       string
+}
+
+func (s *Store) UpsertGoNZBNetScanOutput(ctx context.Context, release releasecard.LocalRelease) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("pgindex store is not initialized")
+	}
+	scanID := strings.TrimSpace(release.LocalReleaseID)
+	if scanID == "" {
+		return fmt.Errorf("scan output local release id is required")
+	}
+	release.SourceKind = scanOutputSourceKind
+	bodyJSON, err := json.Marshal(release)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO gonzbnet_scan_outputs (
+			scan_id, body_json, status, updated_at
+		)
+		VALUES ($1, $2::jsonb, 'pending', NOW())
+		ON CONFLICT (scan_id) DO UPDATE SET
+			body_json = EXCLUDED.body_json,
+			status = CASE
+				WHEN gonzbnet_scan_outputs.status = 'published' THEN 'pending'
+				ELSE gonzbnet_scan_outputs.status
+			END,
+			updated_at = NOW()`,
+		scanID,
+		string(bodyJSON),
+	)
+	if err != nil {
+		return fmt.Errorf("upsert gonzbnet scan output: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) ListGoNZBNetScanOutputCandidates(ctx context.Context, limit int) ([]releasecard.LocalRelease, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("pgindex store is not initialized")
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT body_json
+		FROM gonzbnet_scan_outputs
+		WHERE status = 'pending'
+		ORDER BY updated_at, scan_id
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list gonzbnet scan output candidates: %w", err)
+	}
+	defer rows.Close()
+	out := []releasecard.LocalRelease{}
+	for rows.Next() {
+		var body []byte
+		if err := rows.Scan(&body); err != nil {
+			return nil, err
+		}
+		var release releasecard.LocalRelease
+		if err := json.Unmarshal(body, &release); err != nil {
+			return nil, err
+		}
+		release.SourceKind = scanOutputSourceKind
+		out = append(out, release)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) MarkGoNZBNetScanOutputPublished(ctx context.Context, scanID, eventID string) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("pgindex store is not initialized")
+	}
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE gonzbnet_scan_outputs
+		SET status = 'published',
+		    published_event_id = NULLIF($2, ''),
+		    published_at = NOW(),
+		    updated_at = NOW()
+		WHERE scan_id = $1`,
+		strings.TrimSpace(scanID),
+		strings.TrimSpace(eventID),
+	)
+	if err != nil {
+		return fmt.Errorf("mark gonzbnet scan output published: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) ProjectManifestAvailability(ctx context.Context, projection ManifestAvailabilityProjection) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("pgindex store is not initialized")
+	}
+	item := projection.Attestation
+	if err := manifestavailability.Validate(item, time.Now().UTC(), 2*time.Minute); err != nil {
+		return err
+	}
+	eventID := strings.TrimSpace(projection.EventID)
+	if eventID == "" {
+		return fmt.Errorf("source event_id is required")
+	}
+	authorNodeID := strings.TrimSpace(projection.AuthorNodeID)
+	if authorNodeID == "" {
+		return fmt.Errorf("author_node_id is required")
+	}
+	poolID := firstNonBlank(projection.PoolID, "pool.local")
+	bodyJSON, err := json.Marshal(item)
+	if err != nil {
+		return err
+	}
+	checkedAt, err := time.Parse(time.RFC3339, strings.TrimSpace(item.CheckedAt))
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO manifest_availability_attestations (
+			attestation_id, release_id, manifest_id, author_node_id, pool_id,
+			checked_at, status, confidence, method, body_json, source_event_id,
+			updated_at
+		)
+		VALUES (
+			$1, $2, $3, $4, $5,
+			$6, $7, $8, NULLIF($9, ''), $10::jsonb, $11,
+			NOW()
+		)
+		ON CONFLICT (attestation_id) DO UPDATE SET
+			checked_at = EXCLUDED.checked_at,
+			status = EXCLUDED.status,
+			confidence = EXCLUDED.confidence,
+			method = EXCLUDED.method,
+			body_json = EXCLUDED.body_json,
+			source_event_id = EXCLUDED.source_event_id,
+			updated_at = NOW()`,
+		eventID,
+		item.ReleaseID,
+		item.ManifestID,
+		authorNodeID,
+		poolID,
+		checkedAt.UTC(),
+		item.Status,
+		item.Confidence,
+		item.Method,
+		string(bodyJSON),
+		eventID,
+	); err != nil {
+		return fmt.Errorf("insert manifest availability attestation: %w", err)
+	}
+	if strings.TrimSpace(item.Status) == manifestavailability.StatusAvailable {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE federated_release_sources
+			SET manifest_confidence_score = GREATEST(manifest_confidence_score, $4),
+			    resolvable = TRUE,
+			    last_seen_at = NOW()
+			WHERE release_id = $1
+			  AND manifest_id = $2
+			  AND pool_id = $3`,
+			item.ReleaseID,
+			item.ManifestID,
+			poolID,
+			item.Confidence,
+		); err != nil {
+			return fmt.Errorf("update manifest availability score: %w", err)
+		}
+	}
+	return tx.Commit()
+}
