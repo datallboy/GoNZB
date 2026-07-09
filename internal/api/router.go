@@ -12,6 +12,7 @@ import (
 	"github.com/datallboy/gonzb/internal/api/controllers"
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/auth"
+	"github.com/datallboy/gonzb/internal/gonzbnet/requestauth"
 	"github.com/datallboy/gonzb/internal/telemetry"
 	"github.com/datallboy/gonzb/internal/webui"
 	"github.com/labstack/echo/v5"
@@ -85,6 +86,7 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 			ExpiresIn: 15 * time.Minute,
 		}),
 	})
+	federationRateLimit := federationRateLimitMiddleware(appCtx.Config.GoNZBNet.RateLimitEventsPerMinute)
 
 	// runtime settings admin API for modules with SQLite settings state.
 	if modules.API.Enabled && appCtx.SettingsStore != nil {
@@ -137,15 +139,15 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 	if modules.API.Enabled && modules.GoNZBNet.Enabled {
 		if appCtx.Config.GoNZBNet.HTTPEnabled {
 			e.GET("/.well-known/gonzbnet", gonzbnetCtrl.WellKnown)
-			fed := e.Group("/gonzbnet/v1", bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit))
+			fed := e.Group("/gonzbnet/v1", federationBodyLimitMiddleware(appCtx.Config.GoNZBNet))
 			fed.GET("/node", gonzbnetCtrl.Node)
 			fed.GET("/caps", gonzbnetCtrl.Caps)
 			fed.POST("/handshake", gonzbnetCtrl.Handshake)
 			fed.GET("/outbox", gonzbnetCtrl.Outbox)
 			fed.GET("/events/:event_id", gonzbnetCtrl.Event)
-			fed.POST("/inbox", gonzbnetCtrl.Inbox)
-			fed.POST("/manifests/:manifest_id/request", gonzbnetCtrl.RequestManifest)
-			fed.GET("/manifests/:manifest_id", gonzbnetCtrl.GetManifest)
+			fed.POST("/inbox", gonzbnetCtrl.Inbox, federationRateLimit)
+			fed.POST("/manifests/:manifest_id/request", gonzbnetCtrl.RequestManifest, federationRateLimit)
+			fed.GET("/manifests/:manifest_id", gonzbnetCtrl.GetManifest, federationRateLimit)
 			fed.GET("/ws", gonzbnetCtrl.GossipWS)
 		}
 
@@ -340,6 +342,43 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 	if modules.WebUI.Enabled {
 		registerWebUIRoutes(e)
 	}
+}
+
+func federationRateLimitMiddleware(eventsPerMinute int) echo.MiddlewareFunc {
+	if eventsPerMinute <= 0 {
+		eventsPerMinute = 120
+	}
+	ratePerSecond := float64(eventsPerMinute) / 60.0
+	if ratePerSecond <= 0 {
+		ratePerSecond = 1
+	}
+	return middleware.RateLimiterWithConfig(middleware.RateLimiterConfig{
+		Store: middleware.NewRateLimiterMemoryStoreWithConfig(middleware.RateLimiterMemoryStoreConfig{
+			Rate:      ratePerSecond,
+			Burst:     eventsPerMinute,
+			ExpiresIn: 15 * time.Minute,
+		}),
+		IdentifierExtractor: func(c *echo.Context) (string, error) {
+			if nodeID := federationAuthorizationNodeID(c); nodeID != "" {
+				return "node:" + nodeID, nil
+			}
+			return "ip:" + c.RealIP(), nil
+		},
+		DenyHandler: func(c *echo.Context, identifier string, err error) error {
+			return federationTransportError(c, http.StatusTooManyRequests, "rate_limited", "rate limit exceeded")
+		},
+	})
+}
+
+func federationAuthorizationNodeID(c *echo.Context) string {
+	if c == nil || c.Request() == nil {
+		return ""
+	}
+	values, err := requestauth.ParseAuthorization(c.Request().Header.Get("Authorization"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(values["node_id"])
 }
 
 func apiTokenMiddleware(authSvc *auth.Service, permissions ...string) echo.MiddlewareFunc {

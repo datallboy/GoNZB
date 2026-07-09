@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -92,6 +93,91 @@ type inboxResponse struct {
 	Cursor        string             `json:"cursor,omitempty"`
 }
 
+type federationErrorResponse struct {
+	Error   string `json:"error"`
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+func federationJSONError(c *echo.Context, status int, code, message string) error {
+	code = strings.TrimSpace(code)
+	if code == "" {
+		code = "internal_error"
+	}
+	message = strings.TrimSpace(message)
+	if message == "" {
+		message = code
+	}
+	return c.JSON(status, federationErrorResponse{
+		Error:   code,
+		Code:    code,
+		Message: message,
+	})
+}
+
+func federationAuthErrorCode(err error) string {
+	if err == nil {
+		return "invalid_signature"
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "nonce replay"):
+		return "replayed_nonce"
+	case strings.Contains(msg, "future"):
+		return "future_timestamp"
+	case strings.Contains(msg, "expired"), strings.Contains(msg, "outside tolerance"):
+		return "expired_event"
+	case strings.Contains(msg, "public key"):
+		return "unknown_node"
+	default:
+		return "invalid_signature"
+	}
+}
+
+func federationVerificationCode(reason string) string {
+	reason = strings.ToLower(strings.TrimSpace(reason))
+	switch {
+	case strings.Contains(reason, "unsupported spec_version"):
+		return "unsupported_spec_version"
+	case strings.Contains(reason, "event_id"):
+		return "invalid_event_id"
+	case strings.Contains(reason, "body_hash"):
+		return "invalid_body_hash"
+	case strings.Contains(reason, "signature"):
+		return "invalid_signature"
+	case strings.Contains(reason, "event_type"):
+		return "unsupported_event_type"
+	default:
+		return "invalid_schema"
+	}
+}
+
+func federationPoolErrorCode(reason string) string {
+	reason = strings.ToLower(strings.TrimSpace(reason))
+	switch {
+	case strings.Contains(reason, "blocked"):
+		return "node_blocked"
+	case strings.Contains(reason, "revoked"):
+		return "node_revoked"
+	case strings.Contains(reason, "role"), strings.Contains(reason, "capability"):
+		return "insufficient_pool_role"
+	case strings.Contains(reason, "quorum"), strings.Contains(reason, "threshold"):
+		return "insufficient_pool_quorum"
+	case strings.Contains(reason, "member"), strings.Contains(reason, "pool"), reason == "missing_pool":
+		return "not_pool_member"
+	default:
+		return "not_pool_member"
+	}
+}
+
+func federationBodyReadErrorCode(err error) string {
+	var maxBytesErr *http.MaxBytesError
+	if errors.As(err, &maxBytesErr) {
+		return "payload_too_large"
+	}
+	return "invalid_json"
+}
+
 func NewGoNZBNetController(appCtx *app.Context) *GoNZBNetController {
 	return &GoNZBNetController{appCtx: appCtx}
 }
@@ -99,11 +185,11 @@ func NewGoNZBNetController(appCtx *app.Context) *GoNZBNetController {
 func (ctrl *GoNZBNetController) WellKnown(c *echo.Context) error {
 	id, err := ctrl.localIdentity()
 	if err != nil {
-		return jsonError(c, http.StatusServiceUnavailable, err.Error())
+		return federationJSONError(c, http.StatusServiceUnavailable, "internal_error", err.Error())
 	}
 	resp, err := profile.WellKnownFor(c.Request().Context(), id, ctrl.baseURL(c))
 	if err != nil {
-		return jsonError(c, http.StatusInternalServerError, err.Error())
+		return federationJSONError(c, http.StatusInternalServerError, "internal_error", err.Error())
 	}
 	return c.JSON(http.StatusOK, resp)
 }
@@ -111,11 +197,11 @@ func (ctrl *GoNZBNetController) WellKnown(c *echo.Context) error {
 func (ctrl *GoNZBNetController) Node(c *echo.Context) error {
 	id, err := ctrl.localIdentity()
 	if err != nil {
-		return jsonError(c, http.StatusServiceUnavailable, err.Error())
+		return federationJSONError(c, http.StatusServiceUnavailable, "internal_error", err.Error())
 	}
 	resp, err := profile.NodeProfileFor(c.Request().Context(), id, ctrl.profileConfig(c), time.Now())
 	if err != nil {
-		return jsonError(c, http.StatusInternalServerError, err.Error())
+		return federationJSONError(c, http.StatusInternalServerError, "internal_error", err.Error())
 	}
 	return c.JSON(http.StatusOK, resp)
 }
@@ -128,7 +214,7 @@ func (ctrl *GoNZBNetController) Caps(c *echo.Context) error {
 func (ctrl *GoNZBNetController) Outbox(c *echo.Context) error {
 	store, ok := ctrl.appCtx.PGIndexStore.(gonzbnetStore)
 	if !ok {
-		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet store is unavailable")
+		return federationJSONError(c, http.StatusServiceUnavailable, "internal_error", "gonzbnet store is unavailable")
 	}
 	page, err := store.ListFederationOutboxEvents(c.Request().Context(), pgindex.FederationOutboxParams{
 		Since:     queryParamTrimmed(c, "since"),
@@ -137,7 +223,7 @@ func (ctrl *GoNZBNetController) Outbox(c *echo.Context) error {
 		Limit:     parseIntDefault(queryParamTrimmed(c, "limit"), 100),
 	})
 	if err != nil {
-		return jsonError(c, http.StatusInternalServerError, err.Error())
+		return federationJSONError(c, http.StatusInternalServerError, "internal_error", err.Error())
 	}
 	return c.JSON(http.StatusOK, outboxResponse{
 		SchemaVersion: "1.0",
@@ -151,14 +237,14 @@ func (ctrl *GoNZBNetController) Outbox(c *echo.Context) error {
 func (ctrl *GoNZBNetController) Event(c *echo.Context) error {
 	store, ok := ctrl.appCtx.PGIndexStore.(gonzbnetStore)
 	if !ok {
-		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet store is unavailable")
+		return federationJSONError(c, http.StatusServiceUnavailable, "internal_error", "gonzbnet store is unavailable")
 	}
 	event, err := store.GetFederationEvent(c.Request().Context(), pathParamTrimmed(c, "event_id"))
 	if err != nil {
-		return jsonError(c, http.StatusInternalServerError, err.Error())
+		return federationJSONError(c, http.StatusInternalServerError, "internal_error", err.Error())
 	}
 	if event == nil {
-		return jsonError(c, http.StatusNotFound, "event not found")
+		return federationJSONError(c, http.StatusNotFound, "invalid_event_id", "event not found")
 	}
 	return c.JSON(http.StatusOK, event)
 }
@@ -166,37 +252,37 @@ func (ctrl *GoNZBNetController) Event(c *echo.Context) error {
 func (ctrl *GoNZBNetController) Handshake(c *echo.Context) error {
 	id, err := ctrl.localIdentity()
 	if err != nil {
-		return jsonError(c, http.StatusServiceUnavailable, err.Error())
+		return federationJSONError(c, http.StatusServiceUnavailable, "internal_error", err.Error())
 	}
 	var req map[string]any
 	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
-		return jsonError(c, http.StatusBadRequest, "invalid handshake json")
+		return federationJSONError(c, http.StatusBadRequest, "invalid_json", "invalid handshake json")
 	}
 	signatureValue, _ := req["signature"].(string)
 	delete(req, "signature")
 	if strings.TrimSpace(signatureValue) == "" {
-		return jsonError(c, http.StatusBadRequest, "missing signature")
+		return federationJSONError(c, http.StatusBadRequest, "invalid_signature", "missing signature")
 	}
 	nodeID, _ := req["node_id"].(string)
 	publicKeyValue, _ := req["public_key"].(string)
 	nonce, _ := req["nonce"].(string)
 	publicKey, err := canonical.DecodeBase64URL(publicKeyValue)
 	if err != nil || len(publicKey) != ed25519.PublicKeySize {
-		return jsonError(c, http.StatusBadRequest, "invalid public key")
+		return federationJSONError(c, http.StatusBadRequest, "invalid_signature", "invalid public key")
 	}
 	if identity.NodeIDFromPublicKey(ed25519.PublicKey(publicKey)) != nodeID {
-		return jsonError(c, http.StatusBadRequest, "node_id does not match public key")
+		return federationJSONError(c, http.StatusBadRequest, "invalid_signature", "node_id does not match public key")
 	}
 	signature, err := canonical.DecodeBase64URL(signatureValue)
 	if err != nil {
-		return jsonError(c, http.StatusBadRequest, "invalid signature")
+		return federationJSONError(c, http.StatusBadRequest, "invalid_signature", "invalid signature")
 	}
 	canonicalRequest, err := canonical.Marshal(req)
 	if err != nil {
-		return jsonError(c, http.StatusBadRequest, "invalid canonical handshake")
+		return federationJSONError(c, http.StatusBadRequest, "invalid_schema", "invalid canonical handshake")
 	}
 	if !identity.Verify(ed25519.PublicKey(publicKey), canonicalRequest, signature) {
-		return jsonError(c, http.StatusUnauthorized, "handshake signature verification failed")
+		return federationJSONError(c, http.StatusUnauthorized, "invalid_signature", "handshake signature verification failed")
 	}
 
 	if store, ok := ctrl.appCtx.PGIndexStore.(gonzbnetStore); ok {
@@ -219,11 +305,11 @@ func (ctrl *GoNZBNetController) Handshake(c *echo.Context) error {
 	}
 	canonicalResponse, err := canonical.Marshal(body)
 	if err != nil {
-		return jsonError(c, http.StatusInternalServerError, err.Error())
+		return federationJSONError(c, http.StatusInternalServerError, "internal_error", err.Error())
 	}
 	responseSig, err := id.Sign(c.Request().Context(), canonicalResponse)
 	if err != nil {
-		return jsonError(c, http.StatusInternalServerError, err.Error())
+		return federationJSONError(c, http.StatusInternalServerError, "internal_error", err.Error())
 	}
 	body["signature"] = canonical.Base64URL(responseSig)
 	return c.JSON(http.StatusOK, body)
@@ -232,11 +318,16 @@ func (ctrl *GoNZBNetController) Handshake(c *echo.Context) error {
 func (ctrl *GoNZBNetController) Inbox(c *echo.Context) error {
 	store, ok := ctrl.appCtx.PGIndexStore.(gonzbnetStore)
 	if !ok {
-		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet store is unavailable")
+		return federationJSONError(c, http.StatusServiceUnavailable, "internal_error", "gonzbnet store is unavailable")
 	}
 	body, err := io.ReadAll(c.Request().Body)
 	if err != nil {
-		return jsonError(c, http.StatusBadRequest, "read inbox body")
+		code := federationBodyReadErrorCode(err)
+		status := http.StatusBadRequest
+		if code == "payload_too_large" {
+			status = http.StatusRequestEntityTooLarge
+		}
+		return federationJSONError(c, status, code, "read inbox body")
 	}
 	cfg := ctrl.appCtx.Config.GoNZBNet
 	if _, err := requestauth.Verify(
@@ -251,19 +342,19 @@ func (ctrl *GoNZBNetController) Inbox(c *echo.Context) error {
 		time.Duration(cfg.TimeToleranceSeconds)*time.Second,
 		time.Duration(cfg.NonceTTLSeconds)*time.Second,
 	); err != nil {
-		return jsonError(c, http.StatusUnauthorized, err.Error())
+		return federationJSONError(c, http.StatusUnauthorized, federationAuthErrorCode(err), err.Error())
 	}
 
 	eventsIn, err := decodeInboxEvents(body)
 	if err != nil {
-		return jsonError(c, http.StatusBadRequest, err.Error())
+		return federationJSONError(c, http.StatusBadRequest, "invalid_json", err.Error())
 	}
 	maxBatch := cfg.MaxBatchEvents
 	if maxBatch <= 0 {
 		maxBatch = 100
 	}
 	if len(eventsIn) > maxBatch {
-		return jsonError(c, http.StatusBadRequest, "event batch exceeds max_batch_events")
+		return federationJSONError(c, http.StatusBadRequest, "invalid_schema", "event batch exceeds max_batch_events")
 	}
 
 	resp := inboxResponse{
@@ -293,11 +384,16 @@ func (ctrl *GoNZBNetController) Inbox(c *echo.Context) error {
 func (ctrl *GoNZBNetController) RequestManifest(c *echo.Context) error {
 	store, ok := ctrl.appCtx.PGIndexStore.(gonzbnetStore)
 	if !ok {
-		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet store is unavailable")
+		return federationJSONError(c, http.StatusServiceUnavailable, "internal_error", "gonzbnet store is unavailable")
 	}
 	body, err := io.ReadAll(c.Request().Body)
 	if err != nil {
-		return jsonError(c, http.StatusBadRequest, "read manifest request body")
+		code := federationBodyReadErrorCode(err)
+		status := http.StatusBadRequest
+		if code == "payload_too_large" {
+			status = http.StatusRequestEntityTooLarge
+		}
+		return federationJSONError(c, status, code, "read manifest request body")
 	}
 	cfg := ctrl.appCtx.Config.GoNZBNet
 	verified, err := requestauth.Verify(
@@ -313,11 +409,11 @@ func (ctrl *GoNZBNetController) RequestManifest(c *echo.Context) error {
 		time.Duration(cfg.NonceTTLSeconds)*time.Second,
 	)
 	if err != nil {
-		return jsonError(c, http.StatusUnauthorized, err.Error())
+		return federationJSONError(c, http.StatusUnauthorized, federationAuthErrorCode(err), err.Error())
 	}
 	var req manifest.Request
 	if err := json.Unmarshal(body, &req); err != nil {
-		return jsonError(c, http.StatusBadRequest, "invalid manifest request json")
+		return federationJSONError(c, http.StatusBadRequest, "invalid_json", "invalid manifest request json")
 	}
 	manifestID := pathParamTrimmed(c, "manifest_id")
 	if req.ManifestID != manifestID {
@@ -342,7 +438,7 @@ func (ctrl *GoNZBNetController) RequestManifest(c *echo.Context) error {
 	}
 	allowed, err := store.CanFetchResolutionManifest(c.Request().Context(), manifestID, verified.NodeID)
 	if err != nil {
-		return jsonError(c, http.StatusInternalServerError, err.Error())
+		return federationJSONError(c, http.StatusInternalServerError, "internal_error", err.Error())
 	}
 	if !allowed {
 		return c.JSON(http.StatusForbidden, manifest.Response{
@@ -356,7 +452,7 @@ func (ctrl *GoNZBNetController) RequestManifest(c *echo.Context) error {
 	}
 	event, err := store.GetResolutionManifestEvent(c.Request().Context(), manifestID)
 	if err != nil {
-		return jsonError(c, http.StatusInternalServerError, err.Error())
+		return federationJSONError(c, http.StatusInternalServerError, "internal_error", err.Error())
 	}
 	if event == nil {
 		return c.JSON(http.StatusNotFound, manifest.Response{
@@ -380,7 +476,7 @@ func (ctrl *GoNZBNetController) RequestManifest(c *echo.Context) error {
 func (ctrl *GoNZBNetController) GetManifest(c *echo.Context) error {
 	store, ok := ctrl.appCtx.PGIndexStore.(gonzbnetStore)
 	if !ok {
-		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet store is unavailable")
+		return federationJSONError(c, http.StatusServiceUnavailable, "internal_error", "gonzbnet store is unavailable")
 	}
 	cfg := ctrl.appCtx.Config.GoNZBNet
 	verified, err := requestauth.Verify(
@@ -396,22 +492,22 @@ func (ctrl *GoNZBNetController) GetManifest(c *echo.Context) error {
 		time.Duration(cfg.NonceTTLSeconds)*time.Second,
 	)
 	if err != nil {
-		return jsonError(c, http.StatusUnauthorized, err.Error())
+		return federationJSONError(c, http.StatusUnauthorized, federationAuthErrorCode(err), err.Error())
 	}
 	manifestID := pathParamTrimmed(c, "manifest_id")
 	allowed, err := store.CanFetchResolutionManifest(c.Request().Context(), manifestID, verified.NodeID)
 	if err != nil {
-		return jsonError(c, http.StatusInternalServerError, err.Error())
+		return federationJSONError(c, http.StatusInternalServerError, "internal_error", err.Error())
 	}
 	if !allowed {
-		return jsonError(c, http.StatusForbidden, "not_pool_member")
+		return federationJSONError(c, http.StatusForbidden, "not_pool_member", "requesting node is not authorized for this manifest")
 	}
 	item, err := store.GetResolutionManifest(c.Request().Context(), manifestID)
 	if err != nil {
-		return jsonError(c, http.StatusInternalServerError, err.Error())
+		return federationJSONError(c, http.StatusInternalServerError, "internal_error", err.Error())
 	}
 	if item == nil {
-		return jsonError(c, http.StatusNotFound, "manifest not found")
+		return federationJSONError(c, http.StatusNotFound, "manifest_not_found", "manifest not found")
 	}
 	return c.JSON(http.StatusOK, item)
 }
@@ -419,11 +515,11 @@ func (ctrl *GoNZBNetController) GetManifest(c *echo.Context) error {
 func (ctrl *GoNZBNetController) GossipWS(c *echo.Context) error {
 	store, ok := ctrl.appCtx.PGIndexStore.(gonzbnetStore)
 	if !ok {
-		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet store is unavailable")
+		return federationJSONError(c, http.StatusServiceUnavailable, "internal_error", "gonzbnet store is unavailable")
 	}
 	cfg := ctrl.appCtx.Config.GoNZBNet
 	if !cfg.WebSocketGossipEnabled {
-		return jsonError(c, http.StatusNotFound, "websocket gossip is disabled")
+		return federationJSONError(c, http.StatusNotFound, "invalid_schema", "websocket gossip is disabled")
 	}
 	handler := websocket.Handler(func(ws *websocket.Conn) {
 		defer ws.Close()
@@ -443,7 +539,7 @@ func (ctrl *GoNZBNetController) GossipWS(c *echo.Context) error {
 			_ = websocket.JSON.Send(ws, gossip.Response{
 				SchemaVersion: "1.0",
 				Type:          gossip.ResponseType,
-				Rejected:      []gossip.EventResult{{Status: "rejected", Code: "unauthorized", Message: err.Error()}},
+				Rejected:      []gossip.EventResult{{Status: "rejected", Code: federationAuthErrorCode(err), Message: err.Error()}},
 			})
 			return
 		}
@@ -454,7 +550,7 @@ func (ctrl *GoNZBNetController) GossipWS(c *echo.Context) error {
 					_ = websocket.JSON.Send(ws, gossip.Response{
 						SchemaVersion: "1.0",
 						Type:          gossip.ResponseType,
-						Rejected:      []gossip.EventResult{{Status: "rejected", Code: "invalid_batch", Message: err.Error()}},
+						Rejected:      []gossip.EventResult{{Status: "rejected", Code: "invalid_json", Message: err.Error()}},
 					})
 				}
 				return
@@ -478,11 +574,11 @@ func (ctrl *GoNZBNetController) processGossipBatch(ctx context.Context, store go
 		Rejected:      []gossip.EventResult{},
 	}
 	if strings.TrimSpace(batch.Type) != gossip.Type {
-		resp.Rejected = append(resp.Rejected, gossip.EventResult{Status: "rejected", Code: "invalid_type", Message: "expected GossipBatch"})
+		resp.Rejected = append(resp.Rejected, gossip.EventResult{Status: "rejected", Code: "invalid_schema", Message: "expected GossipBatch"})
 		return resp
 	}
 	if strings.TrimSpace(batch.NetworkID) != "" && strings.TrimSpace(batch.NetworkID) != strings.TrimSpace(cfg.NetworkID) {
-		resp.Rejected = append(resp.Rejected, gossip.EventResult{Status: "rejected", Code: "wrong_network", Message: "network_id mismatch"})
+		resp.Rejected = append(resp.Rejected, gossip.EventResult{Status: "rejected", Code: "invalid_schema", Message: "network_id mismatch"})
 		return resp
 	}
 	maxBatch := cfg.GossipBatchSize
@@ -493,7 +589,7 @@ func (ctrl *GoNZBNetController) processGossipBatch(ctx context.Context, store go
 		maxBatch = 100
 	}
 	if len(batch.Events) > maxBatch {
-		resp.Rejected = append(resp.Rejected, gossip.EventResult{Status: "rejected", Code: "batch_too_large", Message: "gossip batch exceeds limit"})
+		resp.Rejected = append(resp.Rejected, gossip.EventResult{Status: "rejected", Code: "invalid_schema", Message: "gossip batch exceeds limit"})
 		return resp
 	}
 	if cfg.PeerExchangeEnabled {
@@ -537,10 +633,10 @@ func (ctrl *GoNZBNetController) acceptInboxEvent(ctx context.Context, store gonz
 	}
 	raw, _ := json.Marshal(event)
 	if event == nil {
-		return inboxEventResult{Status: "rejected", Code: "invalid_event", Message: "event is required"}
+		return inboxEventResult{Status: "rejected", Code: "invalid_schema", Message: "event is required"}
 	}
 	if exists, err := store.FederationEventExists(ctx, event.EventID); err != nil {
-		return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "store_error", Message: err.Error()}
+		return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "internal_error", Message: err.Error()}
 	} else if exists {
 		return inboxEventResult{EventID: event.EventID, Status: "duplicate"}
 	}
@@ -554,21 +650,21 @@ func (ctrl *GoNZBNetController) acceptInboxEvent(ctx context.Context, store gonz
 			reason = err.Error()
 		}
 		_ = store.AppendRejectedFederationEvent(ctx, eventID, event.AuthorNodeID, event.EventType, raw, reason)
-		return inboxEventResult{EventID: eventID, Status: "rejected", Code: "verification_failed", Message: reason}
+		return inboxEventResult{EventID: eventID, Status: "rejected", Code: federationVerificationCode(reason), Message: reason}
 	}
 	if pools.EventIsPoolControl(event.EventType) {
 		if err := store.ValidateFederationPoolControlEvent(ctx, event); err != nil {
 			_ = store.AppendRejectedFederationEvent(ctx, event.EventID, event.AuthorNodeID, event.EventType, raw, err.Error())
-			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "pool_validation_failed", Message: err.Error()}
+			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: federationPoolErrorCode(err.Error()), Message: err.Error()}
 		}
 	} else {
 		authorization, err := store.CanAcceptFederationEventForPools(ctx, event.AuthorNodeID, event.PoolIDs, event.EventType)
 		if err != nil {
-			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "pool_authorization_error", Message: err.Error()}
+			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "internal_error", Message: err.Error()}
 		}
 		if !authorization.Allowed {
 			_ = store.AppendRejectedFederationEvent(ctx, event.EventID, event.AuthorNodeID, event.EventType, raw, authorization.Reason)
-			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: authorization.Reason, Message: authorization.Reason}
+			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: federationPoolErrorCode(authorization.Reason), Message: authorization.Reason}
 		}
 	}
 	var releaseProjection *releasecard.Projection
@@ -576,7 +672,7 @@ func (ctrl *GoNZBNetController) acceptInboxEvent(ctx context.Context, store gonz
 		var card releasecard.ReleaseCard
 		if err := json.Unmarshal(event.Body, &card); err != nil {
 			_ = store.AppendRejectedFederationEvent(ctx, event.EventID, event.AuthorNodeID, event.EventType, raw, "invalid release card body")
-			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "invalid_body", Message: "invalid release card body"}
+			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "invalid_schema", Message: "invalid release card body"}
 		}
 		poolID := ""
 		if len(event.PoolIDs) > 0 {
@@ -594,7 +690,7 @@ func (ctrl *GoNZBNetController) acceptInboxEvent(ctx context.Context, store gonz
 		var attestation health.Attestation
 		if err := json.Unmarshal(event.Body, &attestation); err != nil {
 			_ = store.AppendRejectedFederationEvent(ctx, event.EventID, event.AuthorNodeID, event.EventType, raw, "invalid health attestation body")
-			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "invalid_body", Message: "invalid health attestation body"}
+			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "invalid_schema", Message: "invalid health attestation body"}
 		}
 		poolID := ""
 		if len(event.PoolIDs) > 0 {
@@ -612,7 +708,7 @@ func (ctrl *GoNZBNetController) acceptInboxEvent(ctx context.Context, store gonz
 		var capacity gonzbnetvalidation.ValidatorCapacity
 		if err := json.Unmarshal(event.Body, &capacity); err != nil {
 			_ = store.AppendRejectedFederationEvent(ctx, event.EventID, event.AuthorNodeID, event.EventType, raw, "invalid validator capacity body")
-			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "invalid_body", Message: "invalid validator capacity body"}
+			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "invalid_schema", Message: "invalid validator capacity body"}
 		}
 		validatorCapacityProjection = &pgindex.ValidatorCapacityProjection{
 			Capacity:     capacity,
@@ -625,7 +721,7 @@ func (ctrl *GoNZBNetController) acceptInboxEvent(ctx context.Context, store gonz
 		var attestation gonzbnetvalidation.ArticleAvailabilityAttestation
 		if err := json.Unmarshal(event.Body, &attestation); err != nil {
 			_ = store.AppendRejectedFederationEvent(ctx, event.EventID, event.AuthorNodeID, event.EventType, raw, "invalid article availability body")
-			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "invalid_body", Message: "invalid article availability body"}
+			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "invalid_schema", Message: "invalid article availability body"}
 		}
 		poolID := ""
 		if len(event.PoolIDs) > 0 {
@@ -643,7 +739,7 @@ func (ctrl *GoNZBNetController) acceptInboxEvent(ctx context.Context, store gonz
 		var attestation gonzbnetvalidation.ChecksumAttestation
 		if err := json.Unmarshal(event.Body, &attestation); err != nil {
 			_ = store.AppendRejectedFederationEvent(ctx, event.EventID, event.AuthorNodeID, event.EventType, raw, "invalid checksum attestation body")
-			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "invalid_body", Message: "invalid checksum attestation body"}
+			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "invalid_schema", Message: "invalid checksum attestation body"}
 		}
 		poolID := ""
 		if len(event.PoolIDs) > 0 {
@@ -661,7 +757,7 @@ func (ctrl *GoNZBNetController) acceptInboxEvent(ctx context.Context, store gonz
 		var attestation manifestavailability.Attestation
 		if err := json.Unmarshal(event.Body, &attestation); err != nil {
 			_ = store.AppendRejectedFederationEvent(ctx, event.EventID, event.AuthorNodeID, event.EventType, raw, "invalid manifest availability body")
-			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "invalid_body", Message: "invalid manifest availability body"}
+			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "invalid_schema", Message: "invalid manifest availability body"}
 		}
 		poolID := ""
 		if len(event.PoolIDs) > 0 {
@@ -679,7 +775,7 @@ func (ctrl *GoNZBNetController) acceptInboxEvent(ctx context.Context, store gonz
 		var tombstone moderation.Tombstone
 		if err := json.Unmarshal(event.Body, &tombstone); err != nil {
 			_ = store.AppendRejectedFederationEvent(ctx, event.EventID, event.AuthorNodeID, event.EventType, raw, "invalid tombstone body")
-			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "invalid_body", Message: "invalid tombstone body"}
+			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "invalid_schema", Message: "invalid tombstone body"}
 		}
 		tombstoneProjection = &pgindex.TombstoneProjection{
 			Tombstone:    tombstone,
@@ -688,51 +784,51 @@ func (ctrl *GoNZBNetController) acceptInboxEvent(ctx context.Context, store gonz
 		}
 	}
 	if err := store.AppendVerifiedFederationEvent(ctx, event, validation); err != nil {
-		return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "store_error", Message: err.Error()}
+		return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "internal_error", Message: err.Error()}
 	}
 	if pools.EventIsPoolControl(event.EventType) {
 		if err := store.ProjectFederationPoolEvent(ctx, event); err != nil {
-			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "projection_failed", Message: err.Error()}
+			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "internal_error", Message: err.Error()}
 		}
 	}
 	if releaseProjection != nil {
 		if err := store.UpsertFederatedReleaseCardProjection(ctx, *releaseProjection); err != nil {
-			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "projection_failed", Message: err.Error()}
+			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "internal_error", Message: err.Error()}
 		}
 	}
 	if healthProjection != nil {
 		if err := store.ProjectHealthAttestation(ctx, *healthProjection); err != nil {
-			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "projection_failed", Message: err.Error()}
+			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "internal_error", Message: err.Error()}
 		}
 	}
 	if validatorCapacityProjection != nil {
 		if err := store.ProjectValidatorCapacity(ctx, *validatorCapacityProjection); err != nil {
-			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "projection_failed", Message: err.Error()}
+			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "internal_error", Message: err.Error()}
 		}
 	}
 	if articleAvailabilityProjection != nil {
 		if err := store.ProjectArticleAvailabilityAttestation(ctx, *articleAvailabilityProjection); err != nil {
-			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "projection_failed", Message: err.Error()}
+			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "internal_error", Message: err.Error()}
 		}
 	}
 	if checksumProjection != nil {
 		if err := store.ProjectChecksumAttestation(ctx, *checksumProjection); err != nil {
-			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "projection_failed", Message: err.Error()}
+			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "internal_error", Message: err.Error()}
 		}
 	}
 	if manifestAvailabilityProjection != nil {
 		if err := store.ProjectManifestAvailability(ctx, *manifestAvailabilityProjection); err != nil {
-			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "projection_failed", Message: err.Error()}
+			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "internal_error", Message: err.Error()}
 		}
 	}
 	if isCoverageEvent(event.EventType) {
 		if err := store.ProjectCoverageEvent(ctx, event); err != nil {
-			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "projection_failed", Message: err.Error()}
+			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "internal_error", Message: err.Error()}
 		}
 	}
 	if tombstoneProjection != nil {
 		if err := store.ProjectTombstone(ctx, *tombstoneProjection); err != nil {
-			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "projection_failed", Message: err.Error()}
+			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "internal_error", Message: err.Error()}
 		}
 	}
 	return inboxEventResult{EventID: event.EventID, Status: "accepted"}
@@ -787,26 +883,27 @@ func (ctrl *GoNZBNetController) localIdentity() (*identity.Identity, error) {
 func (ctrl *GoNZBNetController) profileConfig(c *echo.Context) profile.Config {
 	cfg := ctrl.appCtx.Config.GoNZBNet
 	return profile.Config{
-		Alias:            cfg.NodeAlias,
-		AdvertiseURL:     ctrl.baseURL(c),
-		HTTPBasePath:     cfg.HTTPBasePath,
-		PrivateNetwork:   cfg.PrivateNetwork,
-		LiveQueryEnabled: cfg.LiveQueryEnabled,
-		WebSocketGossip:  cfg.WebSocketGossipEnabled,
-		PeerExchange:     cfg.PeerExchangeEnabled,
-		RelayMode:        cfg.RelayEnabled,
-		Consumer:         cfg.ConsumerEnabled,
-		Scanner:          cfg.ScannerEnabled,
-		Indexer:          ctrl.appCtx.Config.Modules.UsenetIndexer.Enabled,
-		ManifestBuilder:  cfg.ManifestBuilderEnabled,
-		ManifestCache:    cfg.ManifestCacheEnabled,
-		Validator:        cfg.ValidatorEnabled,
-		HealthChecker:    cfg.HealthCheckerEnabled,
-		Coverage:         cfg.CoverageEnabled,
-		Scheduler:        cfg.SchedulerEnabled,
-		MaxEventBytes:    cfg.MaxEventBytes,
-		MaxManifestBytes: cfg.MaxManifestBytes,
-		MaxBatchEvents:   cfg.MaxBatchEvents,
+		Alias:                 cfg.NodeAlias,
+		AdvertiseURL:          ctrl.baseURL(c),
+		HTTPBasePath:          cfg.HTTPBasePath,
+		PrivateNetwork:        cfg.PrivateNetwork,
+		LiveQueryEnabled:      cfg.LiveQueryEnabled,
+		WebSocketGossip:       cfg.WebSocketGossipEnabled,
+		PeerExchange:          cfg.PeerExchangeEnabled,
+		RelayMode:             cfg.RelayEnabled,
+		Consumer:              cfg.ConsumerEnabled,
+		Scanner:               cfg.ScannerEnabled,
+		Indexer:               ctrl.appCtx.Config.Modules.UsenetIndexer.Enabled,
+		ManifestBuilder:       cfg.ManifestBuilderEnabled,
+		ManifestCache:         cfg.ManifestCacheEnabled,
+		Validator:             cfg.ValidatorEnabled,
+		HealthChecker:         cfg.HealthCheckerEnabled,
+		Coverage:              cfg.CoverageEnabled,
+		Scheduler:             cfg.SchedulerEnabled,
+		MaxEventBytes:         cfg.MaxEventBytes,
+		MaxManifestBytes:      cfg.MaxManifestBytes,
+		MaxBatchEvents:        cfg.MaxBatchEvents,
+		RateLimitEventsPerMin: cfg.RateLimitEventsPerMinute,
 	}
 }
 

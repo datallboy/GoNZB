@@ -95,26 +95,27 @@ type Caps struct {
 }
 
 type Config struct {
-	Alias            string
-	AdvertiseURL     string
-	HTTPBasePath     string
-	PrivateNetwork   bool
-	LiveQueryEnabled bool
-	WebSocketGossip  bool
-	PeerExchange     bool
-	RelayMode        bool
-	Consumer         bool
-	Scanner          bool
-	Indexer          bool
-	ManifestBuilder  bool
-	ManifestCache    bool
-	Validator        bool
-	HealthChecker    bool
-	Coverage         bool
-	Scheduler        bool
-	MaxEventBytes    int
-	MaxManifestBytes int
-	MaxBatchEvents   int
+	Alias                 string
+	AdvertiseURL          string
+	HTTPBasePath          string
+	PrivateNetwork        bool
+	LiveQueryEnabled      bool
+	WebSocketGossip       bool
+	PeerExchange          bool
+	RelayMode             bool
+	Consumer              bool
+	Scanner               bool
+	Indexer               bool
+	ManifestBuilder       bool
+	ManifestCache         bool
+	Validator             bool
+	HealthChecker         bool
+	Coverage              bool
+	Scheduler             bool
+	MaxEventBytes         int
+	MaxManifestBytes      int
+	MaxBatchEvents        int
+	RateLimitEventsPerMin int
 }
 
 func WellKnownFor(ctx context.Context, identity Identity, baseURL string) (WellKnown, error) {
@@ -149,6 +150,9 @@ func NodeProfileFor(ctx context.Context, identity Identity, cfg Config, now time
 	}
 	if cfg.MaxBatchEvents <= 0 {
 		cfg.MaxBatchEvents = 100
+	}
+	if cfg.RateLimitEventsPerMin <= 0 {
+		cfg.RateLimitEventsPerMin = 120
 	}
 	ts := now.UTC().Format(time.RFC3339)
 	return NodeProfile{
@@ -191,7 +195,7 @@ func NodeProfileFor(ctx context.Context, identity Identity, cfg Config, now time
 			MaxEventBytes:         cfg.MaxEventBytes,
 			MaxManifestBytes:      cfg.MaxManifestBytes,
 			MaxBatchEvents:        cfg.MaxBatchEvents,
-			RateLimitEventsPerMin: 120,
+			RateLimitEventsPerMin: cfg.RateLimitEventsPerMin,
 		},
 		Policy: Policy{
 			PrivateNetwork:                  cfg.PrivateNetwork,

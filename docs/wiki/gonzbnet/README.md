@@ -74,6 +74,9 @@ Current implementation state:
   `gonzbnet.key_password` is configured.
 - Security cleanup adds explicit encrypted node-key export guarded by
   `gonzbnet.admin.keys`.
+- Security cleanup hardens public federation transport with GoNZBNet-specific
+  body limits, inbox/manifest rate limiting, and stable machine-readable error
+  codes.
 
 Maintained pages:
 
@@ -107,3 +110,4 @@ Maintained pages:
 - [Admin Requirements Cleanup](./admin-requirements-cleanup.md)
 - [Security: Node Key Encryption](./security-key-encryption.md)
 - [Security: Key Export](./security-key-export.md)
+- [Security: Federation Transport Hardening](./security-transport-hardening.md)
