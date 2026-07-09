@@ -10,6 +10,7 @@ function canOpenAdminPortal(permissions: string[]) {
     permission.startsWith('indexer.runtime.') ||
     permission.startsWith('aggregator.runtime.') ||
     permission.startsWith('downloader.runtime.') ||
+    permission.startsWith('gonzbnet.') ||
     permission.startsWith('admin.settings.') ||
     permission.startsWith('auth.')
   )
@@ -124,6 +125,9 @@ export function AdminAppShell() {
               <NavLink to="/admin/indexer/releases">Releases</NavLink>
               <NavLink to="/admin/indexer/binaries">Binaries</NavLink>
             </>
+          ) : null}
+          {moduleVisible('gonzbnet') && hasPermission('gonzbnet.admin.pools') ? (
+            <NavLink to="/admin/gonzbnet">GoNZBNet</NavLink>
           ) : null}
           {hasPermission('admin.settings.write') || hasPermission('admin.settings.read') ? (
             <NavLink to="/admin/settings">Runtime Settings</NavLink>

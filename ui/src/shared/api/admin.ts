@@ -29,6 +29,18 @@ import type {
   AdminScrapeConfigResponse,
   AdminStageConfigPatch,
   AdminStagesResponse,
+  GoNZBNetActionResponse,
+  GoNZBNetAssignmentRequest,
+  GoNZBNetClaimRequest,
+  GoNZBNetCoverageDashboard,
+  GoNZBNetCoveragePlan,
+  GoNZBNetCoverageSuggestion,
+  GoNZBNetCoverageSuggestionParams,
+  GoNZBNetGroupCatalogItem,
+  GoNZBNetListResponse,
+  GoNZBNetNodeCapability,
+  GoNZBNetOutcomeRequest,
+  GoNZBNetValidationGap,
   IndexerOverview,
   ReleaseOverridePatch,
 } from "../types"
@@ -394,4 +406,95 @@ export function reenrichAdminRelease(id: string) {
   return apiRequest(`/api/v1/admin/indexer/releases/${id}/actions/reenrich`, {
     method: "POST",
   })
+}
+
+function goNZBNetQuery(params: Record<string, string | number | undefined> = {}) {
+  const query = new URLSearchParams()
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === "") {
+      continue
+    }
+    query.set(key, String(value))
+  }
+  const suffix = query.toString()
+  return suffix ? `?${suffix}` : ""
+}
+
+export function getGoNZBNetNodeCapabilities() {
+  return apiRequest<GoNZBNetListResponse<GoNZBNetNodeCapability>>(
+    "/api/v1/admin/gonzbnet/nodes/capabilities",
+  )
+}
+
+export function getGoNZBNetCoverageDashboard(poolID?: string) {
+  return apiRequest<GoNZBNetCoverageDashboard>(
+    `/api/v1/admin/gonzbnet/coverage${goNZBNetQuery({ pool_id: poolID })}`,
+  )
+}
+
+export function getGoNZBNetCoverageGroups(poolID?: string) {
+  return apiRequest<GoNZBNetListResponse<GoNZBNetGroupCatalogItem>>(
+    `/api/v1/admin/gonzbnet/coverage/groups${goNZBNetQuery({ pool_id: poolID })}`,
+  )
+}
+
+export function getGoNZBNetValidationGaps(poolID?: string, limit = 100) {
+  return apiRequest<GoNZBNetListResponse<GoNZBNetValidationGap>>(
+    `/api/v1/admin/gonzbnet/coverage/validation-gaps${goNZBNetQuery({ pool_id: poolID, limit })}`,
+  )
+}
+
+export function getGoNZBNetCoverageSuggestions(
+  params: GoNZBNetCoverageSuggestionParams = {},
+) {
+  return apiRequest<GoNZBNetListResponse<GoNZBNetCoverageSuggestion>>(
+    `/api/v1/admin/gonzbnet/coverage/suggestions${goNZBNetQuery(params)}`,
+  )
+}
+
+export function getGoNZBNetCoveragePlan(
+  params: GoNZBNetCoverageSuggestionParams = {},
+) {
+  return apiRequest<GoNZBNetCoveragePlan>(
+    `/api/v1/admin/gonzbnet/coverage/plan${goNZBNetQuery(params)}`,
+  )
+}
+
+export function createGoNZBNetCoverageAssignment(
+  body: GoNZBNetAssignmentRequest,
+) {
+  return apiRequest<GoNZBNetActionResponse>(
+    "/api/v1/admin/gonzbnet/coverage/assignments",
+    { method: "POST", body },
+  )
+}
+
+export function createGoNZBNetCoverageClaim(body: GoNZBNetClaimRequest) {
+  return apiRequest<GoNZBNetActionResponse>(
+    "/api/v1/admin/gonzbnet/coverage/claims",
+    { method: "POST", body },
+  )
+}
+
+export function createGoNZBNetCoverageComplete(
+  body: GoNZBNetOutcomeRequest,
+) {
+  return apiRequest<GoNZBNetActionResponse>(
+    "/api/v1/admin/gonzbnet/coverage/complete",
+    { method: "POST", body },
+  )
+}
+
+export function createGoNZBNetCoverageFailed(body: GoNZBNetOutcomeRequest) {
+  return apiRequest<GoNZBNetActionResponse>(
+    "/api/v1/admin/gonzbnet/coverage/failed",
+    { method: "POST", body },
+  )
+}
+
+export function materializeGoNZBNetStalePenalties(poolID?: string) {
+  return apiRequest<GoNZBNetActionResponse>(
+    `/api/v1/admin/gonzbnet/coverage/stale-penalties${goNZBNetQuery({ pool_id: poolID })}`,
+    { method: "POST" },
+  )
 }
