@@ -241,6 +241,36 @@ func TestFederationRateLimitReturnsStableErrorCode(t *testing.T) {
 	}
 }
 
+func TestFederationRateLimitTemporarilyThrottlesFlooder(t *testing.T) {
+	e := echo.New()
+	mw := federationRateLimitMiddleware(1)
+	handler := mw(func(c *echo.Context) error {
+		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
+	})
+
+	for i := 0; i < 4; i++ {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/gonzbnet/v1/inbox", strings.NewReader(`{}`))
+		req.RemoteAddr = "192.0.2.2:12345"
+		if err := handler(e.NewContext(req, rec)); err != nil {
+			t.Fatalf("request %d returned error: %v", i+1, err)
+		}
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/gonzbnet/v1/inbox", strings.NewReader(`{}`))
+	req.RemoteAddr = "192.0.2.2:12345"
+	if err := handler(e.NewContext(req, rec)); err != nil {
+		t.Fatalf("throttled request returned error: %v", err)
+	}
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected status 429, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"code":"temporarily_throttled"`) {
+		t.Fatalf("expected temporarily_throttled code, got %s", rec.Body.String())
+	}
+}
+
 func TestFederationBodyLimitReturnsStableErrorCode(t *testing.T) {
 	e := echo.New()
 	mw := federationBodyLimitMiddleware(config.GoNZBNetConfig{
