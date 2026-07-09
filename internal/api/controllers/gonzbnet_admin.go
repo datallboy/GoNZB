@@ -4,12 +4,14 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/gonzbnet/capability"
+	"github.com/datallboy/gonzb/internal/gonzbnet/coverage"
 	"github.com/datallboy/gonzb/internal/gonzbnet/events"
 	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
 	"github.com/datallboy/gonzb/internal/gonzbnet/moderation"
@@ -34,6 +36,8 @@ type gonzbnetAdminStore interface {
 	AppendVerifiedFederationEvent(ctx context.Context, event *events.SignedEvent, validation *events.ValidationResult) error
 	ProjectTombstone(ctx context.Context, projection pgindex.TombstoneProjection) error
 	ListTombstones(ctx context.Context, activeOnly bool) ([]pgindex.TombstoneRecord, error)
+	ProjectCoverageEvent(ctx context.Context, event *events.SignedEvent) error
+	ListCoverageDashboard(ctx context.Context, poolID string) (pgindex.CoverageDashboard, error)
 }
 
 type trustPoolRequest struct {
@@ -66,6 +70,44 @@ type tombstoneRequest struct {
 	EvidenceEventIDs []string `json:"evidence_event_ids"`
 	EffectiveAt      string   `json:"effective_at"`
 	ExpiresAt        *string  `json:"expires_at"`
+}
+
+type coverageAssignmentRequest struct {
+	AssignmentID   string `json:"assignment_id"`
+	PlanID         string `json:"plan_id"`
+	PoolID         string `json:"pool_id"`
+	Group          string `json:"group"`
+	AssignedNodeID string `json:"assigned_node_id"`
+	RangeStart     int64  `json:"range_start"`
+	RangeEnd       int64  `json:"range_end"`
+	WindowStart    string `json:"window_start"`
+	WindowEnd      string `json:"window_end"`
+	Priority       int    `json:"priority"`
+	DueAt          string `json:"due_at"`
+}
+
+type coverageClaimRequest struct {
+	ClaimID      string `json:"claim_id"`
+	AssignmentID string `json:"assignment_id"`
+	PoolID       string `json:"pool_id"`
+	Group        string `json:"group"`
+	RangeStart   int64  `json:"range_start"`
+	RangeEnd     int64  `json:"range_end"`
+	WindowStart  string `json:"window_start"`
+	WindowEnd    string `json:"window_end"`
+	ExpiresAt    string `json:"expires_at"`
+}
+
+type coverageOutcomeRequest struct {
+	OutcomeID    string `json:"outcome_id"`
+	ClaimID      string `json:"claim_id"`
+	AssignmentID string `json:"assignment_id"`
+	PoolID       string `json:"pool_id"`
+	Group        string `json:"group"`
+	RangeStart   int64  `json:"range_start"`
+	RangeEnd     int64  `json:"range_end"`
+	ReleaseCount int    `json:"release_count"`
+	Reason       string `json:"reason"`
 }
 
 func NewGoNZBNetAdminController(appCtx *app.Context) *GoNZBNetAdminController {
@@ -110,6 +152,15 @@ func (ctrl *GoNZBNetAdminController) UpsertPool(c *echo.Context) error {
 			pools.EventTypeArticleAvailabilityAttestation,
 			pools.EventTypeChecksumAttestation,
 			pools.EventTypeManifestAvailability,
+			pools.EventTypeScannerCapacity,
+			pools.EventTypeGroupObservation,
+			pools.EventTypeCoveragePlan,
+			pools.EventTypeCoverageAssignment,
+			pools.EventTypeRangeClaim,
+			pools.EventTypeTimeWindowClaim,
+			pools.EventTypeCoverageCheckpoint,
+			pools.EventTypeRangeComplete,
+			pools.EventTypeRangeFailed,
 		}
 	}
 	policy := pools.Policy{
@@ -302,6 +353,209 @@ func (ctrl *GoNZBNetAdminController) CreateTombstone(c *echo.Context) error {
 		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}
 	return c.JSON(http.StatusCreated, map[string]string{"status": "ok", "event_id": event.EventID})
+}
+
+func (ctrl *GoNZBNetAdminController) CoverageDashboard(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	poolID := firstNonBlank(queryParamTrimmed(c, "pool_id"), ctrl.appCtx.Config.GoNZBNet.LocalPoolID, "pool.local")
+	dashboard, err := store.ListCoverageDashboard(c.Request().Context(), poolID)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, dashboard)
+}
+
+func (ctrl *GoNZBNetAdminController) CreateCoverageAssignment(c *echo.Context) error {
+	var req coverageAssignmentRequest
+	if err := decodeJSONBody(c, &req); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	now := time.Now().UTC()
+	body := coverage.CoverageAssignment{
+		SchemaVersion:  "1.0",
+		Type:           coverage.TypeCoverageAssignment,
+		AssignmentID:   firstNonBlank(req.AssignmentID, coverageID("assign", now)),
+		PlanID:         strings.TrimSpace(req.PlanID),
+		PoolID:         firstNonBlank(req.PoolID, ctrl.appCtx.Config.GoNZBNet.LocalPoolID, "pool.local"),
+		Group:          strings.TrimSpace(req.Group),
+		AssignedNodeID: strings.TrimSpace(req.AssignedNodeID),
+		RangeStart:     req.RangeStart,
+		RangeEnd:       req.RangeEnd,
+		WindowStart:    strings.TrimSpace(req.WindowStart),
+		WindowEnd:      strings.TrimSpace(req.WindowEnd),
+		Priority:       req.Priority,
+		DueAt:          strings.TrimSpace(req.DueAt),
+		CreatedAt:      now.Format(time.RFC3339),
+	}
+	return ctrl.signAndProjectCoverage(c, coverage.TypeCoverageAssignment, body, body.PoolID)
+}
+
+func (ctrl *GoNZBNetAdminController) CreateCoverageClaim(c *echo.Context) error {
+	var req coverageClaimRequest
+	if err := decodeJSONBody(c, &req); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	now := time.Now().UTC()
+	nodeID, err := ctrl.localNodeID(c)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	poolID := firstNonBlank(req.PoolID, ctrl.appCtx.Config.GoNZBNet.LocalPoolID, "pool.local")
+	expiresAt := firstNonBlank(req.ExpiresAt, now.Add(30*time.Minute).Format(time.RFC3339))
+	if strings.TrimSpace(req.WindowStart) != "" || strings.TrimSpace(req.WindowEnd) != "" {
+		body := coverage.TimeWindowClaim{
+			SchemaVersion: "1.0",
+			Type:          coverage.TypeTimeWindowClaim,
+			ClaimID:       firstNonBlank(req.ClaimID, coverageID("claim", now)),
+			AssignmentID:  strings.TrimSpace(req.AssignmentID),
+			PoolID:        poolID,
+			Group:         strings.TrimSpace(req.Group),
+			NodeID:        nodeID,
+			WindowStart:   strings.TrimSpace(req.WindowStart),
+			WindowEnd:     strings.TrimSpace(req.WindowEnd),
+			ClaimedAt:     now.Format(time.RFC3339),
+			ExpiresAt:     expiresAt,
+		}
+		return ctrl.signAndProjectCoverage(c, coverage.TypeTimeWindowClaim, body, poolID)
+	}
+	body := coverage.RangeClaim{
+		SchemaVersion: "1.0",
+		Type:          coverage.TypeRangeClaim,
+		ClaimID:       firstNonBlank(req.ClaimID, coverageID("claim", now)),
+		AssignmentID:  strings.TrimSpace(req.AssignmentID),
+		PoolID:        poolID,
+		Group:         strings.TrimSpace(req.Group),
+		NodeID:        nodeID,
+		RangeStart:    req.RangeStart,
+		RangeEnd:      req.RangeEnd,
+		ClaimedAt:     now.Format(time.RFC3339),
+		ExpiresAt:     expiresAt,
+	}
+	return ctrl.signAndProjectCoverage(c, coverage.TypeRangeClaim, body, poolID)
+}
+
+func (ctrl *GoNZBNetAdminController) CreateCoverageComplete(c *echo.Context) error {
+	var req coverageOutcomeRequest
+	if err := decodeJSONBody(c, &req); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	now := time.Now().UTC()
+	nodeID, err := ctrl.localNodeID(c)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	poolID := firstNonBlank(req.PoolID, ctrl.appCtx.Config.GoNZBNet.LocalPoolID, "pool.local")
+	body := coverage.RangeComplete{
+		SchemaVersion: "1.0",
+		Type:          coverage.TypeRangeComplete,
+		OutcomeID:     firstNonBlank(req.OutcomeID, coverageID("complete", now)),
+		ClaimID:       strings.TrimSpace(req.ClaimID),
+		AssignmentID:  strings.TrimSpace(req.AssignmentID),
+		PoolID:        poolID,
+		Group:         strings.TrimSpace(req.Group),
+		NodeID:        nodeID,
+		RangeStart:    req.RangeStart,
+		RangeEnd:      req.RangeEnd,
+		ReleaseCount:  req.ReleaseCount,
+		CompletedAt:   now.Format(time.RFC3339),
+	}
+	return ctrl.signAndProjectCoverage(c, coverage.TypeRangeComplete, body, poolID)
+}
+
+func (ctrl *GoNZBNetAdminController) CreateCoverageFailed(c *echo.Context) error {
+	var req coverageOutcomeRequest
+	if err := decodeJSONBody(c, &req); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	now := time.Now().UTC()
+	nodeID, err := ctrl.localNodeID(c)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	poolID := firstNonBlank(req.PoolID, ctrl.appCtx.Config.GoNZBNet.LocalPoolID, "pool.local")
+	body := coverage.RangeFailed{
+		SchemaVersion: "1.0",
+		Type:          coverage.TypeRangeFailed,
+		OutcomeID:     firstNonBlank(req.OutcomeID, coverageID("failed", now)),
+		ClaimID:       strings.TrimSpace(req.ClaimID),
+		AssignmentID:  strings.TrimSpace(req.AssignmentID),
+		PoolID:        poolID,
+		Group:         strings.TrimSpace(req.Group),
+		NodeID:        nodeID,
+		RangeStart:    req.RangeStart,
+		RangeEnd:      req.RangeEnd,
+		Reason:        strings.TrimSpace(req.Reason),
+		FailedAt:      now.Format(time.RFC3339),
+	}
+	return ctrl.signAndProjectCoverage(c, coverage.TypeRangeFailed, body, poolID)
+}
+
+func (ctrl *GoNZBNetAdminController) signAndProjectCoverage(c *echo.Context, eventType string, body any, poolID string) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	now := time.Now().UTC()
+	if err := coverage.Validate(eventType, body, now, 2*time.Minute); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	nodeIdentity, err := identity.LoadOrCreate(ctrl.appCtx.Config.GoNZBNet.KeysDir)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	nodeID, err := nodeIdentity.NodeID(c.Request().Context())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	publicKey, err := nodeIdentity.PublicKey(c.Request().Context())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if err := store.UpsertFederationNodeIdentity(c.Request().Context(), nodeID, publicKey); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	sequence, previousEventID, err := store.NextFederationEventSequence(c.Request().Context(), nodeID)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	event, validation, err := events.Create(c.Request().Context(), nodeIdentity, events.CreateOptions{
+		EventType:       eventType,
+		Sequence:        sequence,
+		PreviousEventID: previousEventID,
+		CreatedAt:       now,
+		PoolIDs:         []string{poolID},
+		Visibility:      "pool",
+		BodySchema:      coverage.BodySchema(eventType),
+		Body:            body,
+	})
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if validation == nil || !validation.OK {
+		return jsonError(c, http.StatusInternalServerError, "signed coverage event did not verify")
+	}
+	if err := store.AppendVerifiedFederationEvent(c.Request().Context(), event, validation); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if err := store.ProjectCoverageEvent(c.Request().Context(), event); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]string{"status": "ok", "event_id": event.EventID})
+}
+
+func (ctrl *GoNZBNetAdminController) localNodeID(c *echo.Context) (string, error) {
+	nodeIdentity, err := identity.LoadOrCreate(ctrl.appCtx.Config.GoNZBNet.KeysDir)
+	if err != nil {
+		return "", err
+	}
+	return nodeIdentity.NodeID(c.Request().Context())
+}
+
+func coverageID(prefix string, now time.Time) string {
+	return fmt.Sprintf("%s_%d", prefix, now.UnixNano())
 }
 
 func (ctrl *GoNZBNetAdminController) store() (gonzbnetAdminStore, bool) {

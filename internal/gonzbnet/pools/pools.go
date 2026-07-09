@@ -17,6 +17,15 @@ const (
 	EventTypeArticleAvailabilityAttestation = "ArticleAvailabilityAttestation"
 	EventTypeChecksumAttestation            = "ChecksumAttestation"
 	EventTypeManifestAvailability           = "ManifestAvailability"
+	EventTypeScannerCapacity                = "ScannerCapacity"
+	EventTypeGroupObservation               = "GroupObservation"
+	EventTypeCoveragePlan                   = "CoveragePlan"
+	EventTypeCoverageAssignment             = "CoverageAssignment"
+	EventTypeRangeClaim                     = "RangeClaim"
+	EventTypeTimeWindowClaim                = "TimeWindowClaim"
+	EventTypeCoverageCheckpoint             = "CoverageCheckpoint"
+	EventTypeRangeComplete                  = "RangeComplete"
+	EventTypeRangeFailed                    = "RangeFailed"
 
 	EventTypePoolGenesis        = "PoolGenesis"
 	EventTypePoolJoinRequest    = "PoolJoinRequest"
@@ -139,6 +148,15 @@ func NormalizePolicy(policy Policy, adminCount int) Policy {
 			EventTypeArticleAvailabilityAttestation,
 			EventTypeChecksumAttestation,
 			EventTypeManifestAvailability,
+			EventTypeScannerCapacity,
+			EventTypeGroupObservation,
+			EventTypeCoveragePlan,
+			EventTypeCoverageAssignment,
+			EventTypeRangeClaim,
+			EventTypeTimeWindowClaim,
+			EventTypeCoverageCheckpoint,
+			EventTypeRangeComplete,
+			EventTypeRangeFailed,
 		}
 	}
 	return out
