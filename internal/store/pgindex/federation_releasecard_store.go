@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/datallboy/gonzb/internal/gonzbnet/health"
 	"github.com/datallboy/gonzb/internal/gonzbnet/releasecard"
 )
 
@@ -203,10 +204,7 @@ func (s *Store) UpsertFederatedReleaseCardProjection(ctx context.Context, projec
 	if resolvable {
 		manifestConfidenceScore = 1.0
 	}
-	bestScore := availabilityScore
-	if manifestConfidenceScore > bestScore {
-		bestScore = manifestConfidenceScore
-	}
+	bestScore := health.RankingScore(1.0, manifestConfidenceScore, availabilityScore, 0.33, freshnessScore(postedAt))
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -435,7 +433,17 @@ func (s *Store) SearchFederatedReleaseCards(ctx context.Context, params Federate
 	args = append(args, limit)
 
 	query := fmt.Sprintf(`
-		WITH ranked AS (
+		WITH source_counts AS (
+			SELECT release_id, LEAST(1.0, COUNT(*)::double precision / 3.0) AS quorum_score
+			FROM federated_release_sources
+			WHERE EXISTS (
+				SELECT 1
+				FROM jsonb_array_elements_text($1::jsonb) pools(pool_id)
+				WHERE pools.pool_id = federated_release_sources.pool_id
+			)
+			GROUP BY release_id
+		),
+		ranked AS (
 			SELECT
 				c.release_id,
 				COALESCE(c.manifest_id, '') AS manifest_id,
@@ -444,7 +452,18 @@ func (s *Store) SearchFederatedReleaseCards(ctx context.Context, params Federate
 				c.newznab_categories,
 				c.size_bytes,
 				c.posted_at,
-				c.best_score,
+				LEAST(1.0, GREATEST(0.0,
+					(0.35 * s.trust_score) +
+					(0.25 * s.manifest_confidence_score) +
+					(0.25 * s.availability_score) +
+					(0.10 * sc.quorum_score) +
+					(0.05 * CASE
+						WHEN c.posted_at IS NULL THEN 0.5
+						WHEN c.posted_at > NOW() - INTERVAL '14 days' THEN 1.0
+						WHEN c.posted_at > NOW() - INTERVAL '90 days' THEN 0.5
+						ELSE 0.1
+					END)
+				)) AS best_score,
 				c.availability_score,
 				c.trust_score,
 				c.resolvable,
@@ -454,10 +473,24 @@ func (s *Store) SearchFederatedReleaseCards(ctx context.Context, params Federate
 				s.manifest_confidence_score,
 				ROW_NUMBER() OVER (
 					PARTITION BY c.release_id
-					ORDER BY s.trust_score DESC, s.availability_score DESC, c.posted_at DESC NULLS LAST
+					ORDER BY
+						LEAST(1.0, GREATEST(0.0,
+							(0.35 * s.trust_score) +
+							(0.25 * s.manifest_confidence_score) +
+							(0.25 * s.availability_score) +
+							(0.10 * sc.quorum_score) +
+							(0.05 * CASE
+								WHEN c.posted_at IS NULL THEN 0.5
+								WHEN c.posted_at > NOW() - INTERVAL '14 days' THEN 1.0
+								WHEN c.posted_at > NOW() - INTERVAL '90 days' THEN 0.5
+								ELSE 0.1
+							END)
+						)) DESC,
+						c.posted_at DESC NULLS LAST
 				) AS source_rank
 			FROM federated_release_cards c
 			JOIN federated_release_sources s ON s.release_id = c.release_id
+			JOIN source_counts sc ON sc.release_id = c.release_id
 			WHERE %s
 		)
 		SELECT
@@ -478,7 +511,7 @@ func (s *Store) SearchFederatedReleaseCards(ctx context.Context, params Federate
 			manifest_confidence_score
 		FROM ranked
 		WHERE source_rank = 1
-		ORDER BY posted_at DESC NULLS LAST, best_score DESC, release_id ASC
+		ORDER BY best_score DESC, posted_at DESC NULLS LAST, release_id ASC
 		LIMIT $%d`, strings.Join(clauses, "\n  AND "), arg)
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -554,4 +587,19 @@ func normalizeStrings(values []string) []string {
 		out = append(out, value)
 	}
 	return out
+}
+
+func freshnessScore(postedAt *time.Time) float64 {
+	if postedAt == nil {
+		return 0.5
+	}
+	age := time.Since(postedAt.UTC())
+	switch {
+	case age < 14*24*time.Hour:
+		return 1
+	case age < 90*24*time.Hour:
+		return 0.5
+	default:
+		return 0.1
+	}
 }
