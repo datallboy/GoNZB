@@ -478,6 +478,10 @@ func (s *fakeGoNZBNetAdminStore) ListPoolMembers(context.Context, string) ([]pgi
 	return nil, nil
 }
 
+func (s *fakeGoNZBNetAdminStore) ListPoolControlEvents(context.Context, string, int) ([]pgindex.PoolControlEventRecord, error) {
+	return nil, nil
+}
+
 func (s *fakeGoNZBNetAdminStore) UpsertTrustPool(context.Context, pgindex.TrustPoolRecord) error {
 	return nil
 }

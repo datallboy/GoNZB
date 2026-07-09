@@ -20,6 +20,7 @@ import {
   getGoNZBNetManifestSourceDiagnostics,
   getGoNZBNetNodeCapabilities,
   getGoNZBNetNodeProfile,
+  getGoNZBNetPoolControlEvents,
   getGoNZBNetPoolMembers,
   getGoNZBNetPeerDeliveryDiagnostics,
   getGoNZBNetPeerDiagnostics,
@@ -61,6 +62,7 @@ import type {
   GoNZBNetNodeProfileResponse,
   GoNZBNetPeerDeliveryDiagnostic,
   GoNZBNetPeerDiagnostic,
+  GoNZBNetPoolControlEvent,
   GoNZBNetPoolMember,
   GoNZBNetRejectedEventDiagnostic,
   GoNZBNetReleaseSourceDiagnostic,
@@ -294,6 +296,26 @@ function shortID(value?: string) {
   return `${value.slice(0, 10)}...${value.slice(-6)}`
 }
 
+function poolControlSubject(item: GoNZBNetPoolControlEvent) {
+  const body = item.body_json ?? {}
+  const subject = typeof body.subject_node_id === 'string'
+    ? body.subject_node_id
+    : typeof body.candidate_node_id === 'string'
+      ? body.candidate_node_id
+      : ''
+  return shortID(subject)
+}
+
+function poolControlDetail(item: GoNZBNetPoolControlEvent) {
+  const body = item.body_json ?? {}
+  const parts = [
+    typeof body.role === 'string' ? body.role : '',
+    typeof body.proposal_event_id === 'string' ? shortID(body.proposal_event_id) : '',
+    typeof body.reason === 'string' ? body.reason : '',
+  ].filter(Boolean)
+  return parts.length > 0 ? parts.join(' / ') : 'n/a'
+}
+
 function rangeLabel(item: { range_start?: number; range_end?: number }) {
   if (!item.range_start && !item.range_end) {
     return 'n/a'
@@ -494,6 +516,7 @@ export function AdminGoNZBNetPage() {
   const [reputationDiagnostics, setReputationDiagnostics] = useState<GoNZBNetReputationDiagnostic[]>([])
   const [trustPools, setTrustPools] = useState<GoNZBNetTrustPool[]>([])
   const [poolMembers, setPoolMembers] = useState<GoNZBNetPoolMember[]>([])
+  const [poolControlEvents, setPoolControlEvents] = useState<GoNZBNetPoolControlEvent[]>([])
   const [tombstones, setTombstones] = useState<GoNZBNetTombstone[]>([])
   const [assignmentForm, setAssignmentForm] = useState<AssignmentForm>(defaultAssignmentForm)
   const [claimForm, setClaimForm] = useState<ClaimForm>(defaultClaimForm)
@@ -539,6 +562,7 @@ export function AdminGoNZBNetPage() {
         nextValidationTasks,
         nextTrustPools,
         nextPoolMembers,
+        nextPoolControlEvents,
         nextTombstones,
         nextReleaseSources,
         nextManifestSources,
@@ -561,6 +585,7 @@ export function AdminGoNZBNetPage() {
           getGoNZBNetValidationTaskDiagnostics(100),
           getGoNZBNetTrustPools(),
           getGoNZBNetPoolMembers(effectivePoolID),
+          getGoNZBNetPoolControlEvents(effectivePoolID, 100),
           getGoNZBNetTombstones(false).catch(() => ({ items: [], count: 0 })),
           getGoNZBNetReleaseSourceDiagnostics(effectivePoolID, 100),
           getGoNZBNetManifestSourceDiagnostics(effectivePoolID, 100),
@@ -582,6 +607,7 @@ export function AdminGoNZBNetPage() {
       setValidationTaskDiagnostics(nextValidationTasks.items ?? [])
       setTrustPools(nextTrustPools.items ?? [])
       setPoolMembers(nextPoolMembers.items ?? [])
+      setPoolControlEvents(nextPoolControlEvents.items ?? [])
       setTombstones(nextTombstones.items ?? [])
       setReleaseSourceDiagnostics(nextReleaseSources.items ?? [])
       setManifestSourceDiagnostics(nextManifestSources.items ?? [])
@@ -1531,6 +1557,33 @@ export function AdminGoNZBNetPage() {
                     Revoke
                   </button>
                 </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </SectionTable>
+
+      <SectionTable title={`Pool control events: ${effectivePoolID}`} count={poolControlEvents.length}>
+        <table className="data-table data-table--compact">
+          <thead>
+            <tr>
+              <th>Event</th>
+              <th>Type</th>
+              <th>Author</th>
+              <th>Subject</th>
+              <th>Detail</th>
+              <th>Created</th>
+            </tr>
+          </thead>
+          <tbody>
+            {poolControlEvents.map((item) => (
+              <tr key={item.event_id}>
+                <td className="mono-cell breakable-value" title={item.event_id}>{shortID(item.event_id)}</td>
+                <td>{item.event_type}</td>
+                <td className="mono-cell breakable-value" title={item.author_node_id}>{shortID(item.author_node_id)}</td>
+                <td className="mono-cell breakable-value">{poolControlSubject(item)}</td>
+                <td className="breakable-value">{poolControlDetail(item)}</td>
+                <td>{formatDateTime(item.created_at)}</td>
               </tr>
             ))}
           </tbody>
