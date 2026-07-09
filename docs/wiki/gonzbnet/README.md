@@ -17,6 +17,8 @@ Current implementation state:
   for trusted peer URLs.
 - Phase 4 adds signed inbox push sync with nonce replay protection and peer
   delivery tracking.
+- Phase 5 adds local RBAC and aggregator/Newznab search integration over the
+  local federated ReleaseCard cache.
 
 Maintained pages:
 
@@ -24,3 +26,4 @@ Maintained pages:
 - [Phase 2 ReleaseCard Publishing](./phase-2-releasecard-publishing.md)
 - [Phase 3 Manual Pull Sync](./phase-3-manual-pull-sync.md)
 - [Phase 4 Inbox Push Sync](./phase-4-inbox-push-sync.md)
+- [Phase 5 RBAC And Aggregator Integration](./phase-5-rbac-aggregator.md)

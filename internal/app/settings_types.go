@@ -57,6 +57,7 @@ type AggregatorRuntimeSettings struct {
 type AggregatorSourcesRuntimeSettings struct {
 	LocalBlob     RuntimeToggle `json:"local_blob,omitempty"`
 	UsenetIndexer RuntimeToggle `json:"usenet_indexer,omitempty"`
+	GoNZBNet      RuntimeToggle `json:"gonzbnet,omitempty"`
 }
 
 type RuntimeToggle struct {

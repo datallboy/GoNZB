@@ -87,6 +87,7 @@ type AggregatorConfig struct {
 type AggregatorSourcesConfig struct {
 	LocalBlob     ModuleToggle `mapstructure:"local_blob" yaml:"local_blob"`
 	UsenetIndexer ModuleToggle `mapstructure:"usenet_indexer" yaml:"usenet_indexer"`
+	GoNZBNet      ModuleToggle `mapstructure:"gonzbnet" yaml:"gonzbnet"`
 }
 
 type GoNZBNetConfig struct {
@@ -487,6 +488,7 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("modules.api.enabled", true)
 	v.SetDefault("aggregator.sources.local_blob.enabled", false)
 	v.SetDefault("aggregator.sources.usenet_indexer.enabled", false)
+	v.SetDefault("aggregator.sources.gonzbnet.enabled", false)
 	v.SetDefault("gonzbnet.mode", "integrated")
 	v.SetDefault("gonzbnet.node_alias", "")
 	v.SetDefault("gonzbnet.advertise_url", "")
