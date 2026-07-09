@@ -36,10 +36,15 @@ import type {
   GoNZBNetCoveragePlan,
   GoNZBNetCoverageSuggestion,
   GoNZBNetCoverageSuggestionParams,
+  GoNZBNetEventDiagnostic,
   GoNZBNetGroupCatalogItem,
   GoNZBNetListResponse,
   GoNZBNetNodeCapability,
   GoNZBNetOutcomeRequest,
+  GoNZBNetPeerDeliveryDiagnostic,
+  GoNZBNetPeerDiagnostic,
+  GoNZBNetRejectedEventDiagnostic,
+  GoNZBNetValidationTaskDiagnostic,
   GoNZBNetValidationGap,
   IndexerOverview,
   ReleaseOverridePatch,
@@ -496,5 +501,35 @@ export function materializeGoNZBNetStalePenalties(poolID?: string) {
   return apiRequest<GoNZBNetActionResponse>(
     `/api/v1/admin/gonzbnet/coverage/stale-penalties${goNZBNetQuery({ pool_id: poolID })}`,
     { method: "POST" },
+  )
+}
+
+export function getGoNZBNetPeerDiagnostics(limit = 100) {
+  return apiRequest<GoNZBNetListResponse<GoNZBNetPeerDiagnostic>>(
+    `/api/v1/admin/gonzbnet/diagnostics/peers${goNZBNetQuery({ limit })}`,
+  )
+}
+
+export function getGoNZBNetEventDiagnostics(limit = 100) {
+  return apiRequest<GoNZBNetListResponse<GoNZBNetEventDiagnostic>>(
+    `/api/v1/admin/gonzbnet/diagnostics/events${goNZBNetQuery({ limit })}`,
+  )
+}
+
+export function getGoNZBNetRejectedEventDiagnostics(limit = 100) {
+  return apiRequest<GoNZBNetListResponse<GoNZBNetRejectedEventDiagnostic>>(
+    `/api/v1/admin/gonzbnet/diagnostics/rejected-events${goNZBNetQuery({ limit })}`,
+  )
+}
+
+export function getGoNZBNetPeerDeliveryDiagnostics(limit = 100) {
+  return apiRequest<GoNZBNetListResponse<GoNZBNetPeerDeliveryDiagnostic>>(
+    `/api/v1/admin/gonzbnet/diagnostics/deliveries${goNZBNetQuery({ limit })}`,
+  )
+}
+
+export function getGoNZBNetValidationTaskDiagnostics(limit = 100) {
+  return apiRequest<GoNZBNetListResponse<GoNZBNetValidationTaskDiagnostic>>(
+    `/api/v1/admin/gonzbnet/diagnostics/validation-tasks${goNZBNetQuery({ limit })}`,
   )
 }

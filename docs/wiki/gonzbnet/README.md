@@ -53,6 +53,8 @@ Current implementation state:
   catalog reads, validation-gap reads, and stale-claim penalty materialization.
 - Addendum Phase H adds the local GoNZBNet admin WebUI for capability,
   coverage, scheduler, validation-gap, and manual signed coverage workflows.
+- Addendum Phase I adds local admin diagnostics for peers, accepted/rejected
+  events, peer deliveries, and validation task state.
 
 Maintained pages:
 
@@ -75,3 +77,4 @@ Maintained pages:
 - [Phase F Automated Coverage Improvements](./phase-f-coverage-scheduler.md)
 - [Phase G Addendum Checklist Gaps](./phase-g-addendum-checklist-gaps.md)
 - [Phase H Admin UI](./phase-h-admin-ui.md)
+- [Phase I Admin Diagnostics](./phase-i-admin-diagnostics.md)
