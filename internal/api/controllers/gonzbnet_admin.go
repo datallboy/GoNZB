@@ -46,6 +46,7 @@ type gonzbnetAdminStore interface {
 	UpsertFederationNodeIdentity(ctx context.Context, nodeID string, publicKey ed25519.PublicKey) error
 	NextFederationEventSequence(ctx context.Context, authorNodeID string) (int64, *string, error)
 	FindFederationEventByBodyHash(ctx context.Context, authorNodeID, eventType, bodyHash string) (string, error)
+	IsActivePoolAdmin(ctx context.Context, poolID, nodeID string) (bool, error)
 	ValidateFederationPoolControlEvent(ctx context.Context, event *events.SignedEvent) error
 	AppendVerifiedFederationEvent(ctx context.Context, event *events.SignedEvent, validation *events.ValidationResult) error
 	ProjectFederationPoolEvent(ctx context.Context, event *events.SignedEvent) error
@@ -1059,6 +1060,15 @@ func (ctrl *GoNZBNetAdminController) CreateTombstone(c *echo.Context) error {
 	}
 	if err := store.UpsertFederationNodeIdentity(c.Request().Context(), nodeID, publicKey); err != nil {
 		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if body.PoolID != "" && body.Severity != moderation.SeverityLocalOnly {
+		allowed, err := store.IsActivePoolAdmin(c.Request().Context(), body.PoolID, nodeID)
+		if err != nil {
+			return jsonError(c, http.StatusInternalServerError, err.Error())
+		}
+		if !allowed {
+			return jsonError(c, http.StatusForbidden, "local node is not an active pool admin")
+		}
 	}
 	bodyHash, err := moderation.HashBody(body)
 	if err != nil {

@@ -92,6 +92,8 @@ Current implementation state:
   codes.
 - Security cleanup enforces HTTPS/WSS peer transport by default, with
   loopback-only insecure HTTP for explicit local development.
+- Admin cleanup requires active pool-admin membership before the local node can
+  publish pool-scoped Tombstone moderation votes.
 
 Maintained pages:
 
@@ -118,6 +120,7 @@ Maintained pages:
 - [Phase J Pool And Moderation UI](./phase-j-pool-moderation-ui.md)
 - [Phase K Peer Management](./phase-k-peer-management.md)
 - [Phase L RBAC Alignment](./phase-l-rbac-alignment.md)
+- [Admin Pool Tombstone Authorization](./admin-pool-tombstone-authorization.md)
 - [Phase M Source And Health Diagnostics](./phase-m-source-health-diagnostics.md)
 - [Phase N Node Profile And Config Admin](./phase-n-node-config-admin.md)
 - [Phase O Force Resolve Manifest](./phase-o-force-resolve-manifest.md)
