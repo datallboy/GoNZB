@@ -113,7 +113,9 @@ func buildAggregator(appCtx *app.Context, effective *config.Config) app.IndexerA
 		if store, ok := appCtx.PGIndexStore.(gonzbnetAggregatorStore); ok {
 			nodeIdentity, err := identity.LoadOrCreateWithPassword(effective.GoNZBNet.KeysDir, effective.GoNZBNet.KeyPassword)
 			if err == nil {
-				manager.AddSource(gonzbnetsource.NewWithResolver(store, manifestresolver.New(nodeIdentity, store)))
+				manager.AddSource(gonzbnetsource.NewWithResolver(store, manifestresolver.NewWithOptions(nodeIdentity, store, manifestresolver.Options{
+					AllowInsecurePeerHTTP: effective.GoNZBNet.AllowInsecurePeerHTTP,
+				})))
 			} else if appCtx.Logger != nil {
 				appCtx.Logger.Warn("gonzbnet aggregator source disabled: %v", err)
 			}

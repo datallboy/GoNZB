@@ -63,7 +63,7 @@ func TestResolveNZBFetchesSignedManifestWithoutUserContext(t *testing.T) {
 			TrustScore:   1,
 		},
 	}
-	reader, err := New(localIdentity, store).ResolveNZB(ctx, body.ReleaseID)
+	reader, err := NewWithOptions(localIdentity, store, Options{AllowInsecurePeerHTTP: true}).ResolveNZB(ctx, body.ReleaseID)
 	if err != nil {
 		t.Fatalf("resolve nzb: %v", err)
 	}
@@ -77,6 +77,27 @@ func TestResolveNZBFetchesSignedManifestWithoutUserContext(t *testing.T) {
 	}
 	if strings.Contains(strings.ToLower(string(remoteBody)), "username") || strings.Contains(strings.ToLower(string(remoteBody)), "api_key") || strings.Contains(strings.ToLower(string(remoteBody)), "apikey") {
 		t.Fatalf("manifest request leaked user/API context: %s", string(remoteBody))
+	}
+}
+
+func TestResolveNZBRejectsInsecureNonLocalHTTPSource(t *testing.T) {
+	ctx := context.Background()
+	localIdentity, err := identity.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("local identity: %v", err)
+	}
+	store := &fakeResolverStore{
+		source: &pgindex.FederatedManifestSource{
+			ManifestID: "man_1",
+			ReleaseID:  "rel_1",
+			PoolID:     "pool.local",
+			BaseURL:    "http://peer.example/gonzbnet/v1",
+			TrustScore: 1,
+		},
+	}
+
+	if _, err := New(localIdentity, store).ResolveNZB(ctx, "rel_1"); err == nil {
+		t.Fatalf("expected non-local http manifest source to be rejected")
 	}
 }
 

@@ -23,6 +23,7 @@ import (
 	"github.com/datallboy/gonzb/internal/gonzbnet/profile"
 	"github.com/datallboy/gonzb/internal/gonzbnet/releasecard"
 	"github.com/datallboy/gonzb/internal/gonzbnet/requestauth"
+	"github.com/datallboy/gonzb/internal/gonzbnet/transportpolicy"
 	"github.com/datallboy/gonzb/internal/gonzbnet/validation"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
 	"golang.org/x/net/websocket"
@@ -61,10 +62,11 @@ type Logger interface {
 }
 
 type Service struct {
-	identity Identity
-	store    Store
-	client   *http.Client
-	logger   Logger
+	identity              Identity
+	store                 Store
+	client                *http.Client
+	logger                Logger
+	allowInsecurePeerHTTP bool
 }
 
 type Result struct {
@@ -113,11 +115,20 @@ type GossipOptions struct {
 	PeerExchangeEnabled bool
 }
 
+type Options struct {
+	AllowInsecurePeerHTTP bool
+}
+
 func New(identity Identity, store Store, logger Logger) *Service {
+	return NewWithOptions(identity, store, logger, Options{})
+}
+
+func NewWithOptions(identity Identity, store Store, logger Logger, opts Options) *Service {
 	return &Service{
-		identity: identity,
-		store:    store,
-		logger:   logger,
+		identity:              identity,
+		store:                 store,
+		logger:                logger,
+		allowInsecurePeerHTTP: opts.AllowInsecurePeerHTTP,
 		client: &http.Client{
 			Timeout: 15 * time.Second,
 		},
@@ -132,6 +143,9 @@ func (s *Service) UpsertManualPeers(ctx context.Context, peerURLs []string) erro
 		peerURL = strings.TrimSpace(peerURL)
 		if peerURL == "" {
 			continue
+		}
+		if err := transportpolicy.ValidateHTTPURL(peerURL, s.allowInsecurePeerHTTP); err != nil {
+			return err
 		}
 		if _, err := s.store.UpsertFederationPeerURL(ctx, peerURL); err != nil {
 			return err
@@ -570,6 +584,9 @@ func (s *Service) gossipPeer(ctx context.Context, peer pgindex.FederationPeerRec
 		}
 	}
 	wsURL := websocketURL(nodeProfile, wellKnown.BaseURL)
+	if err := transportpolicy.ValidateWebSocketURL(wsURL, s.allowInsecurePeerHTTP); err != nil {
+		return result, err
+	}
 	parsed, err := url.Parse(wsURL)
 	if err != nil {
 		return result, err
@@ -626,6 +643,9 @@ func (s *Service) gossipPeer(ctx context.Context, peer pgindex.FederationPeerRec
 	}
 	if opts.PeerExchangeEnabled {
 		for _, peerURL := range gossip.FilterPeers(response.Peers, true, opts.Fanout) {
+			if err := transportpolicy.ValidateHTTPURL(peerURL, s.allowInsecurePeerHTTP); err != nil {
+				continue
+			}
 			_, _ = s.store.UpsertFederationPeerURL(ctx, peerURL)
 		}
 	}
@@ -661,6 +681,9 @@ func (s *Service) pushEvents(ctx context.Context, baseURL string, items []*event
 		return out, err
 	}
 	endpoint := strings.TrimRight(baseURL, "/") + "/inbox"
+	if err := transportpolicy.ValidateHTTPURL(endpoint, s.allowInsecurePeerHTTP); err != nil {
+		return out, err
+	}
 	u, err := url.Parse(endpoint)
 	if err != nil {
 		return out, err
@@ -694,6 +717,9 @@ func (s *Service) fetchWellKnown(ctx context.Context, peerURL string) (profile.W
 	var out profile.WellKnown
 	endpoint, err := wellKnownURL(peerURL)
 	if err != nil {
+		return out, err
+	}
+	if err := transportpolicy.ValidateHTTPURL(endpoint, s.allowInsecurePeerHTTP); err != nil {
 		return out, err
 	}
 	if err := s.getJSON(ctx, endpoint, &out); err != nil {
@@ -739,6 +765,9 @@ func (s *Service) fetchOutbox(ctx context.Context, baseURL, cursor string) (Outb
 }
 
 func (s *Service) getJSON(ctx context.Context, endpoint string, out any) error {
+	if err := transportpolicy.ValidateHTTPURL(endpoint, s.allowInsecurePeerHTTP); err != nil {
+		return err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return err
@@ -791,7 +820,11 @@ func (s *Service) handshake(ctx context.Context, baseURL string) error {
 	}
 	body["signature"] = canonical.Base64URL(signature)
 	payload, _ := json.Marshal(body)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(baseURL, "/")+"/handshake", bytes.NewReader(payload))
+	endpoint := strings.TrimRight(baseURL, "/") + "/handshake"
+	if err := transportpolicy.ValidateHTTPURL(endpoint, s.allowInsecurePeerHTTP); err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}

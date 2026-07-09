@@ -77,6 +77,8 @@ Current implementation state:
 - Security cleanup hardens public federation transport with GoNZBNet-specific
   body limits, inbox/manifest rate limiting, and stable machine-readable error
   codes.
+- Security cleanup enforces HTTPS/WSS peer transport by default, with
+  loopback-only insecure HTTP for explicit local development.
 
 Maintained pages:
 
@@ -111,3 +113,4 @@ Maintained pages:
 - [Security: Node Key Encryption](./security-key-encryption.md)
 - [Security: Key Export](./security-key-export.md)
 - [Security: Federation Transport Hardening](./security-transport-hardening.md)
+- [Security: Peer TLS Policy](./security-peer-tls-policy.md)

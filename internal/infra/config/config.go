@@ -99,6 +99,7 @@ type GoNZBNetConfig struct {
 	SpecVersion                    string   `mapstructure:"spec_version" yaml:"spec_version"`
 	HTTPEnabled                    bool     `mapstructure:"http_enabled" yaml:"http_enabled"`
 	HTTPBasePath                   string   `mapstructure:"http_base_path" yaml:"http_base_path"`
+	AllowInsecurePeerHTTP          bool     `mapstructure:"allow_insecure_peer_http" yaml:"allow_insecure_peer_http"`
 	PrivateNetwork                 bool     `mapstructure:"private_network" yaml:"private_network"`
 	NetworkID                      string   `mapstructure:"network_id" yaml:"network_id"`
 	LocalPoolID                    string   `mapstructure:"local_pool_id" yaml:"local_pool_id"`
@@ -522,6 +523,7 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("gonzbnet.spec_version", "gonzbnet/1.0")
 	v.SetDefault("gonzbnet.http_enabled", true)
 	v.SetDefault("gonzbnet.http_base_path", "/gonzbnet/v1")
+	v.SetDefault("gonzbnet.allow_insecure_peer_http", false)
 	v.SetDefault("gonzbnet.private_network", true)
 	v.SetDefault("gonzbnet.network_id", "default")
 	v.SetDefault("gonzbnet.local_pool_id", "pool.local")

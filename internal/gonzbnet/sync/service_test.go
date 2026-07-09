@@ -30,7 +30,7 @@ func TestSyncOnceAcceptsAndProjectsRemoteReleaseCard(t *testing.T) {
 		peers: []pgindex.FederationPeerRecord{{ID: 1, PeerURL: server.URL}},
 	}
 
-	result, err := New(localIdentity, store, nil).SyncOnce(ctx)
+	result, err := NewWithOptions(localIdentity, store, nil, Options{AllowInsecurePeerHTTP: true}).SyncOnce(ctx)
 	if err != nil {
 		t.Fatalf("sync once: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestSyncOnceRejectsTamperedRemoteEvent(t *testing.T) {
 		peers: []pgindex.FederationPeerRecord{{ID: 1, PeerURL: server.URL}},
 	}
 
-	result, err := New(localIdentity, store, nil).SyncOnce(ctx)
+	result, err := NewWithOptions(localIdentity, store, nil, Options{AllowInsecurePeerHTTP: true}).SyncOnce(ctx)
 	if err != nil {
 		t.Fatalf("sync once: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestPushOnceSendsSignedEventBatchAndRecordsDelivery(t *testing.T) {
 		undelivered: []*events.SignedEvent{event},
 	}
 
-	result, err := New(localIdentity, store, nil).PushOnce(ctx, 10)
+	result, err := NewWithOptions(localIdentity, store, nil, Options{AllowInsecurePeerHTTP: true}).PushOnce(ctx, 10)
 	if err != nil {
 		t.Fatalf("push once: %v", err)
 	}
@@ -104,6 +104,22 @@ func TestPushOnceSendsSignedEventBatchAndRecordsDelivery(t *testing.T) {
 	}
 	if store.deliveries[0].PeerID != 7 || store.deliveries[0].EventID != event.EventID || store.deliveries[0].Status != "accepted" {
 		t.Fatalf("unexpected delivery: %+v", store.deliveries[0])
+	}
+}
+
+func TestUpsertManualPeersRejectsInsecureNonLocalHTTP(t *testing.T) {
+	ctx := context.Background()
+	localIdentity, err := identity.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("local identity: %v", err)
+	}
+	store := &fakeSyncStore{}
+
+	if err := New(localIdentity, store, nil).UpsertManualPeers(ctx, []string{"http://peer.example/gonzbnet/v1"}); err == nil {
+		t.Fatalf("expected default sync service to reject non-local http peer")
+	}
+	if err := NewWithOptions(localIdentity, store, nil, Options{AllowInsecurePeerHTTP: true}).UpsertManualPeers(ctx, []string{"http://127.0.0.1:8080/gonzbnet/v1"}); err != nil {
+		t.Fatalf("expected local development http peer to pass: %v", err)
 	}
 }
 
