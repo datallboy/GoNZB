@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/datallboy/gonzb/internal/app"
+	"github.com/datallboy/gonzb/internal/gonzbnet/capability"
 	"github.com/datallboy/gonzb/internal/gonzbnet/events"
 	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
 	"github.com/datallboy/gonzb/internal/gonzbnet/moderation"
@@ -49,9 +50,11 @@ type trustPoolRequest struct {
 }
 
 type poolMemberRequest struct {
-	NodeID string `json:"node_id"`
-	Role   string `json:"role"`
-	Status string `json:"status"`
+	NodeID              string          `json:"node_id"`
+	Role                string          `json:"role"`
+	Status              string          `json:"status"`
+	AllowedCapabilities []string        `json:"allowed_capabilities"`
+	Limits              json.RawMessage `json:"limits"`
 }
 
 type tombstoneRequest struct {
@@ -153,11 +156,16 @@ func (ctrl *GoNZBNetAdminController) UpsertPoolMember(c *echo.Context) error {
 	if strings.TrimSpace(req.NodeID) == "" {
 		return jsonError(c, http.StatusBadRequest, "node_id is required")
 	}
+	if len(req.Limits) > 0 && !json.Valid(req.Limits) {
+		return jsonError(c, http.StatusBadRequest, "limits must be a JSON object")
+	}
 	if err := store.UpsertPoolMember(c.Request().Context(), pgindex.PoolMemberRecord{
-		PoolID: pathParamTrimmed(c, "pool_id"),
-		NodeID: req.NodeID,
-		Role:   firstNonBlank(req.Role, pools.RoleMember),
-		Status: firstNonBlank(req.Status, pools.StatusActive),
+		PoolID:              pathParamTrimmed(c, "pool_id"),
+		NodeID:              req.NodeID,
+		Role:                firstNonBlank(req.Role, pools.RoleMember),
+		Status:              firstNonBlank(req.Status, pools.StatusActive),
+		AllowedCapabilities: capability.Normalize(req.AllowedCapabilities),
+		LimitsJSON:          req.Limits,
 	}); err != nil {
 		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}

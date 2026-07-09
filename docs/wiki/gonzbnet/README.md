@@ -34,6 +34,9 @@ Current implementation state:
   dedupe, peer exchange controls, and connection backoff.
 - Phase 11 adds relay-ready controls inside the modular monolith: public
   federation HTTP isolation and relay capability advertising.
+- Addendum Phase A adds capability advertisement, durable node capability
+  snapshots, pool-approved contribution grants, and module switch no-op
+  behavior.
 
 Maintained pages:
 
@@ -48,3 +51,4 @@ Maintained pages:
 - [Phase 9 Moderation And Tombstones](./phase-9-moderation-tombstones.md)
 - [Phase 10 WebSocket Gossip](./phase-10-websocket-gossip.md)
 - [Phase 11 Relay Mode Controls](./phase-11-relay-mode.md)
+- [Phase A Capability Registry](./phase-a-capabilities.md)

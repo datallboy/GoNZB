@@ -61,8 +61,12 @@ func (m *gonzbnetRuntimeModule) Start(ctx context.Context) error {
 	if !m.Enabled() {
 		return nil
 	}
-	publishEnabled := m.publisher != nil && m.appCtx.Config.GoNZBNet.PublishReleaseCardsEnabled
-	healthEnabled := m.publisher != nil && m.appCtx.Config.GoNZBNet.HealthAttestationsEnabled
+	publishEnabled := m.publisher != nil &&
+		m.appCtx.Config.GoNZBNet.PublishReleaseCardsEnabled &&
+		m.appCtx.Config.GoNZBNet.ScannerEnabled
+	healthEnabled := m.publisher != nil &&
+		m.appCtx.Config.GoNZBNet.HealthAttestationsEnabled &&
+		m.appCtx.Config.GoNZBNet.HealthCheckerEnabled
 	pullEnabled := m.pullSync != nil && m.appCtx.Config.GoNZBNet.PullSyncEnabled
 	pushEnabled := m.pullSync != nil && m.appCtx.Config.GoNZBNet.PushSyncEnabled
 	gossipEnabled := m.pullSync != nil && m.appCtx.Config.GoNZBNet.WebSocketGossipEnabled

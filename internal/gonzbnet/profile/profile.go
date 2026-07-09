@@ -60,6 +60,15 @@ type Capabilities struct {
 	WebSocketGossip     bool `json:"websocket_gossip"`
 	PeerExchange        bool `json:"peer_exchange"`
 	RelayMode           bool `json:"relay_mode"`
+	Consumer            bool `json:"consumer"`
+	Scanner             bool `json:"scanner"`
+	Indexer             bool `json:"indexer"`
+	ManifestBuilder     bool `json:"manifest_builder"`
+	ManifestCache       bool `json:"manifest_cache"`
+	Validator           bool `json:"validator"`
+	HealthChecker       bool `json:"health_checker"`
+	Coverage            bool `json:"coverage"`
+	Scheduler           bool `json:"scheduler"`
 }
 
 type Limits struct {
@@ -94,6 +103,15 @@ type Config struct {
 	WebSocketGossip  bool
 	PeerExchange     bool
 	RelayMode        bool
+	Consumer         bool
+	Scanner          bool
+	Indexer          bool
+	ManifestBuilder  bool
+	ManifestCache    bool
+	Validator        bool
+	HealthChecker    bool
+	Coverage         bool
+	Scheduler        bool
 	MaxEventBytes    int
 	MaxManifestBytes int
 	MaxBatchEvents   int
@@ -159,6 +177,15 @@ func NodeProfileFor(ctx context.Context, identity Identity, cfg Config, now time
 			WebSocketGossip:     cfg.WebSocketGossip,
 			PeerExchange:        cfg.PeerExchange,
 			RelayMode:           cfg.RelayMode,
+			Consumer:            cfg.Consumer,
+			Scanner:             cfg.Scanner,
+			Indexer:             cfg.Indexer,
+			ManifestBuilder:     cfg.ManifestBuilder,
+			ManifestCache:       cfg.ManifestCache,
+			Validator:           cfg.Validator,
+			HealthChecker:       cfg.HealthChecker,
+			Coverage:            cfg.Coverage,
+			Scheduler:           cfg.Scheduler,
 		},
 		Limits: Limits{
 			MaxEventBytes:         cfg.MaxEventBytes,

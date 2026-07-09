@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/datallboy/gonzb/internal/gonzbnet/capability"
 	"github.com/datallboy/gonzb/internal/gonzbnet/events"
 	"github.com/datallboy/gonzb/internal/gonzbnet/pools"
 )
@@ -31,14 +32,16 @@ type TrustPoolRecord struct {
 }
 
 type PoolMemberRecord struct {
-	PoolID          string
-	NodeID          string
-	Role            string
-	Status          string
-	ApprovedEventID string
-	RevokedEventID  string
-	JoinedAt        *time.Time
-	RevokedAt       *time.Time
+	PoolID              string
+	NodeID              string
+	Role                string
+	Status              string
+	ApprovedEventID     string
+	RevokedEventID      string
+	AllowedCapabilities []string
+	LimitsJSON          json.RawMessage
+	JoinedAt            *time.Time
+	RevokedAt           *time.Time
 }
 
 type PoolAuthorizationResult struct {
@@ -148,11 +151,12 @@ func (s *Store) ProjectFederationPoolEvent(ctx context.Context, event *events.Si
 		}
 		for _, nodeID := range body.Admins {
 			_ = s.UpsertPoolMember(ctx, PoolMemberRecord{
-				PoolID:          body.PoolID,
-				NodeID:          nodeID,
-				Role:            pools.RoleAdmin,
-				Status:          pools.StatusActive,
-				ApprovedEventID: event.EventID,
+				PoolID:              body.PoolID,
+				NodeID:              nodeID,
+				Role:                pools.RoleAdmin,
+				Status:              pools.StatusActive,
+				ApprovedEventID:     event.EventID,
+				AllowedCapabilities: defaultAllowedCapabilities(pools.RoleAdmin, nil),
 			})
 		}
 		for _, nodeID := range body.Witnesses {
@@ -223,6 +227,16 @@ func (s *Store) CanAcceptFederationEventForPools(ctx context.Context, authorNode
 		}
 		if ok, reason := pools.AuthorizeEvent(policy, activeMember, trustScore, eventType); !ok {
 			return PoolAuthorizationResult{Allowed: false, Reason: reason}, nil
+		}
+		requiredCapabilities := capability.RequiredForEvent(eventType)
+		if len(requiredCapabilities) > 0 {
+			ok, err := s.PoolMemberHasCapability(ctx, poolID, authorNodeID, requiredCapabilities)
+			if err != nil {
+				return PoolAuthorizationResult{}, err
+			}
+			if !ok {
+				return PoolAuthorizationResult{Allowed: false, Reason: "node_capability_not_allowed"}, nil
+			}
 		}
 	}
 	return PoolAuthorizationResult{Allowed: true}, nil
@@ -321,7 +335,8 @@ func (s *Store) ListPoolMembers(ctx context.Context, poolID string) ([]PoolMembe
 	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT pool_id, node_id, role, status, COALESCE(approved_event_id, ''),
-		       COALESCE(revoked_event_id, ''), joined_at, revoked_at
+		       COALESCE(revoked_event_id, ''), allowed_capabilities, limits_json,
+		       joined_at, revoked_at
 		FROM pool_members
 		WHERE pool_id = $1
 		ORDER BY role, node_id`, strings.TrimSpace(poolID))
@@ -334,6 +349,7 @@ func (s *Store) ListPoolMembers(ctx context.Context, poolID string) ([]PoolMembe
 		var item PoolMemberRecord
 		var joinedAt sql.NullTime
 		var revokedAt sql.NullTime
+		var allowedCapabilitiesJSON []byte
 		if err := rows.Scan(
 			&item.PoolID,
 			&item.NodeID,
@@ -341,11 +357,14 @@ func (s *Store) ListPoolMembers(ctx context.Context, poolID string) ([]PoolMembe
 			&item.Status,
 			&item.ApprovedEventID,
 			&item.RevokedEventID,
+			&allowedCapabilitiesJSON,
+			&item.LimitsJSON,
 			&joinedAt,
 			&revokedAt,
 		); err != nil {
 			return nil, err
 		}
+		_ = json.Unmarshal(allowedCapabilitiesJSON, &item.AllowedCapabilities)
 		if joinedAt.Valid {
 			value := joinedAt.Time.UTC()
 			item.JoinedAt = &value
@@ -368,14 +387,19 @@ func (s *Store) UpsertPoolMember(ctx context.Context, member PoolMemberRecord) e
 		now := time.Now().UTC()
 		joinedAt = &now
 	}
+	allowedCapabilities, _ := json.Marshal(defaultAllowedCapabilities(member.Role, member.AllowedCapabilities))
+	limitsJSON := defaultJSON(member.LimitsJSON, `{}`)
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO pool_members (
-			pool_id, node_id, role, status, approved_event_id, joined_at, updated_at
+			pool_id, node_id, role, status, approved_event_id, allowed_capabilities,
+			limits_json, joined_at, updated_at
 		)
-		VALUES ($1, $2, $3, $4, NULLIF($5, ''), $6, NOW())
+		VALUES ($1, $2, $3, $4, NULLIF($5, ''), $6::jsonb, $7::jsonb, $8, NOW())
 		ON CONFLICT (pool_id, node_id, role) DO UPDATE SET
 			status = EXCLUDED.status,
 			approved_event_id = COALESCE(EXCLUDED.approved_event_id, pool_members.approved_event_id),
+			allowed_capabilities = EXCLUDED.allowed_capabilities,
+			limits_json = EXCLUDED.limits_json,
 			revoked_event_id = NULL,
 			joined_at = COALESCE(pool_members.joined_at, EXCLUDED.joined_at),
 			revoked_at = NULL,
@@ -385,6 +409,8 @@ func (s *Store) UpsertPoolMember(ctx context.Context, member PoolMemberRecord) e
 		firstNonBlank(member.Role, pools.RoleMember),
 		firstNonBlank(member.Status, pools.StatusActive),
 		member.ApprovedEventID,
+		string(allowedCapabilities),
+		string(limitsJSON),
 		joinedAt,
 	)
 	if err != nil {
@@ -490,6 +516,32 @@ func (s *Store) IsActivePoolMember(ctx context.Context, poolID, nodeID string) (
 	return ok, nil
 }
 
+func (s *Store) PoolMemberHasCapability(ctx context.Context, poolID, nodeID string, required []string) (bool, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT role, allowed_capabilities
+		FROM pool_members
+		WHERE pool_id = $1
+		  AND node_id = $2
+		  AND status = 'active'`, strings.TrimSpace(poolID), strings.TrimSpace(nodeID))
+	if err != nil {
+		return false, fmt.Errorf("read pool member capabilities: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var role string
+		var allowedJSON []byte
+		if err := rows.Scan(&role, &allowedJSON); err != nil {
+			return false, err
+		}
+		var allowed []string
+		_ = json.Unmarshal(allowedJSON, &allowed)
+		if poolMemberCapabilityAllowed(role, allowed, required) {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
+
 func (s *Store) FederationNodeTrustScore(ctx context.Context, nodeID string) (float64, error) {
 	var score float64
 	err := s.db.QueryRowContext(ctx, `
@@ -500,6 +552,37 @@ func (s *Store) FederationNodeTrustScore(ctx context.Context, nodeID string) (fl
 		return 0, nil
 	}
 	return score, err
+}
+
+func poolMemberCapabilityAllowed(role string, allowed, required []string) bool {
+	if len(required) == 0 {
+		return true
+	}
+	if strings.TrimSpace(role) == pools.RoleAdmin {
+		return true
+	}
+	return capability.HasAny(allowed, required...)
+}
+
+func defaultAllowedCapabilities(role string, allowed []string) []string {
+	allowed = capability.Normalize(allowed)
+	if len(allowed) > 0 {
+		return allowed
+	}
+	if strings.TrimSpace(role) != pools.RoleAdmin {
+		return nil
+	}
+	return []string{
+		capability.Admin,
+		capability.Scanner,
+		capability.Indexer,
+		capability.ManifestBuilder,
+		capability.ManifestCache,
+		capability.Validator,
+		capability.HealthChecker,
+		capability.Relay,
+		capability.CoverageCoordinator,
+	}
 }
 
 func parsePoolTime(value string) *time.Time {
