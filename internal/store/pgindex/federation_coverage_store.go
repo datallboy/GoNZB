@@ -12,10 +12,13 @@ import (
 )
 
 type CoverageDashboard struct {
-	Assignments []CoverageAssignmentRecord `json:"assignments"`
-	Claims      []CoverageClaimRecord      `json:"claims"`
-	StaleClaims []CoverageClaimRecord      `json:"stale_claims"`
-	Outcomes    []CoverageOutcomeRecord    `json:"outcomes"`
+	Assignments   []CoverageAssignmentRecord `json:"assignments"`
+	Claims        []CoverageClaimRecord      `json:"claims"`
+	StaleClaims   []CoverageClaimRecord      `json:"stale_claims"`
+	Outcomes      []CoverageOutcomeRecord    `json:"outcomes"`
+	Gaps          []CoverageAssignmentRecord `json:"gaps"`
+	Duplicates    []CoverageDuplicateRecord  `json:"duplicates"`
+	CoverageScore float64                    `json:"coverage_score"`
 }
 
 type CoverageAssignmentRecord struct {
@@ -60,6 +63,28 @@ type CoverageOutcomeRecord struct {
 	ReleaseCount int       `json:"release_count,omitempty"`
 	Reason       string    `json:"reason,omitempty"`
 	OccurredAt   time.Time `json:"occurred_at"`
+}
+
+type CoverageDuplicateRecord struct {
+	PoolID     string   `json:"pool_id"`
+	Group      string   `json:"group"`
+	RangeStart int64    `json:"range_start"`
+	RangeEnd   int64    `json:"range_end"`
+	ClaimCount int      `json:"claim_count"`
+	NodeIDs    []string `json:"node_ids"`
+}
+
+type CoverageWorkSuggestionParams struct {
+	PoolID                string
+	NodeID                string
+	Mode                  string
+	Limit                 int
+	MinBlockingTrustScore float64
+}
+
+type CoverageWorkSuggestion struct {
+	Assignment CoverageAssignmentRecord `json:"assignment"`
+	Reason     string                   `json:"reason"`
 }
 
 func (s *Store) ProjectCoverageEvent(ctx context.Context, event *events.SignedEvent) error {
@@ -222,7 +247,112 @@ func (s *Store) ListCoverageDashboard(ctx context.Context, poolID string) (Cover
 	out.Claims = claims
 	out.StaleClaims = staleClaims
 	out.Outcomes = outcomes
+	gaps, err := s.listCoverageGaps(ctx, poolID)
+	if err != nil {
+		return out, err
+	}
+	duplicates, err := s.listCoverageDuplicates(ctx, poolID)
+	if err != nil {
+		return out, err
+	}
+	score, err := s.coverageScore(ctx, poolID)
+	if err != nil {
+		return out, err
+	}
+	out.Gaps = gaps
+	out.Duplicates = duplicates
+	out.CoverageScore = score
 	return out, nil
+}
+
+func (s *Store) SuggestCoverageWork(ctx context.Context, params CoverageWorkSuggestionParams) ([]CoverageWorkSuggestion, error) {
+	poolID := strings.TrimSpace(params.PoolID)
+	if poolID == "" {
+		poolID = "pool.local"
+	}
+	mode := strings.TrimSpace(params.Mode)
+	if mode == "" {
+		mode = "scanner"
+	}
+	limit := params.Limit
+	if limit <= 0 || limit > 100 {
+		limit = 25
+	}
+	minTrust := params.MinBlockingTrustScore
+	if minTrust <= 0 {
+		minTrust = 0.25
+	}
+	skipCompleted := mode != "validator"
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT a.assignment_id, a.pool_id, a.group_name, a.assigned_node_id,
+		       COALESCE(a.range_start, 0), COALESCE(a.range_end, 0),
+		       a.window_start, a.window_end, a.priority, a.due_at, a.status,
+		       a.created_at
+		FROM coverage_assignments a
+		WHERE a.pool_id = $1
+		  AND a.status = 'assigned'
+		  AND ($2 = '' OR a.assigned_node_id = $2)
+		  AND NOT EXISTS (
+		    SELECT 1
+		    FROM coverage_claims c
+		    JOIN federation_nodes n ON n.node_id = c.node_id
+		    WHERE c.pool_id = a.pool_id
+		      AND c.group_name = a.group_name
+		      AND c.status = 'active'
+		      AND c.expires_at > NOW()
+		      AND COALESCE(n.local_trust_score, 0) >= $4
+		      AND (
+		        c.assignment_id = a.assignment_id
+		        OR (
+		          c.range_start IS NOT NULL AND a.range_start IS NOT NULL
+		          AND c.range_start <= a.range_end
+		          AND c.range_end >= a.range_start
+		        )
+		      )
+		  )
+		  AND (
+		    $5 = FALSE
+		    OR NOT EXISTS (
+		      SELECT 1
+		      FROM coverage_range_outcomes o
+		      WHERE o.pool_id = a.pool_id
+		        AND o.group_name = a.group_name
+		        AND o.outcome_type = 'complete'
+		        AND (
+		          o.assignment_id = a.assignment_id
+		          OR (
+		            a.range_start IS NOT NULL
+		            AND o.range_start <= a.range_end
+		            AND o.range_end >= a.range_start
+		          )
+		        )
+		    )
+		  )
+		ORDER BY a.priority DESC, a.created_at
+		LIMIT $3`,
+		poolID,
+		strings.TrimSpace(params.NodeID),
+		limit,
+		minTrust,
+		skipCompleted,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []CoverageWorkSuggestion{}
+	for rows.Next() {
+		var item CoverageAssignmentRecord
+		var windowStart, windowEnd, dueAt nullableTime
+		if err := rows.Scan(&item.AssignmentID, &item.PoolID, &item.Group, &item.AssignedNodeID, &item.RangeStart, &item.RangeEnd, &windowStart, &windowEnd, &item.Priority, &dueAt, &item.Status, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		item.WindowStart = windowStart.ptr()
+		item.WindowEnd = windowEnd.ptr()
+		item.DueAt = dueAt.ptr()
+		out = append(out, CoverageWorkSuggestion{Assignment: item, Reason: "dedup_clear"})
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) projectCoveragePlan(ctx context.Context, body coverage.CoveragePlan, event *events.SignedEvent) error {
@@ -490,6 +620,100 @@ func (s *Store) listCoverageOutcomes(ctx context.Context, poolID string) ([]Cove
 		out = append(out, item)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) listCoverageGaps(ctx context.Context, poolID string) ([]CoverageAssignmentRecord, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT a.assignment_id, a.pool_id, a.group_name, a.assigned_node_id,
+		       COALESCE(a.range_start, 0), COALESCE(a.range_end, 0),
+		       a.window_start, a.window_end, a.priority, a.due_at, a.status,
+		       a.created_at
+		FROM coverage_assignments a
+		WHERE a.pool_id = $1
+		  AND a.status = 'assigned'
+		  AND NOT EXISTS (
+		    SELECT 1 FROM coverage_claims c
+		    WHERE c.assignment_id = a.assignment_id
+		      AND c.status = 'active'
+		      AND c.expires_at > NOW()
+		  )
+		  AND NOT EXISTS (
+		    SELECT 1 FROM coverage_range_outcomes o
+		    WHERE o.assignment_id = a.assignment_id
+		      AND o.outcome_type = 'complete'
+		  )
+		ORDER BY a.priority DESC, a.created_at
+		LIMIT 100`, poolID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []CoverageAssignmentRecord{}
+	for rows.Next() {
+		var item CoverageAssignmentRecord
+		var windowStart, windowEnd, dueAt nullableTime
+		if err := rows.Scan(&item.AssignmentID, &item.PoolID, &item.Group, &item.AssignedNodeID, &item.RangeStart, &item.RangeEnd, &windowStart, &windowEnd, &item.Priority, &dueAt, &item.Status, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		item.WindowStart = windowStart.ptr()
+		item.WindowEnd = windowEnd.ptr()
+		item.DueAt = dueAt.ptr()
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) listCoverageDuplicates(ctx context.Context, poolID string) ([]CoverageDuplicateRecord, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT pool_id, group_name, COALESCE(range_start, 0), COALESCE(range_end, 0),
+		       COUNT(*) AS claim_count, jsonb_agg(node_id ORDER BY node_id) AS node_ids
+		FROM coverage_claims
+		WHERE pool_id = $1
+		  AND status = 'active'
+		  AND expires_at > NOW()
+		  AND range_start IS NOT NULL
+		  AND range_end IS NOT NULL
+		GROUP BY pool_id, group_name, range_start, range_end
+		HAVING COUNT(*) > 1
+		ORDER BY claim_count DESC, group_name
+		LIMIT 100`, poolID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []CoverageDuplicateRecord{}
+	for rows.Next() {
+		var item CoverageDuplicateRecord
+		var nodeIDsJSON []byte
+		if err := rows.Scan(&item.PoolID, &item.Group, &item.RangeStart, &item.RangeEnd, &item.ClaimCount, &nodeIDsJSON); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal(nodeIDsJSON, &item.NodeIDs)
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) coverageScore(ctx context.Context, poolID string) (float64, error) {
+	var total, completed int
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT
+			COUNT(*)::int AS total,
+			COUNT(*) FILTER (
+				WHERE EXISTS (
+					SELECT 1 FROM coverage_range_outcomes o
+					WHERE o.assignment_id = a.assignment_id
+					  AND o.outcome_type = 'complete'
+				)
+			)::int AS completed
+		FROM coverage_assignments a
+		WHERE a.pool_id = $1`, poolID).Scan(&total, &completed); err != nil {
+		return 0, err
+	}
+	if total == 0 {
+		return 0, nil
+	}
+	return float64(completed) / float64(total), nil
 }
 
 type nullableTime struct {
