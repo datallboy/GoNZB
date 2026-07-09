@@ -76,6 +76,10 @@ Accepted health claims can adjust local node trust:
   penalty;
 - missing claims that report available articles receive a smaller penalty.
 
+Later trust-attestation cleanup adds signed `TrustAttestation` events as another
+auditable reputation input. They are bounded, pool-authorized, and applied only
+to local `federation_nodes.local_trust_score`.
+
 Federated search now ranks results with the Phase 8 scoring formula:
 
 ```text

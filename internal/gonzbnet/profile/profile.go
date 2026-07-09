@@ -221,6 +221,7 @@ func CapsFor(maxEventBytes, maxManifestBytes int) Caps {
 			"ReleaseCard",
 			"ResolutionManifest",
 			"HealthAttestation",
+			"TrustAttestation",
 			"ValidatorCapacity",
 			"ArticleAvailabilityAttestation",
 			"ChecksumAttestation",

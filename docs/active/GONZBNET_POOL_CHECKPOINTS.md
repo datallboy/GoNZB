@@ -19,5 +19,5 @@ Constraints:
 - Do not expose local user identity, API keys, searches, grabs, or downloads.
 - Reject checkpoints when the local node does not have the event range needed
   to recompute the Merkle root.
-- Keep remote `TrustAttestation` unsupported until a separate trust-score input
-  policy is implemented.
+- Keep trust-score changes auditable through signed events and
+  `reputation_events`.

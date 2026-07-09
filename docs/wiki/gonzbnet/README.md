@@ -106,6 +106,8 @@ Current implementation state:
   `/pools/:pool_id/members`, and `/peers` discovery routes.
 - Pool checkpoint cleanup adds `PoolCheckpoint` validation and projection over
   the accepted append-only event log.
+- Trust attestation cleanup adds signed `TrustAttestation` reputation deltas
+  with local bounded scoring.
 - Security cleanup rejects remote signed events with future `created_at` /
   `not_before` windows, expired `expires_at` values, or event ages beyond
   `gonzbnet.max_event_age_hours`.
@@ -162,6 +164,7 @@ Maintained pages:
 - [Config Route Gate Coverage](./config-route-gate-coverage.md)
 - [Public Endpoint Alignment](./public-endpoint-alignment.md)
 - [Pool Checkpoints](./pool-checkpoints.md)
+- [Trust Attestations](./trust-attestations.md)
 - [Capability Profile Alignment](./capability-profile-alignment.md)
 - [Test Coverage Cleanup](./test-coverage-cleanup.md)
 - [Security: Node Key Encryption](./security-key-encryption.md)

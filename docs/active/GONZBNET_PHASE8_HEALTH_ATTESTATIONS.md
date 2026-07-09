@@ -41,6 +41,11 @@ from health accuracy, and search ranking integration.
    attestations, projection scoring, and search ranking SQL behavior where
    feasible without a live PostgreSQL instance.
 
+Later cleanup:
+
+- `GONZBNET_TRUST_ATTESTATIONS.md` adds signed `TrustAttestation` events as
+  bounded, auditable reputation inputs.
+
 ## Out Of Scope
 
 - Live NNTP STAT/HEAD sampling against remote manifests.

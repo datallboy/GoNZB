@@ -9,10 +9,18 @@ import (
 	"time"
 
 	"github.com/datallboy/gonzb/internal/gonzbnet/health"
+	"github.com/datallboy/gonzb/internal/gonzbnet/trust"
 )
 
 type HealthAttestationProjection struct {
 	Attestation  health.Attestation
+	EventID      string
+	AuthorNodeID string
+	PoolID       string
+}
+
+type TrustAttestationProjection struct {
+	Attestation  trust.Attestation
 	EventID      string
 	AuthorNodeID string
 	PoolID       string
@@ -152,6 +160,64 @@ func (s *Store) ProjectHealthAttestation(ctx context.Context, projection HealthA
 
 	if err := recomputeFederatedReleaseHealthScores(ctx, tx, item.ReleaseID, poolID); err != nil {
 		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) ProjectTrustAttestation(ctx context.Context, projection TrustAttestationProjection) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("pgindex store is not initialized")
+	}
+	item := projection.Attestation
+	if err := trust.Validate(item, time.Now().UTC()); err != nil {
+		return err
+	}
+	eventID := strings.TrimSpace(projection.EventID)
+	if eventID == "" {
+		return fmt.Errorf("source event_id is required")
+	}
+	poolID := strings.TrimSpace(projection.PoolID)
+	if poolID == "" {
+		poolID = strings.TrimSpace(item.PoolID)
+	}
+	subjectNodeID := strings.TrimSpace(item.SubjectNodeID)
+	delta := trust.NormalizedDelta(item.ScoreDelta)
+	reason := "trust_attestation:" + strings.TrimSpace(item.Reason)
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	res, err := tx.ExecContext(ctx, `
+		UPDATE federation_nodes
+		SET local_trust_score = LEAST(1.0, GREATEST(0.0, local_trust_score + $2)),
+		    updated_at = NOW()
+		WHERE node_id = $1`,
+		subjectNodeID,
+		delta,
+	)
+	if err != nil {
+		return fmt.Errorf("update subject node trust score: %w", err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return fmt.Errorf("subject node is unknown")
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO reputation_events (node_id, pool_id, event_id, delta, reason)
+		VALUES ($1, $2, $3, $4, $5)`,
+		subjectNodeID,
+		poolID,
+		eventID,
+		delta,
+		reason,
+	); err != nil {
+		return fmt.Errorf("insert trust attestation reputation event: %w", err)
 	}
 	return tx.Commit()
 }
