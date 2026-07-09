@@ -9,8 +9,10 @@ import (
 
 	"github.com/datallboy/gonzb/internal/gonzbnet/events"
 	"github.com/datallboy/gonzb/internal/gonzbnet/health"
+	"github.com/datallboy/gonzb/internal/gonzbnet/manifest"
 	"github.com/datallboy/gonzb/internal/gonzbnet/pools"
 	"github.com/datallboy/gonzb/internal/gonzbnet/releasecard"
+	"github.com/datallboy/gonzb/internal/gonzbnet/validation"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
 )
 
@@ -27,6 +29,12 @@ type Store interface {
 	AppendVerifiedFederationEvent(ctx context.Context, event *events.SignedEvent, validation *events.ValidationResult) error
 	UpsertFederatedReleaseCardProjection(ctx context.Context, projection releasecard.Projection) error
 	ProjectHealthAttestation(ctx context.Context, projection pgindex.HealthAttestationProjection) error
+	ClaimValidationTasks(ctx context.Context, nodeID string, limit int) ([]pgindex.ValidationTask, error)
+	GetResolutionManifest(ctx context.Context, manifestID string) (*manifest.ResolutionManifest, error)
+	ProjectValidatorCapacity(ctx context.Context, projection pgindex.ValidatorCapacityProjection) error
+	ProjectArticleAvailabilityAttestation(ctx context.Context, projection pgindex.ArticleAvailabilityProjection) error
+	ProjectChecksumAttestation(ctx context.Context, projection pgindex.ChecksumAttestationProjection) error
+	CompleteValidationTask(ctx context.Context, taskID int64, status, message string) error
 }
 
 type Service struct {
@@ -48,6 +56,20 @@ type HealthResult struct {
 	Published int
 	Skipped   int
 	Projected int
+}
+
+type ValidationOptions struct {
+	ChecksumEnabled bool
+	MaxTasksPerHour int
+}
+
+type ValidationResult struct {
+	Claimed           int
+	CapacityPublished int
+	Published         int
+	Skipped           int
+	Projected         int
+	Failed            int
 }
 
 func New(identity Identity, store Store, poolID string) *Service {
@@ -149,6 +171,99 @@ func (s *Service) PublishOnce(ctx context.Context, limit int) (Result, error) {
 		result.Projected++
 	}
 
+	return result, nil
+}
+
+func (s *Service) PublishValidationOnce(ctx context.Context, limit int, opts ValidationOptions) (ValidationResult, error) {
+	var result ValidationResult
+	if s == nil || s.identity == nil || s.store == nil {
+		return result, fmt.Errorf("publisher dependencies are required")
+	}
+	nodeID, err := s.identity.NodeID(ctx)
+	if err != nil {
+		return result, err
+	}
+	publicKey, err := s.identity.PublicKey(ctx)
+	if err != nil {
+		return result, err
+	}
+	if err := s.store.UpsertFederationNodeIdentity(ctx, nodeID, publicKey); err != nil {
+		return result, err
+	}
+	capacityPublished, err := s.publishValidatorCapacity(ctx, nodeID, opts)
+	if err != nil {
+		return result, err
+	}
+	if capacityPublished {
+		result.CapacityPublished = 1
+	}
+	tasks, err := s.store.ClaimValidationTasks(ctx, nodeID, limit)
+	if err != nil {
+		return result, err
+	}
+	result.Claimed = len(tasks)
+	for _, task := range tasks {
+		manifestBody, err := s.store.GetResolutionManifest(ctx, task.ManifestID)
+		if err != nil {
+			result.Failed++
+			_ = s.store.CompleteValidationTask(ctx, task.TaskID, "failed", err.Error())
+			continue
+		}
+		if manifestBody == nil {
+			result.Failed++
+			_ = s.store.CompleteValidationTask(ctx, task.TaskID, "failed", "manifest not found")
+			continue
+		}
+		availability := articleAvailabilityFromManifest(*manifestBody, s.now().UTC())
+		eventID, published, err := s.publishArticleAvailability(ctx, nodeID, availability, firstNonBlank(task.PoolID, s.poolID))
+		if err != nil {
+			result.Failed++
+			_ = s.store.CompleteValidationTask(ctx, task.TaskID, "failed", err.Error())
+			continue
+		}
+		if published {
+			result.Published++
+		} else {
+			result.Skipped++
+		}
+		if err := s.store.ProjectArticleAvailabilityAttestation(ctx, pgindex.ArticleAvailabilityProjection{
+			Attestation:  availability,
+			EventID:      eventID,
+			AuthorNodeID: nodeID,
+			PoolID:       firstNonBlank(task.PoolID, s.poolID),
+		}); err != nil {
+			result.Failed++
+			_ = s.store.CompleteValidationTask(ctx, task.TaskID, "failed", err.Error())
+			continue
+		}
+		result.Projected++
+		if opts.ChecksumEnabled {
+			checksum := checksumAttestationFromManifest(*manifestBody, s.now().UTC())
+			eventID, published, err := s.publishChecksumAttestation(ctx, nodeID, checksum, firstNonBlank(task.PoolID, s.poolID))
+			if err != nil {
+				result.Failed++
+				_ = s.store.CompleteValidationTask(ctx, task.TaskID, "failed", err.Error())
+				continue
+			}
+			if published {
+				result.Published++
+			} else {
+				result.Skipped++
+			}
+			if err := s.store.ProjectChecksumAttestation(ctx, pgindex.ChecksumAttestationProjection{
+				Attestation:  checksum,
+				EventID:      eventID,
+				AuthorNodeID: nodeID,
+				PoolID:       firstNonBlank(task.PoolID, s.poolID),
+			}); err != nil {
+				result.Failed++
+				_ = s.store.CompleteValidationTask(ctx, task.TaskID, "failed", err.Error())
+				continue
+			}
+			result.Projected++
+		}
+		_ = s.store.CompleteValidationTask(ctx, task.TaskID, "completed", "")
+	}
 	return result, nil
 }
 
@@ -279,6 +394,160 @@ func (s *Service) RunHealth(ctx context.Context, interval time.Duration, limit i
 	}
 }
 
+func (s *Service) RunValidation(ctx context.Context, interval time.Duration, limit int, opts ValidationOptions) error {
+	if interval <= 0 {
+		_, err := s.PublishValidationOnce(ctx, limit, opts)
+		return err
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		if _, err := s.PublishValidationOnce(ctx, limit, opts); err != nil {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func (s *Service) publishValidatorCapacity(ctx context.Context, nodeID string, opts ValidationOptions) (bool, error) {
+	capacity := validation.ValidatorCapacity{
+		SchemaVersion:           "1.0",
+		Type:                    validation.TypeValidatorCapacity,
+		NodeID:                  nodeID,
+		PublishedAt:             s.now().UTC().Format(time.RFC3339),
+		MaxTasksPerHour:         opts.MaxTasksPerHour,
+		ArticleAvailability:     true,
+		ChecksumValidation:      opts.ChecksumEnabled,
+		ProviderScope:           validation.ProviderScope{},
+		AcceptedManifestSchemas: []string{manifest.BodySchema},
+	}
+	bodyHash, err := validation.HashBody(capacity)
+	if err != nil {
+		return false, err
+	}
+	existingEventID, err := s.store.FindFederationEventByBodyHash(ctx, nodeID, pools.EventTypeValidatorCapacity, bodyHash)
+	if err != nil {
+		return false, err
+	}
+	eventID := existingEventID
+	published := false
+	if eventID == "" {
+		sequence, previousEventID, err := s.store.NextFederationEventSequence(ctx, nodeID)
+		if err != nil {
+			return false, err
+		}
+		event, validationResult, err := events.Create(ctx, s.identity, events.CreateOptions{
+			EventType:       pools.EventTypeValidatorCapacity,
+			Sequence:        sequence,
+			PreviousEventID: previousEventID,
+			CreatedAt:       s.now().UTC(),
+			PoolIDs:         []string{s.poolID},
+			Visibility:      "pool",
+			BodySchema:      validation.ValidatorCapacityBodySchema,
+			Body:            capacity,
+		})
+		if err != nil {
+			return false, err
+		}
+		if validationResult == nil || !validationResult.OK {
+			return false, fmt.Errorf("signed validator capacity did not verify: %s", validationReason(validationResult))
+		}
+		if err := s.store.AppendVerifiedFederationEvent(ctx, event, validationResult); err != nil {
+			return false, err
+		}
+		eventID = event.EventID
+		published = true
+	}
+	if err := s.store.ProjectValidatorCapacity(ctx, pgindex.ValidatorCapacityProjection{
+		Capacity:     capacity,
+		EventID:      eventID,
+		AuthorNodeID: nodeID,
+	}); err != nil {
+		return false, err
+	}
+	return published, nil
+}
+
+func (s *Service) publishArticleAvailability(ctx context.Context, nodeID string, attestation validation.ArticleAvailabilityAttestation, poolID string) (string, bool, error) {
+	bodyHash, err := validation.HashBody(attestation)
+	if err != nil {
+		return "", false, err
+	}
+	existingEventID, err := s.store.FindFederationEventByBodyHash(ctx, nodeID, pools.EventTypeArticleAvailabilityAttestation, bodyHash)
+	if err != nil {
+		return "", false, err
+	}
+	if existingEventID != "" {
+		return existingEventID, false, nil
+	}
+	sequence, previousEventID, err := s.store.NextFederationEventSequence(ctx, nodeID)
+	if err != nil {
+		return "", false, err
+	}
+	event, validationResult, err := events.Create(ctx, s.identity, events.CreateOptions{
+		EventType:       pools.EventTypeArticleAvailabilityAttestation,
+		Sequence:        sequence,
+		PreviousEventID: previousEventID,
+		CreatedAt:       s.now().UTC(),
+		PoolIDs:         []string{poolID},
+		Visibility:      "pool",
+		BodySchema:      validation.ArticleAvailabilityAttestationBodySchema,
+		Body:            attestation,
+	})
+	if err != nil {
+		return "", false, err
+	}
+	if validationResult == nil || !validationResult.OK {
+		return "", false, fmt.Errorf("signed article availability attestation did not verify: %s", validationReason(validationResult))
+	}
+	if err := s.store.AppendVerifiedFederationEvent(ctx, event, validationResult); err != nil {
+		return "", false, err
+	}
+	return event.EventID, true, nil
+}
+
+func (s *Service) publishChecksumAttestation(ctx context.Context, nodeID string, attestation validation.ChecksumAttestation, poolID string) (string, bool, error) {
+	bodyHash, err := validation.HashBody(attestation)
+	if err != nil {
+		return "", false, err
+	}
+	existingEventID, err := s.store.FindFederationEventByBodyHash(ctx, nodeID, pools.EventTypeChecksumAttestation, bodyHash)
+	if err != nil {
+		return "", false, err
+	}
+	if existingEventID != "" {
+		return existingEventID, false, nil
+	}
+	sequence, previousEventID, err := s.store.NextFederationEventSequence(ctx, nodeID)
+	if err != nil {
+		return "", false, err
+	}
+	event, validationResult, err := events.Create(ctx, s.identity, events.CreateOptions{
+		EventType:       pools.EventTypeChecksumAttestation,
+		Sequence:        sequence,
+		PreviousEventID: previousEventID,
+		CreatedAt:       s.now().UTC(),
+		PoolIDs:         []string{poolID},
+		Visibility:      "pool",
+		BodySchema:      validation.ChecksumAttestationBodySchema,
+		Body:            attestation,
+	})
+	if err != nil {
+		return "", false, err
+	}
+	if validationResult == nil || !validationResult.OK {
+		return "", false, fmt.Errorf("signed checksum attestation did not verify: %s", validationReason(validationResult))
+	}
+	if err := s.store.AppendVerifiedFederationEvent(ctx, event, validationResult); err != nil {
+		return "", false, err
+	}
+	return event.EventID, true, nil
+}
+
 func healthAttestationFromLocalRelease(card releasecard.ReleaseCard, release releasecard.LocalRelease, checkedAt time.Time) health.Attestation {
 	total, available := localArticleCounts(release.Files)
 	missing := total - available
@@ -322,6 +591,50 @@ func healthAttestationFromLocalRelease(card releasecard.ReleaseCard, release rel
 	}
 }
 
+func articleAvailabilityFromManifest(item manifest.ResolutionManifest, checkedAt time.Time) validation.ArticleAvailabilityAttestation {
+	total := 0
+	for _, file := range item.ManifestCore.Files {
+		total += len(file.Segments)
+	}
+	return validation.ArticleAvailabilityAttestation{
+		SchemaVersion:     "1.0",
+		Type:              validation.TypeArticleAvailabilityAttestation,
+		ReleaseID:         item.ReleaseID,
+		ManifestID:        item.ManifestID,
+		CheckedAt:         checkedAt.UTC().Format(time.RFC3339),
+		Status:            validation.StatusUnverified,
+		ArticlesTotal:     total,
+		ArticlesAvailable: 0,
+		MissingArticles:   0,
+		ProviderScope:     validation.ProviderScope{},
+		Confidence:        0.2,
+		Method:            "manifest_structure_validation",
+	}
+}
+
+func checksumAttestationFromManifest(item manifest.ResolutionManifest, checkedAt time.Time) validation.ChecksumAttestation {
+	total := 0
+	if strings.TrimSpace(item.ManifestCore.Hashes.FileListHash) != "" {
+		total++
+	}
+	if strings.TrimSpace(item.ManifestCore.Hashes.SegmentListHash) != "" {
+		total++
+	}
+	return validation.ChecksumAttestation{
+		SchemaVersion:     "1.0",
+		Type:              validation.TypeChecksumAttestation,
+		ReleaseID:         item.ReleaseID,
+		ManifestID:        item.ManifestID,
+		CheckedAt:         checkedAt.UTC().Format(time.RFC3339),
+		Status:            validation.StatusSkipped,
+		ChecksumsTotal:    total,
+		ChecksumsVerified: 0,
+		ChecksumsFailed:   0,
+		Confidence:        0.1,
+		Method:            "checksum_validation_disabled",
+	}
+}
+
 func localArticleCounts(files []releasecard.LocalFile) (int, int) {
 	total := 0
 	available := 0
@@ -351,6 +664,15 @@ func clamp01(value float64) float64 {
 		return 1
 	}
 	return value
+}
+
+func firstNonBlank(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func validationReason(validation *events.ValidationResult) string {

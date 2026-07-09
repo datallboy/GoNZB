@@ -9,7 +9,9 @@ import (
 	"github.com/datallboy/gonzb/internal/gonzbnet/events"
 	"github.com/datallboy/gonzb/internal/gonzbnet/health"
 	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
+	"github.com/datallboy/gonzb/internal/gonzbnet/manifest"
 	"github.com/datallboy/gonzb/internal/gonzbnet/releasecard"
+	"github.com/datallboy/gonzb/internal/gonzbnet/validation"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
 )
 
@@ -96,14 +98,63 @@ func TestPublishHealthOnceSignsCompleteAndIncompleteAttestations(t *testing.T) {
 	}
 }
 
+func TestPublishValidationOnceSignsAvailabilityWithoutIndexer(t *testing.T) {
+	ctx := context.Background()
+	node, err := identity.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("load identity: %v", err)
+	}
+	manifestBody := testPublisherManifest(t)
+	store := &fakeStore{
+		eventsByBodyHash: make(map[string]string),
+		validationTasks: []pgindex.ValidationTask{{
+			TaskID:     7,
+			ManifestID: manifestBody.ManifestID,
+			ReleaseID:  manifestBody.ReleaseID,
+			PoolID:     "pool.local",
+		}},
+		manifests: map[string]*manifest.ResolutionManifest{
+			manifestBody.ManifestID: &manifestBody,
+		},
+	}
+	svc := New(node, store, "pool.local")
+	svc.now = func() time.Time { return time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC) }
+
+	result, err := svc.PublishValidationOnce(ctx, 10, ValidationOptions{ChecksumEnabled: false, MaxTasksPerHour: 10})
+	if err != nil {
+		t.Fatalf("publish validation: %v", err)
+	}
+	if result.Claimed != 1 || result.CapacityPublished != 1 || result.Published != 1 || result.Projected != 1 || result.Failed != 0 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if len(store.availabilityProjections) != 1 {
+		t.Fatalf("expected one availability projection, got %d", len(store.availabilityProjections))
+	}
+	if store.availabilityProjections[0].Attestation.Status != validation.StatusUnverified {
+		t.Fatalf("expected unverified availability, got %q", store.availabilityProjections[0].Attestation.Status)
+	}
+	if store.completedTasks[7] != "completed" {
+		t.Fatalf("expected task completed, got %q", store.completedTasks[7])
+	}
+	if len(store.events) != 2 {
+		t.Fatalf("expected capacity and availability events, got %d", len(store.events))
+	}
+}
+
 type fakeStore struct {
-	candidates        []releasecard.LocalRelease
-	events            []*events.SignedEvent
-	eventsByBodyHash  map[string]string
-	projections       []releasecard.Projection
-	healthProjections []pgindex.HealthAttestationProjection
-	nodeID            string
-	publicKey         ed25519.PublicKey
+	candidates              []releasecard.LocalRelease
+	events                  []*events.SignedEvent
+	eventsByBodyHash        map[string]string
+	projections             []releasecard.Projection
+	healthProjections       []pgindex.HealthAttestationProjection
+	validationTasks         []pgindex.ValidationTask
+	manifests               map[string]*manifest.ResolutionManifest
+	capacityProjections     []pgindex.ValidatorCapacityProjection
+	availabilityProjections []pgindex.ArticleAvailabilityProjection
+	checksumProjections     []pgindex.ChecksumAttestationProjection
+	completedTasks          map[int64]string
+	nodeID                  string
+	publicKey               ed25519.PublicKey
 }
 
 func (s *fakeStore) ListGoNZBNetLocalReleaseCandidates(context.Context, int) ([]releasecard.LocalRelease, error) {
@@ -144,6 +195,40 @@ func (s *fakeStore) ProjectHealthAttestation(_ context.Context, projection pgind
 	return nil
 }
 
+func (s *fakeStore) ClaimValidationTasks(context.Context, string, int) ([]pgindex.ValidationTask, error) {
+	return append([]pgindex.ValidationTask(nil), s.validationTasks...), nil
+}
+
+func (s *fakeStore) GetResolutionManifest(_ context.Context, manifestID string) (*manifest.ResolutionManifest, error) {
+	if s.manifests == nil {
+		return nil, nil
+	}
+	return s.manifests[manifestID], nil
+}
+
+func (s *fakeStore) ProjectValidatorCapacity(_ context.Context, projection pgindex.ValidatorCapacityProjection) error {
+	s.capacityProjections = append(s.capacityProjections, projection)
+	return nil
+}
+
+func (s *fakeStore) ProjectArticleAvailabilityAttestation(_ context.Context, projection pgindex.ArticleAvailabilityProjection) error {
+	s.availabilityProjections = append(s.availabilityProjections, projection)
+	return nil
+}
+
+func (s *fakeStore) ProjectChecksumAttestation(_ context.Context, projection pgindex.ChecksumAttestationProjection) error {
+	s.checksumProjections = append(s.checksumProjections, projection)
+	return nil
+}
+
+func (s *fakeStore) CompleteValidationTask(_ context.Context, taskID int64, status, _ string) error {
+	if s.completedTasks == nil {
+		s.completedTasks = map[int64]string{}
+	}
+	s.completedTasks[taskID] = status
+	return nil
+}
+
 func testPublisherRelease() releasecard.LocalRelease {
 	posted := time.Date(2026, 7, 7, 10, 55, 0, 0, time.UTC)
 	return releasecard.LocalRelease{
@@ -171,5 +256,37 @@ func testPublisherRelease() releasecard.LocalRelease {
 				},
 			},
 		},
+	}
+}
+
+func testPublisherManifest(t *testing.T) manifest.ResolutionManifest {
+	t.Helper()
+	core := manifest.ManifestCore{
+		Groups:   []string{"alt.binaries.example"},
+		Poster:   "poster@example.invalid",
+		PostedAt: "2026-07-09T12:00:00Z",
+		Files: []manifest.ManifestFile{{
+			Name:      "example.mkv",
+			Subject:   "Example example.mkv yEnc",
+			Date:      "2026-07-09T12:01:00Z",
+			SizeBytes: 1000,
+			Segments: []manifest.ManifestSegment{{
+				Number:    1,
+				Bytes:     1000,
+				MessageID: "<seg1@example.invalid>",
+			}},
+		}},
+		NZB: manifest.NZBInfo{Generator: "GoNZBNet", XMLCharset: "utf-8"},
+	}
+	manifestID, _, err := manifest.ComputeID(core)
+	if err != nil {
+		t.Fatalf("compute manifest id: %v", err)
+	}
+	return manifest.ResolutionManifest{
+		SchemaVersion: "1.0",
+		Type:          manifest.Type,
+		ManifestID:    manifestID,
+		ReleaseID:     "rel_manifest",
+		ManifestCore:  core,
 	}
 }

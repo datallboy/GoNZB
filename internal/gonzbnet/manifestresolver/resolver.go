@@ -105,6 +105,7 @@ func (r *Resolver) ResolveNZB(ctx context.Context, releaseID string) (io.ReadClo
 		Manifest:              body,
 		SourceNodeID:          event.AuthorNodeID,
 		SourceEventID:         event.EventID,
+		PoolID:                source.PoolID,
 		CanonicalManifestJSON: canonicalCore,
 		GeneratedNZB:          nzbPayload,
 	}); err != nil {

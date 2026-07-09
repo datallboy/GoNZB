@@ -26,6 +26,7 @@ type ResolutionManifestRecord struct {
 	Manifest              manifest.ResolutionManifest
 	SourceNodeID          string
 	SourceEventID         string
+	PoolID                string
 	CanonicalManifestJSON []byte
 	GeneratedNZB          []byte
 }
@@ -132,7 +133,12 @@ func (s *Store) StoreResolutionManifest(ctx context.Context, record ResolutionMa
 		sum := sha256.Sum256(record.GeneratedNZB)
 		nzbSHA = "sha256:" + hex.EncodeToString(sum[:])
 	}
-	_, err = s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `
 		INSERT INTO resolution_manifests (
 			manifest_id, release_id, source_node_id, source_event_id, encoding,
 			compression, encrypted, canonical_manifest_json, body_json, body_blob,
@@ -169,11 +175,38 @@ func (s *Store) StoreResolutionManifest(ctx context.Context, record ResolutionMa
 		[]byte(bodyJSON),
 		nzbSHA,
 		record.GeneratedNZB,
-	)
-	if err != nil {
+	); err != nil {
 		return fmt.Errorf("store resolution manifest: %w", err)
 	}
-	return nil
+	poolID := firstNonBlank(record.PoolID, "pool.local")
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO federation_validation_tasks (
+			manifest_id, release_id, source_node_id, source_event_id, pool_id,
+			status, due_at, updated_at
+		)
+		VALUES ($1, $2, NULLIF($3, ''), NULLIF($4, ''), $5, 'pending', NOW(), NOW())
+		ON CONFLICT (manifest_id, pool_id) DO UPDATE SET
+			release_id = EXCLUDED.release_id,
+			source_node_id = COALESCE(EXCLUDED.source_node_id, federation_validation_tasks.source_node_id),
+			source_event_id = COALESCE(EXCLUDED.source_event_id, federation_validation_tasks.source_event_id),
+			status = CASE
+				WHEN federation_validation_tasks.status = 'completed' THEN federation_validation_tasks.status
+				ELSE 'pending'
+			END,
+			due_at = CASE
+				WHEN federation_validation_tasks.status = 'completed' THEN federation_validation_tasks.due_at
+				ELSE NOW()
+			END,
+			updated_at = NOW()`,
+		record.Manifest.ManifestID,
+		record.Manifest.ReleaseID,
+		record.SourceNodeID,
+		record.SourceEventID,
+		poolID,
+	); err != nil {
+		return fmt.Errorf("enqueue validation task: %w", err)
+	}
+	return tx.Commit()
 }
 
 func (s *Store) GetResolutionManifest(ctx context.Context, manifestID string) (*manifest.ResolutionManifest, error) {

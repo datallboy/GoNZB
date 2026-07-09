@@ -321,6 +321,18 @@ func (s *fakeSyncStore) UpsertFederatedReleaseCardProjection(_ context.Context, 
 	return nil
 }
 
+func (s *fakeSyncStore) ProjectValidatorCapacity(context.Context, pgindex.ValidatorCapacityProjection) error {
+	return nil
+}
+
+func (s *fakeSyncStore) ProjectArticleAvailabilityAttestation(context.Context, pgindex.ArticleAvailabilityProjection) error {
+	return nil
+}
+
+func (s *fakeSyncStore) ProjectChecksumAttestation(context.Context, pgindex.ChecksumAttestationProjection) error {
+	return nil
+}
+
 func (s *fakeSyncStore) MarkFederationPeerSyncSuccess(_ context.Context, _ int64, _, cursor, _ string) error {
 	s.successCursor = cursor
 	return nil
