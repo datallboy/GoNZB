@@ -16,6 +16,8 @@ Implemented behavior:
 - The pool `checkpoint_witness_threshold` controls the required witness count.
 - Accepted checkpoints update `trust_pools.latest_checkpoint_event_id` and
   `trust_pools.latest_merkle_root`.
+- `GET /gonzbnet/v1/pools/:pool_id/checkpoint` returns the latest accepted
+  signed checkpoint event for the pool.
 
 If the local node does not have the event range named by the checkpoint, the
 checkpoint is rejected instead of trusted blindly.

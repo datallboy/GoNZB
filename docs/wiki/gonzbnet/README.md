@@ -103,7 +103,8 @@ Current implementation state:
 - Config cleanup adds direct route-gate coverage for
   `modules.gonzbnet.enabled` and `gonzbnet.http_enabled`.
 - Public endpoint cleanup adds the spec-listed `/events/batch` inbox alias,
-  `/pools/:pool_id/members`, and `/peers` discovery routes.
+  `/pools/:pool_id/checkpoint`, `/pools/:pool_id/members`, and `/peers`
+  discovery routes.
 - Pool checkpoint cleanup adds `PoolCheckpoint` validation and projection over
   the accepted append-only event log.
 - Trust attestation cleanup adds signed `TrustAttestation` reputation deltas

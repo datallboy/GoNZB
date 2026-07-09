@@ -4,6 +4,7 @@ GoNZBNet now registers two spec-listed public federation endpoints that were
 previously covered by other paths or local admin routes only:
 
 - `POST /gonzbnet/v1/events/batch`
+- `GET /gonzbnet/v1/pools/:pool_id/checkpoint`
 - `GET /gonzbnet/v1/pools/:pool_id/members`
 - `GET /gonzbnet/v1/peers`
 
@@ -14,6 +15,10 @@ previously covered by other paths or local admin routes only:
 `PoolMembers` response containing node IDs, pool roles, status, allowed
 capabilities, limits, and membership timestamps.
 
+`pools/:pool_id/checkpoint` returns the latest accepted signed
+`PoolCheckpoint` event for the pool, read from the append-only event log via
+`trust_pools.latest_checkpoint_event_id`.
+
 `peers` returns enabled peer URLs through the same fanout filter used by
 WebSocket gossip. When `gonzbnet.peer_exchange_enabled` is false, it returns an
 empty list.
@@ -23,4 +28,5 @@ These routes are public federation routes, so they are only registered when
 expose local user identity, API keys, search history, grab history, download
 history, or role-to-pool RBAC mappings.
 
-Pool checkpoint publication is still deferred.
+Checkpoint creation remains event-driven; this endpoint exposes the latest
+accepted checkpoint rather than inventing a checkpoint from local JSONB state.

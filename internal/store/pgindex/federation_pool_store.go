@@ -665,6 +665,32 @@ func (s *Store) UpdateTrustPoolCheckpoint(ctx context.Context, poolID, eventID, 
 	return nil
 }
 
+func (s *Store) GetPoolCheckpointEvent(ctx context.Context, poolID string) (*events.SignedEvent, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("pgindex store is not initialized")
+	}
+	poolID = strings.TrimSpace(poolID)
+	if poolID == "" {
+		return nil, fmt.Errorf("pool_id is required")
+	}
+	var eventID string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COALESCE(latest_checkpoint_event_id, '')
+		FROM trust_pools
+		WHERE pool_id = $1
+		  AND enabled = TRUE`, poolID).Scan(&eventID)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read pool checkpoint: %w", err)
+	}
+	if strings.TrimSpace(eventID) == "" {
+		return nil, nil
+	}
+	return s.GetFederationEvent(ctx, eventID)
+}
+
 func (s *Store) IsActivePoolAdmin(ctx context.Context, poolID, nodeID string) (bool, error) {
 	if s == nil || s.db == nil {
 		return false, fmt.Errorf("pgindex store is not initialized")
