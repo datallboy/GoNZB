@@ -97,6 +97,59 @@ func TestGoNZBNetAdminResolveManifestRequiresReleaseID(t *testing.T) {
 	}
 }
 
+func TestGoNZBNetAdminExportKeyRequiresExplicitConfirmation(t *testing.T) {
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/gonzbnet/keys/export", bytes.NewReader([]byte(`{"backup_password":"backup"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	ctrl := NewGoNZBNetAdminController(&app.Context{Config: testGoNZBNetAdminConfig(t)})
+
+	if err := ctrl.ExportKey(c); err != nil {
+		t.Fatalf("ExportKey returned error: %v", err)
+	}
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "confirmation") {
+		t.Fatalf("expected confirmation validation error, got %s", rec.Body.String())
+	}
+}
+
+func TestGoNZBNetAdminExportKeyReturnsEncryptedBackupOnly(t *testing.T) {
+	cfg := testGoNZBNetAdminConfig(t)
+	cfg.GoNZBNet.KeyPassword = "configured-key-password"
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/gonzbnet/keys/export", bytes.NewReader([]byte(`{"backup_password":"backup-password","confirmation":"export-gonzbnet-node-key"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	ctrl := NewGoNZBNetAdminController(&app.Context{Config: cfg})
+
+	if err := ctrl.ExportKey(c); err != nil {
+		t.Fatalf("ExportKey returned error: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+	var body keyExportResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.NodeID == "" || body.PublicKey == "" || body.EncryptedKey == "" {
+		t.Fatalf("expected encrypted backup response, got %+v", body)
+	}
+	if !strings.Contains(body.EncryptedKey, "gonzbnet.ed25519.private.v1") {
+		t.Fatalf("expected encrypted key envelope, got %q", body.EncryptedKey)
+	}
+	raw := rec.Body.String()
+	for _, secret := range []string{"configured-key-password", "backup-password"} {
+		if strings.Contains(raw, secret) {
+			t.Fatalf("response leaked sensitive value %q: %s", secret, raw)
+		}
+	}
+}
+
 func testGoNZBNetAdminConfig(t *testing.T) *config.Config {
 	t.Helper()
 	return &config.Config{

@@ -122,6 +122,46 @@ func TestLoadOrCreateWithPasswordMigratesPlaintextIdentity(t *testing.T) {
 	}
 }
 
+func TestExportEncryptedPrivateKeyRequiresBackupPassword(t *testing.T) {
+	node, err := LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("create identity: %v", err)
+	}
+	if _, err := node.ExportEncryptedPrivateKey(""); err == nil {
+		t.Fatalf("expected empty backup password to fail")
+	}
+}
+
+func TestExportEncryptedPrivateKeyRoundTripsWithBackupPassword(t *testing.T) {
+	ctx := context.Background()
+	node, err := LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("create identity: %v", err)
+	}
+	nodeID, err := node.NodeID(ctx)
+	if err != nil {
+		t.Fatalf("node id: %v", err)
+	}
+	backup, err := node.ExportEncryptedPrivateKey("backup password")
+	if err != nil {
+		t.Fatalf("export encrypted key: %v", err)
+	}
+	if !strings.Contains(backup, encryptedKeyEnvelopeV1) {
+		t.Fatalf("expected encrypted backup envelope, got %q", backup)
+	}
+	restored, err := fromEncryptedPrivateKey(backup, "backup password")
+	if err != nil {
+		t.Fatalf("restore exported key: %v", err)
+	}
+	restoredID, err := restored.NodeID(ctx)
+	if err != nil {
+		t.Fatalf("restored node id: %v", err)
+	}
+	if restoredID != nodeID {
+		t.Fatalf("expected restored node id %q, got %q", nodeID, restoredID)
+	}
+}
+
 func readKeyFile(t *testing.T, dir string) string {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.Join(dir, DefaultKeyFileName))

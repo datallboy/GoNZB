@@ -40,6 +40,8 @@ import type {
   GoNZBNetEventDiagnostic,
   GoNZBNetGroupCatalogItem,
   GoNZBNetHealthAttestationDiagnostic,
+  GoNZBNetKeyExportRequest,
+  GoNZBNetKeyExportResponse,
   GoNZBNetListResponse,
   GoNZBNetManifestSourceDiagnostic,
   GoNZBNetManifestResolveRequest,
@@ -668,6 +670,13 @@ export function setGoNZBNetNodeBlocked(nodeID: string, blocked: boolean) {
   return apiRequest<GoNZBNetActionResponse>(
     `/api/v1/admin/gonzbnet/nodes/${encodeURIComponent(nodeID)}/${blocked ? "block" : "unblock"}`,
     { method: "POST" },
+  )
+}
+
+export function exportGoNZBNetKey(body: GoNZBNetKeyExportRequest) {
+  return apiRequest<GoNZBNetKeyExportResponse>(
+    "/api/v1/admin/gonzbnet/keys/export",
+    { method: "POST", body },
   )
 }
 
