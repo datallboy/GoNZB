@@ -30,6 +30,8 @@ Current implementation state:
 - Phase 9 adds signed Tombstone moderation events, local-only blocklisting,
   pool-threshold tombstone activation, search hiding, and manifest/NZB cache
   invalidation.
+- Phase 10 adds optional signed WebSocket gossip, TTL/fanout limits, delivery
+  dedupe, peer exchange controls, and connection backoff.
 
 Maintained pages:
 
@@ -42,3 +44,4 @@ Maintained pages:
 - [Phase 7 Resolution Manifests](./phase-7-resolution-manifests.md)
 - [Phase 8 Health Attestations](./phase-8-health-attestations.md)
 - [Phase 9 Moderation And Tombstones](./phase-9-moderation-tombstones.md)
+- [Phase 10 WebSocket Gossip](./phase-10-websocket-gossip.md)

@@ -145,6 +145,7 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		fed.POST("/inbox", gonzbnetCtrl.Inbox)
 		fed.POST("/manifests/:manifest_id/request", gonzbnetCtrl.RequestManifest)
 		fed.GET("/manifests/:manifest_id", gonzbnetCtrl.GetManifest)
+		fed.GET("/ws", gonzbnetCtrl.GossipWS)
 
 		v1AdminGoNZBNet := e.Group("/api/v1/admin/gonzbnet", bodyLimitMiddleware(adminJSONBodyLimit, defaultMultipartBodyLimit))
 		v1AdminGoNZBNet.Use(authMiddleware(authSvc, false, auth.PermissionGoNZBNetAdminPools))
