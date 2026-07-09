@@ -45,6 +45,8 @@ Current implementation state:
   disabled.
 - Addendum Phase D adds signed coverage coordination events, manual assignment
   APIs, active/stale claim projection, and coverage dashboard reads.
+- Addendum Phase E adds local dedup-aware coverage work suggestions, gap and
+  duplicate detection, and coverage score computation.
 
 Maintained pages:
 
@@ -63,3 +65,4 @@ Maintained pages:
 - [Phase B Validation-Only Contribution](./phase-b-validation.md)
 - [Phase C Scan-Without-Index Contribution](./phase-c-scan-output.md)
 - [Phase D Coverage Events And Manual Assignments](./phase-d-coverage.md)
+- [Phase E Dedup-Aware Local Scheduler](./phase-e-dedup-scheduler.md)

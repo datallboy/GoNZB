@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -38,6 +39,7 @@ type gonzbnetAdminStore interface {
 	ListTombstones(ctx context.Context, activeOnly bool) ([]pgindex.TombstoneRecord, error)
 	ProjectCoverageEvent(ctx context.Context, event *events.SignedEvent) error
 	ListCoverageDashboard(ctx context.Context, poolID string) (pgindex.CoverageDashboard, error)
+	SuggestCoverageWork(ctx context.Context, params pgindex.CoverageWorkSuggestionParams) ([]pgindex.CoverageWorkSuggestion, error)
 }
 
 type trustPoolRequest struct {
@@ -368,6 +370,35 @@ func (ctrl *GoNZBNetAdminController) CoverageDashboard(c *echo.Context) error {
 	return c.JSON(http.StatusOK, dashboard)
 }
 
+func (ctrl *GoNZBNetAdminController) CoverageSuggestions(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	poolID := firstNonBlank(queryParamTrimmed(c, "pool_id"), ctrl.appCtx.Config.GoNZBNet.LocalPoolID, "pool.local")
+	nodeID := queryParamTrimmed(c, "node_id")
+	if nodeID == "" {
+		var err error
+		nodeID, err = ctrl.localNodeID(c)
+		if err != nil {
+			return jsonError(c, http.StatusInternalServerError, err.Error())
+		}
+	}
+	limit := parseIntDefault(queryParamTrimmed(c, "limit"), 25)
+	minTrust := parseCoverageFloatDefault(queryParamTrimmed(c, "min_blocking_trust"), 0.25)
+	items, err := store.SuggestCoverageWork(c.Request().Context(), pgindex.CoverageWorkSuggestionParams{
+		PoolID:                poolID,
+		NodeID:                nodeID,
+		Mode:                  firstNonBlank(queryParamTrimmed(c, "mode"), "scanner"),
+		Limit:                 limit,
+		MinBlockingTrustScore: minTrust,
+	})
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
 func (ctrl *GoNZBNetAdminController) CreateCoverageAssignment(c *echo.Context) error {
 	var req coverageAssignmentRequest
 	if err := decodeJSONBody(c, &req); err != nil {
@@ -556,6 +587,14 @@ func (ctrl *GoNZBNetAdminController) localNodeID(c *echo.Context) (string, error
 
 func coverageID(prefix string, now time.Time) string {
 	return fmt.Sprintf("%s_%d", prefix, now.UnixNano())
+}
+
+func parseCoverageFloatDefault(raw string, fallback float64) float64 {
+	value, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	if err != nil {
+		return fallback
+	}
+	return value
 }
 
 func (ctrl *GoNZBNetAdminController) store() (gonzbnetAdminStore, bool) {
