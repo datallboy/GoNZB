@@ -43,6 +43,8 @@ Current implementation state:
 - Addendum Phase C adds scanner scan-output publishing, optional manifest
   availability events, and search isolation when local index projection is
   disabled.
+- Addendum Phase D adds signed coverage coordination events, manual assignment
+  APIs, active/stale claim projection, and coverage dashboard reads.
 
 Maintained pages:
 
@@ -60,3 +62,4 @@ Maintained pages:
 - [Phase A Capability Registry](./phase-a-capabilities.md)
 - [Phase B Validation-Only Contribution](./phase-b-validation.md)
 - [Phase C Scan-Without-Index Contribution](./phase-c-scan-output.md)
+- [Phase D Coverage Events And Manual Assignments](./phase-d-coverage.md)
