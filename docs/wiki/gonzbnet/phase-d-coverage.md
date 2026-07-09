@@ -49,6 +49,18 @@ permission:
 The write endpoints create signed local coverage events, append them to the
 federation event log, and project them locally.
 
+## Public Read API
+
+Later cleanup adds signed node-to-node read endpoints:
+
+- `GET /gonzbnet/v1/coverage/groups`
+- `GET /gonzbnet/v1/coverage/plan`
+- `GET /gonzbnet/v1/coverage/work`
+- `GET /gonzbnet/v1/capabilities/nodes`
+
+These require signed node authentication and active membership in the requested
+pool.
+
 ## Current Boundary
 
 This phase does not execute scanner work. Scanner modules can read assignments,

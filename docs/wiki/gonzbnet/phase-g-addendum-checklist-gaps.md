@@ -27,6 +27,10 @@ The GoNZBNet admin API now exposes:
 These cover capability inspection, pool group catalog views, missing validation
 coverage, and explicit stale-claim penalty materialization.
 
+Later public-read cleanup exposes signed node-to-node reads for coverage groups,
+coverage plan/work suggestions, and pool-filtered node capabilities under
+`/gonzbnet/v1`.
+
 ## Stale Penalties
 
 Stale claim penalties are recorded in `coverage_stale_claim_penalties`. They are

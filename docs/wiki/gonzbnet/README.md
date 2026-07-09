@@ -109,6 +109,8 @@ Current implementation state:
   the accepted append-only event log.
 - Trust attestation cleanup adds signed `TrustAttestation` reputation deltas
   with local bounded scoring.
+- Public coverage read cleanup adds signed node-to-node coverage group, plan,
+  work, and node capability read endpoints.
 - Security cleanup rejects remote signed events with future `created_at` /
   `not_before` windows, expired `expires_at` values, or event ages beyond
   `gonzbnet.max_event_age_hours`.
@@ -166,6 +168,7 @@ Maintained pages:
 - [Public Endpoint Alignment](./public-endpoint-alignment.md)
 - [Pool Checkpoints](./pool-checkpoints.md)
 - [Trust Attestations](./trust-attestations.md)
+- [Public Coverage Read Endpoints](./public-coverage-read-endpoints.md)
 - [Capability Profile Alignment](./capability-profile-alignment.md)
 - [Test Coverage Cleanup](./test-coverage-cleanup.md)
 - [Security: Node Key Encryption](./security-key-encryption.md)

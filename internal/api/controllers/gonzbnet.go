@@ -52,6 +52,11 @@ type gonzbnetStore interface {
 	ValidateFederationPoolControlEvent(ctx context.Context, event *events.SignedEvent) error
 	ProjectFederationPoolEvent(ctx context.Context, event *events.SignedEvent) error
 	CanAcceptFederationEventForPools(ctx context.Context, authorNodeID string, poolIDs []string, eventType string) (pgindex.PoolAuthorizationResult, error)
+	IsActivePoolMember(ctx context.Context, poolID, nodeID string) (bool, error)
+	ListFederationNodeCapabilities(ctx context.Context) ([]pgindex.NodeCapabilityView, error)
+	ListCoverageGroupCatalog(ctx context.Context, poolID string) ([]pgindex.CoverageGroupCatalogItem, error)
+	SuggestCoverageWork(ctx context.Context, params pgindex.CoverageWorkSuggestionParams) ([]pgindex.CoverageWorkSuggestion, error)
+	BuildCoverageSchedulerPlan(ctx context.Context, params pgindex.CoverageWorkSuggestionParams) (pgindex.CoverageSchedulerPlan, error)
 	GetResolutionManifest(ctx context.Context, manifestID string) (*manifest.ResolutionManifest, error)
 	GetResolutionManifestEvent(ctx context.Context, manifestID string) (*events.SignedEvent, error)
 	CanFetchResolutionManifest(ctx context.Context, manifestID, nodeID string) (bool, error)
@@ -93,6 +98,31 @@ type peersResponse struct {
 	SchemaVersion string   `json:"schema_version"`
 	Type          string   `json:"type"`
 	Peers         []string `json:"peers"`
+}
+
+type coverageGroupsResponse struct {
+	SchemaVersion string                             `json:"schema_version"`
+	Type          string                             `json:"type"`
+	PoolID        string                             `json:"pool_id"`
+	Items         []pgindex.CoverageGroupCatalogItem `json:"items"`
+	Count         int                                `json:"count"`
+}
+
+type coverageWorkResponse struct {
+	SchemaVersion string                           `json:"schema_version"`
+	Type          string                           `json:"type"`
+	PoolID        string                           `json:"pool_id"`
+	NodeID        string                           `json:"node_id"`
+	Items         []pgindex.CoverageWorkSuggestion `json:"items"`
+	Count         int                              `json:"count"`
+}
+
+type nodeCapabilitiesResponse struct {
+	SchemaVersion string                       `json:"schema_version"`
+	Type          string                       `json:"type"`
+	PoolID        string                       `json:"pool_id"`
+	Items         []pgindex.NodeCapabilityView `json:"items"`
+	Count         int                          `json:"count"`
 }
 
 type inboxEventBatch struct {
@@ -354,6 +384,149 @@ func (ctrl *GoNZBNetController) Peers(c *echo.Context) error {
 		Type:          "PeerList",
 		Peers:         gossip.FilterPeers(peers, true, cfg.GossipFanout),
 	})
+}
+
+func (ctrl *GoNZBNetController) CoverageGroups(c *echo.Context) error {
+	store, verified, poolID, ok := ctrl.authorizedPoolRead(c)
+	if !ok {
+		return nil
+	}
+	_ = verified
+	items, err := store.ListCoverageGroupCatalog(c.Request().Context(), poolID)
+	if err != nil {
+		return federationJSONError(c, http.StatusInternalServerError, "internal_error", err.Error())
+	}
+	return c.JSON(http.StatusOK, coverageGroupsResponse{
+		SchemaVersion: "1.0",
+		Type:          "CoverageGroups",
+		PoolID:        poolID,
+		Items:         items,
+		Count:         len(items),
+	})
+}
+
+func (ctrl *GoNZBNetController) CoveragePlan(c *echo.Context) error {
+	store, verified, poolID, ok := ctrl.authorizedPoolRead(c)
+	if !ok {
+		return nil
+	}
+	params := ctrl.coverageWorkParams(c, poolID, verified.NodeID)
+	plan, err := store.BuildCoverageSchedulerPlan(c.Request().Context(), params)
+	if err != nil {
+		return federationJSONError(c, http.StatusInternalServerError, "internal_error", err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{
+		"schema_version": "1.0",
+		"type":           "CoveragePlanView",
+		"pool_id":        poolID,
+		"node_id":        verified.NodeID,
+		"plan":           plan,
+	})
+}
+
+func (ctrl *GoNZBNetController) CoverageWork(c *echo.Context) error {
+	store, verified, poolID, ok := ctrl.authorizedPoolRead(c)
+	if !ok {
+		return nil
+	}
+	params := ctrl.coverageWorkParams(c, poolID, verified.NodeID)
+	items, err := store.SuggestCoverageWork(c.Request().Context(), params)
+	if err != nil {
+		return federationJSONError(c, http.StatusInternalServerError, "internal_error", err.Error())
+	}
+	return c.JSON(http.StatusOK, coverageWorkResponse{
+		SchemaVersion: "1.0",
+		Type:          "CoverageWork",
+		PoolID:        poolID,
+		NodeID:        verified.NodeID,
+		Items:         items,
+		Count:         len(items),
+	})
+}
+
+func (ctrl *GoNZBNetController) NodeCapabilities(c *echo.Context) error {
+	store, _, poolID, ok := ctrl.authorizedPoolRead(c)
+	if !ok {
+		return nil
+	}
+	members, err := store.ListPoolMembers(c.Request().Context(), poolID)
+	if err != nil {
+		return federationJSONError(c, http.StatusInternalServerError, "internal_error", err.Error())
+	}
+	activeMembers := map[string]struct{}{}
+	for _, member := range members {
+		if strings.TrimSpace(member.Status) == pools.StatusActive {
+			activeMembers[member.NodeID] = struct{}{}
+		}
+	}
+	items, err := store.ListFederationNodeCapabilities(c.Request().Context())
+	if err != nil {
+		return federationJSONError(c, http.StatusInternalServerError, "internal_error", err.Error())
+	}
+	filtered := make([]pgindex.NodeCapabilityView, 0, len(items))
+	for _, item := range items {
+		if _, ok := activeMembers[item.NodeID]; ok {
+			filtered = append(filtered, item)
+		}
+	}
+	return c.JSON(http.StatusOK, nodeCapabilitiesResponse{
+		SchemaVersion: "1.0",
+		Type:          "NodeCapabilities",
+		PoolID:        poolID,
+		Items:         filtered,
+		Count:         len(filtered),
+	})
+}
+
+func (ctrl *GoNZBNetController) authorizedPoolRead(c *echo.Context) (gonzbnetStore, requestauth.VerificationResult, string, bool) {
+	var empty requestauth.VerificationResult
+	store, ok := ctrl.appCtx.PGIndexStore.(gonzbnetStore)
+	if !ok {
+		_ = federationJSONError(c, http.StatusServiceUnavailable, "internal_error", "gonzbnet store is unavailable")
+		return nil, empty, "", false
+	}
+	poolID := queryParamTrimmed(c, "pool_id")
+	if poolID == "" {
+		_ = federationJSONError(c, http.StatusBadRequest, "invalid_schema", "pool_id is required")
+		return nil, empty, "", false
+	}
+	cfg := ctrl.appCtx.Config.GoNZBNet
+	verified, err := requestauth.Verify(
+		c.Request().Context(),
+		store,
+		requestauth.HeaderFromRequest(c.Request()),
+		c.Request().Method,
+		c.Request().URL.Path,
+		c.Request().URL.RawQuery,
+		nil,
+		time.Now(),
+		time.Duration(cfg.TimeToleranceSeconds)*time.Second,
+		time.Duration(cfg.NonceTTLSeconds)*time.Second,
+	)
+	if err != nil {
+		_ = federationJSONError(c, http.StatusUnauthorized, federationAuthErrorCode(err), err.Error())
+		return nil, empty, "", false
+	}
+	active, err := store.IsActivePoolMember(c.Request().Context(), poolID, verified.NodeID)
+	if err != nil {
+		_ = federationJSONError(c, http.StatusInternalServerError, "internal_error", err.Error())
+		return nil, empty, "", false
+	}
+	if !active {
+		_ = federationJSONError(c, http.StatusForbidden, "not_pool_member", "requesting node is not authorized for this pool")
+		return nil, empty, "", false
+	}
+	return store, verified, poolID, true
+}
+
+func (ctrl *GoNZBNetController) coverageWorkParams(c *echo.Context, poolID, nodeID string) pgindex.CoverageWorkSuggestionParams {
+	return pgindex.CoverageWorkSuggestionParams{
+		PoolID:                poolID,
+		NodeID:                nodeID,
+		Mode:                  firstNonBlank(queryParamTrimmed(c, "role"), queryParamTrimmed(c, "mode"), "scanner"),
+		Limit:                 parseIntDefault(queryParamTrimmed(c, "limit"), 25),
+		MinBlockingTrustScore: 0.25,
+	}
 }
 
 func (ctrl *GoNZBNetController) Handshake(c *echo.Context) error {
