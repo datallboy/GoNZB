@@ -17,6 +17,7 @@ import (
 	"github.com/datallboy/gonzb/internal/gonzbnet/events"
 	"github.com/datallboy/gonzb/internal/gonzbnet/gossip"
 	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
+	"github.com/datallboy/gonzb/internal/gonzbnet/manifestavailability"
 	"github.com/datallboy/gonzb/internal/gonzbnet/pools"
 	"github.com/datallboy/gonzb/internal/gonzbnet/profile"
 	"github.com/datallboy/gonzb/internal/gonzbnet/releasecard"
@@ -41,6 +42,7 @@ type Store interface {
 	ProjectValidatorCapacity(ctx context.Context, projection pgindex.ValidatorCapacityProjection) error
 	ProjectArticleAvailabilityAttestation(ctx context.Context, projection pgindex.ArticleAvailabilityProjection) error
 	ProjectChecksumAttestation(ctx context.Context, projection pgindex.ChecksumAttestationProjection) error
+	ProjectManifestAvailability(ctx context.Context, projection pgindex.ManifestAvailabilityProjection) error
 	MarkFederationPeerSyncSuccess(ctx context.Context, peerID int64, nodeID, cursor, lastEventID string) error
 	MarkFederationPeerSyncFailure(ctx context.Context, peerID int64, errText string) error
 	ListUndeliveredFederationEvents(ctx context.Context, peerID int64, limit int) ([]*events.SignedEvent, error)
@@ -857,6 +859,18 @@ func (s *Service) projectValidationEvent(ctx context.Context, event *events.Sign
 			return nil
 		}
 		return s.store.ProjectChecksumAttestation(ctx, pgindex.ChecksumAttestationProjection{
+			Attestation:  body,
+			EventID:      event.EventID,
+			AuthorNodeID: event.AuthorNodeID,
+			PoolID:       poolID,
+		})
+	case pools.EventTypeManifestAvailability:
+		var body manifestavailability.Attestation
+		if err := json.Unmarshal(event.Body, &body); err != nil {
+			_ = s.store.AppendRejectedFederationEvent(ctx, event.EventID, event.AuthorNodeID, event.EventType, raw, "invalid manifest availability body")
+			return nil
+		}
+		return s.store.ProjectManifestAvailability(ctx, pgindex.ManifestAvailabilityProjection{
 			Attestation:  body,
 			EventID:      event.EventID,
 			AuthorNodeID: event.AuthorNodeID,

@@ -38,6 +38,7 @@ type LocalRelease struct {
 	PrimaryResolution string
 	PrimaryVideoCodec string
 	PrimaryAudioCodec string
+	SourceKind        string
 }
 
 type LocalFile struct {
@@ -221,12 +222,21 @@ func MapLocalRelease(in LocalRelease) (ReleaseCard, error) {
 			ManifestSources: []string{},
 		},
 		Source: Source{
-			Kind:            "local_indexer_cache",
+			Kind:            firstNonBlank(in.SourceKind, "local_indexer_cache"),
 			Confidence:      clamp01(in.Availability),
 			IndexerNameHash: nil,
 		},
 		ExpiresAt: expiresAt,
 	}, nil
+}
+
+func firstNonBlank(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func NormalizeTitle(title string) string {
