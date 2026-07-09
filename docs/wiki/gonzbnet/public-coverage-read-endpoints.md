@@ -18,8 +18,12 @@ capabilities are filtered to active members of the requested pool.
 These endpoints do not expose local users, API keys, search history, grab
 history, download history, or NNTP credentials.
 
-The addendum write-style convenience endpoints remain future cleanup work:
+The concrete addendum write-style coverage convenience endpoints are implemented
+separately:
 
 - `POST /gonzbnet/v1/coverage/claim`
 - `POST /gonzbnet/v1/coverage/checkpoint`
+
+Remaining future cleanup:
+
 - `POST /gonzbnet/v1/validation/request`

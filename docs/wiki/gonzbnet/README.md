@@ -111,6 +111,8 @@ Current implementation state:
   with local bounded scoring.
 - Public coverage read cleanup adds signed node-to-node coverage group, plan,
   work, and node capability read endpoints.
+- Public coverage write cleanup adds signed node-to-node coverage claim and
+  checkpoint convenience endpoints.
 - Security cleanup rejects remote signed events with future `created_at` /
   `not_before` windows, expired `expires_at` values, or event ages beyond
   `gonzbnet.max_event_age_hours`.
@@ -169,6 +171,7 @@ Maintained pages:
 - [Pool Checkpoints](./pool-checkpoints.md)
 - [Trust Attestations](./trust-attestations.md)
 - [Public Coverage Read Endpoints](./public-coverage-read-endpoints.md)
+- [Public Coverage Write Endpoints](./public-coverage-write-endpoints.md)
 - [Capability Profile Alignment](./capability-profile-alignment.md)
 - [Test Coverage Cleanup](./test-coverage-cleanup.md)
 - [Security: Node Key Encryption](./security-key-encryption.md)

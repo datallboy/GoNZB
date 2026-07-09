@@ -31,6 +31,10 @@ Later public-read cleanup exposes signed node-to-node reads for coverage groups,
 coverage plan/work suggestions, and pool-filtered node capabilities under
 `/gonzbnet/v1`.
 
+Later public-write cleanup exposes signed node-to-node coverage claim and
+checkpoint convenience endpoints under `/gonzbnet/v1`, backed by the same inbox
+verification and projection path.
+
 ## Stale Penalties
 
 Stale claim penalties are recorded in `coverage_stale_claim_penalties`. They are

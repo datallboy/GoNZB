@@ -18,11 +18,14 @@ Behavior:
 - Coverage plan/work responses are scoped to the requesting node ID.
 - Node capabilities are filtered to active members of the requested pool.
 
-Out of scope:
+Implemented separately:
 
 - `POST /gonzbnet/v1/coverage/claim`
 - `POST /gonzbnet/v1/coverage/checkpoint`
+
+Out of scope:
+
 - `POST /gonzbnet/v1/validation/request`
 
-Those write-style convenience routes can be layered on top of the existing
-signed inbox/projection path in a separate cleanup.
+The validation request route needs a concrete request/event schema and task
+admission policy before implementation.

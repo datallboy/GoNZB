@@ -61,6 +61,16 @@ Later cleanup adds signed node-to-node read endpoints:
 These require signed node authentication and active membership in the requested
 pool.
 
+## Public Write API
+
+Later cleanup adds signed node-to-node write convenience endpoints:
+
+- `POST /gonzbnet/v1/coverage/claim`
+- `POST /gonzbnet/v1/coverage/checkpoint`
+
+These accept constrained coverage event types and reuse the normal inbox
+verification, pool authorization, append-only log, and projection path.
+
 ## Current Boundary
 
 This phase does not execute scanner work. Scanner modules can read assignments,

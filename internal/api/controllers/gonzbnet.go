@@ -444,6 +444,21 @@ func (ctrl *GoNZBNetController) CoverageWork(c *echo.Context) error {
 	})
 }
 
+func (ctrl *GoNZBNetController) CoverageClaim(c *echo.Context) error {
+	return ctrl.acceptConstrainedFederationEvents(c, map[string]struct{}{
+		coverage.TypeRangeClaim:      {},
+		coverage.TypeTimeWindowClaim: {},
+	})
+}
+
+func (ctrl *GoNZBNetController) CoverageCheckpoint(c *echo.Context) error {
+	return ctrl.acceptConstrainedFederationEvents(c, map[string]struct{}{
+		coverage.TypeCoverageCheckpoint: {},
+		coverage.TypeRangeComplete:      {},
+		coverage.TypeRangeFailed:        {},
+	})
+}
+
 func (ctrl *GoNZBNetController) NodeCapabilities(c *echo.Context) error {
 	store, _, poolID, ok := ctrl.authorizedPoolRead(c)
 	if !ok {
@@ -476,6 +491,89 @@ func (ctrl *GoNZBNetController) NodeCapabilities(c *echo.Context) error {
 		Items:         filtered,
 		Count:         len(filtered),
 	})
+}
+
+func (ctrl *GoNZBNetController) acceptConstrainedFederationEvents(c *echo.Context, allowed map[string]struct{}) error {
+	store, ok := ctrl.appCtx.PGIndexStore.(gonzbnetStore)
+	if !ok {
+		return federationJSONError(c, http.StatusServiceUnavailable, "internal_error", "gonzbnet store is unavailable")
+	}
+	body, err := io.ReadAll(c.Request().Body)
+	if err != nil {
+		code := federationBodyReadErrorCode(err)
+		status := http.StatusBadRequest
+		if code == "payload_too_large" {
+			status = http.StatusRequestEntityTooLarge
+		}
+		return federationJSONError(c, status, code, "read federation event body")
+	}
+	cfg := ctrl.appCtx.Config.GoNZBNet
+	verified, err := requestauth.Verify(
+		c.Request().Context(),
+		store,
+		requestauth.HeaderFromRequest(c.Request()),
+		c.Request().Method,
+		c.Request().URL.Path,
+		c.Request().URL.RawQuery,
+		body,
+		time.Now(),
+		time.Duration(cfg.TimeToleranceSeconds)*time.Second,
+		time.Duration(cfg.NonceTTLSeconds)*time.Second,
+	)
+	if err != nil {
+		return federationJSONError(c, http.StatusUnauthorized, federationAuthErrorCode(err), err.Error())
+	}
+	eventsIn, err := decodeInboxEvents(body)
+	if err != nil {
+		return federationJSONError(c, http.StatusBadRequest, "invalid_json", err.Error())
+	}
+	maxBatch := cfg.MaxBatchEvents
+	if maxBatch <= 0 {
+		maxBatch = 100
+	}
+	if len(eventsIn) > maxBatch {
+		return federationJSONError(c, http.StatusBadRequest, "invalid_schema", "event batch exceeds max_batch_events")
+	}
+	resp := inboxResponse{
+		SchemaVersion: "1.0",
+		Type:          "InboxResponse",
+		Accepted:      []inboxEventResult{},
+		Duplicate:     []inboxEventResult{},
+		Rejected:      []inboxEventResult{},
+	}
+	for i := range eventsIn {
+		event := eventsIn[i]
+		if _, ok := allowed[event.EventType]; !ok {
+			resp.Rejected = append(resp.Rejected, inboxEventResult{
+				EventID: event.EventID,
+				Status:  "rejected",
+				Code:    "unsupported_event_type",
+				Message: "event_type is not accepted by this endpoint",
+			})
+			continue
+		}
+		if event.AuthorNodeID != verified.NodeID {
+			resp.Rejected = append(resp.Rejected, inboxEventResult{
+				EventID: event.EventID,
+				Status:  "rejected",
+				Code:    "request_author_mismatch",
+				Message: "requesting node does not match event author",
+			})
+			continue
+		}
+		item := ctrl.acceptInboxEvent(c.Request().Context(), store, &event)
+		switch item.Status {
+		case "accepted":
+			resp.Accepted = append(resp.Accepted, item)
+			resp.Cursor = item.EventID
+		case "duplicate":
+			resp.Duplicate = append(resp.Duplicate, item)
+			resp.Cursor = item.EventID
+		default:
+			resp.Rejected = append(resp.Rejected, item)
+		}
+	}
+	return c.JSON(http.StatusOK, resp)
 }
 
 func (ctrl *GoNZBNetController) authorizedPoolRead(c *echo.Context) (gonzbnetStore, requestauth.VerificationResult, string, bool) {
