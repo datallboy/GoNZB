@@ -11,6 +11,8 @@ modules:
     enabled: true
   usenet_indexer:
     enabled: true
+  gonzbnet:
+    enabled: false
   web_ui:
     enabled: true
   api:
@@ -22,6 +24,27 @@ api:
   cors_allowed_origins:
     - "http://localhost:5173"
     - "http://127.0.0.1:5173"
+
+# GoNZBNet federation is disabled by default. Phase 1 only creates a persistent
+# node identity and signed append-only event primitives.
+gonzbnet:
+  mode: "integrated"
+  node_alias: ""
+  advertise_url: ""
+  keys_dir: "data/gonzbnet/keys"
+  spec_version: "gonzbnet/1.0"
+  http_enabled: true
+  http_base_path: "/gonzbnet/v1"
+  private_network: true
+  network_id: "default"
+  manual_peers: []
+  max_event_bytes: 262144
+  max_manifest_bytes: 10485760
+  max_batch_events: 100
+  time_tolerance_seconds: 120
+  nonce_ttl_seconds: 600
+  live_query_enabled: false
+  send_user_context: false
 
 # Operational settings are managed in the Admin UI and persisted to SQLite runtime settings.
 # The legacy YAML keys below are intentionally omitted from the normal bootstrap example:

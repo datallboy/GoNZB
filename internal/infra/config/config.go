@@ -21,6 +21,7 @@ type Config struct {
 
 	Indexing   IndexingConfig   `mapstructure:"indexing" yaml:"indexing"`
 	Aggregator AggregatorConfig `mapstructure:"aggregator" yaml:"aggregator"`
+	GoNZBNet   GoNZBNetConfig   `mapstructure:"gonzbnet" yaml:"gonzbnet"`
 	Modules    ModulesConfig    `mapstructure:"modules" yaml:"modules"`
 
 	Port string `mapstructure:"port" yaml:"port"`
@@ -86,6 +87,29 @@ type AggregatorConfig struct {
 type AggregatorSourcesConfig struct {
 	LocalBlob     ModuleToggle `mapstructure:"local_blob" yaml:"local_blob"`
 	UsenetIndexer ModuleToggle `mapstructure:"usenet_indexer" yaml:"usenet_indexer"`
+}
+
+type GoNZBNetConfig struct {
+	Mode                  string   `mapstructure:"mode" yaml:"mode"`
+	NodeAlias             string   `mapstructure:"node_alias" yaml:"node_alias"`
+	AdvertiseURL          string   `mapstructure:"advertise_url" yaml:"advertise_url"`
+	KeysDir               string   `mapstructure:"keys_dir" yaml:"keys_dir"`
+	KeyPassword           string   `mapstructure:"key_password" yaml:"key_password"`
+	SpecVersion           string   `mapstructure:"spec_version" yaml:"spec_version"`
+	HTTPEnabled           bool     `mapstructure:"http_enabled" yaml:"http_enabled"`
+	HTTPBasePath          string   `mapstructure:"http_base_path" yaml:"http_base_path"`
+	PrivateNetwork        bool     `mapstructure:"private_network" yaml:"private_network"`
+	NetworkID             string   `mapstructure:"network_id" yaml:"network_id"`
+	ManualPeers           []string `mapstructure:"manual_peers" yaml:"manual_peers"`
+	MaxEventBytes         int      `mapstructure:"max_event_bytes" yaml:"max_event_bytes"`
+	MaxManifestBytes      int      `mapstructure:"max_manifest_bytes" yaml:"max_manifest_bytes"`
+	MaxBatchEvents        int      `mapstructure:"max_batch_events" yaml:"max_batch_events"`
+	TimeToleranceSeconds  int      `mapstructure:"time_tolerance_seconds" yaml:"time_tolerance_seconds"`
+	NonceTTLSeconds       int      `mapstructure:"nonce_ttl_seconds" yaml:"nonce_ttl_seconds"`
+	LiveQueryEnabled      bool     `mapstructure:"live_query_enabled" yaml:"live_query_enabled"`
+	SendUserContext       bool     `mapstructure:"send_user_context" yaml:"send_user_context"`
+	ShareProviderBackbone bool     `mapstructure:"share_provider_backbone_hash" yaml:"share_provider_backbone_hash"`
+	ShareSourceIndexer    bool     `mapstructure:"share_source_indexer_hash" yaml:"share_source_indexer_hash"`
 }
 
 type IndexingConfig struct {
@@ -238,6 +262,7 @@ type ModulesConfig struct {
 	Downloader    ModuleToggle `mapstructure:"downloader" yaml:"downloader"`
 	Aggregator    ModuleToggle `mapstructure:"aggregator" yaml:"aggregator"`
 	UsenetIndexer ModuleToggle `mapstructure:"usenet_indexer" yaml:"usenet_indexer"`
+	GoNZBNet      ModuleToggle `mapstructure:"gonzbnet" yaml:"gonzbnet"`
 	WebUI         ModuleToggle `mapstructure:"web_ui" yaml:"web_ui"`
 	API           ModuleToggle `mapstructure:"api" yaml:"api"`
 }
@@ -448,10 +473,31 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("modules.downloader.enabled", true)
 	v.SetDefault("modules.aggregator.enabled", true)
 	v.SetDefault("modules.usenet_indexer.enabled", true)
+	v.SetDefault("modules.gonzbnet.enabled", false)
 	v.SetDefault("modules.web_ui.enabled", true)
 	v.SetDefault("modules.api.enabled", true)
 	v.SetDefault("aggregator.sources.local_blob.enabled", false)
 	v.SetDefault("aggregator.sources.usenet_indexer.enabled", false)
+	v.SetDefault("gonzbnet.mode", "integrated")
+	v.SetDefault("gonzbnet.node_alias", "")
+	v.SetDefault("gonzbnet.advertise_url", "")
+	v.SetDefault("gonzbnet.keys_dir", "data/gonzbnet/keys")
+	v.SetDefault("gonzbnet.key_password", "")
+	v.SetDefault("gonzbnet.spec_version", "gonzbnet/1.0")
+	v.SetDefault("gonzbnet.http_enabled", true)
+	v.SetDefault("gonzbnet.http_base_path", "/gonzbnet/v1")
+	v.SetDefault("gonzbnet.private_network", true)
+	v.SetDefault("gonzbnet.network_id", "default")
+	v.SetDefault("gonzbnet.manual_peers", []string{})
+	v.SetDefault("gonzbnet.max_event_bytes", 262144)
+	v.SetDefault("gonzbnet.max_manifest_bytes", 10485760)
+	v.SetDefault("gonzbnet.max_batch_events", 100)
+	v.SetDefault("gonzbnet.time_tolerance_seconds", 120)
+	v.SetDefault("gonzbnet.nonce_ttl_seconds", 600)
+	v.SetDefault("gonzbnet.live_query_enabled", false)
+	v.SetDefault("gonzbnet.send_user_context", false)
+	v.SetDefault("gonzbnet.share_provider_backbone_hash", false)
+	v.SetDefault("gonzbnet.share_source_indexer_hash", false)
 
 	v.SetDefault("api.cors_allowed_origins", []string{
 		"http://localhost:5173",
@@ -492,6 +538,9 @@ func (c *Config) validate() error {
 
 	if c.Download.OutDir == "" {
 		c.Download.OutDir = "./downloads"
+	}
+	if c.GoNZBNet.SendUserContext {
+		return errors.New("gonzbnet.send_user_context must remain false; federation must not send local user context")
 	}
 	if err := validateIndexingStageConfig("indexing.scrape_latest", c.Indexing.ScrapeLatest); err != nil {
 		return err
