@@ -3,6 +3,7 @@ package pgindex
 import (
 	"context"
 	"crypto/ed25519"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -83,6 +84,81 @@ func (s *Store) UpsertFederationNode(ctx context.Context, node FederationNodeRec
 		return fmt.Errorf("upsert federation node: %w", err)
 	}
 	return nil
+}
+
+func (s *Store) UpsertFederationNodeIdentity(ctx context.Context, nodeID string, publicKey ed25519.PublicKey) error {
+	return s.UpsertFederationNode(ctx, FederationNodeRecord{
+		NodeID:    nodeID,
+		PublicKey: publicKey,
+		Software:  "GoNZB",
+		Status:    "local",
+	})
+}
+
+func (s *Store) NextFederationEventSequence(ctx context.Context, authorNodeID string) (int64, *string, error) {
+	if s == nil || s.db == nil {
+		return 0, nil, fmt.Errorf("pgindex store is not initialized")
+	}
+	authorNodeID = strings.TrimSpace(authorNodeID)
+	if authorNodeID == "" {
+		return 0, nil, fmt.Errorf("author_node_id is required")
+	}
+
+	var (
+		sequence int64
+		eventID  string
+	)
+	err := s.db.QueryRowContext(ctx, `
+		SELECT sequence, event_id
+		FROM federation_events
+		WHERE author_node_id = $1
+		ORDER BY sequence DESC, received_at DESC
+		LIMIT 1`, authorNodeID).Scan(&sequence, &eventID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return 1, nil, nil
+		}
+		return 0, nil, fmt.Errorf("read latest federation event sequence: %w", err)
+	}
+
+	return sequence + 1, &eventID, nil
+}
+
+func (s *Store) FindFederationEventByBodyHash(ctx context.Context, authorNodeID, eventType, bodyHash string) (string, error) {
+	if s == nil || s.db == nil {
+		return "", fmt.Errorf("pgindex store is not initialized")
+	}
+	authorNodeID = strings.TrimSpace(authorNodeID)
+	eventType = strings.TrimSpace(eventType)
+	bodyHash = strings.TrimSpace(bodyHash)
+	if authorNodeID == "" || eventType == "" || bodyHash == "" {
+		return "", nil
+	}
+
+	var eventID string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT event_id
+		FROM federation_events
+		WHERE author_node_id = $1
+		  AND event_type = $2
+		  AND body_hash = $3
+		  AND validation_status = 'accepted'
+		ORDER BY sequence DESC
+		LIMIT 1`, authorNodeID, eventType, bodyHash).Scan(&eventID)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("find federation event by body hash: %w", err)
+	}
+	return eventID, nil
+}
+
+func (s *Store) AppendVerifiedFederationEvent(ctx context.Context, event *events.SignedEvent, validation *events.ValidationResult) error {
+	return s.AppendFederationEvent(ctx, FederationEventRecord{
+		Event:      event,
+		Validation: validation,
+	})
 }
 
 func (s *Store) AppendFederationEvent(ctx context.Context, record FederationEventRecord) error {

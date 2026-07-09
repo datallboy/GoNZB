@@ -37,7 +37,11 @@ gonzbnet:
   http_base_path: "/gonzbnet/v1"
   private_network: true
   network_id: "default"
+  local_pool_id: "pool.local"
   manual_peers: []
+  publish_release_cards_enabled: false
+  publish_release_cards_batch_size: 50
+  publish_release_cards_interval_minutes: 10
   max_event_bytes: 262144
   max_manifest_bytes: 10485760
   max_batch_events: 100

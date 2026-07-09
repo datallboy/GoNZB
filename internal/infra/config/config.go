@@ -90,26 +90,30 @@ type AggregatorSourcesConfig struct {
 }
 
 type GoNZBNetConfig struct {
-	Mode                  string   `mapstructure:"mode" yaml:"mode"`
-	NodeAlias             string   `mapstructure:"node_alias" yaml:"node_alias"`
-	AdvertiseURL          string   `mapstructure:"advertise_url" yaml:"advertise_url"`
-	KeysDir               string   `mapstructure:"keys_dir" yaml:"keys_dir"`
-	KeyPassword           string   `mapstructure:"key_password" yaml:"key_password"`
-	SpecVersion           string   `mapstructure:"spec_version" yaml:"spec_version"`
-	HTTPEnabled           bool     `mapstructure:"http_enabled" yaml:"http_enabled"`
-	HTTPBasePath          string   `mapstructure:"http_base_path" yaml:"http_base_path"`
-	PrivateNetwork        bool     `mapstructure:"private_network" yaml:"private_network"`
-	NetworkID             string   `mapstructure:"network_id" yaml:"network_id"`
-	ManualPeers           []string `mapstructure:"manual_peers" yaml:"manual_peers"`
-	MaxEventBytes         int      `mapstructure:"max_event_bytes" yaml:"max_event_bytes"`
-	MaxManifestBytes      int      `mapstructure:"max_manifest_bytes" yaml:"max_manifest_bytes"`
-	MaxBatchEvents        int      `mapstructure:"max_batch_events" yaml:"max_batch_events"`
-	TimeToleranceSeconds  int      `mapstructure:"time_tolerance_seconds" yaml:"time_tolerance_seconds"`
-	NonceTTLSeconds       int      `mapstructure:"nonce_ttl_seconds" yaml:"nonce_ttl_seconds"`
-	LiveQueryEnabled      bool     `mapstructure:"live_query_enabled" yaml:"live_query_enabled"`
-	SendUserContext       bool     `mapstructure:"send_user_context" yaml:"send_user_context"`
-	ShareProviderBackbone bool     `mapstructure:"share_provider_backbone_hash" yaml:"share_provider_backbone_hash"`
-	ShareSourceIndexer    bool     `mapstructure:"share_source_indexer_hash" yaml:"share_source_indexer_hash"`
+	Mode                           string   `mapstructure:"mode" yaml:"mode"`
+	NodeAlias                      string   `mapstructure:"node_alias" yaml:"node_alias"`
+	AdvertiseURL                   string   `mapstructure:"advertise_url" yaml:"advertise_url"`
+	KeysDir                        string   `mapstructure:"keys_dir" yaml:"keys_dir"`
+	KeyPassword                    string   `mapstructure:"key_password" yaml:"key_password"`
+	SpecVersion                    string   `mapstructure:"spec_version" yaml:"spec_version"`
+	HTTPEnabled                    bool     `mapstructure:"http_enabled" yaml:"http_enabled"`
+	HTTPBasePath                   string   `mapstructure:"http_base_path" yaml:"http_base_path"`
+	PrivateNetwork                 bool     `mapstructure:"private_network" yaml:"private_network"`
+	NetworkID                      string   `mapstructure:"network_id" yaml:"network_id"`
+	LocalPoolID                    string   `mapstructure:"local_pool_id" yaml:"local_pool_id"`
+	ManualPeers                    []string `mapstructure:"manual_peers" yaml:"manual_peers"`
+	PublishReleaseCardsEnabled     bool     `mapstructure:"publish_release_cards_enabled" yaml:"publish_release_cards_enabled"`
+	PublishReleaseCardsBatchSize   int      `mapstructure:"publish_release_cards_batch_size" yaml:"publish_release_cards_batch_size"`
+	PublishReleaseCardsIntervalMin float64  `mapstructure:"publish_release_cards_interval_minutes" yaml:"publish_release_cards_interval_minutes"`
+	MaxEventBytes                  int      `mapstructure:"max_event_bytes" yaml:"max_event_bytes"`
+	MaxManifestBytes               int      `mapstructure:"max_manifest_bytes" yaml:"max_manifest_bytes"`
+	MaxBatchEvents                 int      `mapstructure:"max_batch_events" yaml:"max_batch_events"`
+	TimeToleranceSeconds           int      `mapstructure:"time_tolerance_seconds" yaml:"time_tolerance_seconds"`
+	NonceTTLSeconds                int      `mapstructure:"nonce_ttl_seconds" yaml:"nonce_ttl_seconds"`
+	LiveQueryEnabled               bool     `mapstructure:"live_query_enabled" yaml:"live_query_enabled"`
+	SendUserContext                bool     `mapstructure:"send_user_context" yaml:"send_user_context"`
+	ShareProviderBackbone          bool     `mapstructure:"share_provider_backbone_hash" yaml:"share_provider_backbone_hash"`
+	ShareSourceIndexer             bool     `mapstructure:"share_source_indexer_hash" yaml:"share_source_indexer_hash"`
 }
 
 type IndexingConfig struct {
@@ -488,7 +492,11 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("gonzbnet.http_base_path", "/gonzbnet/v1")
 	v.SetDefault("gonzbnet.private_network", true)
 	v.SetDefault("gonzbnet.network_id", "default")
+	v.SetDefault("gonzbnet.local_pool_id", "pool.local")
 	v.SetDefault("gonzbnet.manual_peers", []string{})
+	v.SetDefault("gonzbnet.publish_release_cards_enabled", false)
+	v.SetDefault("gonzbnet.publish_release_cards_batch_size", 50)
+	v.SetDefault("gonzbnet.publish_release_cards_interval_minutes", 10.0)
 	v.SetDefault("gonzbnet.max_event_bytes", 262144)
 	v.SetDefault("gonzbnet.max_manifest_bytes", 10485760)
 	v.SetDefault("gonzbnet.max_batch_events", 100)

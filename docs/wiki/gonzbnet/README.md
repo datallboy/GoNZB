@@ -11,7 +11,10 @@ Current implementation state:
 - Signed events use canonical JSON bytes for signatures and event IDs.
 - PostgreSQL stores accepted event canonical bytes separately from JSONB body
   projections.
+- Phase 2 maps local public-ready indexer releases into signed ReleaseCard
+  events and separate federated release-card projections.
 
 Maintained pages:
 
 - [Phase 1 Identity And Events](./phase-1-identity-and-events.md)
+- [Phase 2 ReleaseCard Publishing](./phase-2-releasecard-publishing.md)
