@@ -684,6 +684,7 @@ func (ctrl *GoNZBNetController) profileConfig(c *echo.Context) profile.Config {
 		LiveQueryEnabled: cfg.LiveQueryEnabled,
 		WebSocketGossip:  cfg.WebSocketGossipEnabled,
 		PeerExchange:     cfg.PeerExchangeEnabled,
+		RelayMode:        cfg.RelayEnabled,
 		MaxEventBytes:    cfg.MaxEventBytes,
 		MaxManifestBytes: cfg.MaxManifestBytes,
 		MaxBatchEvents:   cfg.MaxBatchEvents,

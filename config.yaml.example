@@ -56,6 +56,8 @@ gonzbnet:
   gossip_ttl: 4
   gossip_fanout: 4
   peer_exchange_enabled: false
+  relay_enabled: false
+  relay_api_key: ""
   max_event_bytes: 262144
   max_manifest_bytes: 10485760
   max_batch_events: 100
