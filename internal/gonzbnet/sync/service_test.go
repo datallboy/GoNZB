@@ -337,6 +337,10 @@ func (s *fakeSyncStore) ProjectManifestAvailability(context.Context, pgindex.Man
 	return nil
 }
 
+func (s *fakeSyncStore) ProjectCoverageEvent(context.Context, *events.SignedEvent) error {
+	return nil
+}
+
 func (s *fakeSyncStore) MarkFederationPeerSyncSuccess(_ context.Context, _ int64, _, cursor, _ string) error {
 	s.successCursor = cursor
 	return nil

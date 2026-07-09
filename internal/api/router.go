@@ -158,6 +158,11 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		v1AdminGoNZBNet.GET("/pools/:pool_id/members", gonzbnetAdminCtrl.ListPoolMembers)
 		v1AdminGoNZBNet.POST("/pools/:pool_id/members", gonzbnetAdminCtrl.UpsertPoolMember)
 		v1AdminGoNZBNet.POST("/pools/:pool_id/members/:node_id/revoke", gonzbnetAdminCtrl.RevokePoolMember)
+		v1AdminGoNZBNet.GET("/coverage", gonzbnetAdminCtrl.CoverageDashboard)
+		v1AdminGoNZBNet.POST("/coverage/assignments", gonzbnetAdminCtrl.CreateCoverageAssignment)
+		v1AdminGoNZBNet.POST("/coverage/claims", gonzbnetAdminCtrl.CreateCoverageClaim)
+		v1AdminGoNZBNet.POST("/coverage/complete", gonzbnetAdminCtrl.CreateCoverageComplete)
+		v1AdminGoNZBNet.POST("/coverage/failed", gonzbnetAdminCtrl.CreateCoverageFailed)
 
 		v1AdminGoNZBNetModeration := e.Group("/api/v1/admin/gonzbnet", bodyLimitMiddleware(adminJSONBodyLimit, defaultMultipartBodyLimit))
 		v1AdminGoNZBNetModeration.Use(authMiddleware(authSvc, false, auth.PermissionGoNZBNetAdminModeration))

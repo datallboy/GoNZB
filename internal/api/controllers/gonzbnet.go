@@ -12,6 +12,7 @@ import (
 
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/gonzbnet/canonical"
+	"github.com/datallboy/gonzb/internal/gonzbnet/coverage"
 	"github.com/datallboy/gonzb/internal/gonzbnet/events"
 	"github.com/datallboy/gonzb/internal/gonzbnet/gossip"
 	"github.com/datallboy/gonzb/internal/gonzbnet/health"
@@ -55,6 +56,7 @@ type gonzbnetStore interface {
 	ProjectArticleAvailabilityAttestation(ctx context.Context, projection pgindex.ArticleAvailabilityProjection) error
 	ProjectChecksumAttestation(ctx context.Context, projection pgindex.ChecksumAttestationProjection) error
 	ProjectManifestAvailability(ctx context.Context, projection pgindex.ManifestAvailabilityProjection) error
+	ProjectCoverageEvent(ctx context.Context, event *events.SignedEvent) error
 	ProjectTombstone(ctx context.Context, projection pgindex.TombstoneProjection) error
 	ListEnabledFederationPeers(ctx context.Context) ([]pgindex.FederationPeerRecord, error)
 	UpsertFederationPeerURL(ctx context.Context, peerURL string) (int64, error)
@@ -723,6 +725,11 @@ func (ctrl *GoNZBNetController) acceptInboxEvent(ctx context.Context, store gonz
 			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "projection_failed", Message: err.Error()}
 		}
 	}
+	if isCoverageEvent(event.EventType) {
+		if err := store.ProjectCoverageEvent(ctx, event); err != nil {
+			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "projection_failed", Message: err.Error()}
+		}
+	}
 	if tombstoneProjection != nil {
 		if err := store.ProjectTombstone(ctx, *tombstoneProjection); err != nil {
 			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "projection_failed", Message: err.Error()}
@@ -750,6 +757,15 @@ func decodeInboxEvents(body []byte) ([]events.SignedEvent, error) {
 		return nil, fmt.Errorf("missing event batch")
 	}
 	return []events.SignedEvent{single}, nil
+}
+
+func isCoverageEvent(eventType string) bool {
+	for _, candidate := range coverage.EventTypes() {
+		if eventType == candidate {
+			return true
+		}
+	}
+	return false
 }
 
 func (ctrl *GoNZBNetController) localIdentity() (*identity.Identity, error) {
