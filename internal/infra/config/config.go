@@ -588,6 +588,9 @@ func Load(path string) (*Config, error) {
 	v.SetEnvPrefix("GONZB")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
+	if err := v.BindEnv("modules.gonzbnet.enabled", "GONZBNET_ENABLED"); err != nil {
+		return nil, err
+	}
 
 	var cfg Config
 	if err := v.Unmarshal(&cfg); err != nil {
