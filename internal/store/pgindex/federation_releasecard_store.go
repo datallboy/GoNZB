@@ -318,6 +318,28 @@ func (s *Store) UpsertFederatedReleaseCardProjection(ctx context.Context, projec
 		return fmt.Errorf("upsert federated release source: %w", err)
 	}
 
+	if strings.TrimSpace(card.ManifestID) != "" {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO federated_manifest_sources (
+				manifest_id, release_id, source_node_id, pool_id, advertised,
+				trust_score, updated_at
+			)
+			VALUES ($1, $2, $3, $4, TRUE, $5, NOW())
+			ON CONFLICT (manifest_id, source_node_id, pool_id) DO UPDATE SET
+				release_id = EXCLUDED.release_id,
+				advertised = TRUE,
+				trust_score = EXCLUDED.trust_score,
+				updated_at = NOW()`,
+			card.ManifestID,
+			card.ReleaseID,
+			projection.SourceNodeID,
+			poolID,
+			1.0,
+		); err != nil {
+			return fmt.Errorf("upsert federated manifest source: %w", err)
+		}
+	}
+
 	return tx.Commit()
 }
 

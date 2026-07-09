@@ -143,6 +143,8 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		fed.GET("/outbox", gonzbnetCtrl.Outbox)
 		fed.GET("/events/:event_id", gonzbnetCtrl.Event)
 		fed.POST("/inbox", gonzbnetCtrl.Inbox)
+		fed.POST("/manifests/:manifest_id/request", gonzbnetCtrl.RequestManifest)
+		fed.GET("/manifests/:manifest_id", gonzbnetCtrl.GetManifest)
 
 		v1AdminGoNZBNet := e.Group("/api/v1/admin/gonzbnet", bodyLimitMiddleware(adminJSONBodyLimit, defaultMultipartBodyLimit))
 		v1AdminGoNZBNet.Use(authMiddleware(authSvc, false, auth.PermissionGoNZBNetAdminPools))
