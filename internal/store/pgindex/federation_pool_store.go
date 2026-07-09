@@ -15,33 +15,33 @@ import (
 )
 
 type TrustPoolRecord struct {
-	PoolID                     string
-	DisplayName                string
-	Description                string
-	GenesisEventID             string
-	PolicyJSON                 json.RawMessage
-	MembershipThreshold        int
-	ModerationThreshold        int
-	CheckpointWitnessThreshold int
-	AcceptMode                 string
-	MinNodeTrustScore          float64
-	AcceptedEventTypes         []string
-	Enabled                    bool
-	CreatedAt                  time.Time
-	UpdatedAt                  time.Time
+	PoolID                     string          `json:"pool_id"`
+	DisplayName                string          `json:"display_name"`
+	Description                string          `json:"description"`
+	GenesisEventID             string          `json:"genesis_event_id"`
+	PolicyJSON                 json.RawMessage `json:"policy_json"`
+	MembershipThreshold        int             `json:"membership_threshold"`
+	ModerationThreshold        int             `json:"moderation_threshold"`
+	CheckpointWitnessThreshold int             `json:"checkpoint_witness_threshold"`
+	AcceptMode                 string          `json:"accept_mode"`
+	MinNodeTrustScore          float64         `json:"min_node_trust_score"`
+	AcceptedEventTypes         []string        `json:"accepted_event_types"`
+	Enabled                    bool            `json:"enabled"`
+	CreatedAt                  time.Time       `json:"created_at"`
+	UpdatedAt                  time.Time       `json:"updated_at"`
 }
 
 type PoolMemberRecord struct {
-	PoolID              string
-	NodeID              string
-	Role                string
-	Status              string
-	ApprovedEventID     string
-	RevokedEventID      string
-	AllowedCapabilities []string
-	LimitsJSON          json.RawMessage
-	JoinedAt            *time.Time
-	RevokedAt           *time.Time
+	PoolID              string          `json:"pool_id"`
+	NodeID              string          `json:"node_id"`
+	Role                string          `json:"role"`
+	Status              string          `json:"status"`
+	ApprovedEventID     string          `json:"approved_event_id"`
+	RevokedEventID      string          `json:"revoked_event_id"`
+	AllowedCapabilities []string        `json:"allowed_capabilities"`
+	LimitsJSON          json.RawMessage `json:"limits_json"`
+	JoinedAt            *time.Time      `json:"joined_at,omitempty"`
+	RevokedAt           *time.Time      `json:"revoked_at,omitempty"`
 }
 
 type PoolAuthorizationResult struct {
