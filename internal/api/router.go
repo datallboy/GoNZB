@@ -141,6 +141,7 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		fed.POST("/handshake", gonzbnetCtrl.Handshake)
 		fed.GET("/outbox", gonzbnetCtrl.Outbox)
 		fed.GET("/events/:event_id", gonzbnetCtrl.Event)
+		fed.POST("/inbox", gonzbnetCtrl.Inbox)
 	}
 
 	var (
