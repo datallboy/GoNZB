@@ -26,20 +26,24 @@ type WellKnown struct {
 }
 
 type NodeProfile struct {
-	SchemaVersion   string       `json:"schema_version"`
-	Type            string       `json:"type"`
-	NodeID          string       `json:"node_id"`
-	Alias           string       `json:"alias,omitempty"`
-	Software        string       `json:"software"`
-	SoftwareVersion string       `json:"software_version"`
-	Protocols       []string     `json:"protocols"`
-	PublicKey       string       `json:"public_key"`
-	Endpoints       Endpoints    `json:"endpoints"`
-	Capabilities    Capabilities `json:"capabilities"`
-	Limits          Limits       `json:"limits"`
-	Policy          Policy       `json:"policy"`
-	CreatedAt       string       `json:"created_at"`
-	UpdatedAt       string       `json:"updated_at"`
+	SchemaVersion     string             `json:"schema_version"`
+	Type              string             `json:"type"`
+	NodeID            string             `json:"node_id"`
+	Alias             string             `json:"alias,omitempty"`
+	Software          string             `json:"software"`
+	SoftwareVersion   string             `json:"software_version"`
+	Protocols         []string           `json:"protocols"`
+	PublicKey         string             `json:"public_key"`
+	Endpoints         Endpoints          `json:"endpoints"`
+	Capabilities      Capabilities       `json:"capabilities"`
+	ModuleStatus      ModuleStatus       `json:"module_status"`
+	ScannerCapacity   *ScannerCapacity   `json:"scanner_capacity,omitempty"`
+	ValidatorCapacity *ValidatorCapacity `json:"validator_capacity,omitempty"`
+	ProviderScope     ProviderScope      `json:"provider_scope"`
+	Limits            Limits             `json:"limits"`
+	Policy            Policy             `json:"policy"`
+	CreatedAt         string             `json:"created_at"`
+	UpdatedAt         string             `json:"updated_at"`
 }
 
 type Endpoints struct {
@@ -71,6 +75,39 @@ type Capabilities struct {
 	Scheduler           bool `json:"scheduler"`
 }
 
+type ModuleStatus struct {
+	Scanner         string `json:"scanner"`
+	IndexProjection string `json:"index_projection"`
+	ManifestBuilder string `json:"manifest_builder"`
+	ManifestCache   string `json:"manifest_cache"`
+	Validator       string `json:"validator"`
+	HealthChecker   string `json:"health_checker"`
+	Coverage        string `json:"coverage"`
+	Scheduler       string `json:"scheduler"`
+	Relay           string `json:"relay"`
+}
+
+type ScannerCapacity struct {
+	MaxGroups                int   `json:"max_groups"`
+	MaxArticlesPerHour       int64 `json:"max_articles_per_hour"`
+	MaxHeaderBytesPerHour    int64 `json:"max_header_bytes_per_hour,omitempty"`
+	SupportsArticleRangeScan bool  `json:"supports_article_range_scan"`
+	SupportsTimeWindowScan   bool  `json:"supports_time_window_scan"`
+}
+
+type ValidatorCapacity struct {
+	MaxManifestsPerHour          int      `json:"max_manifests_per_hour"`
+	ValidationTiers              []string `json:"validation_tiers"`
+	SupportsYEncSampleValidation bool     `json:"supports_yenc_sample_validation"`
+	SupportsPAR2Validation       bool     `json:"supports_par2_validation"`
+}
+
+type ProviderScope struct {
+	ProviderDisclosure string `json:"provider_disclosure"`
+	BackboneHash       string `json:"backbone_hash,omitempty"`
+	ArticleNumberScope string `json:"article_number_scope"`
+}
+
 type Limits struct {
 	MaxEventBytes         int `json:"max_event_bytes"`
 	MaxManifestBytes      int `json:"max_manifest_bytes"`
@@ -95,27 +132,36 @@ type Caps struct {
 }
 
 type Config struct {
-	Alias                 string
-	AdvertiseURL          string
-	HTTPBasePath          string
-	PrivateNetwork        bool
-	LiveQueryEnabled      bool
-	WebSocketGossip       bool
-	PeerExchange          bool
-	RelayMode             bool
-	Consumer              bool
-	Scanner               bool
-	Indexer               bool
-	ManifestBuilder       bool
-	ManifestCache         bool
-	Validator             bool
-	HealthChecker         bool
-	Coverage              bool
-	Scheduler             bool
-	MaxEventBytes         int
-	MaxManifestBytes      int
-	MaxBatchEvents        int
-	RateLimitEventsPerMin int
+	Alias                         string
+	AdvertiseURL                  string
+	HTTPBasePath                  string
+	PrivateNetwork                bool
+	LiveQueryEnabled              bool
+	WebSocketGossip               bool
+	PeerExchange                  bool
+	RelayMode                     bool
+	Consumer                      bool
+	Scanner                       bool
+	Indexer                       bool
+	IndexProjection               bool
+	ManifestBuilder               bool
+	ManifestCache                 bool
+	Validator                     bool
+	HealthChecker                 bool
+	Coverage                      bool
+	Scheduler                     bool
+	ScannerMaxGroups              int
+	ScannerMaxArticlesPerHour     int64
+	ValidationMaxManifestsPerHour int
+	ValidationTiers               []string
+	ValidationAllowSamplePayload  bool
+	ValidationAllowPAR2           bool
+	ProviderDisclosure            string
+	ProviderBackboneHash          string
+	MaxEventBytes                 int
+	MaxManifestBytes              int
+	MaxBatchEvents                int
+	RateLimitEventsPerMin         int
 }
 
 func WellKnownFor(ctx context.Context, identity Identity, baseURL string) (WellKnown, error) {
@@ -154,6 +200,40 @@ func NodeProfileFor(ctx context.Context, identity Identity, cfg Config, now time
 	if cfg.RateLimitEventsPerMin <= 0 {
 		cfg.RateLimitEventsPerMin = 120
 	}
+	if cfg.ScannerMaxGroups < 0 {
+		cfg.ScannerMaxGroups = 0
+	}
+	if cfg.ScannerMaxArticlesPerHour < 0 {
+		cfg.ScannerMaxArticlesPerHour = 0
+	}
+	if cfg.ValidationMaxManifestsPerHour < 0 {
+		cfg.ValidationMaxManifestsPerHour = 0
+	}
+	if len(cfg.ValidationTiers) == 0 {
+		cfg.ValidationTiers = []string{"metadata"}
+	}
+	providerDisclosure := strings.TrimSpace(cfg.ProviderDisclosure)
+	if providerDisclosure == "" {
+		providerDisclosure = "hash_only"
+	}
+	var scannerCapacity *ScannerCapacity
+	if cfg.Scanner {
+		scannerCapacity = &ScannerCapacity{
+			MaxGroups:                cfg.ScannerMaxGroups,
+			MaxArticlesPerHour:       cfg.ScannerMaxArticlesPerHour,
+			SupportsArticleRangeScan: true,
+			SupportsTimeWindowScan:   true,
+		}
+	}
+	var validatorCapacity *ValidatorCapacity
+	if cfg.Validator {
+		validatorCapacity = &ValidatorCapacity{
+			MaxManifestsPerHour:          cfg.ValidationMaxManifestsPerHour,
+			ValidationTiers:              append([]string(nil), cfg.ValidationTiers...),
+			SupportsYEncSampleValidation: cfg.ValidationAllowSamplePayload,
+			SupportsPAR2Validation:       cfg.ValidationAllowPAR2,
+		}
+	}
 	ts := now.UTC().Format(time.RFC3339)
 	return NodeProfile{
 		SchemaVersion:   "1.0",
@@ -191,6 +271,24 @@ func NodeProfileFor(ctx context.Context, identity Identity, cfg Config, now time
 			Coverage:            cfg.Coverage,
 			Scheduler:           cfg.Scheduler,
 		},
+		ModuleStatus: ModuleStatus{
+			Scanner:         enabledStatus(cfg.Scanner),
+			IndexProjection: enabledStatus(cfg.IndexProjection),
+			ManifestBuilder: enabledStatus(cfg.ManifestBuilder),
+			ManifestCache:   enabledStatus(cfg.ManifestCache),
+			Validator:       enabledStatus(cfg.Validator),
+			HealthChecker:   enabledStatus(cfg.HealthChecker),
+			Coverage:        enabledStatus(cfg.Coverage),
+			Scheduler:       enabledStatus(cfg.Scheduler),
+			Relay:           enabledStatus(cfg.RelayMode),
+		},
+		ScannerCapacity:   scannerCapacity,
+		ValidatorCapacity: validatorCapacity,
+		ProviderScope: ProviderScope{
+			ProviderDisclosure: providerDisclosure,
+			BackboneHash:       strings.TrimSpace(cfg.ProviderBackboneHash),
+			ArticleNumberScope: "provider_local",
+		},
 		Limits: Limits{
 			MaxEventBytes:         cfg.MaxEventBytes,
 			MaxManifestBytes:      cfg.MaxManifestBytes,
@@ -205,6 +303,13 @@ func NodeProfileFor(ctx context.Context, identity Identity, cfg Config, now time
 		CreatedAt: ts,
 		UpdatedAt: ts,
 	}, nil
+}
+
+func enabledStatus(enabled bool) string {
+	if enabled {
+		return "enabled"
+	}
+	return "disabled"
 }
 
 func CapsFor(maxEventBytes, maxManifestBytes int) Caps {

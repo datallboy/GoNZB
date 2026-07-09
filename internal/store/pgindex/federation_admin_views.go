@@ -17,6 +17,7 @@ type NodeCapabilityView struct {
 	ModuleStatus      json.RawMessage `json:"module_status"`
 	ScannerCapacity   json.RawMessage `json:"scanner_capacity,omitempty"`
 	ValidatorCapacity json.RawMessage `json:"validator_capacity,omitempty"`
+	ProviderScope     json.RawMessage `json:"provider_scope,omitempty"`
 	UpdatedAt         time.Time       `json:"updated_at"`
 }
 
@@ -48,7 +49,7 @@ func (s *Store) ListFederationNodeCapabilities(ctx context.Context) ([]NodeCapab
 		SELECT n.node_id, COALESCE(n.alias, ''), COALESCE(n.base_url, ''),
 		       n.status, COALESCE(c.capabilities, '{}'::jsonb),
 		       COALESCE(c.module_status, '{}'::jsonb),
-		       c.scanner_capacity, c.validator_capacity,
+		       c.scanner_capacity, c.validator_capacity, c.provider_scope,
 		       COALESCE(c.updated_at, n.updated_at)
 		FROM federation_nodes n
 		LEFT JOIN federation_node_capabilities c ON c.node_id = n.node_id
@@ -60,12 +61,13 @@ func (s *Store) ListFederationNodeCapabilities(ctx context.Context) ([]NodeCapab
 	out := []NodeCapabilityView{}
 	for rows.Next() {
 		var item NodeCapabilityView
-		var scanner, validator []byte
-		if err := rows.Scan(&item.NodeID, &item.Alias, &item.BaseURL, &item.Status, &item.Capabilities, &item.ModuleStatus, &scanner, &validator, &item.UpdatedAt); err != nil {
+		var scanner, validator, providerScope []byte
+		if err := rows.Scan(&item.NodeID, &item.Alias, &item.BaseURL, &item.Status, &item.Capabilities, &item.ModuleStatus, &scanner, &validator, &providerScope, &item.UpdatedAt); err != nil {
 			return nil, err
 		}
 		item.ScannerCapacity = scanner
 		item.ValidatorCapacity = validator
+		item.ProviderScope = providerScope
 		if len(item.Capabilities) == 0 {
 			item.Capabilities = json.RawMessage(`{}`)
 		}

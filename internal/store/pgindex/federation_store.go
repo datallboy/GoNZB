@@ -17,16 +17,20 @@ import (
 var ErrFederationSequenceConflict = errors.New("federation sequence conflict")
 
 type FederationNodeRecord struct {
-	NodeID          string
-	PublicKey       ed25519.PublicKey
-	Alias           string
-	Software        string
-	SoftwareVersion string
-	BaseURL         string
-	Capabilities    json.RawMessage
-	ProfileJSON     json.RawMessage
-	Status          string
-	LastVerifiedAt  *time.Time
+	NodeID            string
+	PublicKey         ed25519.PublicKey
+	Alias             string
+	Software          string
+	SoftwareVersion   string
+	BaseURL           string
+	Capabilities      json.RawMessage
+	ModuleStatus      json.RawMessage
+	ScannerCapacity   json.RawMessage
+	ValidatorCapacity json.RawMessage
+	ProviderScope     json.RawMessage
+	ProfileJSON       json.RawMessage
+	Status            string
+	LastVerifiedAt    *time.Time
 }
 
 type FederationEventRecord struct {
@@ -48,6 +52,10 @@ func (s *Store) UpsertFederationNode(ctx context.Context, node FederationNodeRec
 		return fmt.Errorf("public_key must be %d bytes", ed25519.PublicKeySize)
 	}
 	capabilities := defaultJSON(node.Capabilities, `{}`)
+	moduleStatus := defaultJSON(node.ModuleStatus, `{}`)
+	scannerCapacity := nullableJSON(node.ScannerCapacity)
+	validatorCapacity := nullableJSON(node.ValidatorCapacity)
+	providerScope := nullableJSON(node.ProviderScope)
 	profileJSON := defaultJSON(node.ProfileJSON, `{}`)
 	status := strings.TrimSpace(node.Status)
 	if status == "" {
@@ -88,14 +96,23 @@ func (s *Store) UpsertFederationNode(ctx context.Context, node FederationNodeRec
 	}
 	if _, err := s.db.ExecContext(ctx, `
 		INSERT INTO federation_node_capabilities (
-			node_id, capabilities, module_status, updated_at
+			node_id, capabilities, module_status, scanner_capacity, validator_capacity,
+			provider_scope, updated_at
 		)
-		VALUES ($1, $2::jsonb, '{}'::jsonb, NOW())
+		VALUES ($1, $2::jsonb, $3::jsonb, $4::jsonb, $5::jsonb, $6::jsonb, NOW())
 		ON CONFLICT (node_id) DO UPDATE SET
 			capabilities = EXCLUDED.capabilities,
+			module_status = EXCLUDED.module_status,
+			scanner_capacity = COALESCE(EXCLUDED.scanner_capacity, federation_node_capabilities.scanner_capacity),
+			validator_capacity = COALESCE(EXCLUDED.validator_capacity, federation_node_capabilities.validator_capacity),
+			provider_scope = COALESCE(EXCLUDED.provider_scope, federation_node_capabilities.provider_scope),
 			updated_at = NOW()`,
 		node.NodeID,
 		string(capabilities),
+		string(moduleStatus),
+		scannerCapacity,
+		validatorCapacity,
+		providerScope,
 	); err != nil {
 		return fmt.Errorf("upsert federation node capabilities: %w", err)
 	}
@@ -430,4 +447,14 @@ func defaultJSON(raw json.RawMessage, fallback string) json.RawMessage {
 		return json.RawMessage(fallback)
 	}
 	return raw
+}
+
+func nullableJSON(raw json.RawMessage) any {
+	if len(raw) == 0 || !json.Valid(raw) {
+		return nil
+	}
+	if strings.TrimSpace(string(raw)) == "null" {
+		return nil
+	}
+	return string(raw)
 }
