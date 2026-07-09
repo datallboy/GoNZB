@@ -141,6 +141,10 @@ func federationVerificationCode(reason string) string {
 		return "unsupported_spec_version"
 	case strings.Contains(reason, "event_id"):
 		return "invalid_event_id"
+	case strings.Contains(reason, "sequence_conflict"):
+		return "sequence_conflict"
+	case strings.Contains(reason, "fork"):
+		return "fork_detected"
 	case strings.Contains(reason, "body_hash"):
 		return "invalid_body_hash"
 	case strings.Contains(reason, "signature"):
@@ -801,6 +805,11 @@ func (ctrl *GoNZBNetController) acceptInboxEvent(ctx context.Context, store gonz
 		}
 	}
 	if err := store.AppendVerifiedFederationEvent(ctx, event, validation); err != nil {
+		if errors.Is(err, pgindex.ErrFederationSequenceConflict) {
+			reason := "sequence_conflict"
+			_ = store.AppendRejectedFederationEvent(ctx, event.EventID, event.AuthorNodeID, event.EventType, raw, reason)
+			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: federationVerificationCode(reason), Message: reason}
+		}
 		return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "internal_error", Message: err.Error()}
 	}
 	if pools.EventIsPoolControl(event.EventType) {
