@@ -807,6 +807,7 @@ func (c *Config) validate() error {
 	if !c.Modules.Downloader.Enabled &&
 		!c.Modules.Aggregator.Enabled &&
 		!c.Modules.UsenetIndexer.Enabled &&
+		!c.Modules.GoNZBNet.Enabled &&
 		!c.Modules.API.Enabled &&
 		!c.Modules.WebUI.Enabled {
 		return errors.New("at least one module must be enabled")
@@ -820,6 +821,9 @@ func (c *Config) validate() error {
 	// Usenet/NZB Indexer requires PostgreSQL.
 	if c.Modules.UsenetIndexer.Enabled && strings.TrimSpace(c.Store.PGDSN) == "" {
 		return errors.New("store.pg_dsn is required when modules.usenet_indexer.enabled is true")
+	}
+	if c.Modules.GoNZBNet.Enabled && strings.TrimSpace(c.Store.PGDSN) == "" {
+		return errors.New("store.pg_dsn is required when modules.gonzbnet.enabled is true")
 	}
 
 	for i, s := range c.Servers {

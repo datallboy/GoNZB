@@ -30,6 +30,27 @@ func TestReleaseExpectedFileCoverageValidation(t *testing.T) {
 	}
 }
 
+func TestGoNZBNetBootstrapRequiresPostgres(t *testing.T) {
+	cfg := minimalAggregatorConfig()
+	cfg.Modules.GoNZBNet.Enabled = true
+
+	if err := cfg.ValidateEffective(); err == nil {
+		t.Fatal("expected gonzbnet postgres validation error")
+	}
+}
+
+func TestGoNZBNetOnlyBootstrapCountsAsEnabledModule(t *testing.T) {
+	cfg := minimalAggregatorConfig()
+	cfg.Modules = ModulesConfig{
+		GoNZBNet: ModuleToggle{Enabled: true},
+	}
+	cfg.Store.PGDSN = "postgres://gonzb:gonzb@localhost:5432/gonzb?sslmode=disable"
+
+	if err := cfg.ValidateEffective(); err != nil {
+		t.Fatalf("expected gonzbnet-only bootstrap to validate, got %v", err)
+	}
+}
+
 func minimalAggregatorConfig() *Config {
 	return &Config{
 		Modules: ModulesConfig{
