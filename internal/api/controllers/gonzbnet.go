@@ -13,6 +13,7 @@ import (
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/gonzbnet/canonical"
 	"github.com/datallboy/gonzb/internal/gonzbnet/events"
+	"github.com/datallboy/gonzb/internal/gonzbnet/gossip"
 	"github.com/datallboy/gonzb/internal/gonzbnet/health"
 	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
 	"github.com/datallboy/gonzb/internal/gonzbnet/manifest"
@@ -23,6 +24,7 @@ import (
 	"github.com/datallboy/gonzb/internal/gonzbnet/requestauth"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
 	"github.com/labstack/echo/v5"
+	"golang.org/x/net/websocket"
 )
 
 type GoNZBNetController struct {
@@ -48,6 +50,8 @@ type gonzbnetStore interface {
 	CanFetchResolutionManifest(ctx context.Context, manifestID, nodeID string) (bool, error)
 	ProjectHealthAttestation(ctx context.Context, projection pgindex.HealthAttestationProjection) error
 	ProjectTombstone(ctx context.Context, projection pgindex.TombstoneProjection) error
+	ListEnabledFederationPeers(ctx context.Context) ([]pgindex.FederationPeerRecord, error)
+	UpsertFederationPeerURL(ctx context.Context, peerURL string) (int64, error)
 }
 
 type outboxResponse struct {
@@ -404,6 +408,120 @@ func (ctrl *GoNZBNetController) GetManifest(c *echo.Context) error {
 	return c.JSON(http.StatusOK, item)
 }
 
+func (ctrl *GoNZBNetController) GossipWS(c *echo.Context) error {
+	store, ok := ctrl.appCtx.PGIndexStore.(gonzbnetStore)
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet store is unavailable")
+	}
+	cfg := ctrl.appCtx.Config.GoNZBNet
+	if !cfg.WebSocketGossipEnabled {
+		return jsonError(c, http.StatusNotFound, "websocket gossip is disabled")
+	}
+	handler := websocket.Handler(func(ws *websocket.Conn) {
+		defer ws.Close()
+		req := ws.Request()
+		if _, err := requestauth.Verify(
+			req.Context(),
+			store,
+			requestauth.HeaderFromRequest(req),
+			req.Method,
+			req.URL.Path,
+			req.URL.RawQuery,
+			nil,
+			time.Now(),
+			time.Duration(cfg.TimeToleranceSeconds)*time.Second,
+			time.Duration(cfg.NonceTTLSeconds)*time.Second,
+		); err != nil {
+			_ = websocket.JSON.Send(ws, gossip.Response{
+				SchemaVersion: "1.0",
+				Type:          gossip.ResponseType,
+				Rejected:      []gossip.EventResult{{Status: "rejected", Code: "unauthorized", Message: err.Error()}},
+			})
+			return
+		}
+		for {
+			var batch gossip.Batch
+			if err := websocket.JSON.Receive(ws, &batch); err != nil {
+				if err != io.EOF {
+					_ = websocket.JSON.Send(ws, gossip.Response{
+						SchemaVersion: "1.0",
+						Type:          gossip.ResponseType,
+						Rejected:      []gossip.EventResult{{Status: "rejected", Code: "invalid_batch", Message: err.Error()}},
+					})
+				}
+				return
+			}
+			resp := ctrl.processGossipBatch(req.Context(), store, batch)
+			_ = websocket.JSON.Send(ws, resp)
+		}
+	})
+	handler.ServeHTTP(c.Response(), c.Request())
+	return nil
+}
+
+func (ctrl *GoNZBNetController) processGossipBatch(ctx context.Context, store gonzbnetStore, batch gossip.Batch) gossip.Response {
+	cfg := ctrl.appCtx.Config.GoNZBNet
+	resp := gossip.Response{
+		SchemaVersion: "1.0",
+		Type:          gossip.ResponseType,
+		TTL:           gossip.ForwardTTL(gossip.NormalizeTTL(batch.TTL, cfg.GossipTTL)),
+		Accepted:      []gossip.EventResult{},
+		Duplicate:     []gossip.EventResult{},
+		Rejected:      []gossip.EventResult{},
+	}
+	if strings.TrimSpace(batch.Type) != gossip.Type {
+		resp.Rejected = append(resp.Rejected, gossip.EventResult{Status: "rejected", Code: "invalid_type", Message: "expected GossipBatch"})
+		return resp
+	}
+	if strings.TrimSpace(batch.NetworkID) != "" && strings.TrimSpace(batch.NetworkID) != strings.TrimSpace(cfg.NetworkID) {
+		resp.Rejected = append(resp.Rejected, gossip.EventResult{Status: "rejected", Code: "wrong_network", Message: "network_id mismatch"})
+		return resp
+	}
+	maxBatch := cfg.GossipBatchSize
+	if maxBatch <= 0 {
+		maxBatch = cfg.MaxBatchEvents
+	}
+	if maxBatch <= 0 {
+		maxBatch = 100
+	}
+	if len(batch.Events) > maxBatch {
+		resp.Rejected = append(resp.Rejected, gossip.EventResult{Status: "rejected", Code: "batch_too_large", Message: "gossip batch exceeds limit"})
+		return resp
+	}
+	if cfg.PeerExchangeEnabled {
+		for _, peer := range gossip.FilterPeers(batch.Peers, true, cfg.GossipFanout) {
+			_, _ = store.UpsertFederationPeerURL(ctx, peer)
+		}
+		peers, err := store.ListEnabledFederationPeers(ctx)
+		if err == nil {
+			urls := make([]string, 0, len(peers))
+			for _, peer := range peers {
+				urls = append(urls, peer.PeerURL)
+			}
+			resp.Peers = gossip.FilterPeers(urls, true, cfg.GossipFanout)
+		}
+	}
+	for _, eventValue := range batch.Events {
+		event := eventValue
+		result := ctrl.acceptInboxEvent(ctx, store, &event)
+		gossipResult := gossip.EventResult{
+			EventID: result.EventID,
+			Status:  result.Status,
+			Code:    result.Code,
+			Message: result.Message,
+		}
+		switch result.Status {
+		case "accepted":
+			resp.Accepted = append(resp.Accepted, gossipResult)
+		case "duplicate":
+			resp.Duplicate = append(resp.Duplicate, gossipResult)
+		default:
+			resp.Rejected = append(resp.Rejected, gossipResult)
+		}
+	}
+	return resp
+}
+
 func (ctrl *GoNZBNetController) acceptInboxEvent(ctx context.Context, store gonzbnetStore, event *events.SignedEvent) inboxEventResult {
 	eventID := ""
 	if event != nil {
@@ -564,6 +682,8 @@ func (ctrl *GoNZBNetController) profileConfig(c *echo.Context) profile.Config {
 		HTTPBasePath:     cfg.HTTPBasePath,
 		PrivateNetwork:   cfg.PrivateNetwork,
 		LiveQueryEnabled: cfg.LiveQueryEnabled,
+		WebSocketGossip:  cfg.WebSocketGossipEnabled,
+		PeerExchange:     cfg.PeerExchangeEnabled,
 		MaxEventBytes:    cfg.MaxEventBytes,
 		MaxManifestBytes: cfg.MaxManifestBytes,
 		MaxBatchEvents:   cfg.MaxBatchEvents,
