@@ -120,9 +120,29 @@ type GoNZBNetConfig struct {
 	HealthAttestationsEnabled      bool     `mapstructure:"health_attestations_enabled" yaml:"health_attestations_enabled"`
 	HealthAttestationsBatchSize    int      `mapstructure:"health_attestations_batch_size" yaml:"health_attestations_batch_size"`
 	HealthAttestationsIntervalMin  float64  `mapstructure:"health_attestations_interval_minutes" yaml:"health_attestations_interval_minutes"`
+	ScannerMaxGroups               int      `mapstructure:"scanner_max_groups" yaml:"scanner_max_groups"`
+	ScannerMaxArticlesPerHour      int64    `mapstructure:"scanner_max_articles_per_hour" yaml:"scanner_max_articles_per_hour"`
+	ScannerClaimTTLMinutes         int      `mapstructure:"scanner_claim_ttl_minutes" yaml:"scanner_claim_ttl_minutes"`
+	ScannerCheckpointIntervalSecs  int      `mapstructure:"scanner_checkpoint_interval_seconds" yaml:"scanner_checkpoint_interval_seconds"`
+	ScannerRespectRemoteClaims     bool     `mapstructure:"scanner_respect_remote_claims" yaml:"scanner_respect_remote_claims"`
+	ScannerAllowUnassignedWork     bool     `mapstructure:"scanner_allow_unassigned_work" yaml:"scanner_allow_unassigned_work"`
+	CoverageMode                   string   `mapstructure:"coverage_mode" yaml:"coverage_mode"`
+	CoverageMinTrustForClaim       float64  `mapstructure:"coverage_min_trust_for_claim" yaml:"coverage_min_trust_for_claim"`
+	CoverageValidationOverlapPct   int      `mapstructure:"coverage_validation_overlap_percent" yaml:"coverage_validation_overlap_percent"`
+	CoverageStaleClaimPenalty      bool     `mapstructure:"coverage_stale_claim_penalty" yaml:"coverage_stale_claim_penalty"`
+	CoverageProviderScopeMode      string   `mapstructure:"coverage_provider_scope_mode" yaml:"coverage_provider_scope_mode"`
 	ValidationBatchSize            int      `mapstructure:"validation_batch_size" yaml:"validation_batch_size"`
 	ValidationIntervalMin          float64  `mapstructure:"validation_interval_minutes" yaml:"validation_interval_minutes"`
+	ValidationTiers                []string `mapstructure:"validation_tiers" yaml:"validation_tiers"`
+	ValidationMaxManifestsPerHour  int      `mapstructure:"validation_max_manifests_per_hour" yaml:"validation_max_manifests_per_hour"`
+	ValidationSamplePercent        int      `mapstructure:"validation_sample_percent" yaml:"validation_sample_percent"`
+	ValidationAllowSamplePayload   bool     `mapstructure:"validation_allow_sample_payload_fetch" yaml:"validation_allow_sample_payload_fetch"`
+	ValidationAllowPAR2            bool     `mapstructure:"validation_allow_par2_validation" yaml:"validation_allow_par2_validation"`
+	ValidationPublishProviderScope bool     `mapstructure:"validation_publish_provider_scope_hash" yaml:"validation_publish_provider_scope_hash"`
 	ChecksumValidationEnabled      bool     `mapstructure:"checksum_validation_enabled" yaml:"checksum_validation_enabled"`
+	ManifestCacheMaxBytes          int64    `mapstructure:"manifest_cache_max_bytes" yaml:"manifest_cache_max_bytes"`
+	ManifestCacheTTLDays           int      `mapstructure:"manifest_cache_ttl_days" yaml:"manifest_cache_ttl_days"`
+	ManifestCacheServeTrustedPools bool     `mapstructure:"manifest_cache_serve_to_trusted_pools" yaml:"manifest_cache_serve_to_trusted_pools"`
 	PullSyncEnabled                bool     `mapstructure:"pull_sync_enabled" yaml:"pull_sync_enabled"`
 	PullSyncIntervalMin            float64  `mapstructure:"pull_sync_interval_minutes" yaml:"pull_sync_interval_minutes"`
 	PushSyncEnabled                bool     `mapstructure:"push_sync_enabled" yaml:"push_sync_enabled"`
@@ -545,9 +565,29 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("gonzbnet.health_attestations_enabled", false)
 	v.SetDefault("gonzbnet.health_attestations_batch_size", 50)
 	v.SetDefault("gonzbnet.health_attestations_interval_minutes", 30.0)
+	v.SetDefault("gonzbnet.scanner_max_groups", 25)
+	v.SetDefault("gonzbnet.scanner_max_articles_per_hour", int64(250000))
+	v.SetDefault("gonzbnet.scanner_claim_ttl_minutes", 30)
+	v.SetDefault("gonzbnet.scanner_checkpoint_interval_seconds", 300)
+	v.SetDefault("gonzbnet.scanner_respect_remote_claims", true)
+	v.SetDefault("gonzbnet.scanner_allow_unassigned_work", false)
+	v.SetDefault("gonzbnet.coverage_mode", "manual")
+	v.SetDefault("gonzbnet.coverage_min_trust_for_claim", 0.65)
+	v.SetDefault("gonzbnet.coverage_validation_overlap_percent", 10)
+	v.SetDefault("gonzbnet.coverage_stale_claim_penalty", true)
+	v.SetDefault("gonzbnet.coverage_provider_scope_mode", "hash_only")
 	v.SetDefault("gonzbnet.validation_batch_size", 25)
 	v.SetDefault("gonzbnet.validation_interval_minutes", 15.0)
+	v.SetDefault("gonzbnet.validation_tiers", []string{"metadata", "article_stat", "segment_stat"})
+	v.SetDefault("gonzbnet.validation_max_manifests_per_hour", 500)
+	v.SetDefault("gonzbnet.validation_sample_percent", 10)
+	v.SetDefault("gonzbnet.validation_allow_sample_payload_fetch", false)
+	v.SetDefault("gonzbnet.validation_allow_par2_validation", false)
+	v.SetDefault("gonzbnet.validation_publish_provider_scope_hash", true)
 	v.SetDefault("gonzbnet.checksum_validation_enabled", false)
+	v.SetDefault("gonzbnet.manifest_cache_max_bytes", int64(10737418240))
+	v.SetDefault("gonzbnet.manifest_cache_ttl_days", 90)
+	v.SetDefault("gonzbnet.manifest_cache_serve_to_trusted_pools", true)
 	v.SetDefault("gonzbnet.pull_sync_enabled", false)
 	v.SetDefault("gonzbnet.pull_sync_interval_minutes", 10.0)
 	v.SetDefault("gonzbnet.push_sync_enabled", false)
@@ -590,7 +630,7 @@ func Load(path string) (*Config, error) {
 	v.SetEnvPrefix("GONZB")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
-	if err := v.BindEnv("modules.gonzbnet.enabled", "GONZBNET_ENABLED"); err != nil {
+	if err := bindGoNZBNetEnvAliases(v); err != nil {
 		return nil, err
 	}
 
@@ -606,6 +646,52 @@ func Load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
+func bindGoNZBNetEnvAliases(v *viper.Viper) error {
+	aliases := map[string][]string{
+		"modules.gonzbnet.enabled": {"GONZBNET_ENABLED"},
+
+		"gonzbnet.consumer_enabled":                       {"GONZBNET_CONSUMER_ENABLED"},
+		"gonzbnet.scanner_enabled":                        {"GONZBNET_SCANNER_ENABLED"},
+		"gonzbnet.index_projection_enabled":               {"GONZBNET_INDEX_PROJECTION_ENABLED", "GONZBNET_SCANNER_PROJECT_TO_LOCAL_INDEX"},
+		"gonzbnet.manifest_builder_enabled":               {"GONZBNET_MANIFEST_BUILDER_ENABLED"},
+		"gonzbnet.manifest_cache_enabled":                 {"GONZBNET_MANIFEST_CACHE_ENABLED"},
+		"gonzbnet.validator_enabled":                      {"GONZBNET_VALIDATOR_ENABLED"},
+		"gonzbnet.health_checker_enabled":                 {"GONZBNET_HEALTH_CHECKER_ENABLED"},
+		"gonzbnet.coverage_enabled":                       {"GONZBNET_COVERAGE_ENABLED"},
+		"gonzbnet.scheduler_enabled":                      {"GONZBNET_SCHEDULER_ENABLED"},
+		"gonzbnet.relay_enabled":                          {"GONZBNET_RELAY_ENABLED"},
+		"gonzbnet.publish_release_cards_enabled":          {"GONZBNET_SCANNER_PUBLISH_RELEASE_CARDS"},
+		"gonzbnet.manifest_availability_enabled":          {"GONZBNET_SCANNER_PUBLISH_MANIFEST_AVAILABILITY"},
+		"gonzbnet.scanner_max_groups":                     {"GONZBNET_SCANNER_MAX_GROUPS"},
+		"gonzbnet.scanner_max_articles_per_hour":          {"GONZBNET_SCANNER_MAX_ARTICLES_PER_HOUR"},
+		"gonzbnet.scanner_claim_ttl_minutes":              {"GONZBNET_SCANNER_CLAIM_TTL_MINUTES"},
+		"gonzbnet.scanner_checkpoint_interval_seconds":    {"GONZBNET_SCANNER_CHECKPOINT_INTERVAL_SECONDS"},
+		"gonzbnet.scanner_respect_remote_claims":          {"GONZBNET_SCANNER_RESPECT_REMOTE_CLAIMS"},
+		"gonzbnet.scanner_allow_unassigned_work":          {"GONZBNET_SCANNER_ALLOW_UNASSIGNED_WORK"},
+		"gonzbnet.coverage_mode":                          {"GONZBNET_COVERAGE_MODE"},
+		"gonzbnet.coverage_min_trust_for_claim":           {"GONZBNET_COVERAGE_MIN_TRUST_FOR_CLAIM"},
+		"gonzbnet.coverage_validation_overlap_percent":    {"GONZBNET_COVERAGE_VALIDATION_OVERLAP_PERCENT"},
+		"gonzbnet.coverage_stale_claim_penalty":           {"GONZBNET_COVERAGE_STALE_CLAIM_PENALTY"},
+		"gonzbnet.coverage_provider_scope_mode":           {"GONZBNET_COVERAGE_PROVIDER_SCOPE_MODE"},
+		"gonzbnet.validation_tiers":                       {"GONZBNET_VALIDATION_TIERS"},
+		"gonzbnet.validation_max_manifests_per_hour":      {"GONZBNET_VALIDATION_MAX_MANIFESTS_PER_HOUR"},
+		"gonzbnet.validation_sample_percent":              {"GONZBNET_VALIDATION_SAMPLE_PERCENT"},
+		"gonzbnet.validation_allow_sample_payload_fetch":  {"GONZBNET_VALIDATION_ALLOW_SAMPLE_PAYLOAD_FETCH"},
+		"gonzbnet.validation_allow_par2_validation":       {"GONZBNET_VALIDATION_ALLOW_PAR2_VALIDATION"},
+		"gonzbnet.validation_publish_provider_scope_hash": {"GONZBNET_VALIDATION_PUBLISH_PROVIDER_SCOPE_HASH"},
+		"gonzbnet.manifest_cache_max_bytes":               {"GONZBNET_MANIFEST_CACHE_MAX_BYTES"},
+		"gonzbnet.manifest_cache_ttl_days":                {"GONZBNET_MANIFEST_CACHE_TTL_DAYS"},
+		"gonzbnet.manifest_cache_serve_to_trusted_pools":  {"GONZBNET_MANIFEST_CACHE_SERVE_TO_TRUSTED_POOLS"},
+	}
+	for key, names := range aliases {
+		args := append([]string{key}, names...)
+		if err := v.BindEnv(args...); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // exported validation entrypoint for effective bootstrap+runtime settings.
 func (c *Config) ValidateEffective() error {
 	return c.validate()
@@ -618,6 +704,9 @@ func (c *Config) validate() error {
 	}
 	if c.GoNZBNet.SendUserContext {
 		return errors.New("gonzbnet.send_user_context must remain false; federation must not send local user context")
+	}
+	if err := validateGoNZBNetConfig(c.GoNZBNet); err != nil {
+		return err
 	}
 	if err := validateIndexingStageConfig("indexing.scrape_latest", c.Indexing.ScrapeLatest); err != nil {
 		return err
@@ -866,6 +955,57 @@ func (c *Config) validate() error {
 		}
 	}
 
+	return nil
+}
+
+func validateGoNZBNetConfig(cfg GoNZBNetConfig) error {
+	if cfg.ScannerMaxGroups < 0 {
+		return errors.New("gonzbnet.scanner_max_groups must be greater than or equal to 0")
+	}
+	if cfg.ScannerMaxArticlesPerHour < 0 {
+		return errors.New("gonzbnet.scanner_max_articles_per_hour must be greater than or equal to 0")
+	}
+	if cfg.ScannerClaimTTLMinutes < 0 {
+		return errors.New("gonzbnet.scanner_claim_ttl_minutes must be greater than or equal to 0")
+	}
+	if cfg.ScannerCheckpointIntervalSecs < 0 {
+		return errors.New("gonzbnet.scanner_checkpoint_interval_seconds must be greater than or equal to 0")
+	}
+	switch strings.TrimSpace(cfg.CoverageMode) {
+	case "", "manual", "scheduler", "automatic":
+	default:
+		return errors.New("gonzbnet.coverage_mode must be one of: manual, scheduler, automatic")
+	}
+	if cfg.CoverageMinTrustForClaim < 0 || cfg.CoverageMinTrustForClaim > 1 {
+		return errors.New("gonzbnet.coverage_min_trust_for_claim must be between 0 and 1")
+	}
+	if cfg.CoverageValidationOverlapPct < 0 || cfg.CoverageValidationOverlapPct > 100 {
+		return errors.New("gonzbnet.coverage_validation_overlap_percent must be between 0 and 100")
+	}
+	switch strings.TrimSpace(cfg.CoverageProviderScopeMode) {
+	case "", "hash_only", "disabled":
+	default:
+		return errors.New("gonzbnet.coverage_provider_scope_mode must be one of: hash_only, disabled")
+	}
+	for _, tier := range cfg.ValidationTiers {
+		switch strings.TrimSpace(tier) {
+		case "metadata", "article_stat", "segment_stat", "checksum":
+		default:
+			return errors.New("gonzbnet.validation_tiers contains an unsupported tier")
+		}
+	}
+	if cfg.ValidationMaxManifestsPerHour < 0 {
+		return errors.New("gonzbnet.validation_max_manifests_per_hour must be greater than or equal to 0")
+	}
+	if cfg.ValidationSamplePercent < 0 || cfg.ValidationSamplePercent > 100 {
+		return errors.New("gonzbnet.validation_sample_percent must be between 0 and 100")
+	}
+	if cfg.ManifestCacheMaxBytes < 0 {
+		return errors.New("gonzbnet.manifest_cache_max_bytes must be greater than or equal to 0")
+	}
+	if cfg.ManifestCacheTTLDays < 0 {
+		return errors.New("gonzbnet.manifest_cache_ttl_days must be greater than or equal to 0")
+	}
 	return nil
 }
 

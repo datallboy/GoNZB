@@ -15,5 +15,8 @@ still works and takes precedence when both are present:
 GONZB_MODULES_GONZBNET_ENABLED=true
 ```
 
-All other GoNZBNet-specific keys continue to follow the project environment
+Most other GoNZBNet-specific keys continue to follow the project environment
 style, for example `GONZB_GONZBNET_HTTP_ENABLED`.
+
+Later config addendum alignment adds direct `GONZBNET_*` aliases for the
+scanner, coverage, validation, and manifest-cache keys named by the addendum.

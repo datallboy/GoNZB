@@ -113,6 +113,8 @@ Current implementation state:
   work, and node capability read endpoints.
 - Public coverage write cleanup adds signed node-to-node coverage claim and
   checkpoint convenience endpoints.
+- Config addendum alignment adds typed scanner, coverage, validation, and
+  manifest-cache settings with direct `GONZBNET_*` aliases.
 - Security cleanup rejects remote signed events with future `created_at` /
   `not_before` windows, expired `expires_at` values, or event ages beyond
   `gonzbnet.max_event_age_hours`.
@@ -166,6 +168,7 @@ Maintained pages:
 - [Admin: Role Pool Access](./admin-role-pool-access.md)
 - [Config Validation Cleanup](./config-validation-cleanup.md)
 - [Config Enable Alias](./config-enable-alias.md)
+- [Config Addendum Alignment](./config-addendum-alignment.md)
 - [Config Route Gate Coverage](./config-route-gate-coverage.md)
 - [Public Endpoint Alignment](./public-endpoint-alignment.md)
 - [Pool Checkpoints](./pool-checkpoints.md)

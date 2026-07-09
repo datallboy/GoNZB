@@ -48,3 +48,7 @@ workers no-op when their module is disabled:
 Disabling scanner does not prevent remote search or manifest fetch. Disabling
 index projection allows a node to scan/publish without exposing the local
 federated cache through search.
+
+Addendum config cleanup also exposes scanner limits, coverage policy knobs,
+validation limits, and manifest-cache bounds as typed config fields with
+`GONZBNET_*` environment aliases.
