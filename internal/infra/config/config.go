@@ -105,6 +105,8 @@ type GoNZBNetConfig struct {
 	PublishReleaseCardsEnabled     bool     `mapstructure:"publish_release_cards_enabled" yaml:"publish_release_cards_enabled"`
 	PublishReleaseCardsBatchSize   int      `mapstructure:"publish_release_cards_batch_size" yaml:"publish_release_cards_batch_size"`
 	PublishReleaseCardsIntervalMin float64  `mapstructure:"publish_release_cards_interval_minutes" yaml:"publish_release_cards_interval_minutes"`
+	PullSyncEnabled                bool     `mapstructure:"pull_sync_enabled" yaml:"pull_sync_enabled"`
+	PullSyncIntervalMin            float64  `mapstructure:"pull_sync_interval_minutes" yaml:"pull_sync_interval_minutes"`
 	MaxEventBytes                  int      `mapstructure:"max_event_bytes" yaml:"max_event_bytes"`
 	MaxManifestBytes               int      `mapstructure:"max_manifest_bytes" yaml:"max_manifest_bytes"`
 	MaxBatchEvents                 int      `mapstructure:"max_batch_events" yaml:"max_batch_events"`
@@ -497,6 +499,8 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("gonzbnet.publish_release_cards_enabled", false)
 	v.SetDefault("gonzbnet.publish_release_cards_batch_size", 50)
 	v.SetDefault("gonzbnet.publish_release_cards_interval_minutes", 10.0)
+	v.SetDefault("gonzbnet.pull_sync_enabled", false)
+	v.SetDefault("gonzbnet.pull_sync_interval_minutes", 10.0)
 	v.SetDefault("gonzbnet.max_event_bytes", 262144)
 	v.SetDefault("gonzbnet.max_manifest_bytes", 10485760)
 	v.SetDefault("gonzbnet.max_batch_events", 100)

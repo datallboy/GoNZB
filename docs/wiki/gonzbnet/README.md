@@ -13,8 +13,11 @@ Current implementation state:
   projections.
 - Phase 2 maps local public-ready indexer releases into signed ReleaseCard
   events and separate federated release-card projections.
+- Phase 3 adds read-only node discovery/outbox endpoints and manual pull sync
+  for trusted peer URLs.
 
 Maintained pages:
 
 - [Phase 1 Identity And Events](./phase-1-identity-and-events.md)
 - [Phase 2 ReleaseCard Publishing](./phase-2-releasecard-publishing.md)
+- [Phase 3 Manual Pull Sync](./phase-3-manual-pull-sync.md)

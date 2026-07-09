@@ -8,6 +8,7 @@ import (
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
 	"github.com/datallboy/gonzb/internal/gonzbnet/publisher"
+	gonzbnetsync "github.com/datallboy/gonzb/internal/gonzbnet/sync"
 )
 
 const moduleNameGoNZBNet = "gonzbnet"
@@ -15,6 +16,7 @@ const moduleNameGoNZBNet = "gonzbnet"
 type gonzbnetRuntimeModule struct {
 	appCtx    *app.Context
 	publisher *publisher.Service
+	pullSync  *gonzbnetsync.Service
 	cancel    context.CancelFunc
 	running   bool
 }
@@ -25,9 +27,10 @@ func (m *gonzbnetRuntimeModule) Enabled() bool {
 	return m.appCtx != nil && m.appCtx.Config != nil && m.appCtx.Config.Modules.GoNZBNet.Enabled
 }
 
-func (m *gonzbnetRuntimeModule) Build(context.Context) error {
+func (m *gonzbnetRuntimeModule) Build(ctx context.Context) error {
 	m.stop()
 	m.publisher = nil
+	m.pullSync = nil
 	if !m.Enabled() {
 		return nil
 	}
@@ -43,14 +46,24 @@ func (m *gonzbnetRuntimeModule) Build(context.Context) error {
 		return err
 	}
 	m.publisher = publisher.New(nodeIdentity, store, m.appCtx.Config.GoNZBNet.LocalPoolID)
+	syncStore, ok := m.appCtx.PGIndexStore.(gonzbnetsync.Store)
+	if !ok {
+		return fmt.Errorf("pgindex store does not support gonzbnet pull sync")
+	}
+	m.pullSync = gonzbnetsync.New(nodeIdentity, syncStore, m.appCtx.Logger)
+	if err := m.pullSync.UpsertManualPeers(ctx, m.appCtx.Config.GoNZBNet.ManualPeers); err != nil {
+		return err
+	}
 	return nil
 }
 
 func (m *gonzbnetRuntimeModule) Start(ctx context.Context) error {
-	if !m.Enabled() || m.publisher == nil {
+	if !m.Enabled() {
 		return nil
 	}
-	if !m.appCtx.Config.GoNZBNet.PublishReleaseCardsEnabled {
+	publishEnabled := m.publisher != nil && m.appCtx.Config.GoNZBNet.PublishReleaseCardsEnabled
+	pullEnabled := m.pullSync != nil && m.appCtx.Config.GoNZBNet.PullSyncEnabled
+	if !publishEnabled && !pullEnabled {
 		return nil
 	}
 	if m.running {
@@ -60,14 +73,25 @@ func (m *gonzbnetRuntimeModule) Start(ctx context.Context) error {
 	m.cancel = cancel
 	m.running = true
 
-	interval := time.Duration(m.appCtx.Config.GoNZBNet.PublishReleaseCardsIntervalMin * float64(time.Minute))
-	batchSize := m.appCtx.Config.GoNZBNet.PublishReleaseCardsBatchSize
-	m.appCtx.Logger.Info("starting gonzbnet release-card publisher interval=%s batch_size=%d", interval, batchSize)
-	go func() {
-		if err := m.publisher.Run(childCtx, interval, batchSize); err != nil && childCtx.Err() == nil {
-			m.appCtx.Logger.Error("gonzbnet release-card publisher failed: %v", err)
-		}
-	}()
+	if publishEnabled {
+		interval := time.Duration(m.appCtx.Config.GoNZBNet.PublishReleaseCardsIntervalMin * float64(time.Minute))
+		batchSize := m.appCtx.Config.GoNZBNet.PublishReleaseCardsBatchSize
+		m.appCtx.Logger.Info("starting gonzbnet release-card publisher interval=%s batch_size=%d", interval, batchSize)
+		go func() {
+			if err := m.publisher.Run(childCtx, interval, batchSize); err != nil && childCtx.Err() == nil {
+				m.appCtx.Logger.Error("gonzbnet release-card publisher failed: %v", err)
+			}
+		}()
+	}
+	if pullEnabled {
+		interval := time.Duration(m.appCtx.Config.GoNZBNet.PullSyncIntervalMin * float64(time.Minute))
+		m.appCtx.Logger.Info("starting gonzbnet pull sync interval=%s", interval)
+		go func() {
+			if err := m.pullSync.Run(childCtx, interval); err != nil && childCtx.Err() == nil {
+				m.appCtx.Logger.Error("gonzbnet pull sync failed: %v", err)
+			}
+		}()
+	}
 	return nil
 }
 
@@ -95,6 +119,7 @@ func (m *gonzbnetRuntimeModule) ReadinessChecks(context.Context) []app.RuntimeCh
 	checks := []app.RuntimeCheck{
 		runtimeBoolCheck("gonzbnet_pgindex_store", m.appCtx.PGIndexStore != nil, "pgindex store is required"),
 		runtimeBoolCheck("gonzbnet_publisher", m.publisher != nil, "gonzbnet publisher is required"),
+		runtimeBoolCheck("gonzbnet_pull_sync", m.pullSync != nil, "gonzbnet pull sync is required"),
 	}
 	return checks
 }
