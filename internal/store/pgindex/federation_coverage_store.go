@@ -129,6 +129,35 @@ func (s *Store) ProjectCoverageEvent(ctx context.Context, event *events.SignedEv
 			body.NodeID, publishedAt.UTC(), string(groupsJSON), body.MaxRangesPerHour,
 			body.MaxBytesPerHour, string(bodyJSON), event.EventID)
 		return err
+	case coverage.TypeScannerHeartbeat:
+		var body coverage.ScannerHeartbeat
+		if err := json.Unmarshal(event.Body, &body); err != nil {
+			return err
+		}
+		if err := coverage.Validate(event.EventType, body, time.Now().UTC(), 2*time.Minute); err != nil {
+			return err
+		}
+		bodyJSON, _ := json.Marshal(body)
+		groupsJSON, _ := json.Marshal(body.Groups)
+		activeClaimsJSON, _ := json.Marshal(body.ActiveClaims)
+		publishedAt, _ := time.Parse(time.RFC3339, body.PublishedAt)
+		_, err := s.db.ExecContext(ctx, `
+			INSERT INTO scanner_heartbeats (
+				node_id, pool_id, published_at, groups_json, active_claims_json,
+				status, body_json, source_event_id, updated_at
+			)
+			VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7::jsonb, $8, NOW())
+			ON CONFLICT (node_id, pool_id) DO UPDATE SET
+				published_at = EXCLUDED.published_at,
+				groups_json = EXCLUDED.groups_json,
+				active_claims_json = EXCLUDED.active_claims_json,
+				status = EXCLUDED.status,
+				body_json = EXCLUDED.body_json,
+				source_event_id = EXCLUDED.source_event_id,
+				updated_at = NOW()`,
+			body.NodeID, body.PoolID, publishedAt.UTC(), string(groupsJSON),
+			string(activeClaimsJSON), body.Status, string(bodyJSON), event.EventID)
+		return err
 	case coverage.TypeGroupObservation:
 		var body coverage.GroupObservation
 		if err := json.Unmarshal(event.Body, &body); err != nil {
@@ -232,6 +261,9 @@ func (s *Store) ListCoverageDashboard(ctx context.Context, poolID string) (Cover
 	poolID = strings.TrimSpace(poolID)
 	if poolID == "" {
 		poolID = "pool.local"
+	}
+	if _, err := s.MaterializeCoverageStaleClaimPenalties(ctx, poolID); err != nil {
+		return out, err
 	}
 	assignments, err := s.listCoverageAssignments(ctx, poolID)
 	if err != nil {

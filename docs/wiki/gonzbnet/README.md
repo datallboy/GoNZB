@@ -49,6 +49,8 @@ Current implementation state:
   duplicate detection, and coverage score computation.
 - Addendum Phase F adds deterministic weighted rendezvous scheduler helpers and
   read-only coverage plans for stale-claim failover review.
+- Addendum Phase G adds ScannerHeartbeat, node capability admin reads, group
+  catalog reads, validation-gap reads, and stale-claim penalty materialization.
 
 Maintained pages:
 
@@ -69,3 +71,4 @@ Maintained pages:
 - [Phase D Coverage Events And Manual Assignments](./phase-d-coverage.md)
 - [Phase E Dedup-Aware Local Scheduler](./phase-e-dedup-scheduler.md)
 - [Phase F Automated Coverage Improvements](./phase-f-coverage-scheduler.md)
+- [Phase G Addendum Checklist Gaps](./phase-g-addendum-checklist-gaps.md)
