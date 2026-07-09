@@ -122,6 +122,24 @@ func (s *Store) ValidateFederationPoolControlEvent(ctx context.Context, event *e
 			return err
 		}
 		return pools.ValidateMemberRevocation(body, adminKeys)
+	case pools.EventTypePoolCheckpoint:
+		var body pools.Checkpoint
+		if err := json.Unmarshal(event.Body, &body); err != nil {
+			return fmt.Errorf("invalid pool checkpoint body: %w", err)
+		}
+		policy, err := s.GetTrustPoolPolicy(ctx, body.PoolID)
+		if err != nil {
+			return err
+		}
+		witnessKeys, err := s.ActivePoolWitnessPublicKeys(ctx, body.PoolID)
+		if err != nil {
+			return err
+		}
+		leaves, err := s.ListPoolCheckpointLeaves(ctx, body.PoolID, int(body.EventCount))
+		if err != nil {
+			return err
+		}
+		return pools.ValidateCheckpoint(body, witnessKeys, policy.CheckpointWitnessThreshold, leaves)
 	default:
 		return nil
 	}
@@ -201,6 +219,12 @@ func (s *Store) ProjectFederationPoolEvent(ctx context.Context, event *events.Si
 			return err
 		}
 		return s.RevokePoolMember(ctx, body.PoolID, body.SubjectNodeID, event.EventID, parsePoolTime(body.EffectiveAt))
+	case pools.EventTypePoolCheckpoint:
+		var body pools.Checkpoint
+		if err := json.Unmarshal(event.Body, &body); err != nil {
+			return err
+		}
+		return s.UpdateTrustPoolCheckpoint(ctx, body.PoolID, event.EventID, body.MerkleRoot)
 	default:
 		return nil
 	}
@@ -502,14 +526,16 @@ func (s *Store) GetTrustPoolPolicy(ctx context.Context, poolID string) (pools.Po
 	}
 	var acceptedTypesJSON []byte
 	err := s.db.QueryRowContext(ctx, `
-		SELECT pool_id, membership_threshold, moderation_threshold, accept_mode,
-		       min_node_trust_score, accepted_event_types
+		SELECT pool_id, membership_threshold, moderation_threshold,
+		       checkpoint_witness_threshold, accept_mode, min_node_trust_score,
+		       accepted_event_types
 		FROM trust_pools
 		WHERE pool_id = $1
 		  AND enabled = TRUE`, strings.TrimSpace(poolID)).Scan(
 		&policy.PoolID,
 		&policy.MembershipThreshold,
 		&policy.ModerationThreshold,
+		&policy.CheckpointWitnessThreshold,
 		&policy.AcceptMode,
 		&policy.MinNodeTrustScore,
 		&acceptedTypesJSON,
@@ -548,6 +574,95 @@ func (s *Store) ActivePoolAdminPublicKeys(ctx context.Context, poolID string) (m
 		}
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) ActivePoolWitnessPublicKeys(ctx context.Context, poolID string) (map[string]ed25519.PublicKey, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("pgindex store is not initialized")
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT n.node_id, n.public_key
+		FROM pool_members m
+		JOIN federation_nodes n ON n.node_id = m.node_id
+		WHERE m.pool_id = $1
+		  AND m.role IN ('admin', 'witness')
+		  AND m.status = 'active'`, strings.TrimSpace(poolID))
+	if err != nil {
+		return nil, fmt.Errorf("list active pool witnesses: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]ed25519.PublicKey{}
+	for rows.Next() {
+		var nodeID string
+		var publicKey []byte
+		if err := rows.Scan(&nodeID, &publicKey); err != nil {
+			return nil, err
+		}
+		if len(publicKey) == ed25519.PublicKeySize {
+			out[nodeID] = ed25519.PublicKey(publicKey)
+		}
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ListPoolCheckpointLeaves(ctx context.Context, poolID string, limit int) ([]pools.CheckpointLeaf, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("pgindex store is not initialized")
+	}
+	poolID = strings.TrimSpace(poolID)
+	if poolID == "" {
+		return nil, fmt.Errorf("pool_id is required")
+	}
+	if limit <= 0 || limit > 100000 {
+		return nil, fmt.Errorf("checkpoint event_count is out of range")
+	}
+	poolFilter, _ := json.Marshal([]string{poolID})
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT event_id, author_node_id, sequence, body_hash, created_at
+		FROM federation_events
+		WHERE validation_status = 'accepted'
+		  AND visibility <> 'local'
+		  AND event_type <> $1
+		  AND pool_ids @> $2::jsonb
+		ORDER BY created_at ASC, event_id ASC
+		LIMIT $3`, pools.EventTypePoolCheckpoint, string(poolFilter), limit)
+	if err != nil {
+		return nil, fmt.Errorf("list pool checkpoint leaves: %w", err)
+	}
+	defer rows.Close()
+	out := []pools.CheckpointLeaf{}
+	for rows.Next() {
+		var leaf pools.CheckpointLeaf
+		if err := rows.Scan(&leaf.EventID, &leaf.AuthorNodeID, &leaf.Sequence, &leaf.BodyHash, &leaf.CreatedAt); err != nil {
+			return nil, err
+		}
+		leaf.CreatedAt = leaf.CreatedAt.UTC()
+		out = append(out, leaf)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) UpdateTrustPoolCheckpoint(ctx context.Context, poolID, eventID, merkleRoot string) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("pgindex store is not initialized")
+	}
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE trust_pools
+		SET latest_checkpoint_event_id = $2,
+		    latest_merkle_root = $3,
+		    updated_at = NOW()
+		WHERE pool_id = $1`, strings.TrimSpace(poolID), strings.TrimSpace(eventID), strings.TrimSpace(merkleRoot))
+	if err != nil {
+		return fmt.Errorf("update trust pool checkpoint: %w", err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 func (s *Store) IsActivePoolAdmin(ctx context.Context, poolID, nodeID string) (bool, error) {
