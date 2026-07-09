@@ -65,6 +65,8 @@ Current implementation state:
   sources, health attestations, and node reputation/trust visibility.
 - Addendum Phase N adds local node profile visibility and redacted GoNZBNet
   configuration validation to the admin API/UI.
+- Capability cleanup aligns NodeProfile contribution booleans with optional
+  module configuration.
 - Addendum Phase O adds a local admin action to resolve federated manifests
   through the existing signed manifest resolver path.
 - Addendum Phase P adds local peer removal to the peer-management admin API/UI.
@@ -151,6 +153,7 @@ Maintained pages:
 - [Admin: Role Pool Access](./admin-role-pool-access.md)
 - [Config Validation Cleanup](./config-validation-cleanup.md)
 - [Config Enable Alias](./config-enable-alias.md)
+- [Capability Profile Alignment](./capability-profile-alignment.md)
 - [Test Coverage Cleanup](./test-coverage-cleanup.md)
 - [Security: Node Key Encryption](./security-key-encryption.md)
 - [Security: Key Export](./security-key-export.md)
