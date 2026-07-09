@@ -94,6 +94,8 @@ Current implementation state:
   loopback-only insecure HTTP for explicit local development.
 - Admin cleanup requires active pool-admin membership before the local node can
   publish pool-scoped Tombstone moderation votes.
+- Config cleanup treats GoNZBNet as a first-class enabled module and requires
+  PostgreSQL when `modules.gonzbnet.enabled` is true.
 
 Maintained pages:
 
@@ -132,6 +134,7 @@ Maintained pages:
 - [Admin: Pool Control Events](./admin-pool-control-events.md)
 - [Admin: Recompute Scores](./admin-recompute-scores.md)
 - [Admin: Role Pool Access](./admin-role-pool-access.md)
+- [Config Validation Cleanup](./config-validation-cleanup.md)
 - [Security: Node Key Encryption](./security-key-encryption.md)
 - [Security: Key Export](./security-key-export.md)
 - [Security: Node Key Rotation](./security-key-rotation.md)
