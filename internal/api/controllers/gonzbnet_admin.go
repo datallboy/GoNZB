@@ -102,7 +102,14 @@ func (ctrl *GoNZBNetAdminController) UpsertPool(c *echo.Context) error {
 	}
 	acceptedTypes := req.AcceptedEventTypes
 	if len(acceptedTypes) == 0 {
-		acceptedTypes = []string{"ReleaseCard", "HealthAttestation", "Tombstone"}
+		acceptedTypes = []string{
+			pools.EventTypeReleaseCard,
+			pools.EventTypeHealthAttestation,
+			pools.EventTypeTombstone,
+			pools.EventTypeValidatorCapacity,
+			pools.EventTypeArticleAvailabilityAttestation,
+			pools.EventTypeChecksumAttestation,
+		}
 	}
 	policy := pools.Policy{
 		MembershipThreshold:        req.MembershipThreshold,

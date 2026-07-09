@@ -12,6 +12,9 @@ func TestRequiredForEvent(t *testing.T) {
 	if !HasAny([]string{ManifestCache}, RequiredForEvent("ResolutionManifest")...) {
 		t.Fatalf("expected manifest_cache to satisfy ResolutionManifest")
 	}
+	if !HasAny([]string{Validator}, RequiredForEvent("ArticleAvailabilityAttestation")...) {
+		t.Fatalf("expected validator to satisfy ArticleAvailabilityAttestation")
+	}
 }
 
 func TestNormalizeDeduplicates(t *testing.T) {

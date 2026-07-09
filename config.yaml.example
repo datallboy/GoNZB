@@ -54,6 +54,9 @@ gonzbnet:
   health_attestations_enabled: false
   health_attestations_batch_size: 50
   health_attestations_interval_minutes: 30
+  validation_batch_size: 25
+  validation_interval_minutes: 15
+  checksum_validation_enabled: false
   pull_sync_enabled: false
   pull_sync_interval_minutes: 10
   push_sync_enabled: false
