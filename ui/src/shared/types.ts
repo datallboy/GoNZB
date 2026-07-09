@@ -1655,3 +1655,82 @@ export type GoNZBNetValidationTaskDiagnostic = {
   created_at: string
   updated_at: string
 }
+
+export type GoNZBNetTrustPool = {
+  pool_id: string
+  display_name: string
+  description: string
+  genesis_event_id: string
+  policy_json: Record<string, unknown>
+  membership_threshold: number
+  moderation_threshold: number
+  checkpoint_witness_threshold: number
+  accept_mode: string
+  min_node_trust_score: number
+  accepted_event_types: string[]
+  enabled: boolean
+  created_at: string
+  updated_at: string
+}
+
+export type GoNZBNetPoolMember = {
+  pool_id: string
+  node_id: string
+  role: string
+  status: string
+  approved_event_id: string
+  revoked_event_id: string
+  allowed_capabilities: string[]
+  limits_json: Record<string, unknown>
+  joined_at?: string
+  revoked_at?: string
+}
+
+export type GoNZBNetTrustPoolRequest = {
+  pool_id: string
+  display_name: string
+  description?: string
+  membership_threshold?: number
+  moderation_threshold?: number
+  checkpoint_witness_threshold?: number
+  accept_mode?: string
+  min_node_trust_score?: number
+  accepted_event_types?: string[]
+  enabled?: boolean
+}
+
+export type GoNZBNetPoolMemberRequest = {
+  node_id: string
+  role?: string
+  status?: string
+  allowed_capabilities?: string[]
+  limits?: Record<string, unknown>
+}
+
+export type GoNZBNetTombstone = {
+  id: number
+  target_type: string
+  target_id: string
+  pool_id?: string
+  reason: string
+  severity: string
+  source_event_id: string
+  active: boolean
+  approval_count: number
+  approvals_required: number
+  effective_at: string
+  expires_at?: string
+  created_at: string
+  updated_at: string
+}
+
+export type GoNZBNetTombstoneRequest = {
+  target_type: string
+  target_id: string
+  pool_id?: string
+  reason: string
+  severity?: string
+  evidence_event_ids?: string[]
+  effective_at?: string
+  expires_at?: string
+}
