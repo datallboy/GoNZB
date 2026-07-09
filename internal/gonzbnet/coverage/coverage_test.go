@@ -63,3 +63,35 @@ func TestTimeWindowClaimRequiresValidWindowAndExpiry(t *testing.T) {
 		t.Fatalf("expected invalid time window to fail")
 	}
 }
+
+func TestScannerHeartbeatValidationAndHash(t *testing.T) {
+	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
+	item := ScannerHeartbeat{
+		SchemaVersion: "1.0",
+		Type:          TypeScannerHeartbeat,
+		NodeID:        "node_1",
+		PoolID:        "pool.local",
+		PublishedAt:   now.Format(time.RFC3339),
+		Groups:        []string{"alt.binaries.example"},
+		ActiveClaims:  []string{"claim_1"},
+		Status:        "online",
+	}
+	if err := Validate(TypeScannerHeartbeat, item, now, 2*time.Minute); err != nil {
+		t.Fatalf("validate heartbeat: %v", err)
+	}
+	first, err := HashBody(item)
+	if err != nil {
+		t.Fatalf("hash heartbeat: %v", err)
+	}
+	second, err := HashBody(item)
+	if err != nil {
+		t.Fatalf("hash heartbeat again: %v", err)
+	}
+	if first == "" || first != second {
+		t.Fatalf("hash should be deterministic: %q %q", first, second)
+	}
+	item.Status = "bad"
+	if err := Validate(TypeScannerHeartbeat, item, now, 2*time.Minute); err == nil {
+		t.Fatalf("expected invalid heartbeat status to fail")
+	}
+}

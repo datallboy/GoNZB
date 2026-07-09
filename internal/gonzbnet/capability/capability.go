@@ -61,7 +61,7 @@ func RequiredForEvent(eventType string) []string {
 		return []string{Validator}
 	case "ManifestAvailability":
 		return []string{Scanner, ManifestBuilder, ManifestCache}
-	case "ScannerCapacity", "GroupObservation", "RangeClaim", "TimeWindowClaim", "RangeComplete", "RangeFailed":
+	case "ScannerCapacity", "ScannerHeartbeat", "GroupObservation", "RangeClaim", "TimeWindowClaim", "RangeComplete", "RangeFailed":
 		return []string{Scanner, Coverage}
 	case "CoveragePlan", "CoverageAssignment", "CoverageCheckpoint":
 		return []string{Admin, CoverageCoordinator}
