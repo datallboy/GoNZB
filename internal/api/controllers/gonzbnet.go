@@ -147,6 +147,12 @@ func federationVerificationCode(reason string) string {
 		return "invalid_signature"
 	case strings.Contains(reason, "event_type"):
 		return "unsupported_event_type"
+	case strings.Contains(reason, "future"):
+		return "future_timestamp"
+	case strings.Contains(reason, "expired"):
+		return "expired_event"
+	case strings.Contains(reason, "too old"):
+		return "stale_event"
 	default:
 		return "invalid_schema"
 	}
@@ -641,7 +647,12 @@ func (ctrl *GoNZBNetController) acceptInboxEvent(ctx context.Context, store gonz
 		return inboxEventResult{EventID: event.EventID, Status: "duplicate"}
 	}
 	cfg := ctrl.appCtx.Config.GoNZBNet
-	validation, err := events.VerifyAt(event, time.Now(), time.Duration(cfg.TimeToleranceSeconds)*time.Second)
+	validation, err := events.VerifyWithin(
+		event,
+		time.Now(),
+		time.Duration(cfg.TimeToleranceSeconds)*time.Second,
+		time.Duration(cfg.MaxEventAgeHours)*time.Hour,
+	)
 	if err != nil || validation == nil || !validation.OK {
 		reason := "verification failed"
 		if validation != nil && validation.Reason != "" {

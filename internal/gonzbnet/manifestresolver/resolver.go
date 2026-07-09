@@ -39,11 +39,13 @@ type Resolver struct {
 	client                *http.Client
 	allowInsecurePeerHTTP bool
 	eventTimeTolerance    time.Duration
+	maxEventAge           time.Duration
 }
 
 type Options struct {
 	AllowInsecurePeerHTTP bool
 	EventTimeTolerance    time.Duration
+	MaxEventAge           time.Duration
 }
 
 func New(identity Identity, store Store) *Resolver {
@@ -60,6 +62,7 @@ func NewWithOptions(identity Identity, store Store, opts Options) *Resolver {
 		store:                 store,
 		allowInsecurePeerHTTP: opts.AllowInsecurePeerHTTP,
 		eventTimeTolerance:    eventTimeTolerance,
+		maxEventAge:           opts.MaxEventAge,
 		client: &http.Client{
 			Timeout: 20 * time.Second,
 		},
@@ -94,7 +97,7 @@ func (r *Resolver) ResolveNZB(ctx context.Context, releaseID string) (io.ReadClo
 	if err != nil {
 		return failSource(err)
 	}
-	validation, err := events.VerifyAt(event, time.Now(), r.eventTimeTolerance)
+	validation, err := events.VerifyWithin(event, time.Now(), r.eventTimeTolerance, r.maxEventAge)
 	if err != nil {
 		return failSource(err)
 	}

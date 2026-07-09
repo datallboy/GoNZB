@@ -117,6 +117,7 @@ func buildAggregator(appCtx *app.Context, effective *config.Config) app.IndexerA
 				manager.AddSource(gonzbnetsource.NewWithResolver(store, manifestresolver.NewWithOptions(nodeIdentity, store, manifestresolver.Options{
 					AllowInsecurePeerHTTP: effective.GoNZBNet.AllowInsecurePeerHTTP,
 					EventTimeTolerance:    time.Duration(effective.GoNZBNet.TimeToleranceSeconds) * time.Second,
+					MaxEventAge:           time.Duration(effective.GoNZBNet.MaxEventAgeHours) * time.Hour,
 				})))
 			} else if appCtx.Logger != nil {
 				appCtx.Logger.Warn("gonzbnet aggregator source disabled: %v", err)

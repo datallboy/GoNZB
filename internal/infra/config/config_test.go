@@ -110,6 +110,30 @@ modules:
 	}
 }
 
+func TestGoNZBNetMaxEventAgeDefault(t *testing.T) {
+	cfgPath := writeMinimalConfig(t, `
+modules:
+  downloader:
+    enabled: false
+  aggregator:
+    enabled: true
+  usenet_indexer:
+    enabled: false
+  api:
+    enabled: true
+  web_ui:
+    enabled: false
+`)
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.GoNZBNet.MaxEventAgeHours != 720 {
+		t.Fatalf("expected default max event age 720 hours, got %d", cfg.GoNZBNet.MaxEventAgeHours)
+	}
+}
+
 func minimalAggregatorConfig() *Config {
 	return &Config{
 		Modules: ModulesConfig{
