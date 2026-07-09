@@ -27,7 +27,8 @@ import (
 )
 
 type GoNZBNetAdminController struct {
-	appCtx *app.Context
+	appCtx        *app.Context
+	storeOverride gonzbnetAdminStore
 }
 
 type gonzbnetAdminStore interface {
@@ -39,6 +40,7 @@ type gonzbnetAdminStore interface {
 	UpsertFederationNodeIdentity(ctx context.Context, nodeID string, publicKey ed25519.PublicKey) error
 	NextFederationEventSequence(ctx context.Context, authorNodeID string) (int64, *string, error)
 	FindFederationEventByBodyHash(ctx context.Context, authorNodeID, eventType, bodyHash string) (string, error)
+	ValidateFederationPoolControlEvent(ctx context.Context, event *events.SignedEvent) error
 	AppendVerifiedFederationEvent(ctx context.Context, event *events.SignedEvent, validation *events.ValidationResult) error
 	ProjectTombstone(ctx context.Context, projection pgindex.TombstoneProjection) error
 	ListTombstones(ctx context.Context, activeOnly bool) ([]pgindex.TombstoneRecord, error)
@@ -84,6 +86,19 @@ type poolMemberRequest struct {
 	Status              string          `json:"status"`
 	AllowedCapabilities []string        `json:"allowed_capabilities"`
 	Limits              json.RawMessage `json:"limits"`
+}
+
+type poolJoinRequest struct {
+	RequestedRoles []string `json:"requested_roles"`
+	Message        string   `json:"message"`
+}
+
+type poolJoinResponse struct {
+	Status          string   `json:"status"`
+	EventID         string   `json:"event_id"`
+	PoolID          string   `json:"pool_id"`
+	CandidateNodeID string   `json:"candidate_node_id"`
+	RequestedRoles  []string `json:"requested_roles"`
 }
 
 type peerRequest struct {
@@ -564,6 +579,80 @@ func (ctrl *GoNZBNetAdminController) RevokePoolMember(c *echo.Context) error {
 		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}
 	return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (ctrl *GoNZBNetAdminController) RequestPoolJoin(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	var req poolJoinRequest
+	if err := decodeJSONBody(c, &req); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	poolID := pathParamTrimmed(c, "pool_id")
+	if poolID == "" {
+		return jsonError(c, http.StatusBadRequest, "pool_id is required")
+	}
+	nodeIdentity, err := ctrl.localIdentity()
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	nodeID, err := nodeIdentity.NodeID(c.Request().Context())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	publicKey, err := nodeIdentity.PublicKey(c.Request().Context())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if err := store.UpsertFederationNodeIdentity(c.Request().Context(), nodeID, publicKey); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	sequence, previousEventID, err := store.NextFederationEventSequence(c.Request().Context(), nodeID)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	now := time.Now().UTC()
+	roles := normalizeRequestedRoles(req.RequestedRoles)
+	body := pools.JoinRequest{
+		SchemaVersion:   "1.0",
+		Type:            pools.EventTypePoolJoinRequest,
+		PoolID:          poolID,
+		CandidateNodeID: nodeID,
+		RequestedRoles:  roles,
+		Message:         strings.TrimSpace(req.Message),
+		CreatedAt:       now.Format(time.RFC3339),
+	}
+	event, validation, err := events.Create(c.Request().Context(), nodeIdentity, events.CreateOptions{
+		EventType:       pools.EventTypePoolJoinRequest,
+		Sequence:        sequence,
+		PreviousEventID: previousEventID,
+		CreatedAt:       now,
+		PoolIDs:         []string{poolID},
+		Visibility:      "pool",
+		BodySchema:      pools.BodySchema(pools.EventTypePoolJoinRequest),
+		Body:            body,
+	})
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if validation == nil || !validation.OK {
+		return jsonError(c, http.StatusInternalServerError, "signed pool join request did not verify")
+	}
+	if err := store.ValidateFederationPoolControlEvent(c.Request().Context(), event); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	if err := store.AppendVerifiedFederationEvent(c.Request().Context(), event, validation); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, poolJoinResponse{
+		Status:          "ok",
+		EventID:         event.EventID,
+		PoolID:          poolID,
+		CandidateNodeID: nodeID,
+		RequestedRoles:  roles,
+	})
 }
 
 func (ctrl *GoNZBNetAdminController) ListTombstones(c *echo.Context) error {
@@ -1283,6 +1372,26 @@ func (ctrl *GoNZBNetAdminController) manifestResolver() (*manifestresolver.Resol
 	}), nil
 }
 
+func normalizeRequestedRoles(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	if len(out) == 0 {
+		return []string{pools.RoleMember}
+	}
+	return out
+}
+
 func coverageID(prefix string, now time.Time) string {
 	return fmt.Sprintf("%s_%d", prefix, now.UnixNano())
 }
@@ -1296,7 +1405,13 @@ func parseCoverageFloatDefault(raw string, fallback float64) float64 {
 }
 
 func (ctrl *GoNZBNetAdminController) store() (gonzbnetAdminStore, bool) {
-	if ctrl == nil || ctrl.appCtx == nil || ctrl.appCtx.PGIndexStore == nil {
+	if ctrl == nil {
+		return nil, false
+	}
+	if ctrl.storeOverride != nil {
+		return ctrl.storeOverride, true
+	}
+	if ctrl.appCtx == nil || ctrl.appCtx.PGIndexStore == nil {
 		return nil, false
 	}
 	store, ok := ctrl.appCtx.PGIndexStore.(gonzbnetAdminStore)
