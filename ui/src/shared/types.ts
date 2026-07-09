@@ -1947,6 +1947,19 @@ export type GoNZBNetManifestResolveResponse = {
   resolved: boolean
 }
 
+export type GoNZBNetScoreRecomputeRequest = {
+  pool_id?: string
+}
+
+export type GoNZBNetScoreRecomputeResponse = {
+  status: string
+  result: {
+    pool_id: string
+    source_updates: number
+    card_updates: number
+  }
+}
+
 export type GoNZBNetKeyExportRequest = {
   backup_password: string
   confirmation: string
