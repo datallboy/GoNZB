@@ -531,6 +531,10 @@ func (s *fakeSyncStore) ProjectManifestAvailability(context.Context, pgindex.Man
 	return nil
 }
 
+func (s *fakeSyncStore) ProjectTrustAttestation(context.Context, pgindex.TrustAttestationProjection) error {
+	return nil
+}
+
 func (s *fakeSyncStore) ProjectCoverageEvent(context.Context, *events.SignedEvent) error {
 	return nil
 }

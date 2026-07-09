@@ -15,6 +15,7 @@ import (
 const (
 	EventTypeReleaseCard                    = "ReleaseCard"
 	EventTypeHealthAttestation              = "HealthAttestation"
+	EventTypeTrustAttestation               = "TrustAttestation"
 	EventTypeTombstone                      = "Tombstone"
 	EventTypeValidatorCapacity              = "ValidatorCapacity"
 	EventTypeArticleAvailabilityAttestation = "ArticleAvailabilityAttestation"
@@ -173,6 +174,7 @@ func NormalizePolicy(policy Policy, adminCount int) Policy {
 		out.AcceptedEventTypes = []string{
 			EventTypeReleaseCard,
 			EventTypeHealthAttestation,
+			EventTypeTrustAttestation,
 			EventTypeTombstone,
 			EventTypeValidatorCapacity,
 			EventTypeArticleAvailabilityAttestation,
@@ -206,6 +208,7 @@ func EventTypeSupported(eventType string) bool {
 	switch strings.TrimSpace(eventType) {
 	case EventTypeReleaseCard,
 		EventTypeHealthAttestation,
+		EventTypeTrustAttestation,
 		EventTypeTombstone,
 		EventTypeValidatorCapacity,
 		EventTypeArticleAvailabilityAttestation,

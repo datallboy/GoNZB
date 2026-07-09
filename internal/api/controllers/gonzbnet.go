@@ -25,6 +25,7 @@ import (
 	"github.com/datallboy/gonzb/internal/gonzbnet/profile"
 	"github.com/datallboy/gonzb/internal/gonzbnet/releasecard"
 	"github.com/datallboy/gonzb/internal/gonzbnet/requestauth"
+	"github.com/datallboy/gonzb/internal/gonzbnet/trust"
 	gonzbnetvalidation "github.com/datallboy/gonzb/internal/gonzbnet/validation"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
 	"github.com/labstack/echo/v5"
@@ -54,6 +55,7 @@ type gonzbnetStore interface {
 	GetResolutionManifestEvent(ctx context.Context, manifestID string) (*events.SignedEvent, error)
 	CanFetchResolutionManifest(ctx context.Context, manifestID, nodeID string) (bool, error)
 	ProjectHealthAttestation(ctx context.Context, projection pgindex.HealthAttestationProjection) error
+	ProjectTrustAttestation(ctx context.Context, projection pgindex.TrustAttestationProjection) error
 	ProjectValidatorCapacity(ctx context.Context, projection pgindex.ValidatorCapacityProjection) error
 	ProjectArticleAvailabilityAttestation(ctx context.Context, projection pgindex.ArticleAvailabilityProjection) error
 	ProjectChecksumAttestation(ctx context.Context, projection pgindex.ChecksumAttestationProjection) error
@@ -787,6 +789,28 @@ func (ctrl *GoNZBNetController) acceptInboxEvent(ctx context.Context, store gonz
 			PoolID:       poolID,
 		}
 	}
+	var trustProjection *pgindex.TrustAttestationProjection
+	if event.EventType == pools.EventTypeTrustAttestation {
+		var attestation trust.Attestation
+		if err := json.Unmarshal(event.Body, &attestation); err != nil {
+			_ = store.AppendRejectedFederationEvent(ctx, event.EventID, event.AuthorNodeID, event.EventType, raw, "invalid trust attestation body")
+			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "invalid_schema", Message: "invalid trust attestation body"}
+		}
+		if err := trust.Validate(attestation, time.Now().UTC()); err != nil {
+			_ = store.AppendRejectedFederationEvent(ctx, event.EventID, event.AuthorNodeID, event.EventType, raw, err.Error())
+			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "invalid_schema", Message: err.Error()}
+		}
+		poolID := ""
+		if len(event.PoolIDs) > 0 {
+			poolID = event.PoolIDs[0]
+		}
+		trustProjection = &pgindex.TrustAttestationProjection{
+			Attestation:  attestation,
+			EventID:      event.EventID,
+			AuthorNodeID: event.AuthorNodeID,
+			PoolID:       poolID,
+		}
+	}
 	var validatorCapacityProjection *pgindex.ValidatorCapacityProjection
 	if event.EventType == pools.EventTypeValidatorCapacity {
 		var capacity gonzbnetvalidation.ValidatorCapacity
@@ -887,6 +911,11 @@ func (ctrl *GoNZBNetController) acceptInboxEvent(ctx context.Context, store gonz
 	}
 	if healthProjection != nil {
 		if err := store.ProjectHealthAttestation(ctx, *healthProjection); err != nil {
+			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "internal_error", Message: err.Error()}
+		}
+	}
+	if trustProjection != nil {
+		if err := store.ProjectTrustAttestation(ctx, *trustProjection); err != nil {
 			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "internal_error", Message: err.Error()}
 		}
 	}

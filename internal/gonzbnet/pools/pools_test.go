@@ -73,12 +73,13 @@ func TestEventTypeSupportedRejectsUnknownTypes(t *testing.T) {
 		EventTypeCoverageAssignment,
 		EventTypePoolMemberApproved,
 		EventTypePoolCheckpoint,
+		EventTypeTrustAttestation,
 	} {
 		if !EventTypeSupported(eventType) {
 			t.Fatalf("expected %s to be supported", eventType)
 		}
 	}
-	for _, eventType := range []string{"", "UnknownFutureEvent", "TrustAttestation"} {
+	for _, eventType := range []string{"", "UnknownFutureEvent"} {
 		if EventTypeSupported(eventType) {
 			t.Fatalf("expected %s to be rejected", eventType)
 		}

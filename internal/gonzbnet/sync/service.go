@@ -25,6 +25,7 @@ import (
 	"github.com/datallboy/gonzb/internal/gonzbnet/releasecard"
 	"github.com/datallboy/gonzb/internal/gonzbnet/requestauth"
 	"github.com/datallboy/gonzb/internal/gonzbnet/transportpolicy"
+	"github.com/datallboy/gonzb/internal/gonzbnet/trust"
 	"github.com/datallboy/gonzb/internal/gonzbnet/validation"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
 	"golang.org/x/net/websocket"
@@ -46,6 +47,7 @@ type Store interface {
 	ProjectArticleAvailabilityAttestation(ctx context.Context, projection pgindex.ArticleAvailabilityProjection) error
 	ProjectChecksumAttestation(ctx context.Context, projection pgindex.ChecksumAttestationProjection) error
 	ProjectManifestAvailability(ctx context.Context, projection pgindex.ManifestAvailabilityProjection) error
+	ProjectTrustAttestation(ctx context.Context, projection pgindex.TrustAttestationProjection) error
 	ProjectCoverageEvent(ctx context.Context, event *events.SignedEvent) error
 	MarkFederationPeerSyncSuccess(ctx context.Context, peerID int64, nodeID, cursor, lastEventID string) error
 	MarkFederationPeerSyncFailure(ctx context.Context, peerID int64, errText string) error
@@ -933,6 +935,22 @@ func (s *Service) projectValidationEvent(ctx context.Context, event *events.Sign
 			return nil
 		}
 		return s.store.ProjectManifestAvailability(ctx, pgindex.ManifestAvailabilityProjection{
+			Attestation:  body,
+			EventID:      event.EventID,
+			AuthorNodeID: event.AuthorNodeID,
+			PoolID:       poolID,
+		})
+	case pools.EventTypeTrustAttestation:
+		var body trust.Attestation
+		if err := json.Unmarshal(event.Body, &body); err != nil {
+			_ = s.store.AppendRejectedFederationEvent(ctx, event.EventID, event.AuthorNodeID, event.EventType, raw, "invalid trust attestation body")
+			return nil
+		}
+		if err := trust.Validate(body, time.Now().UTC()); err != nil {
+			_ = s.store.AppendRejectedFederationEvent(ctx, event.EventID, event.AuthorNodeID, event.EventType, raw, err.Error())
+			return nil
+		}
+		return s.store.ProjectTrustAttestation(ctx, pgindex.TrustAttestationProjection{
 			Attestation:  body,
 			EventID:      event.EventID,
 			AuthorNodeID: event.AuthorNodeID,
