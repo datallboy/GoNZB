@@ -44,6 +44,7 @@ type gonzbnetAdminStore interface {
 	ProjectCoverageEvent(ctx context.Context, event *events.SignedEvent) error
 	UpsertFederationPeerURL(ctx context.Context, peerURL string) (int64, error)
 	SetFederationPeerEnabled(ctx context.Context, peerID int64, enabled bool) error
+	DeleteFederationPeer(ctx context.Context, peerID int64) (bool, error)
 	ListCoverageDashboard(ctx context.Context, poolID string) (pgindex.CoverageDashboard, error)
 	SuggestCoverageWork(ctx context.Context, params pgindex.CoverageWorkSuggestionParams) ([]pgindex.CoverageWorkSuggestion, error)
 	BuildCoverageSchedulerPlan(ctx context.Context, params pgindex.CoverageWorkSuggestionParams) (pgindex.CoverageSchedulerPlan, error)
@@ -687,6 +688,25 @@ func (ctrl *GoNZBNetAdminController) EnablePeer(c *echo.Context) error {
 
 func (ctrl *GoNZBNetAdminController) DisablePeer(c *echo.Context) error {
 	return ctrl.setPeerEnabled(c, false)
+}
+
+func (ctrl *GoNZBNetAdminController) DeletePeer(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	peerID, err := strconv.ParseInt(pathParamTrimmed(c, "peer_id"), 10, 64)
+	if err != nil || peerID <= 0 {
+		return jsonError(c, http.StatusBadRequest, "valid peer_id is required")
+	}
+	deleted, err := store.DeleteFederationPeer(c.Request().Context(), peerID)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if !deleted {
+		return jsonError(c, http.StatusNotFound, "peer not found")
+	}
+	return c.JSON(http.StatusOK, map[string]any{"status": "ok", "peer_id": peerID})
 }
 
 func (ctrl *GoNZBNetAdminController) PullSync(c *echo.Context) error {

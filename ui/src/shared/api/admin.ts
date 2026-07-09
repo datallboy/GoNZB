@@ -657,6 +657,13 @@ export function setGoNZBNetPeerEnabled(peerID: number, enabled: boolean) {
   )
 }
 
+export function deleteGoNZBNetPeer(peerID: number) {
+  return apiRequest<GoNZBNetPeerActionResponse>(
+    `/api/v1/admin/gonzbnet/peers/${peerID}`,
+    { method: "DELETE" },
+  )
+}
+
 export function runGoNZBNetPullSync() {
   return apiRequest<GoNZBNetSyncActionResponse>(
     "/api/v1/admin/gonzbnet/sync/pull",
