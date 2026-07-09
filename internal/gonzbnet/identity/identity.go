@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/datallboy/gonzb/internal/gonzbnet/canonical"
 	"golang.org/x/crypto/pbkdf2"
@@ -35,6 +36,13 @@ type Identity struct {
 	privateKey ed25519.PrivateKey
 	publicKey  ed25519.PublicKey
 	nodeID     string
+}
+
+type RotationResult struct {
+	OldIdentity *Identity
+	NewIdentity *Identity
+	BackupPath  string
+	RotatedAt   time.Time
 }
 
 func LoadOrCreate(keysDir string) (*Identity, error) {
@@ -69,6 +77,57 @@ func LoadOrCreateWithPassword(keysDir, password string) (*Identity, error) {
 		return nil, fmt.Errorf("write node identity key: %w", err)
 	}
 	return FromPrivateKey(privateKey)
+}
+
+func Rotate(keysDir, password string, now time.Time) (*RotationResult, error) {
+	keysDir = strings.TrimSpace(keysDir)
+	if keysDir == "" {
+		return nil, fmt.Errorf("gonzbnet keys dir is required")
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	oldIdentity, err := LoadOrCreateWithPassword(keysDir, password)
+	if err != nil {
+		return nil, err
+	}
+	keyPath := filepath.Join(keysDir, DefaultKeyFileName)
+	backupPath := filepath.Join(keysDir, fmt.Sprintf("%s.%s.bak", DefaultKeyFileName, now.UTC().Format("20060102T150405Z")))
+	if _, err := os.Stat(backupPath); err == nil {
+		return nil, fmt.Errorf("node identity backup already exists")
+	} else if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("check node identity backup: %w", err)
+	}
+	if err := os.Rename(keyPath, backupPath); err != nil {
+		return nil, fmt.Errorf("backup node identity key: %w", err)
+	}
+
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		_ = os.Rename(backupPath, keyPath)
+		return nil, fmt.Errorf("generate rotated node identity key: %w", err)
+	}
+	encoded, err := encodeStoredPrivateKey(privateKey, password)
+	if err != nil {
+		_ = os.Rename(backupPath, keyPath)
+		return nil, err
+	}
+	if err := os.WriteFile(keyPath, []byte(encoded+"\n"), 0600); err != nil {
+		_ = os.Rename(backupPath, keyPath)
+		return nil, fmt.Errorf("write rotated node identity key: %w", err)
+	}
+	newIdentity, err := FromPrivateKey(privateKey)
+	if err != nil {
+		_ = os.Remove(keyPath)
+		_ = os.Rename(backupPath, keyPath)
+		return nil, err
+	}
+	return &RotationResult{
+		OldIdentity: oldIdentity,
+		NewIdentity: newIdentity,
+		BackupPath:  backupPath,
+		RotatedAt:   now.UTC(),
+	}, nil
 }
 
 func FromPrivateKey(privateKey ed25519.PrivateKey) (*Identity, error) {

@@ -106,6 +106,10 @@ type keyExportRequest struct {
 	Confirmation   string `json:"confirmation"`
 }
 
+type keyRotateRequest struct {
+	Confirmation string `json:"confirmation"`
+}
+
 type keyExportResponse struct {
 	Status       string `json:"status"`
 	NodeID       string `json:"node_id"`
@@ -113,6 +117,17 @@ type keyExportResponse struct {
 	Format       string `json:"format"`
 	EncryptedKey string `json:"encrypted_key"`
 	CreatedAt    string `json:"created_at"`
+}
+
+type keyRotateResponse struct {
+	Status       string `json:"status"`
+	OldNodeID    string `json:"old_node_id"`
+	OldPublicKey string `json:"old_public_key"`
+	NewNodeID    string `json:"new_node_id"`
+	NewPublicKey string `json:"new_public_key"`
+	BackupPath   string `json:"backup_path"`
+	RotatedAt    string `json:"rotated_at"`
+	Warning      string `json:"warning"`
 }
 
 type gonzbnetAdminNodeProfileResponse struct {
@@ -375,6 +390,50 @@ func (ctrl *GoNZBNetAdminController) ExportKey(c *echo.Context) error {
 		Format:       "gonzbnet.ed25519.private.v1",
 		EncryptedKey: encryptedKey,
 		CreatedAt:    time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
+func (ctrl *GoNZBNetAdminController) RotateKey(c *echo.Context) error {
+	var req keyRotateRequest
+	if err := decodeJSONBody(c, &req); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	if strings.TrimSpace(req.Confirmation) != "rotate-gonzbnet-node-key" {
+		return jsonError(c, http.StatusBadRequest, "confirmation must be rotate-gonzbnet-node-key")
+	}
+	if ctrl == nil || ctrl.appCtx == nil || ctrl.appCtx.Config == nil {
+		return jsonError(c, http.StatusInternalServerError, "gonzbnet admin controller is not initialized")
+	}
+	cfg := ctrl.appCtx.Config.GoNZBNet
+	result, err := identity.Rotate(cfg.KeysDir, cfg.KeyPassword, time.Now().UTC())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	oldNodeID, err := result.OldIdentity.NodeID(c.Request().Context())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	newNodeID, err := result.NewIdentity.NodeID(c.Request().Context())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	oldPublicKey, err := result.OldIdentity.PublicKeyBase64URL(c.Request().Context())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	newPublicKey, err := result.NewIdentity.PublicKeyBase64URL(c.Request().Context())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, keyRotateResponse{
+		Status:       "ok",
+		OldNodeID:    oldNodeID,
+		OldPublicKey: oldPublicKey,
+		NewNodeID:    newNodeID,
+		NewPublicKey: newPublicKey,
+		BackupPath:   result.BackupPath,
+		RotatedAt:    result.RotatedAt.Format(time.RFC3339),
+		Warning:      "node key rotation changes the node_id; re-establish pool membership and peer trust for the new node_id",
 	})
 }
 

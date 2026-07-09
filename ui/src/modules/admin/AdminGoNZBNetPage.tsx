@@ -31,6 +31,7 @@ import {
   materializeGoNZBNetStalePenalties,
   revokeGoNZBNetPoolMember,
   resolveGoNZBNetManifest,
+  rotateGoNZBNetKey,
   runGoNZBNetGossipSync,
   runGoNZBNetPullSync,
   runGoNZBNetPushSync,
@@ -137,6 +138,10 @@ type KeyExportForm = {
   confirmation: string
 }
 
+type KeyRotateForm = {
+  confirmation: string
+}
+
 const defaultPoolID = 'pool.local'
 
 const defaultAssignmentForm: AssignmentForm = {
@@ -204,6 +209,10 @@ const defaultManifestResolveForm: ManifestResolveForm = {
 
 const defaultKeyExportForm: KeyExportForm = {
   backup_password: '',
+  confirmation: '',
+}
+
+const defaultKeyRotateForm: KeyRotateForm = {
   confirmation: '',
 }
 
@@ -454,6 +463,7 @@ export function AdminGoNZBNetPage() {
   const [tombstoneForm, setTombstoneForm] = useState<TombstoneForm>(defaultTombstoneForm)
   const [manifestResolveForm, setManifestResolveForm] = useState<ManifestResolveForm>(defaultManifestResolveForm)
   const [keyExportForm, setKeyExportForm] = useState<KeyExportForm>(defaultKeyExportForm)
+  const [keyRotateForm, setKeyRotateForm] = useState<KeyRotateForm>(defaultKeyRotateForm)
   const [exportedKey, setExportedKey] = useState('')
   const [peerURL, setPeerURL] = useState('')
   const [loading, setLoading] = useState(false)
@@ -789,6 +799,20 @@ export function AdminGoNZBNetPage() {
     }
   }
 
+  async function handleKeyRotate(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    try {
+      const response = await rotateGoNZBNetKey({
+        confirmation: keyRotateForm.confirmation.trim(),
+      })
+      setKeyRotateForm(defaultKeyRotateForm)
+      setActionStatus(`Rotated node key ${shortID(response.old_node_id)} -> ${shortID(response.new_node_id)}`)
+      await refresh()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to rotate node key')
+    }
+  }
+
   const assignments = dashboard?.assignments ?? []
   const claims = dashboard?.claims ?? []
   const staleClaims = dashboard?.stale_claims ?? []
@@ -975,23 +999,34 @@ export function AdminGoNZBNetPage() {
         </SectionTable>
       </div>
 
-      <form className="page-card stack" onSubmit={handleKeyExport}>
-        <h2 className="section-title">Key backup</h2>
-        <div className="toolbar-grid">
-          <label className="field">
-            <span>Backup password</span>
-            <input className="table-input" required type="password" value={keyExportForm.backup_password} onChange={(event) => setKeyExportForm({ ...keyExportForm, backup_password: event.target.value })} />
-          </label>
+      <div className="two-column-grid">
+        <form className="page-card stack" onSubmit={handleKeyExport}>
+          <h2 className="section-title">Key backup</h2>
+          <div className="toolbar-grid">
+            <label className="field">
+              <span>Backup password</span>
+              <input className="table-input" required type="password" value={keyExportForm.backup_password} onChange={(event) => setKeyExportForm({ ...keyExportForm, backup_password: event.target.value })} />
+            </label>
+            <label className="field">
+              <span>Confirmation</span>
+              <input className="table-input" required value={keyExportForm.confirmation} onChange={(event) => setKeyExportForm({ ...keyExportForm, confirmation: event.target.value })} />
+            </label>
+          </div>
+          <button className="primary-button align-end" type="submit">Export encrypted backup</button>
+          {exportedKey ? (
+            <textarea className="table-input mono-cell" readOnly rows={8} value={exportedKey} />
+          ) : null}
+        </form>
+
+        <form className="page-card stack" onSubmit={handleKeyRotate}>
+          <h2 className="section-title">Key rotation</h2>
           <label className="field">
             <span>Confirmation</span>
-            <input className="table-input" required value={keyExportForm.confirmation} onChange={(event) => setKeyExportForm({ ...keyExportForm, confirmation: event.target.value })} />
+            <input className="table-input" required value={keyRotateForm.confirmation} onChange={(event) => setKeyRotateForm({ confirmation: event.target.value })} />
           </label>
-        </div>
-        <button className="primary-button align-end" type="submit">Export encrypted backup</button>
-        {exportedKey ? (
-          <textarea className="table-input mono-cell" readOnly rows={8} value={exportedKey} />
-        ) : null}
-      </form>
+          <button className="secondary-button align-end" type="submit">Rotate node key</button>
+        </form>
+      </div>
 
       <div className="two-column-grid">
         <form className="page-card stack" onSubmit={handlePool}>

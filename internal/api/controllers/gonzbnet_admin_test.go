@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/datallboy/gonzb/internal/app"
+	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
 	"github.com/datallboy/gonzb/internal/infra/config"
 	"github.com/labstack/echo/v5"
 )
@@ -149,6 +150,80 @@ func TestGoNZBNetAdminExportKeyReturnsEncryptedBackupOnly(t *testing.T) {
 		}
 	}
 }
+
+func TestGoNZBNetAdminRotateKeyRequiresExplicitConfirmation(t *testing.T) {
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/gonzbnet/keys/rotate", bytes.NewReader([]byte(`{}`)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	ctrl := NewGoNZBNetAdminController(&app.Context{Config: testGoNZBNetAdminConfig(t)})
+
+	if err := ctrl.RotateKey(c); err != nil {
+		t.Fatalf("RotateKey returned error: %v", err)
+	}
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "confirmation") {
+		t.Fatalf("expected confirmation validation error, got %s", rec.Body.String())
+	}
+}
+
+func TestGoNZBNetAdminRotateKeyChangesNodeIDAndDoesNotReturnSecrets(t *testing.T) {
+	cfg := testGoNZBNetAdminConfig(t)
+	cfg.GoNZBNet.KeyPassword = "configured-key-password"
+	original, err := identity.LoadOrCreateWithPassword(cfg.GoNZBNet.KeysDir, cfg.GoNZBNet.KeyPassword)
+	if err != nil {
+		t.Fatalf("create original identity: %v", err)
+	}
+	originalID, _ := original.NodeID(t.Context())
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/gonzbnet/keys/rotate", bytes.NewReader([]byte(`{"confirmation":"rotate-gonzbnet-node-key"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	ctrl := NewGoNZBNetAdminController(&app.Context{Config: cfg})
+
+	if err := ctrl.RotateKey(c); err != nil {
+		t.Fatalf("RotateKey returned error: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+	var body keyRotateResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.OldNodeID != originalID {
+		t.Fatalf("expected old node id %q, got %q", originalID, body.OldNodeID)
+	}
+	if body.NewNodeID == "" || body.NewNodeID == originalID {
+		t.Fatalf("expected new node id, got %+v", body)
+	}
+	if body.OldPublicKey == "" || body.NewPublicKey == "" || body.OldPublicKey == body.NewPublicKey {
+		t.Fatalf("expected changed public keys, got %+v", body)
+	}
+	if body.BackupPath == "" || body.Warning == "" {
+		t.Fatalf("expected backup path and warning, got %+v", body)
+	}
+	reloaded, err := identity.LoadOrCreateWithPassword(cfg.GoNZBNet.KeysDir, cfg.GoNZBNet.KeyPassword)
+	if err != nil {
+		t.Fatalf("reload rotated identity: %v", err)
+	}
+	reloadedID, _ := reloaded.NodeID(t.Context())
+	if reloadedID != body.NewNodeID {
+		t.Fatalf("expected persisted rotated node id %q, got %q", body.NewNodeID, reloadedID)
+	}
+	raw := rec.Body.String()
+	for _, secret := range []string{"configured-key-password", "encrypted_key", encryptedKeyEnvelopeMarker} {
+		if strings.Contains(strings.ToLower(raw), strings.ToLower(secret)) {
+			t.Fatalf("response leaked sensitive value %q: %s", secret, raw)
+		}
+	}
+}
+
+const encryptedKeyEnvelopeMarker = "gonzbnet.ed25519.private.v1"
 
 func testGoNZBNetAdminConfig(t *testing.T) *config.Config {
 	t.Helper()

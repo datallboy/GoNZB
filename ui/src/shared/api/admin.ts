@@ -42,6 +42,8 @@ import type {
   GoNZBNetHealthAttestationDiagnostic,
   GoNZBNetKeyExportRequest,
   GoNZBNetKeyExportResponse,
+  GoNZBNetKeyRotateRequest,
+  GoNZBNetKeyRotateResponse,
   GoNZBNetListResponse,
   GoNZBNetManifestSourceDiagnostic,
   GoNZBNetManifestResolveRequest,
@@ -676,6 +678,13 @@ export function setGoNZBNetNodeBlocked(nodeID: string, blocked: boolean) {
 export function exportGoNZBNetKey(body: GoNZBNetKeyExportRequest) {
   return apiRequest<GoNZBNetKeyExportResponse>(
     "/api/v1/admin/gonzbnet/keys/export",
+    { method: "POST", body },
+  )
+}
+
+export function rotateGoNZBNetKey(body: GoNZBNetKeyRotateRequest) {
+  return apiRequest<GoNZBNetKeyRotateResponse>(
+    "/api/v1/admin/gonzbnet/keys/rotate",
     { method: "POST", body },
   )
 }
