@@ -100,6 +100,8 @@ Current implementation state:
   PostgreSQL when `modules.gonzbnet.enabled` is true.
 - Config cleanup maps the spec shorthand `GONZBNET_ENABLED` to the existing
   `modules.gonzbnet.enabled` module gate.
+- Config cleanup adds direct route-gate coverage for
+  `modules.gonzbnet.enabled` and `gonzbnet.http_enabled`.
 - Security cleanup rejects remote signed events with future `created_at` /
   `not_before` windows, expired `expires_at` values, or event ages beyond
   `gonzbnet.max_event_age_hours`.
@@ -153,6 +155,7 @@ Maintained pages:
 - [Admin: Role Pool Access](./admin-role-pool-access.md)
 - [Config Validation Cleanup](./config-validation-cleanup.md)
 - [Config Enable Alias](./config-enable-alias.md)
+- [Config Route Gate Coverage](./config-route-gate-coverage.md)
 - [Capability Profile Alignment](./capability-profile-alignment.md)
 - [Test Coverage Cleanup](./test-coverage-cleanup.md)
 - [Security: Node Key Encryption](./security-key-encryption.md)
