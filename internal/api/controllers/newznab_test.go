@@ -50,3 +50,24 @@ func TestBuildRSSResponseUsesNumericCategoryAttr(t *testing.T) {
 		t.Fatalf("expected numeric category attr, got %+v", item.Attributes)
 	}
 }
+
+func TestBuildRSSResponseUsesLocalDownloadLinks(t *testing.T) {
+	resp := buildRSSResponse([]*domain.Release{{
+		ID:          "local-composite-id",
+		Title:       "Federated Example",
+		Source:      "gonzbnet",
+		GUID:        "rel_federated",
+		Size:        2048,
+		PublishDate: time.Unix(1, 0).UTC(),
+		Category:    "2040",
+	}}, "http://local.example", "token")
+
+	if len(resp.Channel.Items) != 1 {
+		t.Fatalf("expected one rss item")
+	}
+	item := resp.Channel.Items[0]
+	expected := "http://local.example/api?t=get&id=local-composite-id&apikey=token"
+	if item.Link != expected || item.Enclosure.URL != expected {
+		t.Fatalf("expected local download URL %q, got link=%q enclosure=%q", expected, item.Link, item.Enclosure.URL)
+	}
+}

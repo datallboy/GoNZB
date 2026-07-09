@@ -426,6 +426,7 @@ func aggregatorRuntimeFromConfig(cfg config.AggregatorConfig) *AggregatorRuntime
 		Sources: AggregatorSourcesRuntimeSettings{
 			LocalBlob:     RuntimeToggle{Enabled: cfg.Sources.LocalBlob.Enabled},
 			UsenetIndexer: RuntimeToggle{Enabled: cfg.Sources.UsenetIndexer.Enabled},
+			GoNZBNet:      RuntimeToggle{Enabled: cfg.Sources.GoNZBNet.Enabled},
 		},
 	}
 }
@@ -464,6 +465,7 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 	if runtime.Aggregator != nil {
 		effective.Aggregator.Sources.LocalBlob.Enabled = runtime.Aggregator.Sources.LocalBlob.Enabled
 		effective.Aggregator.Sources.UsenetIndexer.Enabled = runtime.Aggregator.Sources.UsenetIndexer.Enabled
+		effective.Aggregator.Sources.GoNZBNet.Enabled = runtime.Aggregator.Sources.GoNZBNet.Enabled
 	}
 
 	if runtime.Download != nil {
@@ -707,7 +709,7 @@ func RuntimeConfigured(in *RuntimeSettings) bool {
 	return len(in.Servers) > 0 ||
 		len(in.Indexers) > 0 ||
 		len(in.ArrIntegrations) > 0 ||
-		in.Aggregator != nil && (in.Aggregator.Sources.LocalBlob.Enabled || in.Aggregator.Sources.UsenetIndexer.Enabled) ||
+		in.Aggregator != nil && (in.Aggregator.Sources.LocalBlob.Enabled || in.Aggregator.Sources.UsenetIndexer.Enabled || in.Aggregator.Sources.GoNZBNet.Enabled) ||
 		downloadConfigured(in.Download) ||
 		indexingConfigured(in.Indexing)
 }

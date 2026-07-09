@@ -2,6 +2,7 @@ package pgindex
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -9,6 +10,32 @@ import (
 
 	"github.com/datallboy/gonzb/internal/gonzbnet/releasecard"
 )
+
+type FederatedReleaseCardSearchParams struct {
+	Query  string
+	IMDBID string
+	TVDBID int64
+	Pools  []string
+	Limit  int
+}
+
+type FederatedReleaseCardSummary struct {
+	ReleaseID          string
+	ManifestID         string
+	Title              string
+	NormalizedTitle    string
+	NewznabCategories  []int
+	SizeBytes          int64
+	PostedAt           *time.Time
+	BestScore          float64
+	AvailabilityScore  float64
+	TrustScore         float64
+	Resolvable         bool
+	SourceEventID      string
+	PoolID             string
+	SourceNodeID       string
+	ManifestConfidence float64
+}
 
 func (s *Store) ListGoNZBNetLocalReleaseCandidates(ctx context.Context, limit int) ([]releasecard.LocalRelease, error) {
 	if limit <= 0 {
@@ -294,6 +321,189 @@ func (s *Store) UpsertFederatedReleaseCardProjection(ctx context.Context, projec
 	return tx.Commit()
 }
 
+func (s *Store) ListFederationSearchPoolsForPrincipal(ctx context.Context, userID string, roleIDs []string) ([]string, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("pgindex store is not initialized")
+	}
+	roleIDsJSON, err := json.Marshal(normalizeStrings(roleIDs))
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT DISTINCT pool_id
+		FROM (
+			SELECT pool_id
+			FROM user_federation_pool_access
+			WHERE user_id = NULLIF($1, '')
+			  AND can_search = TRUE
+			UNION
+			SELECT r.pool_id
+			FROM role_federation_pool_access r
+			WHERE r.can_search = TRUE
+			  AND EXISTS (
+			    SELECT 1
+			    FROM jsonb_array_elements_text($2::jsonb) role_ids(role_id)
+			    WHERE role_ids.role_id = r.role_id
+			  )
+		) pools
+		ORDER BY pool_id`, strings.TrimSpace(userID), string(roleIDsJSON))
+	if err != nil {
+		return nil, fmt.Errorf("list federation search pools: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]string, 0, 4)
+	for rows.Next() {
+		var poolID string
+		if err := rows.Scan(&poolID); err != nil {
+			return nil, fmt.Errorf("scan federation search pool: %w", err)
+		}
+		out = append(out, poolID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate federation search pools: %w", err)
+	}
+	return out, nil
+}
+
+func (s *Store) SearchFederatedReleaseCards(ctx context.Context, params FederatedReleaseCardSearchParams) ([]FederatedReleaseCardSummary, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("pgindex store is not initialized")
+	}
+	pools := normalizeStrings(params.Pools)
+	if len(pools) == 0 {
+		return []FederatedReleaseCardSummary{}, nil
+	}
+	limit := params.Limit
+	if limit <= 0 || limit > 100 {
+		limit = 100
+	}
+	poolsJSON, err := json.Marshal(pools)
+	if err != nil {
+		return nil, err
+	}
+
+	clauses := []string{
+		"c.status = 'accepted'",
+		"(c.expires_at IS NULL OR c.expires_at > NOW())",
+		"s.trust_score > 0",
+		`EXISTS (
+			SELECT 1
+			FROM jsonb_array_elements_text($1::jsonb) pools(pool_id)
+			WHERE pools.pool_id = s.pool_id
+		)`,
+	}
+	args := []any{string(poolsJSON)}
+	arg := 2
+	if query := strings.TrimSpace(params.Query); query != "" {
+		clauses = append(clauses, fmt.Sprintf("(c.normalized_title ILIKE $%d OR c.title ILIKE $%d)", arg, arg))
+		args = append(args, "%"+query+"%")
+		arg++
+	}
+	if imdbID := strings.TrimSpace(params.IMDBID); imdbID != "" {
+		clauses = append(clauses, fmt.Sprintf("c.media_json->>'imdb_id' = $%d", arg))
+		args = append(args, imdbID)
+		arg++
+	}
+	if params.TVDBID > 0 {
+		clauses = append(clauses, fmt.Sprintf("(c.media_json->>'tvdb_id')::bigint = $%d", arg))
+		args = append(args, params.TVDBID)
+		arg++
+	}
+	args = append(args, limit)
+
+	query := fmt.Sprintf(`
+		WITH ranked AS (
+			SELECT
+				c.release_id,
+				COALESCE(c.manifest_id, '') AS manifest_id,
+				c.title,
+				c.normalized_title,
+				c.newznab_categories,
+				c.size_bytes,
+				c.posted_at,
+				c.best_score,
+				c.availability_score,
+				c.trust_score,
+				c.resolvable,
+				COALESCE(c.source_event_id, '') AS source_event_id,
+				s.pool_id,
+				s.source_node_id,
+				s.manifest_confidence_score,
+				ROW_NUMBER() OVER (
+					PARTITION BY c.release_id
+					ORDER BY s.trust_score DESC, s.availability_score DESC, c.posted_at DESC NULLS LAST
+				) AS source_rank
+			FROM federated_release_cards c
+			JOIN federated_release_sources s ON s.release_id = c.release_id
+			WHERE %s
+		)
+		SELECT
+			release_id,
+			manifest_id,
+			title,
+			normalized_title,
+			newznab_categories,
+			size_bytes,
+			posted_at,
+			best_score,
+			availability_score,
+			trust_score,
+			resolvable,
+			source_event_id,
+			pool_id,
+			source_node_id,
+			manifest_confidence_score
+		FROM ranked
+		WHERE source_rank = 1
+		ORDER BY posted_at DESC NULLS LAST, best_score DESC, release_id ASC
+		LIMIT $%d`, strings.Join(clauses, "\n  AND "), arg)
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("search federated release cards: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]FederatedReleaseCardSummary, 0, limit)
+	for rows.Next() {
+		var (
+			item       FederatedReleaseCardSummary
+			postedAt   sql.NullTime
+			categories []byte
+		)
+		if err := rows.Scan(
+			&item.ReleaseID,
+			&item.ManifestID,
+			&item.Title,
+			&item.NormalizedTitle,
+			&categories,
+			&item.SizeBytes,
+			&postedAt,
+			&item.BestScore,
+			&item.AvailabilityScore,
+			&item.TrustScore,
+			&item.Resolvable,
+			&item.SourceEventID,
+			&item.PoolID,
+			&item.SourceNodeID,
+			&item.ManifestConfidence,
+		); err != nil {
+			return nil, fmt.Errorf("scan federated release card: %w", err)
+		}
+		if postedAt.Valid {
+			value := postedAt.Time.UTC()
+			item.PostedAt = &value
+		}
+		_ = json.Unmarshal(categories, &item.NewznabCategories)
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate federated release cards: %w", err)
+	}
+	return out, nil
+}
+
 func parseOptionalRFC3339(value string) *time.Time {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -305,4 +515,21 @@ func parseOptionalRFC3339(value string) *time.Time {
 	}
 	utc := parsed.UTC()
 	return &utc
+}
+
+func normalizeStrings(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }

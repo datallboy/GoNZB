@@ -383,6 +383,7 @@ func (s *Service) principalForUser(ctx context.Context, user *StoredUser) (*Prin
 	return &Principal{
 		UserID:      user.ID,
 		Username:    user.Username,
+		RoleIDs:     append([]string(nil), roleIDs...),
 		Permissions: perms,
 	}, nil
 }
