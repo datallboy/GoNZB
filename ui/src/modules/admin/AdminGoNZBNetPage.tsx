@@ -9,7 +9,12 @@ import {
   getGoNZBNetCoverageGroups,
   getGoNZBNetCoveragePlan,
   getGoNZBNetCoverageSuggestions,
+  getGoNZBNetEventDiagnostics,
   getGoNZBNetNodeCapabilities,
+  getGoNZBNetPeerDeliveryDiagnostics,
+  getGoNZBNetPeerDiagnostics,
+  getGoNZBNetRejectedEventDiagnostics,
+  getGoNZBNetValidationTaskDiagnostics,
   getGoNZBNetValidationGaps,
   materializeGoNZBNetStalePenalties,
 } from '../../shared/api/admin'
@@ -21,8 +26,13 @@ import type {
   GoNZBNetCoverageOutcome,
   GoNZBNetCoveragePlan,
   GoNZBNetCoverageSuggestion,
+  GoNZBNetEventDiagnostic,
   GoNZBNetGroupCatalogItem,
   GoNZBNetNodeCapability,
+  GoNZBNetPeerDeliveryDiagnostic,
+  GoNZBNetPeerDiagnostic,
+  GoNZBNetRejectedEventDiagnostic,
+  GoNZBNetValidationTaskDiagnostic,
   GoNZBNetValidationGap,
 } from '../../shared/types'
 
@@ -279,6 +289,11 @@ export function AdminGoNZBNetPage() {
   const [validationGaps, setValidationGaps] = useState<GoNZBNetValidationGap[]>([])
   const [suggestions, setSuggestions] = useState<GoNZBNetCoverageSuggestion[]>([])
   const [plan, setPlan] = useState<GoNZBNetCoveragePlan | null>(null)
+  const [peerDiagnostics, setPeerDiagnostics] = useState<GoNZBNetPeerDiagnostic[]>([])
+  const [eventDiagnostics, setEventDiagnostics] = useState<GoNZBNetEventDiagnostic[]>([])
+  const [rejectedDiagnostics, setRejectedDiagnostics] = useState<GoNZBNetRejectedEventDiagnostic[]>([])
+  const [deliveryDiagnostics, setDeliveryDiagnostics] = useState<GoNZBNetPeerDeliveryDiagnostic[]>([])
+  const [validationTaskDiagnostics, setValidationTaskDiagnostics] = useState<GoNZBNetValidationTaskDiagnostic[]>([])
   const [assignmentForm, setAssignmentForm] = useState<AssignmentForm>(defaultAssignmentForm)
   const [claimForm, setClaimForm] = useState<ClaimForm>(defaultClaimForm)
   const [completeForm, setCompleteForm] = useState<OutcomeForm>(defaultOutcomeForm)
@@ -293,7 +308,19 @@ export function AdminGoNZBNetPage() {
   async function refresh() {
     setLoading(true)
     try {
-      const [nextNodes, nextDashboard, nextGroups, nextValidationGaps, nextSuggestions, nextPlan] =
+      const [
+        nextNodes,
+        nextDashboard,
+        nextGroups,
+        nextValidationGaps,
+        nextSuggestions,
+        nextPlan,
+        nextPeers,
+        nextEvents,
+        nextRejected,
+        nextDeliveries,
+        nextValidationTasks,
+      ] =
         await Promise.all([
           getGoNZBNetNodeCapabilities(),
           getGoNZBNetCoverageDashboard(effectivePoolID),
@@ -301,6 +328,11 @@ export function AdminGoNZBNetPage() {
           getGoNZBNetValidationGaps(effectivePoolID, 100),
           getGoNZBNetCoverageSuggestions({ pool_id: effectivePoolID, mode, limit: 25 }),
           getGoNZBNetCoveragePlan({ pool_id: effectivePoolID, mode, limit: 25 }),
+          getGoNZBNetPeerDiagnostics(100),
+          getGoNZBNetEventDiagnostics(100),
+          getGoNZBNetRejectedEventDiagnostics(100),
+          getGoNZBNetPeerDeliveryDiagnostics(100),
+          getGoNZBNetValidationTaskDiagnostics(100),
         ])
       setNodes(nextNodes.items ?? [])
       setDashboard(nextDashboard)
@@ -308,6 +340,11 @@ export function AdminGoNZBNetPage() {
       setValidationGaps(nextValidationGaps.items ?? [])
       setSuggestions(nextSuggestions.items ?? [])
       setPlan(nextPlan)
+      setPeerDiagnostics(nextPeers.items ?? [])
+      setEventDiagnostics(nextEvents.items ?? [])
+      setRejectedDiagnostics(nextRejected.items ?? [])
+      setDeliveryDiagnostics(nextDeliveries.items ?? [])
+      setValidationTaskDiagnostics(nextValidationTasks.items ?? [])
       setError(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load GoNZBNet admin state')
@@ -450,6 +487,8 @@ export function AdminGoNZBNetPage() {
           <StatCard label="Assignments" value={formatNumber(assignments.length)} detail={`${formatNumber(gaps.length)} open gaps`} />
           <StatCard label="Claims" value={formatNumber(claims.length)} detail={`${formatNumber(staleClaims.length)} stale`} />
           <StatCard label="Validation gaps" value={formatNumber(validationGaps.length)} detail={`${formatNumber(duplicates.length)} duplicate ranges`} />
+          <StatCard label="Peers" value={formatNumber(peerDiagnostics.length)} detail={`${formatNumber(deliveryDiagnostics.length)} delivery records`} />
+          <StatCard label="Event log" value={formatNumber(eventDiagnostics.length)} detail={`${formatNumber(rejectedDiagnostics.length)} rejected events`} />
         </div>
       </div>
 
@@ -591,6 +630,161 @@ export function AdminGoNZBNetPage() {
                 <td>{capabilityKeys(node.capabilities).map((key) => <span className="status-pill status-pill--table" key={key}>{key}</span>)}</td>
                 <td>{Object.entries(node.module_status ?? {}).map(([key, value]) => <div key={key}>{key}: {String(value)}</div>)}</td>
                 <td>{formatDateTime(node.updated_at)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </SectionTable>
+
+      <SectionTable title="Peer diagnostics" count={peerDiagnostics.length}>
+        <table className="data-table data-table--compact">
+          <thead>
+            <tr>
+              <th>Peer</th>
+              <th>Node</th>
+              <th>Status</th>
+              <th>Cursor</th>
+              <th>Failures</th>
+              <th>Last sync</th>
+              <th>Updated</th>
+            </tr>
+          </thead>
+          <tbody>
+            {peerDiagnostics.map((item) => (
+              <tr key={item.id}>
+                <td className="breakable-value">{item.peer_url}</td>
+                <td className="mono-cell breakable-value" title={item.node_id}>{shortID(item.node_id)}</td>
+                <td><span className="status-pill status-pill--table">{item.enabled ? item.status : 'disabled'}</span></td>
+                <td className="mono-cell breakable-value" title={item.last_event_id}>{shortID(item.last_event_id || item.cursor)}</td>
+                <td>
+                  {formatNumber(item.failure_count)}
+                  {item.last_error ? <div className="muted-copy breakable-value">{item.last_error}</div> : null}
+                </td>
+                <td>{formatDateTime(item.last_sync_at)}</td>
+                <td>{formatDateTime(item.updated_at)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </SectionTable>
+
+      <SectionTable title="Event diagnostics" count={eventDiagnostics.length}>
+        <table className="data-table data-table--compact">
+          <thead>
+            <tr>
+              <th>Event</th>
+              <th>Type</th>
+              <th>Author</th>
+              <th>Pools</th>
+              <th>Status</th>
+              <th>Projected</th>
+              <th>Received</th>
+            </tr>
+          </thead>
+          <tbody>
+            {eventDiagnostics.map((item) => (
+              <tr key={item.event_id}>
+                <td className="mono-cell breakable-value" title={item.event_id}>{shortID(item.event_id)}</td>
+                <td><span className="status-pill status-pill--table">{item.event_type}</span></td>
+                <td className="mono-cell breakable-value" title={item.author_node_id}>{shortID(item.author_node_id)}</td>
+                <td className="breakable-value">{(item.pool_ids ?? []).join(', ') || 'local'}</td>
+                <td>
+                  <span className="status-pill status-pill--table">{item.validation_status}</span>
+                  {item.rejection_reason ? <div className="muted-copy breakable-value">{item.rejection_reason}</div> : null}
+                </td>
+                <td>{item.projected ? formatDateTime(item.projected_at) : 'no'}</td>
+                <td>{formatDateTime(item.received_at)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </SectionTable>
+
+      <SectionTable title="Rejected event diagnostics" count={rejectedDiagnostics.length}>
+        <table className="data-table data-table--compact">
+          <thead>
+            <tr>
+              <th>Event</th>
+              <th>Type</th>
+              <th>Author</th>
+              <th>Reason</th>
+              <th>Received</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rejectedDiagnostics.map((item) => (
+              <tr key={item.id}>
+                <td className="mono-cell breakable-value" title={item.event_id}>{shortID(item.event_id)}</td>
+                <td>{label(item.event_type)}</td>
+                <td className="mono-cell breakable-value" title={item.author_node_id}>{shortID(item.author_node_id)}</td>
+                <td className="breakable-value">{item.rejection_reason}</td>
+                <td>{formatDateTime(item.received_at)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </SectionTable>
+
+      <SectionTable title="Peer delivery diagnostics" count={deliveryDiagnostics.length}>
+        <table className="data-table data-table--compact">
+          <thead>
+            <tr>
+              <th>Peer</th>
+              <th>Event</th>
+              <th>Type</th>
+              <th>Status</th>
+              <th>Attempts</th>
+              <th>Delivered</th>
+              <th>Updated</th>
+            </tr>
+          </thead>
+          <tbody>
+            {deliveryDiagnostics.map((item) => (
+              <tr key={`${item.peer_id}-${item.event_id}`}>
+                <td className="breakable-value">{item.peer_url}</td>
+                <td className="mono-cell breakable-value" title={item.event_id}>{shortID(item.event_id)}</td>
+                <td>{label(item.event_type)}</td>
+                <td>
+                  <span className="status-pill status-pill--table">{item.status}</span>
+                  {item.last_error ? <div className="muted-copy breakable-value">{item.last_error}</div> : null}
+                </td>
+                <td>{formatNumber(item.attempts)}</td>
+                <td>{formatDateTime(item.delivered_at)}</td>
+                <td>{formatDateTime(item.updated_at)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </SectionTable>
+
+      <SectionTable title="Validation task diagnostics" count={validationTaskDiagnostics.length}>
+        <table className="data-table data-table--compact">
+          <thead>
+            <tr>
+              <th>Task</th>
+              <th>Manifest</th>
+              <th>Release</th>
+              <th>Pool</th>
+              <th>Status</th>
+              <th>Attempts</th>
+              <th>Due</th>
+              <th>Updated</th>
+            </tr>
+          </thead>
+          <tbody>
+            {validationTaskDiagnostics.map((item) => (
+              <tr key={item.task_id}>
+                <td>{formatNumber(item.task_id)}</td>
+                <td className="mono-cell breakable-value" title={item.manifest_id}>{shortID(item.manifest_id)}</td>
+                <td className="mono-cell breakable-value" title={item.release_id}>{shortID(item.release_id)}</td>
+                <td>{item.pool_id}</td>
+                <td>
+                  <span className="status-pill status-pill--table">{item.status}</span>
+                  {item.last_error ? <div className="muted-copy breakable-value">{item.last_error}</div> : null}
+                </td>
+                <td>{formatNumber(item.attempts)}</td>
+                <td>{formatDateTime(item.due_at)}</td>
+                <td>{formatDateTime(item.updated_at)}</td>
               </tr>
             ))}
           </tbody>

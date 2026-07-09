@@ -45,6 +45,11 @@ type gonzbnetAdminStore interface {
 	ListCoverageGroupCatalog(ctx context.Context, poolID string) ([]pgindex.CoverageGroupCatalogItem, error)
 	ListValidationGaps(ctx context.Context, poolID string, limit int) ([]pgindex.ValidationGap, error)
 	MaterializeCoverageStaleClaimPenalties(ctx context.Context, poolID string) (int64, error)
+	ListFederationPeerDiagnostics(ctx context.Context, limit int) ([]pgindex.FederationPeerDiagnostic, error)
+	ListFederationEventDiagnostics(ctx context.Context, limit int) ([]pgindex.FederationEventDiagnostic, error)
+	ListFederationRejectedEventDiagnostics(ctx context.Context, limit int) ([]pgindex.FederationRejectedEventDiagnostic, error)
+	ListFederationPeerDeliveryDiagnostics(ctx context.Context, limit int) ([]pgindex.FederationPeerDeliveryDiagnostic, error)
+	ListValidationTaskDiagnostics(ctx context.Context, limit int) ([]pgindex.ValidationTaskDiagnostic, error)
 }
 
 type trustPoolRequest struct {
@@ -471,6 +476,66 @@ func (ctrl *GoNZBNetAdminController) CoverageSchedulerPlan(c *echo.Context) erro
 		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}
 	return c.JSON(http.StatusOK, plan)
+}
+
+func (ctrl *GoNZBNetAdminController) PeerDiagnostics(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	items, err := store.ListFederationPeerDiagnostics(c.Request().Context(), parseIntDefault(queryParamTrimmed(c, "limit"), 100))
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
+func (ctrl *GoNZBNetAdminController) EventDiagnostics(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	items, err := store.ListFederationEventDiagnostics(c.Request().Context(), parseIntDefault(queryParamTrimmed(c, "limit"), 100))
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
+func (ctrl *GoNZBNetAdminController) RejectedEventDiagnostics(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	items, err := store.ListFederationRejectedEventDiagnostics(c.Request().Context(), parseIntDefault(queryParamTrimmed(c, "limit"), 100))
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
+func (ctrl *GoNZBNetAdminController) PeerDeliveryDiagnostics(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	items, err := store.ListFederationPeerDeliveryDiagnostics(c.Request().Context(), parseIntDefault(queryParamTrimmed(c, "limit"), 100))
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
+func (ctrl *GoNZBNetAdminController) ValidationTaskDiagnostics(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	items, err := store.ListValidationTaskDiagnostics(c.Request().Context(), parseIntDefault(queryParamTrimmed(c, "limit"), 100))
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items)})
 }
 
 func (ctrl *GoNZBNetAdminController) coverageSuggestionParams(c *echo.Context) (pgindex.CoverageWorkSuggestionParams, error) {
