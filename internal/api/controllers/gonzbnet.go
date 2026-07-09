@@ -14,6 +14,7 @@ import (
 	"github.com/datallboy/gonzb/internal/gonzbnet/canonical"
 	"github.com/datallboy/gonzb/internal/gonzbnet/events"
 	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
+	"github.com/datallboy/gonzb/internal/gonzbnet/pools"
 	"github.com/datallboy/gonzb/internal/gonzbnet/profile"
 	"github.com/datallboy/gonzb/internal/gonzbnet/releasecard"
 	"github.com/datallboy/gonzb/internal/gonzbnet/requestauth"
@@ -36,6 +37,9 @@ type gonzbnetStore interface {
 	AppendVerifiedFederationEvent(ctx context.Context, event *events.SignedEvent, validation *events.ValidationResult) error
 	AppendRejectedFederationEvent(ctx context.Context, eventID, authorNodeID, eventType string, rawEventJSON []byte, reason string) error
 	UpsertFederatedReleaseCardProjection(ctx context.Context, projection releasecard.Projection) error
+	ValidateFederationPoolControlEvent(ctx context.Context, event *events.SignedEvent) error
+	ProjectFederationPoolEvent(ctx context.Context, event *events.SignedEvent) error
+	CanAcceptFederationEventForPools(ctx context.Context, authorNodeID string, poolIDs []string, eventType string) (pgindex.PoolAuthorizationResult, error)
 }
 
 type outboxResponse struct {
@@ -292,6 +296,21 @@ func (ctrl *GoNZBNetController) acceptInboxEvent(ctx context.Context, store gonz
 		_ = store.AppendRejectedFederationEvent(ctx, eventID, event.AuthorNodeID, event.EventType, raw, reason)
 		return inboxEventResult{EventID: eventID, Status: "rejected", Code: "verification_failed", Message: reason}
 	}
+	if pools.EventIsPoolControl(event.EventType) {
+		if err := store.ValidateFederationPoolControlEvent(ctx, event); err != nil {
+			_ = store.AppendRejectedFederationEvent(ctx, event.EventID, event.AuthorNodeID, event.EventType, raw, err.Error())
+			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "pool_validation_failed", Message: err.Error()}
+		}
+	} else {
+		authorization, err := store.CanAcceptFederationEventForPools(ctx, event.AuthorNodeID, event.PoolIDs, event.EventType)
+		if err != nil {
+			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "pool_authorization_error", Message: err.Error()}
+		}
+		if !authorization.Allowed {
+			_ = store.AppendRejectedFederationEvent(ctx, event.EventID, event.AuthorNodeID, event.EventType, raw, authorization.Reason)
+			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: authorization.Reason, Message: authorization.Reason}
+		}
+	}
 	var releaseProjection *releasecard.Projection
 	if event.EventType == "ReleaseCard" {
 		var card releasecard.ReleaseCard
@@ -312,6 +331,11 @@ func (ctrl *GoNZBNetController) acceptInboxEvent(ctx context.Context, store gonz
 	}
 	if err := store.AppendVerifiedFederationEvent(ctx, event, validation); err != nil {
 		return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "store_error", Message: err.Error()}
+	}
+	if pools.EventIsPoolControl(event.EventType) {
+		if err := store.ProjectFederationPoolEvent(ctx, event); err != nil {
+			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "projection_failed", Message: err.Error()}
+		}
 	}
 	if releaseProjection != nil {
 		if err := store.UpsertFederatedReleaseCardProjection(ctx, *releaseProjection); err != nil {
