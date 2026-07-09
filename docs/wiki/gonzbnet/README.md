@@ -67,6 +67,7 @@ Current implementation state:
   configuration validation to the admin API/UI.
 - Addendum Phase O adds a local admin action to resolve federated manifests
   through the existing signed manifest resolver path.
+- Addendum Phase P adds local peer removal to the peer-management admin API/UI.
 
 Maintained pages:
 
@@ -96,3 +97,4 @@ Maintained pages:
 - [Phase M Source And Health Diagnostics](./phase-m-source-health-diagnostics.md)
 - [Phase N Node Profile And Config Admin](./phase-n-node-config-admin.md)
 - [Phase O Force Resolve Manifest](./phase-o-force-resolve-manifest.md)
+- [Phase P Remove Peer](./phase-p-remove-peer.md)
