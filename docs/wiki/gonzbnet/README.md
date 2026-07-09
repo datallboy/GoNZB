@@ -47,6 +47,8 @@ Current implementation state:
   APIs, active/stale claim projection, and coverage dashboard reads.
 - Addendum Phase E adds local dedup-aware coverage work suggestions, gap and
   duplicate detection, and coverage score computation.
+- Addendum Phase F adds deterministic weighted rendezvous scheduler helpers and
+  read-only coverage plans for stale-claim failover review.
 
 Maintained pages:
 
@@ -66,3 +68,4 @@ Maintained pages:
 - [Phase C Scan-Without-Index Contribution](./phase-c-scan-output.md)
 - [Phase D Coverage Events And Manual Assignments](./phase-d-coverage.md)
 - [Phase E Dedup-Aware Local Scheduler](./phase-e-dedup-scheduler.md)
+- [Phase F Automated Coverage Improvements](./phase-f-coverage-scheduler.md)

@@ -160,6 +160,7 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		v1AdminGoNZBNet.POST("/pools/:pool_id/members/:node_id/revoke", gonzbnetAdminCtrl.RevokePoolMember)
 		v1AdminGoNZBNet.GET("/coverage", gonzbnetAdminCtrl.CoverageDashboard)
 		v1AdminGoNZBNet.GET("/coverage/suggestions", gonzbnetAdminCtrl.CoverageSuggestions)
+		v1AdminGoNZBNet.GET("/coverage/plan", gonzbnetAdminCtrl.CoverageSchedulerPlan)
 		v1AdminGoNZBNet.POST("/coverage/assignments", gonzbnetAdminCtrl.CreateCoverageAssignment)
 		v1AdminGoNZBNet.POST("/coverage/claims", gonzbnetAdminCtrl.CreateCoverageClaim)
 		v1AdminGoNZBNet.POST("/coverage/complete", gonzbnetAdminCtrl.CreateCoverageComplete)
