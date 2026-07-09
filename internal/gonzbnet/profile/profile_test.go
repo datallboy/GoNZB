@@ -59,3 +59,43 @@ func TestNodeProfileAdvertisesConsumerOnlyCapabilities(t *testing.T) {
 		t.Fatalf("consumer-only node should not advertise contribution capabilities: %+v", profile.Capabilities)
 	}
 }
+
+func TestNodeProfileAdvertisesCapacityAndModuleStatus(t *testing.T) {
+	node, err := identity.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("identity: %v", err)
+	}
+
+	profile, err := NodeProfileFor(context.Background(), node, Config{
+		AdvertiseURL:                  "https://node.example/gonzbnet/v1",
+		Scanner:                       true,
+		IndexProjection:               false,
+		Validator:                     true,
+		ManifestBuilder:               true,
+		ScannerMaxGroups:              12,
+		ScannerMaxArticlesPerHour:     345000,
+		ValidationMaxManifestsPerHour: 40,
+		ValidationTiers:               []string{"metadata", "article_stat"},
+		ValidationAllowSamplePayload:  true,
+		ValidationAllowPAR2:           false,
+		ProviderDisclosure:            "hash_only",
+	}, time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("node profile: %v", err)
+	}
+	if profile.ModuleStatus.Scanner != "enabled" || profile.ModuleStatus.IndexProjection != "disabled" {
+		t.Fatalf("unexpected module status: %+v", profile.ModuleStatus)
+	}
+	if profile.ScannerCapacity == nil || profile.ScannerCapacity.MaxGroups != 12 || profile.ScannerCapacity.MaxArticlesPerHour != 345000 {
+		t.Fatalf("unexpected scanner capacity: %+v", profile.ScannerCapacity)
+	}
+	if profile.ValidatorCapacity == nil || profile.ValidatorCapacity.MaxManifestsPerHour != 40 {
+		t.Fatalf("unexpected validator capacity: %+v", profile.ValidatorCapacity)
+	}
+	if len(profile.ValidatorCapacity.ValidationTiers) != 2 || !profile.ValidatorCapacity.SupportsYEncSampleValidation || profile.ValidatorCapacity.SupportsPAR2Validation {
+		t.Fatalf("unexpected validator tiers/support: %+v", profile.ValidatorCapacity)
+	}
+	if profile.ProviderScope.ProviderDisclosure != "hash_only" || profile.ProviderScope.ArticleNumberScope != "provider_local" {
+		t.Fatalf("unexpected provider scope: %+v", profile.ProviderScope)
+	}
+}

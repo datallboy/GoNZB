@@ -117,6 +117,8 @@ Current implementation state:
   manifest-cache settings with direct `GONZBNET_*` aliases.
 - Security cleanup adds temporary in-memory throttling after repeated
   federation rate-limit violations.
+- Profile cleanup adds NodeProfile module status, scanner capacity, validator
+  capacity, and provider-scope advertisement.
 - Security cleanup rejects remote signed events with future `created_at` /
   `not_before` windows, expired `expires_at` values, or event ages beyond
   `gonzbnet.max_event_age_hours`.
@@ -178,6 +180,7 @@ Maintained pages:
 - [Public Coverage Read Endpoints](./public-coverage-read-endpoints.md)
 - [Public Coverage Write Endpoints](./public-coverage-write-endpoints.md)
 - [Capability Profile Alignment](./capability-profile-alignment.md)
+- [Profile Capacity Alignment](./profile-capacity-alignment.md)
 - [Test Coverage Cleanup](./test-coverage-cleanup.md)
 - [Security: Node Key Encryption](./security-key-encryption.md)
 - [Security: Key Export](./security-key-export.md)

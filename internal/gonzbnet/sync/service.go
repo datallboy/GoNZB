@@ -339,19 +339,7 @@ func (s *Service) syncPeer(ctx context.Context, peer pgindex.FederationPeerRecor
 	if err != nil {
 		return result, fmt.Errorf("decode peer public key: %w", err)
 	}
-	profileJSON, _ := json.Marshal(nodeProfile)
-	capabilitiesJSON, _ := json.Marshal(nodeProfile.Capabilities)
-	if err := s.store.UpsertFederationNode(ctx, pgindex.FederationNodeRecord{
-		NodeID:          nodeProfile.NodeID,
-		PublicKey:       ed25519.PublicKey(publicKey),
-		Alias:           nodeProfile.Alias,
-		Software:        nodeProfile.Software,
-		SoftwareVersion: nodeProfile.SoftwareVersion,
-		BaseURL:         wellKnown.BaseURL,
-		Capabilities:    capabilitiesJSON,
-		ProfileJSON:     profileJSON,
-		Status:          "connected",
-	}); err != nil {
+	if err := s.store.UpsertFederationNode(ctx, federationNodeRecordFromProfile(nodeProfile, wellKnown.BaseURL, ed25519.PublicKey(publicKey))); err != nil {
 		return result, err
 	}
 	if _, err := s.fetchCaps(ctx, wellKnown.BaseURL); err != nil {
@@ -485,19 +473,7 @@ func (s *Service) pushPeer(ctx context.Context, peer pgindex.FederationPeerRecor
 	if err != nil {
 		return result, fmt.Errorf("decode peer public key: %w", err)
 	}
-	profileJSON, _ := json.Marshal(nodeProfile)
-	capabilitiesJSON, _ := json.Marshal(nodeProfile.Capabilities)
-	if err := s.store.UpsertFederationNode(ctx, pgindex.FederationNodeRecord{
-		NodeID:          nodeProfile.NodeID,
-		PublicKey:       ed25519.PublicKey(publicKey),
-		Alias:           nodeProfile.Alias,
-		Software:        nodeProfile.Software,
-		SoftwareVersion: nodeProfile.SoftwareVersion,
-		BaseURL:         wellKnown.BaseURL,
-		Capabilities:    capabilitiesJSON,
-		ProfileJSON:     profileJSON,
-		Status:          "connected",
-	}); err != nil {
+	if err := s.store.UpsertFederationNode(ctx, federationNodeRecordFromProfile(nodeProfile, wellKnown.BaseURL, ed25519.PublicKey(publicKey))); err != nil {
 		return result, err
 	}
 	items, err := s.store.ListUndeliveredFederationEvents(ctx, peer.ID, limit)
@@ -575,19 +551,7 @@ func (s *Service) gossipPeer(ctx context.Context, peer pgindex.FederationPeerRec
 	if err != nil {
 		return result, fmt.Errorf("decode peer public key: %w", err)
 	}
-	profileJSON, _ := json.Marshal(nodeProfile)
-	capabilitiesJSON, _ := json.Marshal(nodeProfile.Capabilities)
-	if err := s.store.UpsertFederationNode(ctx, pgindex.FederationNodeRecord{
-		NodeID:          nodeProfile.NodeID,
-		PublicKey:       ed25519.PublicKey(publicKey),
-		Alias:           nodeProfile.Alias,
-		Software:        nodeProfile.Software,
-		SoftwareVersion: nodeProfile.SoftwareVersion,
-		BaseURL:         wellKnown.BaseURL,
-		Capabilities:    capabilitiesJSON,
-		ProfileJSON:     profileJSON,
-		Status:          "connected",
-	}); err != nil {
+	if err := s.store.UpsertFederationNode(ctx, federationNodeRecordFromProfile(nodeProfile, wellKnown.BaseURL, ed25519.PublicKey(publicKey))); err != nil {
 		return result, err
 	}
 	if !nodeProfile.Capabilities.WebSocketGossip {
@@ -882,6 +846,36 @@ func (s *Service) validatePeerIdentity(wellKnown profile.WellKnown, nodeProfile 
 		return fmt.Errorf("peer node id does not match public key")
 	}
 	return nil
+}
+
+func federationNodeRecordFromProfile(nodeProfile profile.NodeProfile, baseURL string, publicKey ed25519.PublicKey) pgindex.FederationNodeRecord {
+	profileJSON, _ := json.Marshal(nodeProfile)
+	capabilitiesJSON, _ := json.Marshal(nodeProfile.Capabilities)
+	moduleStatusJSON, _ := json.Marshal(nodeProfile.ModuleStatus)
+	var scannerCapacityJSON []byte
+	if nodeProfile.ScannerCapacity != nil {
+		scannerCapacityJSON, _ = json.Marshal(nodeProfile.ScannerCapacity)
+	}
+	var validatorCapacityJSON []byte
+	if nodeProfile.ValidatorCapacity != nil {
+		validatorCapacityJSON, _ = json.Marshal(nodeProfile.ValidatorCapacity)
+	}
+	providerScopeJSON, _ := json.Marshal(nodeProfile.ProviderScope)
+	return pgindex.FederationNodeRecord{
+		NodeID:            nodeProfile.NodeID,
+		PublicKey:         publicKey,
+		Alias:             nodeProfile.Alias,
+		Software:          nodeProfile.Software,
+		SoftwareVersion:   nodeProfile.SoftwareVersion,
+		BaseURL:           baseURL,
+		Capabilities:      capabilitiesJSON,
+		ModuleStatus:      moduleStatusJSON,
+		ScannerCapacity:   scannerCapacityJSON,
+		ValidatorCapacity: validatorCapacityJSON,
+		ProviderScope:     providerScopeJSON,
+		ProfileJSON:       profileJSON,
+		Status:            "connected",
+	}
 }
 
 func (s *Service) projectValidationEvent(ctx context.Context, event *events.SignedEvent, raw []byte) error {

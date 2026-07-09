@@ -9,3 +9,6 @@ NodeProfile capability booleans now reflect the configured optional modules:
 This lets validator-only, scanner-only, relay, and consumer-only nodes advertise
 their real participation shape without implying support for modules that are
 disabled locally.
+
+Profile capacity cleanup adds module status plus scanner and validator capacity
+blocks to the same NodeProfile document.

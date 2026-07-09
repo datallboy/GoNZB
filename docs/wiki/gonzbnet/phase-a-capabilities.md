@@ -52,3 +52,6 @@ federated cache through search.
 Addendum config cleanup also exposes scanner limits, coverage policy knobs,
 validation limits, and manifest-cache bounds as typed config fields with
 `GONZBNET_*` environment aliases.
+
+Profile capacity cleanup extends NodeProfile with module status, scanner
+capacity, validator capacity, and privacy-preserving provider scope fields.
