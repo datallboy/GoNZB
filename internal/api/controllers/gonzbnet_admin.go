@@ -255,6 +255,9 @@ func (ctrl *GoNZBNetAdminController) ConfigValidation(c *echo.Context) error {
 	if cfg.MaxBatchEvents <= 0 {
 		issue("error", "gonzbnet.max_batch_events", "must be greater than 0")
 	}
+	if cfg.RateLimitEventsPerMinute <= 0 {
+		issue("error", "gonzbnet.rate_limit_events_per_minute", "must be greater than 0")
+	}
 	if cfg.TimeToleranceSeconds <= 0 {
 		issue("error", "gonzbnet.time_tolerance_seconds", "must be greater than 0")
 	}
@@ -1292,11 +1295,12 @@ func (ctrl *GoNZBNetAdminController) adminConfigSummary() gonzbnetAdminConfigSum
 			"websocket_gossip":     cfg.WebSocketGossipEnabled,
 		},
 		Limits: map[string]int{
-			"max_batch_events":       cfg.MaxBatchEvents,
-			"max_event_bytes":        cfg.MaxEventBytes,
-			"max_manifest_bytes":     cfg.MaxManifestBytes,
-			"nonce_ttl_seconds":      cfg.NonceTTLSeconds,
-			"time_tolerance_seconds": cfg.TimeToleranceSeconds,
+			"max_batch_events":             cfg.MaxBatchEvents,
+			"max_event_bytes":              cfg.MaxEventBytes,
+			"max_manifest_bytes":           cfg.MaxManifestBytes,
+			"nonce_ttl_seconds":            cfg.NonceTTLSeconds,
+			"rate_limit_events_per_minute": cfg.RateLimitEventsPerMinute,
+			"time_tolerance_seconds":       cfg.TimeToleranceSeconds,
 		},
 		Privacy: map[string]bool{
 			"live_query_enabled":         cfg.LiveQueryEnabled,

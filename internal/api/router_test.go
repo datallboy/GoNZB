@@ -1,6 +1,9 @@
 package api
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/datallboy/gonzb/internal/app"
@@ -92,6 +95,62 @@ func TestRegisterRoutesIndexerOnly(t *testing.T) {
 	assertRoutePresent(t, routes, "/api/v1/admin/indexer/stages/:stage/actions/resume")
 	assertRouteMissing(t, routes, "/api/v1/releases/search")
 	assertRouteMissing(t, routes, "/api/v1/queue")
+}
+
+func TestFederationRateLimitReturnsStableErrorCode(t *testing.T) {
+	e := echo.New()
+	mw := federationRateLimitMiddleware(1)
+	handler := mw(func(c *echo.Context) error {
+		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/gonzbnet/v1/inbox", strings.NewReader(`{}`))
+	req.RemoteAddr = "192.0.2.1:12345"
+	if err := handler(e.NewContext(req, rec)); err != nil {
+		t.Fatalf("first request returned error: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected first request status 200, got %d", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/gonzbnet/v1/inbox", strings.NewReader(`{}`))
+	req.RemoteAddr = "192.0.2.1:12345"
+	if err := handler(e.NewContext(req, rec)); err != nil {
+		t.Fatalf("second request returned error: %v", err)
+	}
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected status 429, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"code":"rate_limited"`) {
+		t.Fatalf("expected rate_limited code, got %s", rec.Body.String())
+	}
+}
+
+func TestFederationBodyLimitReturnsStableErrorCode(t *testing.T) {
+	e := echo.New()
+	mw := federationBodyLimitMiddleware(config.GoNZBNetConfig{
+		MaxEventBytes:    1,
+		MaxManifestBytes: 1,
+		MaxBatchEvents:   1,
+	})
+	handler := mw(func(c *echo.Context) error {
+		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
+	})
+	body := strings.NewReader(strings.Repeat("a", int(defaultJSONBodyLimit)+1))
+	req := httptest.NewRequest(http.MethodPost, "/gonzbnet/v1/inbox", body)
+	rec := httptest.NewRecorder()
+
+	if err := handler(e.NewContext(req, rec)); err != nil {
+		t.Fatalf("request returned error: %v", err)
+	}
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected status 413, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"code":"payload_too_large"`) {
+		t.Fatalf("expected payload_too_large code, got %s", rec.Body.String())
+	}
 }
 
 func routePaths(e *echo.Echo) map[string]struct{} {

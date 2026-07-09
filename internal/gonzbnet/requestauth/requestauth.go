@@ -83,8 +83,11 @@ func Verify(ctx context.Context, store VerifierStore, authorization, method, pat
 	if tolerance <= 0 {
 		tolerance = 120 * time.Second
 	}
-	if now.UTC().Sub(timestamp.UTC()) > tolerance || timestamp.UTC().Sub(now.UTC()) > tolerance {
-		return result, fmt.Errorf("timestamp outside tolerance")
+	if now.UTC().Sub(timestamp.UTC()) > tolerance {
+		return result, fmt.Errorf("timestamp expired")
+	}
+	if timestamp.UTC().Sub(now.UTC()) > tolerance {
+		return result, fmt.Errorf("timestamp in future")
 	}
 	if _, err := canonical.DecodeBase64URL(nonce); err != nil {
 		return result, fmt.Errorf("invalid nonce")
