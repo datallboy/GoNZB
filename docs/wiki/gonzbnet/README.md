@@ -37,6 +37,9 @@ Current implementation state:
 - Addendum Phase A adds capability advertisement, durable node capability
   snapshots, pool-approved contribution grants, and module switch no-op
   behavior.
+- Addendum Phase B adds validator-only signed attestations, validation task
+  queueing, checksum-attestation schema support, and validation score
+  projection.
 
 Maintained pages:
 
@@ -52,3 +55,4 @@ Maintained pages:
 - [Phase 10 WebSocket Gossip](./phase-10-websocket-gossip.md)
 - [Phase 11 Relay Mode Controls](./phase-11-relay-mode.md)
 - [Phase A Capability Registry](./phase-a-capabilities.md)
+- [Phase B Validation-Only Contribution](./phase-b-validation.md)

@@ -57,6 +57,8 @@ func RequiredForEvent(eventType string) []string {
 		return []string{ManifestBuilder, ManifestCache}
 	case "HealthAttestation":
 		return []string{Validator, HealthChecker}
+	case "ValidatorCapacity", "ArticleAvailabilityAttestation", "ChecksumAttestation":
+		return []string{Validator}
 	case "Tombstone":
 		return []string{Admin}
 	default:
