@@ -118,6 +118,9 @@ type GoNZBNetConfig struct {
 	HealthAttestationsEnabled      bool     `mapstructure:"health_attestations_enabled" yaml:"health_attestations_enabled"`
 	HealthAttestationsBatchSize    int      `mapstructure:"health_attestations_batch_size" yaml:"health_attestations_batch_size"`
 	HealthAttestationsIntervalMin  float64  `mapstructure:"health_attestations_interval_minutes" yaml:"health_attestations_interval_minutes"`
+	ValidationBatchSize            int      `mapstructure:"validation_batch_size" yaml:"validation_batch_size"`
+	ValidationIntervalMin          float64  `mapstructure:"validation_interval_minutes" yaml:"validation_interval_minutes"`
+	ChecksumValidationEnabled      bool     `mapstructure:"checksum_validation_enabled" yaml:"checksum_validation_enabled"`
 	PullSyncEnabled                bool     `mapstructure:"pull_sync_enabled" yaml:"pull_sync_enabled"`
 	PullSyncIntervalMin            float64  `mapstructure:"pull_sync_interval_minutes" yaml:"pull_sync_interval_minutes"`
 	PushSyncEnabled                bool     `mapstructure:"push_sync_enabled" yaml:"push_sync_enabled"`
@@ -536,6 +539,9 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("gonzbnet.health_attestations_enabled", false)
 	v.SetDefault("gonzbnet.health_attestations_batch_size", 50)
 	v.SetDefault("gonzbnet.health_attestations_interval_minutes", 30.0)
+	v.SetDefault("gonzbnet.validation_batch_size", 25)
+	v.SetDefault("gonzbnet.validation_interval_minutes", 15.0)
+	v.SetDefault("gonzbnet.checksum_validation_enabled", false)
 	v.SetDefault("gonzbnet.pull_sync_enabled", false)
 	v.SetDefault("gonzbnet.pull_sync_interval_minutes", 10.0)
 	v.SetDefault("gonzbnet.push_sync_enabled", false)

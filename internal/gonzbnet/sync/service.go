@@ -21,6 +21,7 @@ import (
 	"github.com/datallboy/gonzb/internal/gonzbnet/profile"
 	"github.com/datallboy/gonzb/internal/gonzbnet/releasecard"
 	"github.com/datallboy/gonzb/internal/gonzbnet/requestauth"
+	"github.com/datallboy/gonzb/internal/gonzbnet/validation"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
 	"golang.org/x/net/websocket"
 )
@@ -37,6 +38,9 @@ type Store interface {
 	AppendVerifiedFederationEvent(ctx context.Context, event *events.SignedEvent, validation *events.ValidationResult) error
 	AppendRejectedFederationEvent(ctx context.Context, eventID, authorNodeID, eventType string, rawEventJSON []byte, reason string) error
 	UpsertFederatedReleaseCardProjection(ctx context.Context, projection releasecard.Projection) error
+	ProjectValidatorCapacity(ctx context.Context, projection pgindex.ValidatorCapacityProjection) error
+	ProjectArticleAvailabilityAttestation(ctx context.Context, projection pgindex.ArticleAvailabilityProjection) error
+	ProjectChecksumAttestation(ctx context.Context, projection pgindex.ChecksumAttestationProjection) error
 	MarkFederationPeerSyncSuccess(ctx context.Context, peerID int64, nodeID, cursor, lastEventID string) error
 	MarkFederationPeerSyncFailure(ctx context.Context, peerID int64, errText string) error
 	ListUndeliveredFederationEvents(ctx context.Context, peerID int64, limit int) ([]*events.SignedEvent, error)
@@ -396,6 +400,9 @@ func (s *Service) syncPeer(ctx context.Context, peer pgindex.FederationPeerRecor
 					return result, err
 				}
 				result.Projected++
+			}
+			if err := s.projectValidationEvent(ctx, &event, raw); err != nil {
+				return result, err
 			}
 		}
 		if page.NextCursor != "" {
@@ -809,6 +816,55 @@ func (s *Service) validatePeerIdentity(wellKnown profile.WellKnown, nodeProfile 
 		return fmt.Errorf("peer node id does not match public key")
 	}
 	return nil
+}
+
+func (s *Service) projectValidationEvent(ctx context.Context, event *events.SignedEvent, raw []byte) error {
+	if event == nil {
+		return nil
+	}
+	poolID := ""
+	if len(event.PoolIDs) > 0 {
+		poolID = event.PoolIDs[0]
+	}
+	switch event.EventType {
+	case pools.EventTypeValidatorCapacity:
+		var body validation.ValidatorCapacity
+		if err := json.Unmarshal(event.Body, &body); err != nil {
+			_ = s.store.AppendRejectedFederationEvent(ctx, event.EventID, event.AuthorNodeID, event.EventType, raw, "invalid validator capacity body")
+			return nil
+		}
+		return s.store.ProjectValidatorCapacity(ctx, pgindex.ValidatorCapacityProjection{
+			Capacity:     body,
+			EventID:      event.EventID,
+			AuthorNodeID: event.AuthorNodeID,
+		})
+	case pools.EventTypeArticleAvailabilityAttestation:
+		var body validation.ArticleAvailabilityAttestation
+		if err := json.Unmarshal(event.Body, &body); err != nil {
+			_ = s.store.AppendRejectedFederationEvent(ctx, event.EventID, event.AuthorNodeID, event.EventType, raw, "invalid article availability body")
+			return nil
+		}
+		return s.store.ProjectArticleAvailabilityAttestation(ctx, pgindex.ArticleAvailabilityProjection{
+			Attestation:  body,
+			EventID:      event.EventID,
+			AuthorNodeID: event.AuthorNodeID,
+			PoolID:       poolID,
+		})
+	case pools.EventTypeChecksumAttestation:
+		var body validation.ChecksumAttestation
+		if err := json.Unmarshal(event.Body, &body); err != nil {
+			_ = s.store.AppendRejectedFederationEvent(ctx, event.EventID, event.AuthorNodeID, event.EventType, raw, "invalid checksum attestation body")
+			return nil
+		}
+		return s.store.ProjectChecksumAttestation(ctx, pgindex.ChecksumAttestationProjection{
+			Attestation:  body,
+			EventID:      event.EventID,
+			AuthorNodeID: event.AuthorNodeID,
+			PoolID:       poolID,
+		})
+	default:
+		return nil
+	}
 }
 
 func wellKnownURL(peerURL string) (string, error) {

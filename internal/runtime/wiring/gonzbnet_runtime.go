@@ -67,10 +67,11 @@ func (m *gonzbnetRuntimeModule) Start(ctx context.Context) error {
 	healthEnabled := m.publisher != nil &&
 		m.appCtx.Config.GoNZBNet.HealthAttestationsEnabled &&
 		m.appCtx.Config.GoNZBNet.HealthCheckerEnabled
+	validationEnabled := m.publisher != nil && m.appCtx.Config.GoNZBNet.ValidatorEnabled
 	pullEnabled := m.pullSync != nil && m.appCtx.Config.GoNZBNet.PullSyncEnabled
 	pushEnabled := m.pullSync != nil && m.appCtx.Config.GoNZBNet.PushSyncEnabled
 	gossipEnabled := m.pullSync != nil && m.appCtx.Config.GoNZBNet.WebSocketGossipEnabled
-	if !publishEnabled && !healthEnabled && !pullEnabled && !pushEnabled && !gossipEnabled {
+	if !publishEnabled && !healthEnabled && !validationEnabled && !pullEnabled && !pushEnabled && !gossipEnabled {
 		return nil
 	}
 	if m.running {
@@ -97,6 +98,20 @@ func (m *gonzbnetRuntimeModule) Start(ctx context.Context) error {
 		go func() {
 			if err := m.publisher.RunHealth(childCtx, interval, batchSize); err != nil && childCtx.Err() == nil {
 				m.appCtx.Logger.Error("gonzbnet health attestation publisher failed: %v", err)
+			}
+		}()
+	}
+	if validationEnabled {
+		interval := time.Duration(m.appCtx.Config.GoNZBNet.ValidationIntervalMin * float64(time.Minute))
+		batchSize := m.appCtx.Config.GoNZBNet.ValidationBatchSize
+		opts := publisher.ValidationOptions{
+			ChecksumEnabled: m.appCtx.Config.GoNZBNet.ChecksumValidationEnabled,
+			MaxTasksPerHour: batchSize,
+		}
+		m.appCtx.Logger.Info("starting gonzbnet validator interval=%s batch_size=%d checksum_validation=%v", interval, batchSize, opts.ChecksumEnabled)
+		go func() {
+			if err := m.publisher.RunValidation(childCtx, interval, batchSize, opts); err != nil && childCtx.Err() == nil {
+				m.appCtx.Logger.Error("gonzbnet validator failed: %v", err)
 			}
 		}()
 	}

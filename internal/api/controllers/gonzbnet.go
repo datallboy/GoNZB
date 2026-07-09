@@ -22,6 +22,7 @@ import (
 	"github.com/datallboy/gonzb/internal/gonzbnet/profile"
 	"github.com/datallboy/gonzb/internal/gonzbnet/releasecard"
 	"github.com/datallboy/gonzb/internal/gonzbnet/requestauth"
+	gonzbnetvalidation "github.com/datallboy/gonzb/internal/gonzbnet/validation"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
 	"github.com/labstack/echo/v5"
 	"golang.org/x/net/websocket"
@@ -49,6 +50,9 @@ type gonzbnetStore interface {
 	GetResolutionManifestEvent(ctx context.Context, manifestID string) (*events.SignedEvent, error)
 	CanFetchResolutionManifest(ctx context.Context, manifestID, nodeID string) (bool, error)
 	ProjectHealthAttestation(ctx context.Context, projection pgindex.HealthAttestationProjection) error
+	ProjectValidatorCapacity(ctx context.Context, projection pgindex.ValidatorCapacityProjection) error
+	ProjectArticleAvailabilityAttestation(ctx context.Context, projection pgindex.ArticleAvailabilityProjection) error
+	ProjectChecksumAttestation(ctx context.Context, projection pgindex.ChecksumAttestationProjection) error
 	ProjectTombstone(ctx context.Context, projection pgindex.TombstoneProjection) error
 	ListEnabledFederationPeers(ctx context.Context) ([]pgindex.FederationPeerRecord, error)
 	UpsertFederationPeerURL(ctx context.Context, peerURL string) (int64, error)
@@ -599,6 +603,55 @@ func (ctrl *GoNZBNetController) acceptInboxEvent(ctx context.Context, store gonz
 			PoolID:       poolID,
 		}
 	}
+	var validatorCapacityProjection *pgindex.ValidatorCapacityProjection
+	if event.EventType == pools.EventTypeValidatorCapacity {
+		var capacity gonzbnetvalidation.ValidatorCapacity
+		if err := json.Unmarshal(event.Body, &capacity); err != nil {
+			_ = store.AppendRejectedFederationEvent(ctx, event.EventID, event.AuthorNodeID, event.EventType, raw, "invalid validator capacity body")
+			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "invalid_body", Message: "invalid validator capacity body"}
+		}
+		validatorCapacityProjection = &pgindex.ValidatorCapacityProjection{
+			Capacity:     capacity,
+			EventID:      event.EventID,
+			AuthorNodeID: event.AuthorNodeID,
+		}
+	}
+	var articleAvailabilityProjection *pgindex.ArticleAvailabilityProjection
+	if event.EventType == pools.EventTypeArticleAvailabilityAttestation {
+		var attestation gonzbnetvalidation.ArticleAvailabilityAttestation
+		if err := json.Unmarshal(event.Body, &attestation); err != nil {
+			_ = store.AppendRejectedFederationEvent(ctx, event.EventID, event.AuthorNodeID, event.EventType, raw, "invalid article availability body")
+			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "invalid_body", Message: "invalid article availability body"}
+		}
+		poolID := ""
+		if len(event.PoolIDs) > 0 {
+			poolID = event.PoolIDs[0]
+		}
+		articleAvailabilityProjection = &pgindex.ArticleAvailabilityProjection{
+			Attestation:  attestation,
+			EventID:      event.EventID,
+			AuthorNodeID: event.AuthorNodeID,
+			PoolID:       poolID,
+		}
+	}
+	var checksumProjection *pgindex.ChecksumAttestationProjection
+	if event.EventType == pools.EventTypeChecksumAttestation {
+		var attestation gonzbnetvalidation.ChecksumAttestation
+		if err := json.Unmarshal(event.Body, &attestation); err != nil {
+			_ = store.AppendRejectedFederationEvent(ctx, event.EventID, event.AuthorNodeID, event.EventType, raw, "invalid checksum attestation body")
+			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "invalid_body", Message: "invalid checksum attestation body"}
+		}
+		poolID := ""
+		if len(event.PoolIDs) > 0 {
+			poolID = event.PoolIDs[0]
+		}
+		checksumProjection = &pgindex.ChecksumAttestationProjection{
+			Attestation:  attestation,
+			EventID:      event.EventID,
+			AuthorNodeID: event.AuthorNodeID,
+			PoolID:       poolID,
+		}
+	}
 	var tombstoneProjection *pgindex.TombstoneProjection
 	if event.EventType == pools.EventTypeTombstone {
 		var tombstone moderation.Tombstone
@@ -627,6 +680,21 @@ func (ctrl *GoNZBNetController) acceptInboxEvent(ctx context.Context, store gonz
 	}
 	if healthProjection != nil {
 		if err := store.ProjectHealthAttestation(ctx, *healthProjection); err != nil {
+			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "projection_failed", Message: err.Error()}
+		}
+	}
+	if validatorCapacityProjection != nil {
+		if err := store.ProjectValidatorCapacity(ctx, *validatorCapacityProjection); err != nil {
+			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "projection_failed", Message: err.Error()}
+		}
+	}
+	if articleAvailabilityProjection != nil {
+		if err := store.ProjectArticleAvailabilityAttestation(ctx, *articleAvailabilityProjection); err != nil {
+			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "projection_failed", Message: err.Error()}
+		}
+	}
+	if checksumProjection != nil {
+		if err := store.ProjectChecksumAttestation(ctx, *checksumProjection); err != nil {
 			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "projection_failed", Message: err.Error()}
 		}
 	}

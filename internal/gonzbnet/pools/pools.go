@@ -10,9 +10,12 @@ import (
 )
 
 const (
-	EventTypeReleaseCard       = "ReleaseCard"
-	EventTypeHealthAttestation = "HealthAttestation"
-	EventTypeTombstone         = "Tombstone"
+	EventTypeReleaseCard                    = "ReleaseCard"
+	EventTypeHealthAttestation              = "HealthAttestation"
+	EventTypeTombstone                      = "Tombstone"
+	EventTypeValidatorCapacity              = "ValidatorCapacity"
+	EventTypeArticleAvailabilityAttestation = "ArticleAvailabilityAttestation"
+	EventTypeChecksumAttestation            = "ChecksumAttestation"
 
 	EventTypePoolGenesis        = "PoolGenesis"
 	EventTypePoolJoinRequest    = "PoolJoinRequest"
@@ -127,7 +130,14 @@ func NormalizePolicy(policy Policy, adminCount int) Policy {
 		out.AcceptMode = "pool_member"
 	}
 	if len(out.AcceptedEventTypes) == 0 {
-		out.AcceptedEventTypes = []string{EventTypeReleaseCard, EventTypeHealthAttestation, EventTypeTombstone}
+		out.AcceptedEventTypes = []string{
+			EventTypeReleaseCard,
+			EventTypeHealthAttestation,
+			EventTypeTombstone,
+			EventTypeValidatorCapacity,
+			EventTypeArticleAvailabilityAttestation,
+			EventTypeChecksumAttestation,
+		}
 	}
 	return out
 }
