@@ -146,7 +146,8 @@ func aggregatorHasSource(cfg *config.Config) bool {
 	}
 	return len(cfg.Indexers) > 0 ||
 		cfg.Aggregator.Sources.LocalBlob.Enabled ||
-		cfg.Aggregator.Sources.UsenetIndexer.Enabled
+		cfg.Aggregator.Sources.UsenetIndexer.Enabled ||
+		cfg.Aggregator.Sources.GoNZBNet.Enabled
 }
 
 type usenetIndexerRuntimeModule struct {
