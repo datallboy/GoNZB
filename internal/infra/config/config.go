@@ -682,6 +682,7 @@ func bindGoNZBNetEnvAliases(v *viper.Viper) error {
 		"gonzbnet.manifest_cache_max_bytes":               {"GONZBNET_MANIFEST_CACHE_MAX_BYTES"},
 		"gonzbnet.manifest_cache_ttl_days":                {"GONZBNET_MANIFEST_CACHE_TTL_DAYS"},
 		"gonzbnet.manifest_cache_serve_to_trusted_pools":  {"GONZBNET_MANIFEST_CACHE_SERVE_TO_TRUSTED_POOLS"},
+		"gonzbnet.live_query_enabled":                     {"GONZBNET_LIVE_QUERY_ENABLED"},
 	}
 	for key, names := range aliases {
 		args := append([]string{key}, names...)
@@ -704,6 +705,9 @@ func (c *Config) validate() error {
 	}
 	if c.GoNZBNet.SendUserContext {
 		return errors.New("gonzbnet.send_user_context must remain false; federation must not send local user context")
+	}
+	if c.GoNZBNet.LiveQueryEnabled {
+		return errors.New("gonzbnet.live_query_enabled is reserved; searches must use the local federated cache")
 	}
 	if err := validateGoNZBNetConfig(c.GoNZBNet); err != nil {
 		return err

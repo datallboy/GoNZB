@@ -43,6 +43,36 @@ func TestGoNZBNetBootstrapRequiresPostgres(t *testing.T) {
 	}
 }
 
+func TestGoNZBNetRejectsLiveQueryEnabled(t *testing.T) {
+	cfg := minimalAggregatorConfig()
+	cfg.GoNZBNet.LiveQueryEnabled = true
+
+	if err := cfg.ValidateEffective(); err == nil {
+		t.Fatal("expected live query validation error")
+	}
+}
+
+func TestGoNZBNetRejectsLiveQueryEnvAlias(t *testing.T) {
+	cfgPath := writeMinimalConfig(t, `
+modules:
+  downloader:
+    enabled: false
+  aggregator:
+    enabled: true
+  usenet_indexer:
+    enabled: false
+  api:
+    enabled: true
+  web_ui:
+    enabled: false
+`)
+	t.Setenv("GONZBNET_LIVE_QUERY_ENABLED", "true")
+
+	if _, err := Load(cfgPath); err == nil {
+		t.Fatal("expected live query env alias validation error")
+	}
+}
+
 func TestGoNZBNetOnlyBootstrapCountsAsEnabledModule(t *testing.T) {
 	cfg := minimalAggregatorConfig()
 	cfg.Modules = ModulesConfig{

@@ -60,6 +60,25 @@ func TestNodeProfileAdvertisesConsumerOnlyCapabilities(t *testing.T) {
 	}
 }
 
+func TestNodeProfileDoesNotAdvertiseLiveQuery(t *testing.T) {
+	node, err := identity.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("identity: %v", err)
+	}
+
+	profile, err := NodeProfileFor(context.Background(), node, Config{
+		AdvertiseURL:     "https://node.example/gonzbnet/v1",
+		Consumer:         true,
+		LiveQueryEnabled: true,
+	}, time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("node profile: %v", err)
+	}
+	if profile.Policy.LiveQuerySupported {
+		t.Fatalf("live query should not be advertised")
+	}
+}
+
 func TestNodeProfileAdvertisesCapacityAndModuleStatus(t *testing.T) {
 	node, err := identity.LoadOrCreate(t.TempDir())
 	if err != nil {
