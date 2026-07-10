@@ -2,6 +2,7 @@ package events
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -72,6 +73,28 @@ func TestSignedEventBodyTamperFailsVerification(t *testing.T) {
 	}
 	if result.Reason != "body_hash mismatch" {
 		t.Fatalf("expected body_hash mismatch, got %q", result.Reason)
+	}
+}
+
+func TestSignedEventDuplicateBodyKeyFailsVerification(t *testing.T) {
+	ctx := context.Background()
+	node, err := identity.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("load identity: %v", err)
+	}
+	event, _, err := Create(ctx, node, testCreateOptions())
+	if err != nil {
+		t.Fatalf("create event: %v", err)
+	}
+
+	tampered := *event
+	tampered.Body = []byte(`{"schema_version":"1.0","alias":"first","alias":"second"}`)
+	result, err := Verify(&tampered)
+	if err != nil {
+		t.Fatalf("verify duplicate-key event: %v", err)
+	}
+	if result.OK || !strings.Contains(result.Reason, "Duplicate key") {
+		t.Fatalf("expected duplicate body key rejection, got %+v", result)
 	}
 }
 

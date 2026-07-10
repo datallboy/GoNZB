@@ -200,6 +200,9 @@ func (r *Resolver) fetchManifest(ctx context.Context, source pgindex.FederatedMa
 		return nil, fmt.Errorf("manifest request status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(payload)))
 	}
 	var out manifest.Response
+	if err := canonical.ValidateJSON(payload); err != nil {
+		return nil, fmt.Errorf("invalid manifest response json: %w", err)
+	}
 	if err := json.Unmarshal(payload, &out); err != nil {
 		return nil, err
 	}

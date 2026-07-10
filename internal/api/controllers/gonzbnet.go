@@ -551,7 +551,7 @@ func (ctrl *GoNZBNetController) ValidationRequest(c *echo.Context) error {
 		return federationJSONError(c, http.StatusUnauthorized, federationAuthErrorCode(err), err.Error())
 	}
 	var req gonzbnetvalidation.Request
-	if err := json.Unmarshal(body, &req); err != nil {
+	if err := decodeFederationJSON(body, &req); err != nil {
 		return federationJSONError(c, http.StatusBadRequest, "invalid_json", "invalid validation request json")
 	}
 	if err := gonzbnetvalidation.ValidateRequest(req, time.Now().UTC(), time.Duration(cfg.TimeToleranceSeconds)*time.Second); err != nil {
@@ -896,8 +896,12 @@ func (ctrl *GoNZBNetController) Handshake(c *echo.Context) error {
 	if err != nil {
 		return federationJSONError(c, http.StatusServiceUnavailable, "internal_error", err.Error())
 	}
+	bodyBytes, err := io.ReadAll(c.Request().Body)
+	if err != nil {
+		return federationJSONError(c, http.StatusBadRequest, "invalid_json", "read handshake json")
+	}
 	var req map[string]any
-	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+	if err := decodeFederationJSON(bodyBytes, &req); err != nil {
 		return federationJSONError(c, http.StatusBadRequest, "invalid_json", "invalid handshake json")
 	}
 	signatureValue, _ := req["signature"].(string)
@@ -1054,7 +1058,7 @@ func (ctrl *GoNZBNetController) RequestManifest(c *echo.Context) error {
 		return federationJSONError(c, http.StatusUnauthorized, federationAuthErrorCode(err), err.Error())
 	}
 	var req manifest.Request
-	if err := json.Unmarshal(body, &req); err != nil {
+	if err := decodeFederationJSON(body, &req); err != nil {
 		return federationJSONError(c, http.StatusBadRequest, "invalid_json", "invalid manifest request json")
 	}
 	manifestID := pathParamTrimmed(c, "manifest_id")
@@ -1186,8 +1190,8 @@ func (ctrl *GoNZBNetController) GossipWS(c *echo.Context) error {
 			return
 		}
 		for {
-			var batch gossip.Batch
-			if err := websocket.JSON.Receive(ws, &batch); err != nil {
+			var payload []byte
+			if err := websocket.Message.Receive(ws, &payload); err != nil {
 				if err != io.EOF {
 					_ = websocket.JSON.Send(ws, gossip.Response{
 						SchemaVersion: "1.0",
@@ -1195,6 +1199,15 @@ func (ctrl *GoNZBNetController) GossipWS(c *echo.Context) error {
 						Rejected:      []gossip.EventResult{{Status: "rejected", Code: "invalid_json", Message: err.Error()}},
 					})
 				}
+				return
+			}
+			var batch gossip.Batch
+			if err := decodeFederationJSON(payload, &batch); err != nil {
+				_ = websocket.JSON.Send(ws, gossip.Response{
+					SchemaVersion: "1.0",
+					Type:          gossip.ResponseType,
+					Rejected:      []gossip.EventResult{{Status: "rejected", Code: "invalid_json", Message: err.Error()}},
+				})
 				return
 			}
 			resp := ctrl.processGossipBatch(req.Context(), store, batch)
@@ -1525,6 +1538,9 @@ func (ctrl *GoNZBNetController) acceptInboxEvent(ctx context.Context, store gonz
 }
 
 func decodeInboxEvents(body []byte) ([]events.SignedEvent, error) {
+	if err := canonical.ValidateJSON(body); err != nil {
+		return nil, fmt.Errorf("invalid inbox json: %w", err)
+	}
 	var batch inboxEventBatch
 	if err := json.Unmarshal(body, &batch); err != nil {
 		return nil, fmt.Errorf("invalid inbox json")
@@ -1543,6 +1559,13 @@ func decodeInboxEvents(body []byte) ([]events.SignedEvent, error) {
 		return nil, fmt.Errorf("missing event batch")
 	}
 	return []events.SignedEvent{single}, nil
+}
+
+func decodeFederationJSON(body []byte, out any) error {
+	if err := canonical.ValidateJSON(body); err != nil {
+		return err
+	}
+	return json.Unmarshal(body, out)
 }
 
 func isCoverageEvent(eventType string) bool {
