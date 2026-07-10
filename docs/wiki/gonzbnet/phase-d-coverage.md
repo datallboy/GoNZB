@@ -73,5 +73,7 @@ verification, pool authorization, append-only log, and projection path.
 
 ## Current Boundary
 
-This phase does not execute scanner work. Scanner modules can read assignments,
-publish claims, and report outcomes through the event schemas added here.
+Phase D introduced the event schemas and manual APIs. Later scanner
+coordination cleanup wires the existing usenet-indexer scrape loop into these
+events for configured scrape ranges. Assignment-driven automatic scanner work
+selection remains future scanner-module integration.

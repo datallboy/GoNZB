@@ -13,6 +13,8 @@ Implemented surfaces include:
 - pool-approved capabilities and event acceptance gates;
 - coverage observations, assignments, claims, checkpoints, outcomes, dashboard
   reads, stale-claim penalties, and dedup-aware work suggestions;
+- existing indexer scrape coordination with signed local claims/outcomes and
+  trusted remote active/completed range suppression;
 - signed validation-request task admission for locally cached manifests;
 - article availability and checksum attestation projections;
 - privacy boundaries that keep local users, API keys, searches, grabs,
@@ -27,8 +29,10 @@ Validation request boundary:
   `requesting_node_id`, and an optional `target_node_id` must match the local
   node.
 
-Deferred operational work:
+Scanner coordination boundary:
 
-- A full autonomous distributed scanner loop remains future scanner-module work.
-  Current GoNZBNet code provides the signed metadata, coverage coordination, and
-  scheduler suggestion surfaces that such a worker would consume.
+- The existing usenet-indexer scrape loop can publish signed local
+  `RangeClaim`, `RangeComplete`, and `RangeFailed` events and honor trusted
+  remote active/completed ranges when scanner coverage coordination is enabled.
+- Assignment-driven automatic scanner work selection remains future
+  scanner-module integration.

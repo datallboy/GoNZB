@@ -77,6 +77,40 @@ type Options struct {
 	Concurrency              int
 	MaxBatches               int
 	BackfillUntilDateByGroup map[string]time.Time
+	RangeCoordinator         RangeCoordinator
+}
+
+type RangeCoordinator interface {
+	BeginScrapeRange(ctx context.Context, request RangeRequest) (RangeDecision, error)
+	CompleteScrapeRange(ctx context.Context, decision RangeDecision, result RangeResult) error
+	FailScrapeRange(ctx context.Context, decision RangeDecision, cause error) error
+}
+
+type RangeRequest struct {
+	Mode       string
+	Group      string
+	RangeStart int64
+	RangeEnd   int64
+}
+
+type RangeDecision struct {
+	ClaimID           string
+	AssignmentID      string
+	Group             string
+	RangeStart        int64
+	RangeEnd          int64
+	Skipped           bool
+	AdvanceCheckpoint bool
+	Reason            string
+}
+
+type RangeResult struct {
+	Mode             string
+	Group            string
+	RangeStart       int64
+	RangeEnd         int64
+	ArticleHeaders   int
+	ArticlesInserted int64
 }
 
 type Service struct {
@@ -109,6 +143,7 @@ type runMetrics struct {
 	CutoffFiltered     int64
 	CheckpointUpdates  int
 	DeferredRanges     int
+	RangesSkipped      int
 	RotationStartIndex int
 	RotationNextIndex  int
 }
@@ -121,6 +156,7 @@ type groupRunResult struct {
 	CutoffFiltered     int64
 	CheckpointUpdates  int
 	DeferredRanges     int
+	RangesSkipped      int
 }
 
 type groupRunOutcome struct {
@@ -329,6 +365,7 @@ func (s *Service) runGroups(ctx context.Context, providerID int64, mode string, 
 		metrics.CutoffFiltered += outcome.result.CutoffFiltered
 		metrics.CheckpointUpdates += outcome.result.CheckpointUpdates
 		metrics.DeferredRanges += outcome.result.DeferredRanges
+		metrics.RangesSkipped += outcome.result.RangesSkipped
 
 		if outcome.err != nil && !isContextCancellation(outcome.err) && firstErr == nil {
 			firstErr = outcome.err
@@ -432,15 +469,41 @@ func (s *Service) runLatestGroup(ctx context.Context, providerID int64, group st
 	} else if deferred {
 		return groupRunResult{HadWork: true, DeferredRanges: 1}, nil
 	}
+	decision, skipped, err := s.beginScrapeRange(ctx, "latest", group, start, to)
+	if err != nil {
+		return groupRunResult{}, err
+	}
+	if skipped {
+		result := groupRunResult{HadWork: true, RangesSkipped: 1}
+		if decision.AdvanceCheckpoint {
+			if err := s.repo.UpsertLatestCheckpoint(ctx, providerID, newsgroupID, to); err != nil {
+				return groupRunResult{}, fmt.Errorf("upsert skipped latest checkpoint %s=%d: %w", group, to, err)
+			}
+			result.CheckpointUpdates = 1
+		}
+		return result, nil
+	}
 
 	headers, inserted, _, _, actualProviderID, err := s.fetchInsertRange(ctx, providerID, newsgroupID, group, start, to, nil, stats.ProviderID)
 	if err != nil {
+		_ = s.failScrapeRange(ctx, decision, err)
 		return groupRunResult{}, err
 	}
 	providerID = actualProviderID
 
 	if err := s.repo.UpsertLatestCheckpoint(ctx, providerID, newsgroupID, to); err != nil {
+		_ = s.failScrapeRange(ctx, decision, err)
 		return groupRunResult{}, fmt.Errorf("upsert latest checkpoint %s=%d: %w", group, to, err)
+	}
+	if err := s.completeScrapeRange(ctx, decision, RangeResult{
+		Mode:             "latest",
+		Group:            group,
+		RangeStart:       start,
+		RangeEnd:         to,
+		ArticleHeaders:   len(headers),
+		ArticlesInserted: inserted,
+	}); err != nil {
+		return groupRunResult{}, err
 	}
 
 	s.log.Info("scrape latest: group=%s range=%d-%d inserted=%d", group, start, to, inserted)
@@ -556,6 +619,24 @@ func (s *Service) runBackfillGroup(ctx context.Context, providerID int64, group 
 		}
 		return groupRunResult{HadWork: true, DeferredRanges: 1, CheckpointUpdates: 1}, nil
 	}
+	decision, skipped, err := s.beginScrapeRange(ctx, "backfill", group, start, end)
+	if err != nil {
+		return groupRunResult{}, err
+	}
+	if skipped {
+		result := groupRunResult{HadWork: true, RangesSkipped: 1}
+		if decision.AdvanceCheckpoint {
+			nextCursor := start - 1
+			if nextCursor < 0 {
+				nextCursor = 0
+			}
+			if err := s.repo.UpsertBackfillCheckpoint(ctx, providerID, newsgroupID, nextCursor); err != nil {
+				return groupRunResult{}, fmt.Errorf("upsert skipped backfill checkpoint %s=%d: %w", group, nextCursor, err)
+			}
+			result.CheckpointUpdates = 1
+		}
+		return result, nil
+	}
 
 	var cutoff *time.Time
 	if hasCutoff {
@@ -564,6 +645,7 @@ func (s *Service) runBackfillGroup(ctx context.Context, providerID int64, group 
 	}
 	headers, inserted, oldestSeen, cutoffFiltered, actualProviderID, err := s.fetchInsertRange(ctx, providerID, newsgroupID, group, start, end, cutoff, stats.ProviderID)
 	if err != nil {
+		_ = s.failScrapeRange(ctx, decision, err)
 		return groupRunResult{}, err
 	}
 	providerID = actualProviderID
@@ -571,7 +653,18 @@ func (s *Service) runBackfillGroup(ctx context.Context, providerID int64, group 
 	if hasCutoff {
 		if oldestSeen != nil && !oldestSeen.After(cutoffDate.UTC()) {
 			if err := s.repo.SetBackfillCheckpointState(ctx, providerID, newsgroupID, ptrTime(cutoffDate.UTC()), true, "until_date_reached"); err != nil {
+				_ = s.failScrapeRange(ctx, decision, err)
 				return groupRunResult{}, fmt.Errorf("mark backfill cutoff reached %s: %w", group, err)
+			}
+			if err := s.completeScrapeRange(ctx, decision, RangeResult{
+				Mode:             "backfill",
+				Group:            group,
+				RangeStart:       start,
+				RangeEnd:         end,
+				ArticleHeaders:   len(headers),
+				ArticlesInserted: inserted,
+			}); err != nil {
+				return groupRunResult{}, err
 			}
 			s.log.Info("scrape backfill: group=%s reached cutoff=%s oldest=%s inserted=%d", group, cutoffDate.UTC().Format(time.RFC3339), oldestSeen.Format(time.RFC3339), inserted)
 			return groupRunResult{
@@ -590,7 +683,18 @@ func (s *Service) runBackfillGroup(ctx context.Context, providerID int64, group 
 	}
 
 	if err := s.repo.UpsertBackfillCheckpoint(ctx, providerID, newsgroupID, nextCursor); err != nil {
+		_ = s.failScrapeRange(ctx, decision, err)
 		return groupRunResult{}, fmt.Errorf("upsert backfill checkpoint %s=%d: %w", group, nextCursor, err)
+	}
+	if err := s.completeScrapeRange(ctx, decision, RangeResult{
+		Mode:             "backfill",
+		Group:            group,
+		RangeStart:       start,
+		RangeEnd:         end,
+		ArticleHeaders:   len(headers),
+		ArticlesInserted: inserted,
+	}); err != nil {
+		return groupRunResult{}, err
 	}
 
 	s.log.Info("scrape backfill: group=%s range=%d-%d inserted=%d next=%d", group, start, end, inserted, nextCursor)
@@ -602,6 +706,51 @@ func (s *Service) runBackfillGroup(ctx context.Context, providerID int64, group 
 		CutoffFiltered:     int64(cutoffFiltered),
 		CheckpointUpdates:  1,
 	}, nil
+}
+
+func (s *Service) beginScrapeRange(ctx context.Context, mode, group string, from, to int64) (RangeDecision, bool, error) {
+	if s.opts.RangeCoordinator == nil || from <= 0 || to < from {
+		return RangeDecision{}, false, nil
+	}
+	decision, err := s.opts.RangeCoordinator.BeginScrapeRange(ctx, RangeRequest{
+		Mode:       mode,
+		Group:      group,
+		RangeStart: from,
+		RangeEnd:   to,
+	})
+	if err != nil {
+		return RangeDecision{}, false, fmt.Errorf("begin coordinated scrape range %s %d-%d: %w", group, from, to, err)
+	}
+	if decision.Group == "" {
+		decision.Group = group
+	}
+	if decision.RangeStart == 0 {
+		decision.RangeStart = from
+	}
+	if decision.RangeEnd == 0 {
+		decision.RangeEnd = to
+	}
+	if decision.Skipped && s.log != nil {
+		s.log.Info("scrape %s skipped coordinated range: group=%s range=%d-%d reason=%s", mode, group, from, to, decision.Reason)
+	}
+	return decision, decision.Skipped, nil
+}
+
+func (s *Service) completeScrapeRange(ctx context.Context, decision RangeDecision, result RangeResult) error {
+	if s.opts.RangeCoordinator == nil || strings.TrimSpace(decision.ClaimID) == "" {
+		return nil
+	}
+	if err := s.opts.RangeCoordinator.CompleteScrapeRange(ctx, decision, result); err != nil {
+		return fmt.Errorf("complete coordinated scrape range %s %d-%d: %w", result.Group, result.RangeStart, result.RangeEnd, err)
+	}
+	return nil
+}
+
+func (s *Service) failScrapeRange(ctx context.Context, decision RangeDecision, cause error) error {
+	if s.opts.RangeCoordinator == nil || strings.TrimSpace(decision.ClaimID) == "" {
+		return nil
+	}
+	return s.opts.RangeCoordinator.FailScrapeRange(ctx, decision, cause)
 }
 
 func (s *Service) fetchInsertRange(ctx context.Context, providerID, newsgroupID int64, group string, from, to int64, cutoff *time.Time, expectedProviderKey string) ([]pgindex.ArticleHeader, int64, *time.Time, int, int64, error) {
@@ -812,6 +961,7 @@ func (m *runMetrics) toMap() map[string]any {
 		"cutoff_filtered":      m.CutoffFiltered,
 		"checkpoint_updates":   m.CheckpointUpdates,
 		"deferred_ranges":      m.DeferredRanges,
+		"ranges_skipped":       m.RangesSkipped,
 		"batch_size":           m.BatchSize,
 		"rotation_start_index": m.RotationStartIndex,
 		"rotation_next_index":  m.RotationNextIndex,

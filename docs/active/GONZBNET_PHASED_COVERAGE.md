@@ -33,11 +33,12 @@ Add coverage coordination primitives:
 - Claim expiration is projection-based. Active claims are claims whose
   `expires_at` is in the future; stale claims are expired claims without a
   matching completion/failure.
-- Actual scanner execution is out of scope; scanner modules can consume active
-  assignments and emit claim/outcome events later.
+- Actual scanner execution is out of scope for Phase D. Later scanner
+  coordination cleanup lets the existing usenet-indexer scrape loop emit
+  claim/outcome events for configured scrape ranges.
 
 ## Out Of Scope
 
 - Automated scheduler decisions.
-- NNTP scan execution.
+- Assignment-driven NNTP scan execution.
 - Visual dashboard components.

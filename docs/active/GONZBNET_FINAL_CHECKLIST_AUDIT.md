@@ -22,6 +22,9 @@ remaining GoNZBNet work.
 - Range claims, time-window claims, range completion, and validation overlap are
   handled by the dedup-aware coverage suggestion path.
 - Stale claims can be detected and materialized as reputation penalties.
+- Existing indexer scrape ranges can publish local signed claims/outcomes and
+  honor trusted remote active/completed ranges when scanner coverage
+  coordination is enabled.
 - Article availability and checksum attestations project into validation-aware
   scores; checksum emission remains feature-flagged.
 - Signed validation requests can enqueue local validation tasks for manifests
@@ -43,11 +46,14 @@ node, and the referenced manifest is already cached locally.
 Validator capacity and validation attestation events continue to flow through
 the signed inbox path.
 
-## Deferred Operational Work
+## Scanner Coordination Boundary
 
-A full autonomous scanner execution loop is still outside the current
-GoNZBNet code. The implemented surface supports scanner contribution through
-ReleaseCard publication, scan-output ingestion, coverage assignments, claims,
-checkpoints, outcomes, and scheduler suggestions. The actual NNTP scanner loop
-that consumes those suggestions and performs distributed scan work remains a
-future scanner module integration.
+The existing usenet-indexer scrape loop can participate in GoNZBNet scanner
+coordination when GoNZBNet, scanner mode, coverage mode, and unassigned scanner
+work are enabled. It publishes local signed range claims/outcomes and skips
+trusted remote active/completed ranges without exposing user or provider
+credentials.
+
+Assignment-driven automatic scanner work selection remains a future scanner
+module integration. Current scheduler APIs continue to expose suggestions for
+operators or future automation.
