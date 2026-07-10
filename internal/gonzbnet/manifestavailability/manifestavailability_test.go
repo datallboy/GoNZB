@@ -8,14 +8,16 @@ import (
 func TestValidateAndHashManifestAvailability(t *testing.T) {
 	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
 	item := Attestation{
-		SchemaVersion: "1.0",
-		Type:          Type,
-		ReleaseID:     "rel_1",
-		ManifestID:    "man_1",
-		CheckedAt:     now.Format(time.RFC3339),
-		Status:        StatusAvailable,
-		Confidence:    0.9,
-		Method:        "scan_output",
+		SchemaVersion:       "1.0",
+		Type:                Type,
+		ReleaseID:           "rel_1",
+		ManifestID:          "man_1",
+		SourceNodeID:        "node_1",
+		PoolID:              "pool.local",
+		Available:           true,
+		FetchPolicy:         FetchPolicyTrustedPeers,
+		CompressedSizeBytes: 81234,
+		UpdatedAt:           now.Format(time.RFC3339),
 	}
 	if err := Validate(item, now, 2*time.Minute); err != nil {
 		t.Fatalf("validate manifest availability: %v", err)
@@ -31,8 +33,8 @@ func TestValidateAndHashManifestAvailability(t *testing.T) {
 	if first == "" || first != second {
 		t.Fatalf("hash should be deterministic: %q %q", first, second)
 	}
-	item.Status = "bad"
+	item.FetchPolicy = "bad"
 	if err := Validate(item, now, 2*time.Minute); err == nil {
-		t.Fatalf("expected invalid status to fail")
+		t.Fatalf("expected invalid fetch policy to fail")
 	}
 }

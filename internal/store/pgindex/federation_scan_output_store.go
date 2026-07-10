@@ -123,15 +123,22 @@ func (s *Store) ProjectManifestAvailability(ctx context.Context, projection Mani
 	if authorNodeID == "" {
 		return fmt.Errorf("author_node_id is required")
 	}
-	poolID := firstNonBlank(projection.PoolID, "pool.local")
+	if authorNodeID != strings.TrimSpace(item.SourceNodeID) {
+		return fmt.Errorf("source_node_id does not match author_node_id")
+	}
+	poolID := firstNonBlank(projection.PoolID, item.PoolID)
+	if poolID != strings.TrimSpace(item.PoolID) {
+		return fmt.Errorf("manifest availability pool_id mismatch")
+	}
 	bodyJSON, err := json.Marshal(item)
 	if err != nil {
 		return err
 	}
-	checkedAt, err := time.Parse(time.RFC3339, strings.TrimSpace(item.CheckedAt))
+	updatedAt, err := time.Parse(time.RFC3339, strings.TrimSpace(item.UpdatedAt))
 	if err != nil {
 		return err
 	}
+	confidence := manifestAvailabilityConfidence(item.Available)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -141,12 +148,13 @@ func (s *Store) ProjectManifestAvailability(ctx context.Context, projection Mani
 		INSERT INTO manifest_availability_attestations (
 			attestation_id, release_id, manifest_id, author_node_id, pool_id,
 			checked_at, status, confidence, method, body_json, source_event_id,
-			updated_at
+			source_node_id, available, fetch_policy, compressed_size_bytes,
+			wire_updated_at, updated_at
 		)
 		VALUES (
 			$1, $2, $3, $4, $5,
 			$6, $7, $8, NULLIF($9, ''), $10::jsonb, $11,
-			NOW()
+			$12, $13, $14, $15, $16, NOW()
 		)
 		ON CONFLICT (attestation_id) DO UPDATE SET
 			checked_at = EXCLUDED.checked_at,
@@ -155,37 +163,62 @@ func (s *Store) ProjectManifestAvailability(ctx context.Context, projection Mani
 			method = EXCLUDED.method,
 			body_json = EXCLUDED.body_json,
 			source_event_id = EXCLUDED.source_event_id,
+			source_node_id = EXCLUDED.source_node_id,
+			available = EXCLUDED.available,
+			fetch_policy = EXCLUDED.fetch_policy,
+			compressed_size_bytes = EXCLUDED.compressed_size_bytes,
+			wire_updated_at = EXCLUDED.wire_updated_at,
 			updated_at = NOW()`,
 		eventID,
 		item.ReleaseID,
 		item.ManifestID,
 		authorNodeID,
 		poolID,
-		checkedAt.UTC(),
-		item.Status,
-		item.Confidence,
-		item.Method,
+		updatedAt.UTC(),
+		manifestAvailabilityStatus(item.Available),
+		confidence,
+		item.FetchPolicy,
 		string(bodyJSON),
 		eventID,
+		item.SourceNodeID,
+		item.Available,
+		item.FetchPolicy,
+		item.CompressedSizeBytes,
+		updatedAt.UTC(),
 	); err != nil {
 		return fmt.Errorf("insert manifest availability attestation: %w", err)
 	}
-	if strings.TrimSpace(item.Status) == manifestavailability.StatusAvailable {
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE federated_release_sources
-			SET manifest_confidence_score = GREATEST(manifest_confidence_score, $4),
-			    resolvable = TRUE,
-			    last_seen_at = NOW()
-			WHERE release_id = $1
-			  AND manifest_id = $2
-			  AND pool_id = $3`,
-			item.ReleaseID,
-			item.ManifestID,
-			poolID,
-			item.Confidence,
-		); err != nil {
-			return fmt.Errorf("update manifest availability score: %w", err)
-		}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE federated_release_sources
+		SET manifest_confidence_score = $5,
+		    resolvable = $4,
+		    last_seen_at = NOW()
+		WHERE release_id = $1
+		  AND manifest_id = $2
+		  AND pool_id = $3
+		  AND source_node_id = $6`,
+		item.ReleaseID,
+		item.ManifestID,
+		poolID,
+		item.Available,
+		confidence,
+		item.SourceNodeID,
+	); err != nil {
+		return fmt.Errorf("update manifest availability score: %w", err)
 	}
 	return tx.Commit()
+}
+
+func manifestAvailabilityStatus(available bool) string {
+	if available {
+		return "available"
+	}
+	return "unavailable"
+}
+
+func manifestAvailabilityConfidence(available bool) float64 {
+	if available {
+		return 1
+	}
+	return 0
 }

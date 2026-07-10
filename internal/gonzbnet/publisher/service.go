@@ -545,14 +545,16 @@ func (s *Service) publishArticleAvailability(ctx context.Context, nodeID string,
 
 func (s *Service) publishManifestAvailabilityOnce(ctx context.Context, nodeID string, card releasecard.ReleaseCard) error {
 	attestation := manifestavailability.Attestation{
-		SchemaVersion: "1.0",
-		Type:          manifestavailability.Type,
-		ReleaseID:     card.ReleaseID,
-		ManifestID:    card.ManifestID,
-		CheckedAt:     s.now().UTC().Format(time.RFC3339),
-		Status:        manifestavailability.StatusAvailable,
-		Confidence:    0.9,
-		Method:        "scan_output",
+		SchemaVersion:       "1.0",
+		Type:                manifestavailability.Type,
+		ReleaseID:           card.ReleaseID,
+		ManifestID:          card.ManifestID,
+		SourceNodeID:        nodeID,
+		PoolID:              s.poolID,
+		Available:           true,
+		FetchPolicy:         firstNonBlank(card.Resolution.FetchPolicy, manifestavailability.FetchPolicyTrustedPeers),
+		CompressedSizeBytes: card.Resolution.CompressedSizeBytes,
+		UpdatedAt:           s.now().UTC().Format(time.RFC3339),
 	}
 	bodyHash, err := manifestavailability.HashBody(attestation)
 	if err != nil {
