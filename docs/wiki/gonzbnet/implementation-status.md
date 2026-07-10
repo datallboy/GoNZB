@@ -19,6 +19,8 @@ Completed during this audit:
   boundaries reject duplicate JSON object names before decoding.
 - per-author append transactions validate chain links, track partial-sync gaps,
   and retain fork evidence without projecting alternate branches.
+- profiles and caps advertise only active publishers, structural validation,
+  uncompressed JSON, and implemented signed-event paths.
 
 The current required work is:
 
@@ -28,7 +30,7 @@ The current required work is:
 - perform configured validator tiers against the local NNTP provider;
 - emit scanner capacity, heartbeat, observations, and periodic checkpoints;
 - enforce manifest-cache retention/serving limits;
-- advertise only implemented capabilities and align divergent wire bodies;
+- align divergent wire bodies with the specification;
 - add PostgreSQL-backed three-node end-to-end coverage and GoNZBNet metrics.
 
 The standalone relay process is not on this list. The specification explicitly

@@ -45,6 +45,8 @@ Completed during this audit:
   and duplicate-key rejection before federation payload decoding.
 - Per-author append transactions now enforce known chain links, track and
   resolve partial-sync gaps, and retain fork evidence with suspicious status.
+- Node profiles and `/caps` now advertise only active publication paths,
+  structural validation, uncompressed JCS JSON, and implemented event routes.
 
 ### Critical correctness and privacy
 
@@ -68,25 +70,23 @@ is limited to well-known metadata, node profile, and capabilities.
 
 ### Protocol and security conformance
 
-5. Make capabilities truthful. The node currently advertises gzip/zstd and
-    event types that the normal receive path does not implement.
-6. Reconcile wire-body differences where current typed objects diverge from
+5. Reconcile wire-body differences where current typed objects diverge from
     the specification, especially `ManifestAvailability` and coverage events.
-7. Complete config semantics and aliases for controls that affect behavior,
+6. Complete config semantics and aliases for controls that affect behavior,
     including manifest-specific rate limits, remote get timeout, configurable
     route base path, and currently display-only addendum limits.
-8. Make accepted-event storage and projection atomic, or retain explicit
+7. Make accepted-event storage and projection atomic, or retain explicit
     pending/quarantine state until projection succeeds.
 
 ### Verification and operations
 
-9. Add the specified PostgreSQL-backed three-node end-to-end harness covering
+8. Add the specified PostgreSQL-backed three-node end-to-end harness covering
     publish, pull/push, authorized search/get, manifest fetch, malicious-node
     rejection, revocation, and tombstone propagation.
-10. Add direct PostgreSQL integration tests for event append/rejection,
+9. Add direct PostgreSQL integration tests for event append/rejection,
     projections, pool authorization, and migration behavior. Current GoNZBNet
     tests rely primarily on fakes.
-11. Add the named GoNZBNet counters/histograms and fill remaining structured-log
+10. Add the named GoNZBNet counters/histograms and fill remaining structured-log
     events from the observability section.
 
 ## Documentation Drift
@@ -102,7 +102,7 @@ is limited to well-known metadata, node profile, and capabilities.
 
 ## Execution Order
 
-1. Transactional receive projection and truthful protocol advertisement.
+1. Transactional receive projection and wire-body conformance.
 2. Local manifest building and validator/scanner contribution behavior.
 3. Config enforcement and truthful protocol advertisement.
 4. Integration/E2E tests and observability.

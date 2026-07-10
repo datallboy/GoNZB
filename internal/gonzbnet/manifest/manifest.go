@@ -112,6 +112,13 @@ func Validate(in ResolutionManifest) ([]byte, error) {
 	if strings.TrimSpace(in.ReleaseID) == "" {
 		return nil, fmt.Errorf("release_id is required")
 	}
+	compression := strings.ToLower(strings.TrimSpace(in.Compression))
+	if compression != "" && compression != "none" {
+		return nil, fmt.Errorf("unsupported manifest compression %q", in.Compression)
+	}
+	if in.Encrypted {
+		return nil, fmt.Errorf("encrypted manifests are not supported")
+	}
 	if len(in.ManifestCore.Files) == 0 {
 		return nil, fmt.Errorf("manifest_core.files is required")
 	}

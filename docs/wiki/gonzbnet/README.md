@@ -160,6 +160,8 @@ Current implementation state:
   duplicate object names before federation payload decoding.
 - Event-chain cleanup validates known predecessor/successor links, tracks
   partial-sync gaps, and preserves fork evidence without projection.
+- Capability cleanup removes unsupported compression, encryption, validation,
+  event, publisher, and WebSocket claims from public profiles and caps.
 
 Maintained pages:
 
