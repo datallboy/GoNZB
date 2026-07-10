@@ -94,6 +94,13 @@ type CoverageSchedulerPlan struct {
 	Mode        string                   `json:"mode"`
 }
 
+type CoverageScannerNode struct {
+	NodeID           string  `json:"node_id"`
+	Weight           float64 `json:"weight"`
+	MaxRangesPerHour int     `json:"max_ranges_per_hour"`
+	LocalTrustScore  float64 `json:"local_trust_score"`
+}
+
 type CoverageRangeBlockParams struct {
 	PoolID                string
 	NodeID                string
@@ -535,6 +542,110 @@ func (s *Store) BuildCoverageSchedulerPlan(ctx context.Context, params CoverageW
 	out.StaleClaims = staleClaims
 	out.Mode = firstNonBlank(params.Mode, "scanner")
 	return out, nil
+}
+
+func (s *Store) ListStaleCoverageRangeClaims(ctx context.Context, poolID string, limit int) ([]CoverageClaimRecord, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("pgindex store is not initialized")
+	}
+	poolID = firstNonBlank(poolID, "pool.local")
+	if limit <= 0 || limit > 100 {
+		limit = 25
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT c.claim_id, COALESCE(c.assignment_id, ''), c.pool_id,
+		       c.group_name, c.node_id, COALESCE(c.range_start, 0),
+		       COALESCE(c.range_end, 0), c.claimed_at, c.expires_at, c.status
+		FROM coverage_claims c
+		WHERE c.pool_id = $1
+		  AND c.claim_type = 'range'
+		  AND c.status = 'active'
+		  AND c.expires_at <= NOW()
+		  AND c.range_start IS NOT NULL
+		  AND c.range_end IS NOT NULL
+		  AND c.range_start > 0
+		  AND c.range_end >= c.range_start
+		  AND NOT EXISTS (
+		    SELECT 1 FROM coverage_range_outcomes o
+		    WHERE o.claim_id = c.claim_id
+		  )
+		ORDER BY c.expires_at
+		LIMIT $2`, poolID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []CoverageClaimRecord{}
+	for rows.Next() {
+		var item CoverageClaimRecord
+		item.ClaimType = "range"
+		if err := rows.Scan(&item.ClaimID, &item.AssignmentID, &item.PoolID, &item.Group, &item.NodeID, &item.RangeStart, &item.RangeEnd, &item.ClaimedAt, &item.ExpiresAt, &item.Status); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ListCoverageScannerNodes(ctx context.Context, poolID string, minTrustScore float64) ([]CoverageScannerNode, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("pgindex store is not initialized")
+	}
+	poolID = firstNonBlank(poolID, "pool.local")
+	if minTrustScore < 0 {
+		minTrustScore = 0
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT pm.node_id,
+		       COALESCE(NULLIF(sc.max_ranges_per_hour, 0), 1) AS weight,
+		       COALESCE(sc.max_ranges_per_hour, 0) AS max_ranges_per_hour,
+		       COALESCE(n.local_trust_score, 0) AS local_trust_score
+		FROM pool_members pm
+		JOIN federation_nodes n ON n.node_id = pm.node_id
+		LEFT JOIN scanner_capacities sc ON sc.node_id = pm.node_id
+		WHERE pm.pool_id = $1
+		  AND pm.status = 'active'
+		  AND COALESCE(n.status, '') <> 'blocked'
+		  AND COALESCE(n.local_trust_score, 0) >= $2
+		  AND (
+		    pm.role = 'admin'
+		    OR pm.allowed_capabilities ? 'scanner'
+		    OR sc.node_id IS NOT NULL
+		  )
+		GROUP BY pm.node_id, sc.max_ranges_per_hour, n.local_trust_score
+		ORDER BY pm.node_id`, poolID, minTrustScore)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []CoverageScannerNode{}
+	for rows.Next() {
+		var item CoverageScannerNode
+		if err := rows.Scan(&item.NodeID, &item.Weight, &item.MaxRangesPerHour, &item.LocalTrustScore); err != nil {
+			return nil, err
+		}
+		if item.Weight <= 0 {
+			item.Weight = 1
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) CoverageAssignmentExists(ctx context.Context, assignmentID string) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, fmt.Errorf("pgindex store is not initialized")
+	}
+	var ok bool
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM coverage_assignments
+			WHERE assignment_id = $1
+		)`, strings.TrimSpace(assignmentID)).Scan(&ok); err != nil {
+		return false, err
+	}
+	return ok, nil
 }
 
 func (s *Store) projectCoveragePlan(ctx context.Context, body coverage.CoveragePlan, event *events.SignedEvent) error {

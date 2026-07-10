@@ -21,6 +21,7 @@ import (
 	"github.com/datallboy/gonzb/internal/gonzbnet/moderation"
 	"github.com/datallboy/gonzb/internal/gonzbnet/pools"
 	"github.com/datallboy/gonzb/internal/gonzbnet/profile"
+	"github.com/datallboy/gonzb/internal/gonzbnet/reassigner"
 	gonzbnetsync "github.com/datallboy/gonzb/internal/gonzbnet/sync"
 	"github.com/datallboy/gonzb/internal/gonzbnet/transportpolicy"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
@@ -60,6 +61,9 @@ type gonzbnetAdminStore interface {
 	ListCoverageDashboard(ctx context.Context, poolID string) (pgindex.CoverageDashboard, error)
 	SuggestCoverageWork(ctx context.Context, params pgindex.CoverageWorkSuggestionParams) ([]pgindex.CoverageWorkSuggestion, error)
 	BuildCoverageSchedulerPlan(ctx context.Context, params pgindex.CoverageWorkSuggestionParams) (pgindex.CoverageSchedulerPlan, error)
+	ListStaleCoverageRangeClaims(ctx context.Context, poolID string, limit int) ([]pgindex.CoverageClaimRecord, error)
+	ListCoverageScannerNodes(ctx context.Context, poolID string, minTrustScore float64) ([]pgindex.CoverageScannerNode, error)
+	CoverageAssignmentExists(ctx context.Context, assignmentID string) (bool, error)
 	ListFederationNodeCapabilities(ctx context.Context) ([]pgindex.NodeCapabilityView, error)
 	ListCoverageGroupCatalog(ctx context.Context, poolID string) ([]pgindex.CoverageGroupCatalogItem, error)
 	ListValidationGaps(ctx context.Context, poolID string, limit int) ([]pgindex.ValidationGap, error)
@@ -1241,6 +1245,29 @@ func (ctrl *GoNZBNetAdminController) CoverageSchedulerPlan(c *echo.Context) erro
 		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}
 	return c.JSON(http.StatusOK, plan)
+}
+
+func (ctrl *GoNZBNetAdminController) CreateStaleClaimReassignments(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	nodeIdentity, err := ctrl.localIdentity()
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	poolID := firstNonBlank(queryParamTrimmed(c, "pool_id"), ctrl.appCtx.Config.GoNZBNet.LocalPoolID, "pool.local")
+	limit := parseIntDefault(queryParamTrimmed(c, "limit"), 25)
+	minTrust := parseCoverageFloatDefault(queryParamTrimmed(c, "min_blocking_trust"), ctrl.appCtx.Config.GoNZBNet.CoverageMinTrustForClaim)
+	svc, err := reassigner.New(nodeIdentity, store, poolID, minTrust)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	result, err := svc.RunOnce(c.Request().Context(), limit)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"status": "ok", "result": result})
 }
 
 func (ctrl *GoNZBNetAdminController) UpsertPeer(c *echo.Context) error {
