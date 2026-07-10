@@ -81,11 +81,12 @@ is limited to well-known metadata, node profile, and capabilities.
 
 ### Protocol and security conformance
 
-5. Partially complete. The remote manifest fetch timeout is now typed,
+5. Partially complete. The spec's shared federation rate limit is enforced,
+    and the remote manifest fetch timeout is now typed,
     defaulted, and wired into the resolver, and the configurable federation
     route base path is used by route registration with the existing default
-    fallback. Manifest-specific rate limits and currently display-only
-    addendum limits still need behavioral enforcement.
+    fallback. Currently display-only addendum limits still need behavioral
+    enforcement.
 6. Pending projection state is now durable: accepted-event projection failures
     are recorded with event/type, retry attempts, error, and resolution state.
     Full single-transaction append/projection remains a future optimization,
