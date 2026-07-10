@@ -84,31 +84,38 @@ type CoverageAssignment struct {
 	SchemaVersion  string `json:"schema_version"`
 	Type           string `json:"type"`
 	AssignmentID   string `json:"assignment_id"`
-	PlanID         string `json:"plan_id,omitempty"`
+	PlanID         string `json:"-"`
 	PoolID         string `json:"pool_id"`
 	Group          string `json:"group"`
+	Mode           string `json:"mode"`
+	Role           string `json:"role"`
 	AssignedNodeID string `json:"assigned_node_id"`
+	ProviderScope  string `json:"provider_scope_hash,omitempty"`
 	RangeStart     int64  `json:"range_start,omitempty"`
 	RangeEnd       int64  `json:"range_end,omitempty"`
 	WindowStart    string `json:"window_start,omitempty"`
 	WindowEnd      string `json:"window_end,omitempty"`
 	Priority       int    `json:"priority"`
-	DueAt          string `json:"due_at,omitempty"`
+	DueAt          string `json:"-"`
+	ExpiresAt      string `json:"expires_at"`
 	CreatedAt      string `json:"created_at"`
 }
 
 type RangeClaim struct {
-	SchemaVersion string `json:"schema_version"`
-	Type          string `json:"type"`
-	ClaimID       string `json:"claim_id"`
-	AssignmentID  string `json:"assignment_id"`
-	PoolID        string `json:"pool_id"`
-	Group         string `json:"group"`
-	NodeID        string `json:"node_id"`
-	RangeStart    int64  `json:"range_start"`
-	RangeEnd      int64  `json:"range_end"`
-	ClaimedAt     string `json:"claimed_at"`
-	ExpiresAt     string `json:"expires_at"`
+	SchemaVersion                     string `json:"schema_version"`
+	Type                              string `json:"type"`
+	ClaimID                           string `json:"claim_id"`
+	AssignmentID                      string `json:"assignment_id"`
+	PoolID                            string `json:"pool_id"`
+	Group                             string `json:"group"`
+	NodeID                            string `json:"claimant_node_id"`
+	ProviderScope                     string `json:"provider_scope_hash,omitempty"`
+	RangeStart                        int64  `json:"range_start"`
+	RangeEnd                          int64  `json:"range_end"`
+	ClaimedAt                         string `json:"claimed_at"`
+	ExpiresAt                         string `json:"expires_at"`
+	ClaimMode                         string `json:"claim_mode"`
+	ExpectedCheckpointIntervalSeconds int    `json:"expected_checkpoint_interval_seconds"`
 }
 
 type TimeWindowClaim struct {
@@ -118,11 +125,13 @@ type TimeWindowClaim struct {
 	AssignmentID  string `json:"assignment_id"`
 	PoolID        string `json:"pool_id"`
 	Group         string `json:"group"`
-	NodeID        string `json:"node_id"`
+	NodeID        string `json:"claimant_node_id"`
+	ProviderScope string `json:"provider_scope_hash,omitempty"`
 	WindowStart   string `json:"window_start"`
 	WindowEnd     string `json:"window_end"`
 	ClaimedAt     string `json:"claimed_at"`
 	ExpiresAt     string `json:"expires_at"`
+	ClaimMode     string `json:"claim_mode"`
 }
 
 type CoverageCheckpoint struct {
@@ -137,32 +146,41 @@ type CoverageCheckpoint struct {
 }
 
 type RangeComplete struct {
-	SchemaVersion string `json:"schema_version"`
-	Type          string `json:"type"`
-	OutcomeID     string `json:"outcome_id"`
-	ClaimID       string `json:"claim_id"`
-	AssignmentID  string `json:"assignment_id"`
-	PoolID        string `json:"pool_id"`
-	Group         string `json:"group"`
-	NodeID        string `json:"node_id"`
-	RangeStart    int64  `json:"range_start"`
-	RangeEnd      int64  `json:"range_end"`
-	ReleaseCount  int    `json:"release_count"`
-	CompletedAt   string `json:"completed_at"`
+	SchemaVersion          string `json:"schema_version"`
+	Type                   string `json:"type"`
+	OutcomeID              string `json:"completion_id"`
+	ClaimID                string `json:"claim_id"`
+	AssignmentID           string `json:"-"`
+	PoolID                 string `json:"pool_id"`
+	Group                  string `json:"group"`
+	NodeID                 string `json:"node_id"`
+	ProviderScope          string `json:"provider_scope_hash,omitempty"`
+	RangeStart             int64  `json:"range_start"`
+	RangeEnd               int64  `json:"range_end"`
+	ArticlesSeen           int64  `json:"articles_seen"`
+	HeadersProcessed       int64  `json:"headers_processed"`
+	ReleaseCount           int    `json:"release_cards_emitted"`
+	ManifestsEmitted       int    `json:"manifests_emitted"`
+	DedupCandidatesSkipped int    `json:"dedup_candidates_skipped"`
+	ErrorCount             int    `json:"error_count"`
+	RangeFingerprint       string `json:"range_fingerprint,omitempty"`
+	CompletedAt            string `json:"completed_at"`
 }
 
 type RangeFailed struct {
 	SchemaVersion string `json:"schema_version"`
 	Type          string `json:"type"`
-	OutcomeID     string `json:"outcome_id"`
+	OutcomeID     string `json:"failure_id"`
 	ClaimID       string `json:"claim_id"`
-	AssignmentID  string `json:"assignment_id"`
+	AssignmentID  string `json:"-"`
 	PoolID        string `json:"pool_id"`
 	Group         string `json:"group"`
 	NodeID        string `json:"node_id"`
+	ProviderScope string `json:"provider_scope_hash,omitempty"`
 	RangeStart    int64  `json:"range_start"`
 	RangeEnd      int64  `json:"range_end"`
-	Reason        string `json:"reason"`
+	Reason        string `json:"reason_code"`
+	Retryable     bool   `json:"retryable"`
 	FailedAt      string `json:"failed_at"`
 }
 
@@ -351,8 +369,25 @@ func validateAssignment(in CoverageAssignment, now time.Time, tolerance time.Dur
 	if strings.TrimSpace(in.AssignmentID) == "" || strings.TrimSpace(in.PoolID) == "" || strings.TrimSpace(in.Group) == "" || strings.TrimSpace(in.AssignedNodeID) == "" {
 		return fmt.Errorf("assignment_id, pool_id, group, and assigned_node_id are required")
 	}
+	if strings.TrimSpace(in.Mode) != "article_range" && strings.TrimSpace(in.Mode) != "time_window" {
+		return fmt.Errorf("unsupported assignment mode")
+	}
+	switch strings.TrimSpace(in.Role) {
+	case "primary_scanner", "validator", "manifest_builder":
+	default:
+		return fmt.Errorf("unsupported assignment role")
+	}
 	if err := validateTimestamp("created_at", in.CreatedAt, now, tolerance); err != nil {
 		return err
+	}
+	if _, err := time.Parse(time.RFC3339, strings.TrimSpace(in.ExpiresAt)); err != nil {
+		return fmt.Errorf("expires_at must be RFC3339")
+	}
+	if in.Mode == "article_range" && (strings.TrimSpace(in.WindowStart) != "" || strings.TrimSpace(in.WindowEnd) != "") {
+		return fmt.Errorf("article_range assignment cannot contain a time window")
+	}
+	if in.Mode == "time_window" && (in.RangeStart != 0 || in.RangeEnd != 0) {
+		return fmt.Errorf("time_window assignment cannot contain an article range")
 	}
 	return validateRangeOrWindow(in.RangeStart, in.RangeEnd, in.WindowStart, in.WindowEnd)
 }
@@ -370,6 +405,12 @@ func validateRangeClaim(in RangeClaim, now time.Time, tolerance time.Duration) e
 	if _, err := time.Parse(time.RFC3339, strings.TrimSpace(in.ExpiresAt)); err != nil {
 		return fmt.Errorf("expires_at must be RFC3339")
 	}
+	if strings.TrimSpace(in.ClaimMode) == "" {
+		return fmt.Errorf("claim_mode is required")
+	}
+	if in.ExpectedCheckpointIntervalSeconds < 0 {
+		return fmt.Errorf("expected_checkpoint_interval_seconds must not be negative")
+	}
 	return validateRange(in.RangeStart, in.RangeEnd)
 }
 
@@ -385,6 +426,9 @@ func validateTimeWindowClaim(in TimeWindowClaim, now time.Time, tolerance time.D
 	}
 	if _, err := time.Parse(time.RFC3339, strings.TrimSpace(in.ExpiresAt)); err != nil {
 		return fmt.Errorf("expires_at must be RFC3339")
+	}
+	if strings.TrimSpace(in.ClaimMode) == "" {
+		return fmt.Errorf("claim_mode is required")
 	}
 	return validateWindow(in.WindowStart, in.WindowEnd)
 }
@@ -412,6 +456,9 @@ func validateRangeComplete(in RangeComplete, now time.Time, tolerance time.Durat
 	if err := validateTimestamp("completed_at", in.CompletedAt, now, tolerance); err != nil {
 		return err
 	}
+	if in.ArticlesSeen < 0 || in.HeadersProcessed < 0 || in.ReleaseCount < 0 || in.ManifestsEmitted < 0 || in.DedupCandidatesSkipped < 0 || in.ErrorCount < 0 {
+		return fmt.Errorf("completion counters must not be negative")
+	}
 	return validateRange(in.RangeStart, in.RangeEnd)
 }
 
@@ -424,6 +471,9 @@ func validateRangeFailed(in RangeFailed, now time.Time, tolerance time.Duration)
 	}
 	if err := validateTimestamp("failed_at", in.FailedAt, now, tolerance); err != nil {
 		return err
+	}
+	if strings.TrimSpace(in.Reason) == "" {
+		return fmt.Errorf("reason_code is required")
 	}
 	return validateRange(in.RangeStart, in.RangeEnd)
 }

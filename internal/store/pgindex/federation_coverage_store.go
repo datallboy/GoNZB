@@ -731,27 +731,33 @@ func (s *Store) projectCoverageAssignment(ctx context.Context, body coverage.Cov
 	createdAt, _ := time.Parse(time.RFC3339, body.CreatedAt)
 	windowStart := parseNullableTime(body.WindowStart)
 	windowEnd := parseNullableTime(body.WindowEnd)
-	dueAt := parseNullableTime(body.DueAt)
+	dueAt := parseNullableTime(body.ExpiresAt)
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO coverage_assignments (
 			assignment_id, plan_id, pool_id, group_name, assigned_node_id,
 			range_start, range_end, window_start, window_end, priority, due_at,
 			status, author_node_id, body_json, source_event_id, created_at,
-			updated_at
+			mode, assignment_role, provider_scope_hash, expires_at, updated_at
 		)
 		VALUES ($1, NULLIF($2, ''), $3, $4, $5, NULLIF($6, 0), NULLIF($7, 0),
-		        $8, $9, $10, $11, 'assigned', $12, $13::jsonb, $14, $15, NOW())
+		        $8, $9, $10, $11, 'assigned', $12, $13::jsonb, $14, $15,
+		        $16, $17, NULLIF($18, ''), $19, NOW())
 		ON CONFLICT (assignment_id) DO UPDATE SET
 			assigned_node_id = EXCLUDED.assigned_node_id,
 			priority = EXCLUDED.priority,
 			due_at = EXCLUDED.due_at,
+			mode = EXCLUDED.mode,
+			assignment_role = EXCLUDED.assignment_role,
+			provider_scope_hash = EXCLUDED.provider_scope_hash,
+			expires_at = EXCLUDED.expires_at,
 			status = EXCLUDED.status,
 			body_json = EXCLUDED.body_json,
 			source_event_id = EXCLUDED.source_event_id,
 			updated_at = NOW()`,
 		body.AssignmentID, body.PlanID, body.PoolID, body.Group, body.AssignedNodeID,
 		body.RangeStart, body.RangeEnd, windowStart, windowEnd, body.Priority, dueAt,
-		event.AuthorNodeID, string(bodyJSON), event.EventID, createdAt.UTC())
+		event.AuthorNodeID, string(bodyJSON), event.EventID, createdAt.UTC(), body.Mode,
+		body.Role, body.ProviderScope, dueAt)
 	return err
 }
 
@@ -763,18 +769,23 @@ func (s *Store) projectRangeClaim(ctx context.Context, body coverage.RangeClaim,
 		INSERT INTO coverage_claims (
 			claim_id, claim_type, assignment_id, pool_id, group_name, node_id,
 			range_start, range_end, claimed_at, expires_at, status, author_node_id,
-			body_json, source_event_id, updated_at
+			body_json, source_event_id, provider_scope_hash, claim_mode,
+			expected_checkpoint_interval_seconds, updated_at
 		)
-		VALUES ($1, 'range', NULLIF($2, ''), $3, $4, $5, $6, $7, $8, $9, 'active', $10, $11::jsonb, $12, NOW())
+		VALUES ($1, 'range', NULLIF($2, ''), $3, $4, $5, $6, $7, $8, $9, 'active', $10, $11::jsonb, $12, NULLIF($13, ''), $14, $15, NOW())
 		ON CONFLICT (claim_id) DO UPDATE SET
 			expires_at = EXCLUDED.expires_at,
 			status = EXCLUDED.status,
+			provider_scope_hash = EXCLUDED.provider_scope_hash,
+			claim_mode = EXCLUDED.claim_mode,
+			expected_checkpoint_interval_seconds = EXCLUDED.expected_checkpoint_interval_seconds,
 			body_json = EXCLUDED.body_json,
 			source_event_id = EXCLUDED.source_event_id,
 			updated_at = NOW()`,
 		body.ClaimID, body.AssignmentID, body.PoolID, body.Group, body.NodeID,
 		body.RangeStart, body.RangeEnd, claimedAt.UTC(), expiresAt.UTC(),
-		event.AuthorNodeID, string(bodyJSON), event.EventID)
+		event.AuthorNodeID, string(bodyJSON), event.EventID, body.ProviderScope,
+		body.ClaimMode, body.ExpectedCheckpointIntervalSeconds)
 	return err
 }
 
@@ -788,18 +799,20 @@ func (s *Store) projectTimeWindowClaim(ctx context.Context, body coverage.TimeWi
 		INSERT INTO coverage_claims (
 			claim_id, claim_type, assignment_id, pool_id, group_name, node_id,
 			window_start, window_end, claimed_at, expires_at, status, author_node_id,
-			body_json, source_event_id, updated_at
+			body_json, source_event_id, provider_scope_hash, claim_mode, updated_at
 		)
-		VALUES ($1, 'time_window', NULLIF($2, ''), $3, $4, $5, $6, $7, $8, $9, 'active', $10, $11::jsonb, $12, NOW())
+		VALUES ($1, 'time_window', NULLIF($2, ''), $3, $4, $5, $6, $7, $8, $9, 'active', $10, $11::jsonb, $12, NULLIF($13, ''), $14, NOW())
 		ON CONFLICT (claim_id) DO UPDATE SET
 			expires_at = EXCLUDED.expires_at,
 			status = EXCLUDED.status,
+			provider_scope_hash = EXCLUDED.provider_scope_hash,
+			claim_mode = EXCLUDED.claim_mode,
 			body_json = EXCLUDED.body_json,
 			source_event_id = EXCLUDED.source_event_id,
 			updated_at = NOW()`,
 		body.ClaimID, body.AssignmentID, body.PoolID, body.Group, body.NodeID,
 		windowStart.UTC(), windowEnd.UTC(), claimedAt.UTC(), expiresAt.UTC(),
-		event.AuthorNodeID, string(bodyJSON), event.EventID)
+		event.AuthorNodeID, string(bodyJSON), event.EventID, body.ProviderScope, body.ClaimMode)
 	return err
 }
 
@@ -827,39 +840,82 @@ func (s *Store) projectCoverageCheckpoint(ctx context.Context, body coverage.Cov
 func (s *Store) projectRangeComplete(ctx context.Context, body coverage.RangeComplete, event *events.SignedEvent) error {
 	bodyJSON, _ := json.Marshal(body)
 	completedAt, _ := time.Parse(time.RFC3339, body.CompletedAt)
-	return s.projectCoverageOutcome(ctx, "complete", body.OutcomeID, body.ClaimID, body.AssignmentID, body.PoolID, body.Group, body.NodeID, body.RangeStart, body.RangeEnd, body.ReleaseCount, "", completedAt, string(bodyJSON), event)
+	return s.projectCoverageOutcome(ctx, "complete", body.OutcomeID, body.ClaimID, body.AssignmentID, body.PoolID, body.Group, body.NodeID, body.RangeStart, body.RangeEnd, body.ReleaseCount, "", completedAt, string(bodyJSON), event, coverageOutcomeDetails{
+		ProviderScope:          body.ProviderScope,
+		ArticlesSeen:           body.ArticlesSeen,
+		HeadersProcessed:       body.HeadersProcessed,
+		ManifestsEmitted:       body.ManifestsEmitted,
+		DedupCandidatesSkipped: body.DedupCandidatesSkipped,
+		ErrorCount:             body.ErrorCount,
+		RangeFingerprint:       body.RangeFingerprint,
+	})
 }
 
 func (s *Store) projectRangeFailed(ctx context.Context, body coverage.RangeFailed, event *events.SignedEvent) error {
 	bodyJSON, _ := json.Marshal(body)
 	failedAt, _ := time.Parse(time.RFC3339, body.FailedAt)
-	return s.projectCoverageOutcome(ctx, "failed", body.OutcomeID, body.ClaimID, body.AssignmentID, body.PoolID, body.Group, body.NodeID, body.RangeStart, body.RangeEnd, 0, body.Reason, failedAt, string(bodyJSON), event)
+	return s.projectCoverageOutcome(ctx, "failed", body.OutcomeID, body.ClaimID, body.AssignmentID, body.PoolID, body.Group, body.NodeID, body.RangeStart, body.RangeEnd, 0, body.Reason, failedAt, string(bodyJSON), event, coverageOutcomeDetails{
+		ProviderScope: body.ProviderScope,
+		Retryable:     body.Retryable,
+	})
 }
 
-func (s *Store) projectCoverageOutcome(ctx context.Context, outcomeType, outcomeID, claimID, assignmentID, poolID, group, nodeID string, rangeStart, rangeEnd int64, releaseCount int, reason string, occurredAt time.Time, bodyJSON string, event *events.SignedEvent) error {
+type coverageOutcomeDetails struct {
+	ProviderScope          string
+	ArticlesSeen           int64
+	HeadersProcessed       int64
+	ManifestsEmitted       int
+	DedupCandidatesSkipped int
+	ErrorCount             int
+	RangeFingerprint       string
+	Retryable              bool
+}
+
+func (s *Store) projectCoverageOutcome(ctx context.Context, outcomeType, outcomeID, claimID, assignmentID, poolID, group, nodeID string, rangeStart, rangeEnd int64, releaseCount int, reason string, occurredAt time.Time, bodyJSON string, event *events.SignedEvent, details coverageOutcomeDetails) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	if strings.TrimSpace(assignmentID) == "" && strings.TrimSpace(claimID) != "" {
+		_ = tx.QueryRowContext(ctx, `
+			SELECT COALESCE(assignment_id, '')
+			FROM coverage_claims
+			WHERE claim_id = $1`, claimID).Scan(&assignmentID)
+	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO coverage_range_outcomes (
 			outcome_id, outcome_type, claim_id, assignment_id, pool_id, group_name,
 			node_id, range_start, range_end, release_count, reason, occurred_at,
-			author_node_id, body_json, source_event_id, updated_at
+			author_node_id, body_json, source_event_id, provider_scope_hash,
+			articles_seen, headers_processed, manifests_emitted,
+			dedup_candidates_skipped, error_count, range_fingerprint, retryable,
+			updated_at
 		)
-		VALUES ($1, $2, NULLIF($3, ''), NULLIF($4, ''), $5, $6, $7, $8, $9, $10, NULLIF($11, ''), $12, $13, $14::jsonb, $15, NOW())
+		VALUES ($1, $2, NULLIF($3, ''), NULLIF($4, ''), $5, $6, $7, $8, $9, $10, NULLIF($11, ''), $12, $13, $14::jsonb, $15,
+		        NULLIF($16, ''), $17, $18, $19, $20, $21, NULLIF($22, ''), $23, NOW())
 		ON CONFLICT (outcome_id) DO UPDATE SET
 			outcome_type = EXCLUDED.outcome_type,
 			release_count = EXCLUDED.release_count,
 			reason = EXCLUDED.reason,
+			provider_scope_hash = EXCLUDED.provider_scope_hash,
+			articles_seen = EXCLUDED.articles_seen,
+			headers_processed = EXCLUDED.headers_processed,
+			manifests_emitted = EXCLUDED.manifests_emitted,
+			dedup_candidates_skipped = EXCLUDED.dedup_candidates_skipped,
+			error_count = EXCLUDED.error_count,
+			range_fingerprint = EXCLUDED.range_fingerprint,
+			retryable = EXCLUDED.retryable,
 			occurred_at = EXCLUDED.occurred_at,
 			body_json = EXCLUDED.body_json,
 			source_event_id = EXCLUDED.source_event_id,
 			updated_at = NOW()`,
 		outcomeID, outcomeType, claimID, assignmentID, poolID, group, nodeID,
 		rangeStart, rangeEnd, releaseCount, reason, occurredAt.UTC(),
-		event.AuthorNodeID, bodyJSON, event.EventID); err != nil {
+		event.AuthorNodeID, bodyJSON, event.EventID, details.ProviderScope,
+		details.ArticlesSeen, details.HeadersProcessed, details.ManifestsEmitted,
+		details.DedupCandidatesSkipped, details.ErrorCount, details.RangeFingerprint,
+		details.Retryable); err != nil {
 		return err
 	}
 	if strings.TrimSpace(claimID) != "" {

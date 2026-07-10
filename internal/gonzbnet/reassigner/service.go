@@ -160,12 +160,16 @@ func replacementAssignmentForClaim(claim pgindex.CoverageClaimRecord, assignment
 		PlanID:         "stale-" + strings.TrimSpace(claim.ClaimID),
 		PoolID:         strings.TrimSpace(claim.PoolID),
 		Group:          strings.TrimSpace(claim.Group),
+		Mode:           "article_range",
+		Role:           "primary_scanner",
 		AssignedNodeID: strings.TrimSpace(assignedNodeID),
 		Priority:       100,
 		DueAt:          now.Add(30 * time.Minute).Format(time.RFC3339),
+		ExpiresAt:      now.Add(30 * time.Minute).Format(time.RFC3339),
 		CreatedAt:      now.Format(time.RFC3339),
 	}
 	if claim.WindowStart != nil && claim.WindowEnd != nil && claim.WindowEnd.After(*claim.WindowStart) {
+		body.Mode = "time_window"
 		body.WindowStart = claim.WindowStart.UTC().Format(time.RFC3339)
 		body.WindowEnd = claim.WindowEnd.UTC().Format(time.RFC3339)
 		return body
