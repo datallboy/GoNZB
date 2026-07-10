@@ -140,7 +140,7 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 	if modules.API.Enabled && modules.GoNZBNet.Enabled {
 		if appCtx.Config.GoNZBNet.HTTPEnabled {
 			e.GET("/.well-known/gonzbnet", gonzbnetCtrl.WellKnown)
-			fed := e.Group("/gonzbnet/v1", federationBodyLimitMiddleware(appCtx.Config.GoNZBNet))
+			fed := e.Group(gonzbnetHTTPBasePath(appCtx.Config.GoNZBNet.HTTPBasePath), federationBodyLimitMiddleware(appCtx.Config.GoNZBNet))
 			fed.GET("/node", gonzbnetCtrl.Node)
 			fed.GET("/caps", gonzbnetCtrl.Caps)
 			fed.POST("/handshake", gonzbnetCtrl.Handshake)
@@ -364,6 +364,17 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 	if modules.WebUI.Enabled {
 		registerWebUIRoutes(e)
 	}
+}
+
+func gonzbnetHTTPBasePath(configured string) string {
+	path := strings.TrimRight(strings.TrimSpace(configured), "/")
+	if path == "" {
+		return "/gonzbnet/v1"
+	}
+	if !strings.HasPrefix(path, "/") {
+		return "/" + path
+	}
+	return path
 }
 
 func federationRateLimitMiddleware(eventsPerMinute int) echo.MiddlewareFunc {

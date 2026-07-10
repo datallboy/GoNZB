@@ -167,6 +167,8 @@ Current implementation state:
 - Local manifest cache policy enforces configured TTL expiry and byte-budget
   pruning in the PostgreSQL store while retaining active trusted-pool serving
   authorization.
+- Federation HTTP routes honor `gonzbnet.http_base_path`, with
+  `/gonzbnet/v1` retained as the default and the well-known endpoint unchanged.
 - Coverage wire cleanup aligns active leases/outcomes, capacity observations,
   checkpoints, and nested plans with provider-scoped relational projections.
 
