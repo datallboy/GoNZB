@@ -119,6 +119,24 @@ func TestFederationAcceptedAndRejectedEventPersistence(t *testing.T) {
 	if projectedMaxGroups != 3 {
 		t.Fatalf("unexpected scanner capacity max_groups=%d", projectedMaxGroups)
 	}
+	attestation := validation.ArticleAvailabilityAttestation{
+		SchemaVersion: "1.0", Type: validation.TypeArticleAvailabilityAttestation,
+		ReleaseID: "rel_pg_projection", ManifestID: "man_pg_projection",
+		CheckedAt: time.Now().UTC().Format(time.RFC3339), Status: validation.StatusAvailable,
+		ArticlesTotal: 1, ArticlesAvailable: 1, Confidence: 1, Method: "nntp_fetch_body_prefix",
+	}
+	if err := store.ProjectArticleAvailabilityAttestation(ctx, ArticleAvailabilityProjection{
+		Attestation: attestation, EventID: coverageEvent.EventID, AuthorNodeID: nodeID, PoolID: "pool.test",
+	}); err != nil {
+		t.Fatalf("project article availability: %v", err)
+	}
+	var projectedStatus string
+	if err := store.DB().QueryRowContext(ctx, `SELECT status FROM article_availability_attestations WHERE manifest_id = $1 AND author_node_id = $2`, attestation.ManifestID, nodeID).Scan(&projectedStatus); err != nil {
+		t.Fatalf("read article availability projection: %v", err)
+	}
+	if projectedStatus != validation.StatusAvailable {
+		t.Fatalf("unexpected article availability status=%q", projectedStatus)
+	}
 	rejectedID := event.EventID + "-rejected"
 	if err := store.AppendRejectedFederationEvent(ctx, rejectedID, nodeID, "NodeProfile", []byte(`{"bad":true}`), "malformed signature"); err != nil {
 		t.Fatalf("append rejected event: %v", err)
