@@ -50,6 +50,14 @@ func (m *gonzbnetRuntimeModule) Build(ctx context.Context) error {
 		return err
 	}
 	m.publisher = publisher.New(nodeIdentity, store, m.appCtx.Config.GoNZBNet.LocalPoolID)
+	if checker, ok := m.appCtx.NNTP.(interface {
+		FetchBodyPrefixForScope(context.Context, string, string, []string, int64) ([]byte, error)
+	}); ok {
+		m.publisher.SetArticleChecker(func(ctx context.Context, messageID string, groups []string) error {
+			_, err := checker.FetchBodyPrefixForScope(ctx, "gonzbnet_validator", messageID, groups, 1)
+			return err
+		})
+	}
 	if policyStore, ok := m.appCtx.PGIndexStore.(interface {
 		SetGoNZBNetManifestCachePolicy(int64, int)
 	}); ok {

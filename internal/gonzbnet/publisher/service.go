@@ -49,6 +49,7 @@ type Service struct {
 	now                         func() time.Time
 	publishManifestAvailability bool
 	buildManifests              bool
+	articleChecker              func(context.Context, string, []string) error
 }
 
 type Result struct {
@@ -101,6 +102,12 @@ func (s *Service) SetManifestAvailabilityPublishing(enabled bool) {
 func (s *Service) SetManifestBuilding(enabled bool) {
 	if s != nil {
 		s.buildManifests = enabled
+	}
+}
+
+func (s *Service) SetArticleChecker(checker func(context.Context, string, []string) error) {
+	if s != nil {
+		s.articleChecker = checker
 	}
 }
 
@@ -316,6 +323,9 @@ func (s *Service) PublishValidationOnce(ctx context.Context, limit int, opts Val
 			continue
 		}
 		availability := articleAvailabilityFromManifest(*manifestBody, s.now().UTC())
+		if s.articleChecker != nil {
+			availability = s.articleAvailabilityFromNNTP(ctx, *manifestBody)
+		}
 		eventID, published, err := s.publishArticleAvailability(ctx, nodeID, availability, firstNonBlank(task.PoolID, s.poolID))
 		if err != nil {
 			result.Failed++
@@ -366,6 +376,41 @@ func (s *Service) PublishValidationOnce(ctx context.Context, limit int, opts Val
 		_ = s.store.CompleteValidationTask(ctx, task.TaskID, "completed", "")
 	}
 	return result, nil
+}
+
+func (s *Service) articleAvailabilityFromNNTP(ctx context.Context, item manifest.ResolutionManifest) validation.ArticleAvailabilityAttestation {
+	checkedAt := s.now().UTC()
+	total := 0
+	available := 0
+	missing := 0
+	for _, file := range item.ManifestCore.Files {
+		for _, segment := range file.Segments {
+			total++
+			groups := append([]string(nil), item.ManifestCore.Groups...)
+			if err := s.articleChecker(ctx, segment.MessageID, groups); err != nil {
+				missing++
+				continue
+			}
+			available++
+		}
+	}
+	status := validation.StatusAvailable
+	if available == 0 {
+		status = validation.StatusMissing
+	} else if missing > 0 {
+		status = validation.StatusPartial
+	}
+	confidence := 1.0
+	if total == 0 {
+		confidence = 0
+	}
+	return validation.ArticleAvailabilityAttestation{
+		SchemaVersion: "1.0", Type: validation.TypeArticleAvailabilityAttestation,
+		ReleaseID: item.ReleaseID, ManifestID: item.ManifestID,
+		CheckedAt: checkedAt.Format(time.RFC3339), Status: status,
+		ArticlesTotal: total, ArticlesAvailable: available, MissingArticles: missing,
+		Confidence: confidence, Method: "nntp_fetch_body_prefix",
+	}
 }
 
 func (s *Service) PublishHealthOnce(ctx context.Context, limit int) (HealthResult, error) {
