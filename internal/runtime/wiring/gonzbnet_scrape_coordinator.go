@@ -318,6 +318,25 @@ func (c *gonzbnetScrapeRangeCoordinator) CompleteScrapeRange(ctx context.Context
 		return err
 	}
 	now := c.now().UTC()
+	observation := coverage.GroupObservation{
+		SchemaVersion:        "1.0",
+		Type:                 coverage.TypeGroupObservation,
+		ObservationID:        decision.ClaimID + "-observation",
+		NodeID:               nodeID,
+		PoolID:               c.poolID,
+		Group:                strings.TrimSpace(result.Group),
+		ProviderScope:        c.providerScopeHash,
+		ObservedAt:           now.Format(time.RFC3339),
+		LowWatermark:         result.RangeStart,
+		HighWatermark:        result.RangeEnd,
+		EstimatedCount:       max(0, result.RangeEnd-result.RangeStart+1),
+		PostsPerHourEstimate: float64(max(0, result.ArticlesInserted)),
+		ScanSupported:        true,
+		Confidence:           1,
+	}
+	if err := c.signAppendProject(ctx, coverage.TypeGroupObservation, observation); err != nil {
+		return err
+	}
 	checkpoint := coverage.CoverageCheckpoint{
 		SchemaVersion:       "1.0",
 		Type:                coverage.TypeCoverageCheckpoint,
