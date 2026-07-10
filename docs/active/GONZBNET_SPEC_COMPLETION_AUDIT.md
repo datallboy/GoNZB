@@ -77,9 +77,10 @@ is limited to well-known metadata, node profile, and capabilities.
 ### Protocol and security conformance
 
 5. Complete config semantics and aliases for controls that affect behavior,
-    including manifest-specific rate limits, remote get timeout, and currently
-    display-only addendum limits. The configurable federation route base path
-    is now used by route registration with the existing default fallback.
+    including manifest-specific rate limits and currently display-only addendum
+    limits. The remote manifest fetch timeout is now typed, defaulted, and
+    wired into the resolver. The configurable federation route base path is
+    now used by route registration with the existing default fallback.
 6. Make accepted-event storage and projection atomic, or retain explicit
     pending/quarantine state until projection succeeds.
 

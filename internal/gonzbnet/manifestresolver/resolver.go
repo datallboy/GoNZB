@@ -41,6 +41,7 @@ type Resolver struct {
 	eventTimeTolerance    time.Duration
 	maxEventAge           time.Duration
 	maxManifestBytes      int64
+	fetchTimeout          time.Duration
 }
 
 type Options struct {
@@ -48,6 +49,7 @@ type Options struct {
 	EventTimeTolerance    time.Duration
 	MaxEventAge           time.Duration
 	MaxManifestBytes      int64
+	FetchTimeout          time.Duration
 }
 
 func New(identity Identity, store Store) *Resolver {
@@ -63,6 +65,10 @@ func NewWithOptions(identity Identity, store Store, opts Options) *Resolver {
 	if maxManifestBytes <= 0 {
 		maxManifestBytes = 10485760
 	}
+	fetchTimeout := opts.FetchTimeout
+	if fetchTimeout <= 0 {
+		fetchTimeout = 20 * time.Second
+	}
 	return &Resolver{
 		identity:              identity,
 		store:                 store,
@@ -70,8 +76,9 @@ func NewWithOptions(identity Identity, store Store, opts Options) *Resolver {
 		eventTimeTolerance:    eventTimeTolerance,
 		maxEventAge:           opts.MaxEventAge,
 		maxManifestBytes:      maxManifestBytes,
+		fetchTimeout:          fetchTimeout,
 		client: &http.Client{
-			Timeout: 20 * time.Second,
+			Timeout: fetchTimeout,
 		},
 	}
 }
