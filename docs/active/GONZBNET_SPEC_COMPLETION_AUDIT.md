@@ -100,9 +100,9 @@ is limited to well-known metadata, node profile, and capabilities.
     publish, pull/push, authorized search/get, manifest fetch, malicious-node
     rejection, revocation, and tombstone propagation.
 8. Partially complete. Direct PostgreSQL integration tests now cover migration,
-    accepted/rejected event persistence, chain continuity, and pending
-    projection lifecycle. Typed projection and pool-authorization integration
-    coverage remains to be added.
+    accepted/rejected event persistence, ReleaseCard projection, chain
+    continuity, and pending projection lifecycle. Validation/coverage typed
+    projections and pool-authorization integration coverage remain to be added.
 9. Add the named GoNZBNet counters/histograms and fill remaining structured-log
     events from the observability section.
 
