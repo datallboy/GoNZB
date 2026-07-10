@@ -31,6 +31,7 @@ type Store interface {
 	FindFederationEventByBodyHash(ctx context.Context, authorNodeID, eventType, bodyHash string) (string, error)
 	AppendVerifiedFederationEvent(ctx context.Context, event *events.SignedEvent, validation *events.ValidationResult) error
 	UpsertFederatedReleaseCardProjection(ctx context.Context, projection releasecard.Projection) error
+	StoreResolutionManifest(ctx context.Context, record pgindex.ResolutionManifestRecord) error
 	ProjectManifestAvailability(ctx context.Context, projection pgindex.ManifestAvailabilityProjection) error
 	ProjectHealthAttestation(ctx context.Context, projection pgindex.HealthAttestationProjection) error
 	ClaimValidationTasks(ctx context.Context, nodeID string, limit int) ([]pgindex.ValidationTask, error)
@@ -47,6 +48,7 @@ type Service struct {
 	poolID                      string
 	now                         func() time.Time
 	publishManifestAvailability bool
+	buildManifests              bool
 }
 
 type Result struct {
@@ -93,6 +95,12 @@ func New(identity Identity, store Store, poolID string) *Service {
 func (s *Service) SetManifestAvailabilityPublishing(enabled bool) {
 	if s != nil {
 		s.publishManifestAvailability = enabled
+	}
+}
+
+func (s *Service) SetManifestBuilding(enabled bool) {
+	if s != nil {
+		s.buildManifests = enabled
 	}
 }
 
@@ -156,6 +164,11 @@ func (s *Service) PublishOnce(ctx context.Context, limit int) (Result, error) {
 				_ = s.store.MarkGoNZBNetScanOutputPublished(ctx, candidate.LocalReleaseID, existingEventID)
 			}
 			result.Projected++
+			if s.buildManifests && strings.TrimSpace(card.ManifestID) != "" {
+				if err := s.buildAndStoreManifest(ctx, candidate, card, existingEventID, nodeID); err != nil {
+					return result, err
+				}
+			}
 			continue
 		}
 
@@ -201,10 +214,65 @@ func (s *Service) PublishOnce(ctx context.Context, limit int) (Result, error) {
 				}
 			}
 		}
+		if s.buildManifests && strings.TrimSpace(card.ManifestID) != "" {
+			if err := s.buildAndStoreManifest(ctx, candidate, card, event.EventID, nodeID); err != nil {
+				return result, err
+			}
+		}
 		result.Projected++
 	}
 
 	return result, nil
+}
+
+func (s *Service) buildAndStoreManifest(ctx context.Context, candidate releasecard.LocalRelease, card releasecard.ReleaseCard, eventID, nodeID string) error {
+	item, canonicalCore, generatedNZB, err := BuildLocalManifest(candidate)
+	if err != nil {
+		return fmt.Errorf("build local manifest for %s: %w", card.ReleaseID, err)
+	}
+	if item.ManifestID != card.ManifestID {
+		return fmt.Errorf("manifest ID mismatch for release %s: card=%s built=%s", card.ReleaseID, card.ManifestID, item.ManifestID)
+	}
+	item.ReleaseID = card.ReleaseID
+	return s.store.StoreResolutionManifest(ctx, pgindex.ResolutionManifestRecord{
+		Manifest:              item,
+		SourceNodeID:          nodeID,
+		SourceEventID:         eventID,
+		PoolID:                s.poolID,
+		CanonicalManifestJSON: canonicalCore,
+		GeneratedNZB:          generatedNZB,
+	})
+}
+
+func BuildLocalManifest(candidate releasecard.LocalRelease) (manifest.ResolutionManifest, []byte, []byte, error) {
+	core, err := releasecard.ManifestCoreForLocalRelease(candidate)
+	if err != nil {
+		return manifest.ResolutionManifest{}, nil, nil, err
+	}
+	if len(core.Files) == 0 {
+		return manifest.ResolutionManifest{}, nil, nil, fmt.Errorf("complete file segments are required")
+	}
+	manifestID, canonicalCore, err := manifest.ComputeID(core)
+	if err != nil {
+		return manifest.ResolutionManifest{}, nil, nil, err
+	}
+	item := manifest.ResolutionManifest{
+		SchemaVersion: "1.0",
+		Type:          manifest.Type,
+		ManifestID:    manifestID,
+		ReleaseID:     firstNonBlank(candidate.LocalReleaseID, candidate.GUID),
+		ManifestCore:  core,
+		Compression:   "none",
+		Encrypted:     false,
+	}
+	if item.ReleaseID == "" {
+		return manifest.ResolutionManifest{}, nil, nil, fmt.Errorf("release ID is required")
+	}
+	generatedNZB, err := manifest.GenerateNZB(item)
+	if err != nil {
+		return manifest.ResolutionManifest{}, nil, nil, err
+	}
+	return item, canonicalCore, generatedNZB, nil
 }
 
 func (s *Service) PublishValidationOnce(ctx context.Context, limit int, opts ValidationOptions) (ValidationResult, error) {

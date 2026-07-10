@@ -59,10 +59,10 @@ is limited to well-known metadata, node profile, and capabilities.
 
 ### Missing contribution behavior
 
-1. Build and cache ResolutionManifests from local indexer/scan data when
-   `manifest_builder_enabled` is active. At present manifests only enter the
-   cache through remote resolution, so a network has no complete local manifest
-   origin path.
+1. Complete. When `manifest_builder_enabled` is active, the local ReleaseCard
+   publisher maps complete indexed files/segments to a shared canonical
+   manifest core, validates and generates the manifest/NZB, and stores them in
+   `resolution_manifests`.
 2. Execute validator tiers against the local NNTP provider. The current
    validator emits structural `unverified` attestations and does not perform the
    spec's article/segment existence checks.
