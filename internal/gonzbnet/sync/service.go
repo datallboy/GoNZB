@@ -63,6 +63,10 @@ type Store interface {
 	CanAcceptFederationEventForPools(ctx context.Context, authorNodeID string, poolIDs []string, eventType string) (pgindex.PoolAuthorizationResult, error)
 }
 
+type pendingProjectionRecorder interface {
+	RecordFederationProjectionFailure(context.Context, string, string, string, error) error
+}
+
 type Logger interface {
 	Info(format string, args ...any)
 	Warn(format string, args ...any)
@@ -77,6 +81,15 @@ type Service struct {
 	allowInsecurePeerHTTP bool
 	eventTimeTolerance    time.Duration
 	maxEventAge           time.Duration
+}
+
+func (s *Service) recordProjectionFailure(ctx context.Context, event *events.SignedEvent, kind string, err error) {
+	if s == nil || event == nil || err == nil {
+		return
+	}
+	if recorder, ok := s.store.(pendingProjectionRecorder); ok {
+		_ = recorder.RecordFederationProjectionFailure(ctx, event.EventID, event.EventType, kind, err)
+	}
 }
 
 type Result struct {
@@ -440,15 +453,18 @@ func (s *Service) syncPeer(ctx context.Context, peer pgindex.FederationPeerRecor
 					SourceNodeID: event.AuthorNodeID,
 					PoolID:       poolID,
 				}); err != nil {
+					s.recordProjectionFailure(ctx, &event, "release_card", err)
 					return result, err
 				}
 				result.Projected++
 			}
 			if err := s.projectValidationEvent(ctx, &event, raw); err != nil {
+				s.recordProjectionFailure(ctx, &event, "validation", err)
 				return result, err
 			}
 			if isSyncCoverageEvent(event.EventType) {
 				if err := s.store.ProjectCoverageEvent(ctx, &event); err != nil {
+					s.recordProjectionFailure(ctx, &event, "coverage", err)
 					return result, err
 				}
 				result.Projected++
