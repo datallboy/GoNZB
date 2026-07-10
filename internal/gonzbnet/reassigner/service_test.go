@@ -63,6 +63,56 @@ func TestRunOnceSignsReplacementAssignmentForStaleRangeClaim(t *testing.T) {
 	}
 }
 
+func TestRunOnceSignsReplacementAssignmentForStaleTimeWindowClaim(t *testing.T) {
+	nodeIdentity, err := identity.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("identity: %v", err)
+	}
+	windowStart := time.Date(2026, 7, 9, 10, 0, 0, 0, time.UTC)
+	windowEnd := windowStart.Add(time.Hour)
+	store := &fakeStore{
+		windowClaims: []pgindex.CoverageClaimRecord{{
+			ClaimID:     "claim-window-1",
+			ClaimType:   "time_window",
+			PoolID:      "pool.test",
+			Group:       "alt.binaries.test",
+			NodeID:      "node_stale",
+			WindowStart: &windowStart,
+			WindowEnd:   &windowEnd,
+			ExpiresAt:   time.Date(2026, 7, 9, 11, 0, 0, 0, time.UTC),
+			Status:      "active",
+		}},
+		nodes: []pgindex.CoverageScannerNode{
+			{NodeID: "node_stale", Weight: 100, LocalTrustScore: 1},
+			{NodeID: "node_fresh", Weight: 1, LocalTrustScore: 1},
+		},
+	}
+	svc, err := New(nodeIdentity, store, "pool.test", 0.65)
+	if err != nil {
+		t.Fatalf("service: %v", err)
+	}
+	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
+	svc.now = func() time.Time { return now }
+
+	result, err := svc.RunOnce(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+	if result.StaleClaims != 1 || result.AssignmentsCreated != 1 || result.SkippedNoNode != 0 || result.SkippedDuplicate != 0 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if len(store.events) != 1 || store.events[0].EventType != coverage.TypeCoverageAssignment {
+		t.Fatalf("expected one coverage assignment event, got %+v", store.events)
+	}
+	var body coverage.CoverageAssignment
+	if err := json.Unmarshal(store.events[0].Body, &body); err != nil {
+		t.Fatalf("decode assignment: %v", err)
+	}
+	if body.AssignedNodeID != "node_fresh" || body.WindowStart != windowStart.Format(time.RFC3339) || body.WindowEnd != windowEnd.Format(time.RFC3339) || body.RangeStart != 0 || body.RangeEnd != 0 {
+		t.Fatalf("unexpected assignment body: %+v", body)
+	}
+}
+
 func TestRunOnceSkipsDuplicateReplacementAssignment(t *testing.T) {
 	nodeIdentity, err := identity.LoadOrCreate(t.TempDir())
 	if err != nil {
@@ -99,21 +149,27 @@ func TestRunOnceSkipsDuplicateReplacementAssignment(t *testing.T) {
 }
 
 type fakeStore struct {
-	claims     []pgindex.CoverageClaimRecord
-	nodes      []pgindex.CoverageScannerNode
-	existing   map[string]bool
-	sequence   int64
-	events     []*events.SignedEvent
-	projected  int
-	localNode  string
-	publicKey  ed25519.PublicKey
-	minTrust   float64
-	lastPoolID string
+	claims       []pgindex.CoverageClaimRecord
+	windowClaims []pgindex.CoverageClaimRecord
+	nodes        []pgindex.CoverageScannerNode
+	existing     map[string]bool
+	sequence     int64
+	events       []*events.SignedEvent
+	projected    int
+	localNode    string
+	publicKey    ed25519.PublicKey
+	minTrust     float64
+	lastPoolID   string
 }
 
 func (s *fakeStore) ListStaleCoverageRangeClaims(_ context.Context, poolID string, _ int) ([]pgindex.CoverageClaimRecord, error) {
 	s.lastPoolID = poolID
 	return s.claims, nil
+}
+
+func (s *fakeStore) ListStaleCoverageTimeWindowClaims(_ context.Context, poolID string, _ int) ([]pgindex.CoverageClaimRecord, error) {
+	s.lastPoolID = poolID
+	return s.windowClaims, nil
 }
 
 func (s *fakeStore) ListCoverageScannerNodes(_ context.Context, _ string, minTrustScore float64) ([]pgindex.CoverageScannerNode, error) {

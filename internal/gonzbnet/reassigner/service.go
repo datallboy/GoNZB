@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 
 type Store interface {
 	ListStaleCoverageRangeClaims(ctx context.Context, poolID string, limit int) ([]pgindex.CoverageClaimRecord, error)
+	ListStaleCoverageTimeWindowClaims(ctx context.Context, poolID string, limit int) ([]pgindex.CoverageClaimRecord, error)
 	ListCoverageScannerNodes(ctx context.Context, poolID string, minTrustScore float64) ([]pgindex.CoverageScannerNode, error)
 	CoverageAssignmentExists(ctx context.Context, assignmentID string) (bool, error)
 	UpsertFederationNodeIdentity(ctx context.Context, nodeID string, publicKey ed25519.PublicKey) error
@@ -83,7 +85,7 @@ func (s *Service) RunOnce(ctx context.Context, limit int) (Result, error) {
 	if limit <= 0 {
 		limit = 25
 	}
-	staleClaims, err := s.store.ListStaleCoverageRangeClaims(ctx, s.poolID, limit)
+	staleClaims, err := s.staleClaims(ctx, limit)
 	if err != nil {
 		return result, err
 	}
@@ -122,26 +124,55 @@ func (s *Service) RunOnce(ctx context.Context, limit int) (Result, error) {
 			continue
 		}
 		now := s.now().UTC()
-		body := coverage.CoverageAssignment{
-			SchemaVersion:  "1.0",
-			Type:           coverage.TypeCoverageAssignment,
-			AssignmentID:   assignmentID,
-			PlanID:         "stale-" + strings.TrimSpace(claim.ClaimID),
-			PoolID:         strings.TrimSpace(claim.PoolID),
-			Group:          strings.TrimSpace(claim.Group),
-			AssignedNodeID: assignedNodeID,
-			RangeStart:     claim.RangeStart,
-			RangeEnd:       claim.RangeEnd,
-			Priority:       100,
-			DueAt:          now.Add(30 * time.Minute).Format(time.RFC3339),
-			CreatedAt:      now.Format(time.RFC3339),
-		}
+		body := replacementAssignmentForClaim(claim, assignmentID, assignedNodeID, now)
 		if err := s.signAppendProject(ctx, body); err != nil {
 			return result, err
 		}
 		result.AssignmentsCreated++
 	}
 	return result, nil
+}
+
+func (s *Service) staleClaims(ctx context.Context, limit int) ([]pgindex.CoverageClaimRecord, error) {
+	rangeClaims, err := s.store.ListStaleCoverageRangeClaims(ctx, s.poolID, limit)
+	if err != nil {
+		return nil, err
+	}
+	windowClaims, err := s.store.ListStaleCoverageTimeWindowClaims(ctx, s.poolID, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := append(append([]pgindex.CoverageClaimRecord{}, rangeClaims...), windowClaims...)
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].ExpiresAt.Before(out[j].ExpiresAt)
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func replacementAssignmentForClaim(claim pgindex.CoverageClaimRecord, assignmentID, assignedNodeID string, now time.Time) coverage.CoverageAssignment {
+	body := coverage.CoverageAssignment{
+		SchemaVersion:  "1.0",
+		Type:           coverage.TypeCoverageAssignment,
+		AssignmentID:   assignmentID,
+		PlanID:         "stale-" + strings.TrimSpace(claim.ClaimID),
+		PoolID:         strings.TrimSpace(claim.PoolID),
+		Group:          strings.TrimSpace(claim.Group),
+		AssignedNodeID: strings.TrimSpace(assignedNodeID),
+		Priority:       100,
+		DueAt:          now.Add(30 * time.Minute).Format(time.RFC3339),
+		CreatedAt:      now.Format(time.RFC3339),
+	}
+	if claim.WindowStart != nil && claim.WindowEnd != nil && claim.WindowEnd.After(*claim.WindowStart) {
+		body.WindowStart = claim.WindowStart.UTC().Format(time.RFC3339)
+		body.WindowEnd = claim.WindowEnd.UTC().Format(time.RFC3339)
+		return body
+	}
+	body.RangeStart = claim.RangeStart
+	body.RangeEnd = claim.RangeEnd
+	return body
 }
 
 func (s *Service) signAppendProject(ctx context.Context, body coverage.CoverageAssignment) error {
@@ -191,7 +222,7 @@ func selectReplacementNode(claim pgindex.CoverageClaimRecord, nodes []pgindex.Co
 		}
 		schedulerNodes = append(schedulerNodes, coverage.SchedulerNode{NodeID: nodeID, Weight: weight})
 	}
-	workID := fmt.Sprintf("%s:%s:%d-%d", strings.TrimSpace(claim.PoolID), strings.TrimSpace(claim.Group), claim.RangeStart, claim.RangeEnd)
+	workID := claimWorkID(claim)
 	assignments := coverage.RendezvousAssignments([]coverage.SchedulerWorkItem{{
 		WorkID: workID,
 		SeenBy: []string{
@@ -204,14 +235,43 @@ func selectReplacementNode(claim pgindex.CoverageClaimRecord, nodes []pgindex.Co
 	return assignments[0].NodeID
 }
 
+func claimWorkID(claim pgindex.CoverageClaimRecord) string {
+	if claim.WindowStart != nil && claim.WindowEnd != nil {
+		return fmt.Sprintf("%s:%s:%s:%s-%s",
+			strings.TrimSpace(claim.PoolID),
+			strings.TrimSpace(claim.Group),
+			strings.TrimSpace(claim.ClaimType),
+			claim.WindowStart.UTC().Format(time.RFC3339),
+			claim.WindowEnd.UTC().Format(time.RFC3339),
+		)
+	}
+	return fmt.Sprintf("%s:%s:%s:%d-%d",
+		strings.TrimSpace(claim.PoolID),
+		strings.TrimSpace(claim.Group),
+		strings.TrimSpace(claim.ClaimType),
+		claim.RangeStart,
+		claim.RangeEnd,
+	)
+}
+
 func replacementAssignmentID(claim pgindex.CoverageClaimRecord) string {
 	payload := strings.Join([]string{
 		strings.TrimSpace(claim.PoolID),
 		strings.TrimSpace(claim.ClaimID),
+		strings.TrimSpace(claim.ClaimType),
 		strings.TrimSpace(claim.Group),
 		fmt.Sprintf("%d", claim.RangeStart),
 		fmt.Sprintf("%d", claim.RangeEnd),
+		formatClaimWindowTime(claim.WindowStart),
+		formatClaimWindowTime(claim.WindowEnd),
 	}, "\x00")
 	sum := sha256.Sum256([]byte(payload))
 	return "assign_stale_" + canonical.Base64URL(sum[:])[:32]
+}
+
+func formatClaimWindowTime(value *time.Time) string {
+	if value == nil {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339)
 }
