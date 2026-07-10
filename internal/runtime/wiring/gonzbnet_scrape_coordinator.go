@@ -276,6 +276,26 @@ func (c *gonzbnetScrapeRangeCoordinator) CompleteScrapeRange(ctx context.Context
 		return err
 	}
 	now := c.now().UTC()
+	checkpoint := coverage.CoverageCheckpoint{
+		SchemaVersion:       "1.0",
+		Type:                coverage.TypeCoverageCheckpoint,
+		CheckpointID:        decision.ClaimID + "-checkpoint",
+		PoolID:              c.poolID,
+		NodeID:              nodeID,
+		Group:               strings.TrimSpace(result.Group),
+		ProviderScope:       c.providerScopeHash,
+		ClaimID:             decision.ClaimID,
+		RangeStart:          result.RangeStart,
+		RangeCurrent:        result.RangeEnd,
+		RangeEnd:            result.RangeEnd,
+		ReleaseCardsEmitted: 0,
+		ManifestsEmitted:    0,
+		Errors:              0,
+		CheckedAt:           now.Format(time.RFC3339),
+	}
+	if err := c.signAppendProject(ctx, coverage.TypeCoverageCheckpoint, checkpoint); err != nil {
+		return err
+	}
 	body := coverage.RangeComplete{
 		SchemaVersion:    "1.0",
 		Type:             coverage.TypeRangeComplete,
