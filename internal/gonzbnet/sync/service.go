@@ -68,6 +68,12 @@ type pendingProjectionRecorder interface {
 	ResolveFederationProjection(context.Context, string) error
 }
 
+type pendingProjectionStore interface {
+	pendingProjectionRecorder
+	ListPendingFederationProjections(context.Context, int) ([]pgindex.PendingFederationProjection, error)
+	GetFederationEvent(context.Context, string) (*events.SignedEvent, error)
+}
+
 type Logger interface {
 	Info(format string, args ...any)
 	Warn(format string, args ...any)
@@ -99,6 +105,53 @@ func (s *Service) resolveProjection(ctx context.Context, event *events.SignedEve
 	}
 	if recorder, ok := s.store.(pendingProjectionRecorder); ok {
 		_ = recorder.ResolveFederationProjection(ctx, event.EventID)
+	}
+}
+
+// RetryPendingProjections replays durable projection failures against the
+// immutable accepted event log. It is safe to call repeatedly.
+func (s *Service) RetryPendingProjections(ctx context.Context, limit int) (int, error) {
+	store, ok := s.store.(pendingProjectionStore)
+	if !ok {
+		return 0, nil
+	}
+	pending, err := store.ListPendingFederationProjections(ctx, limit)
+	if err != nil {
+		return 0, err
+	}
+	resolved := 0
+	for _, item := range pending {
+		event, err := store.GetFederationEvent(ctx, item.EventID)
+		if err != nil || event == nil {
+			continue
+		}
+		if err := s.replayProjection(ctx, event); err != nil {
+			_ = store.RecordFederationProjectionFailure(ctx, event.EventID, event.EventType, item.ProjectionKind, err)
+			continue
+		}
+		if err := store.ResolveFederationProjection(ctx, event.EventID); err == nil {
+			resolved++
+		}
+	}
+	return resolved, nil
+}
+
+func (s *Service) replayProjection(ctx context.Context, event *events.SignedEvent) error {
+	switch event.EventType {
+	case pools.EventTypeReleaseCard:
+		var card releasecard.ReleaseCard
+		if err := json.Unmarshal(event.Body, &card); err != nil {
+			return err
+		}
+		poolID := ""
+		if len(event.PoolIDs) > 0 {
+			poolID = event.PoolIDs[0]
+		}
+		return s.store.UpsertFederatedReleaseCardProjection(ctx, releasecard.Projection{Card: card, EventID: event.EventID, SourceNodeID: event.AuthorNodeID, PoolID: poolID})
+	case pools.EventTypeCoveragePlan, pools.EventTypeCoverageAssignment, pools.EventTypeRangeClaim, pools.EventTypeTimeWindowClaim, pools.EventTypeCoverageCheckpoint, pools.EventTypeRangeComplete, pools.EventTypeRangeFailed:
+		return s.store.ProjectCoverageEvent(ctx, event)
+	default:
+		return s.projectValidationEvent(ctx, event, event.Body)
 	}
 }
 

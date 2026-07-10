@@ -47,3 +47,34 @@ func (s *Store) ResolveFederationProjection(ctx context.Context, eventID string)
 		WHERE event_id = $1`, strings.TrimSpace(eventID))
 	return err
 }
+
+func (s *Store) ListPendingFederationProjections(ctx context.Context, limit int) ([]PendingFederationProjection, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("pgindex store is not initialized")
+	}
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT event_id, event_type, projection_kind, status, attempts, COALESCE(last_error, '')
+		FROM federation_pending_projections
+		WHERE status = 'pending'
+		ORDER BY last_attempt_at ASC
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list pending federation projections: %w", err)
+	}
+	defer rows.Close()
+	var out []PendingFederationProjection
+	for rows.Next() {
+		var item PendingFederationProjection
+		if err := rows.Scan(&item.EventID, &item.EventType, &item.ProjectionKind, &item.Status, &item.Attempts, &item.LastError); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
