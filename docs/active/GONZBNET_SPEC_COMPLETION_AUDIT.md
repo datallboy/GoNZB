@@ -81,11 +81,11 @@ is limited to well-known metadata, node profile, and capabilities.
 
 ### Protocol and security conformance
 
-5. Complete config semantics and aliases for controls that affect behavior,
-    including manifest-specific rate limits and currently display-only addendum
-    limits. The remote manifest fetch timeout is now typed, defaulted, and
-    wired into the resolver. The configurable federation route base path is
-    now used by route registration with the existing default fallback.
+5. Partially complete. The remote manifest fetch timeout is now typed,
+    defaulted, and wired into the resolver, and the configurable federation
+    route base path is used by route registration with the existing default
+    fallback. Manifest-specific rate limits and currently display-only
+    addendum limits still need behavioral enforcement.
 6. Pending projection state is now durable: accepted-event projection failures
     are recorded with event/type, retry attempts, error, and resolution state.
     Full single-transaction append/projection remains a future optimization,
