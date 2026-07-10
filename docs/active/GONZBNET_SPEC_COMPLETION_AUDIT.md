@@ -102,8 +102,8 @@ is limited to well-known metadata, node profile, and capabilities.
 8. Partially complete. Direct PostgreSQL integration tests now cover migration,
     accepted/rejected event persistence, ReleaseCard and validator-capacity
     projections, chain continuity, and pending projection lifecycle.
-    Article/coverage typed projections and pool-authorization integration
-    coverage remain to be added.
+    Coverage typed projection coverage is now included; article-attestation
+    projection and pool-authorization integration coverage remain to be added.
 9. Add the named GoNZBNet counters/histograms and fill remaining structured-log
     events from the observability section.
 
