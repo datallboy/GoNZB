@@ -1,0 +1,106 @@
+# GoNZBNet Specification Completion Audit
+
+Status: active
+
+Source of truth: `docs/GoNZBNet_Codex_Implementation_Spec.md`.
+
+This audit reconciles the implementation specification with the current code,
+phase documents, and maintained wiki. It does not define new phases. Cleanup
+work should be committed directly on `feature/gonzbnet` unless a remaining
+spec item is large enough to require an implementation branch.
+
+## Implemented Baseline
+
+- Core phases 1 through 10 have working code paths for identity, signed events,
+  release-card publication, pull/push transport, local RBAC search, trust pools,
+  on-demand manifest resolution, health projections, tombstones, and optional
+  WebSocket gossip.
+- Phase 11 correctly remains relay-ready modular-monolith behavior. A standalone
+  relay process is a future extension and is not a v1 completion requirement.
+- Addendum phases A through E are substantially present. Optional module
+  switches, capabilities, scan output, validation queues, coverage events, and
+  local dedup-aware scheduling exist.
+- Optional Phase F scheduling helpers and stale-claim reassignment are present,
+  although Phase F is not a v1 blocker.
+- Admin APIs/UI and the documented security cleanups cover most required local
+  operational controls.
+
+## Required Remaining Work
+
+Completed during this audit:
+
+- Pool-level `can_get` and `can_resolve_manifest` grants are now enforced before
+  generic aggregator blob-cache reads.
+- Shared `aggregator_release_cache` rows are no longer used as GoNZBNet search
+  results because they do not retain pool identity.
+
+### Critical correctness and privacy
+
+1. Validate every event body schema before an event is marked accepted. The
+   current inbox and pull paths append envelope-valid events before some
+   projection validators run, and ReleaseCard has no receive-side validator.
+2. Protect pool-scoped outbox, event, member, checkpoint, and peer reads with
+   signed node requests and pool visibility checks. The current core read
+   endpoints are public even in private-pool mode.
+3. Sign pull outbox requests and synchronize all accepted event types. The
+   current pull client requests only `ReleaseCard`, so pull-only peers do not
+   receive health, trust, moderation, pool, validation, or coverage events.
+
+### Missing contribution behavior
+
+4. Build and cache ResolutionManifests from local indexer/scan data when
+   `manifest_builder_enabled` is active. At present manifests only enter the
+   cache through remote resolution, so a network has no complete local manifest
+   origin path.
+5. Execute validator tiers against the local NNTP provider. The current
+   validator emits structural `unverified` attestations and does not perform the
+   spec's article/segment existence checks.
+6. Publish scanner capacity/heartbeat/group observations and periodic coverage
+   checkpoints from scanner execution. The schemas and projections exist, but
+   the scanner loop currently emits claims and terminal outcomes only.
+7. Enforce manifest-cache byte/TTL/serving settings. These settings are typed
+   and displayed but do not currently control cache retention or serving.
+
+### Protocol and security conformance
+
+8. Replace or prove the canonical JSON implementation against RFC 8785 vectors,
+    including ECMAScript number serialization, UTF-16 property ordering, and
+    duplicate-key rejection. The package currently has no direct tests.
+9. Validate per-author chain continuity (`previous_event_id` and monotonic
+    sequence), not only same-sequence conflicts.
+10. Make capabilities truthful. The node currently advertises gzip/zstd and
+    event types that the normal receive path does not implement.
+11. Complete config semantics and aliases for controls that affect behavior,
+    including manifest-specific rate limits, remote get timeout, configurable
+    route base path, and currently display-only addendum limits.
+12. Make accepted-event storage and projection atomic, or retain explicit
+    pending/quarantine state until projection succeeds.
+
+### Verification and operations
+
+13. Add the specified PostgreSQL-backed three-node end-to-end harness covering
+    publish, pull/push, authorized search/get, manifest fetch, malicious-node
+    rejection, revocation, and tombstone propagation.
+14. Add direct PostgreSQL integration tests for event append/rejection,
+    projections, pool authorization, and migration behavior. Current GoNZBNet
+    tests rely primarily on fakes.
+15. Add the named GoNZBNet counters/histograms and fill remaining structured-log
+    events from the observability section.
+
+## Documentation Drift
+
+- `GONZBNET_PHASE1_IMPLEMENTATION_PLAN.md` still says `Status: in progress`
+  even though Phase 1 is implemented and merged.
+- The prior final-checklist audit overstated completion by treating phase pages
+  and unit tests as proof of end-to-end conformance.
+- Phase B accurately documents structural-only validation, which is evidence of
+  remaining work rather than completed validation-only operation.
+- Phase 7 accurately documents that local manifest building was out of scope;
+  the optional manifest-builder module still needs that behavior.
+
+## Execution Order
+
+1. Receive pipeline validation/quarantine and exact canonical JSON.
+2. Signed pool-visible read transport and complete pull projection.
+3. Local manifest building and validator/scanner contribution behavior.
+4. Config enforcement, integration/E2E tests, and observability.

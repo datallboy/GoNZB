@@ -19,6 +19,7 @@ const sourceName = "gonzbnet"
 
 type Store interface {
 	ListFederationSearchPoolsForPrincipal(ctx context.Context, userID string, roleIDs []string) ([]string, error)
+	CanGetFederatedReleaseForPrincipal(ctx context.Context, releaseID, userID string, roleIDs []string) (bool, error)
 	SearchFederatedReleaseCards(ctx context.Context, params pgindex.FederatedReleaseCardSearchParams) ([]pgindex.FederatedReleaseCardSummary, error)
 }
 
@@ -77,17 +78,42 @@ func (s *Source) Search(ctx context.Context, req aggregator.SearchRequest) ([]*d
 }
 
 func (s *Source) GetNZB(ctx context.Context, rel *domain.Release) (io.ReadCloser, error) {
-	principal, ok := auth.PrincipalFromContext(ctx)
-	if !ok || principal == nil || !principal.Has(auth.PermissionGoNZBNetGet) {
-		return nil, fmt.Errorf("gonzbnet get permission is required")
-	}
-	if !principal.Has(auth.PermissionGoNZBNetResolveManifest) {
-		return nil, fmt.Errorf("gonzbnet resolve manifest permission is required")
+	if err := s.AuthorizeGet(ctx, rel); err != nil {
+		return nil, err
 	}
 	if s == nil || s.resolver == nil {
 		return nil, fmt.Errorf("gonzbnet manifest resolver is not configured")
 	}
 	return s.resolver.ResolveNZB(ctx, rel.GUID)
+}
+
+func (s *Source) AuthorizeGet(ctx context.Context, rel *domain.Release) error {
+	if s == nil || s.store == nil {
+		return fmt.Errorf("gonzbnet source is not configured")
+	}
+	if rel == nil || strings.TrimSpace(rel.GUID) == "" {
+		return fmt.Errorf("gonzbnet release is required")
+	}
+	principal, ok := auth.PrincipalFromContext(ctx)
+	if !ok || principal == nil || !principal.Has(auth.PermissionGoNZBNetGet) {
+		return fmt.Errorf("gonzbnet get permission is required")
+	}
+	if !principal.Has(auth.PermissionGoNZBNetResolveManifest) {
+		return fmt.Errorf("gonzbnet resolve manifest permission is required")
+	}
+	allowed, err := s.store.CanGetFederatedReleaseForPrincipal(
+		ctx,
+		strings.TrimSpace(rel.GUID),
+		principal.UserID,
+		principal.RoleIDs,
+	)
+	if err != nil {
+		return fmt.Errorf("check gonzbnet pool access: %w", err)
+	}
+	if !allowed {
+		return fmt.Errorf("gonzbnet pool get and resolve access is required")
+	}
+	return nil
 }
 
 func federatedReleaseToDomain(item pgindex.FederatedReleaseCardSummary) *domain.Release {

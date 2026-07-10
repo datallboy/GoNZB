@@ -57,11 +57,16 @@ core v1 work already represented by the phase pages.
 
 ## Boundaries
 
+- The core implementation is not yet complete. Pool-scoped get authorization,
+  receive-side body validation before accepted storage, protected outbox
+  visibility, local manifest building, and the specified three-node end-to-end
+  harness remain open. See [Implementation Status](./implementation-status.md).
 - The standalone `gonzbnet-relay` process remains deferred. Phase 11 implements
   relay-ready modular-monolith controls because v1 is intentionally not split
   into microservices.
 - Automatic creation of replacement `CoverageAssignment` events is implemented
-  for stale article range claims when automatic coverage mode is enabled.
+  for stale article range and time-window claims when automatic coverage mode is
+  enabled.
 - Range assignments are consumed directly by the scrape loop. Time-window
   assignments are resolved to article ranges locally, claimed with
   `TimeWindowClaim`, and completed with range outcomes.

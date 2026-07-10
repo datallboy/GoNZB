@@ -150,9 +150,12 @@ Current implementation state:
   GoNZBNet RBAC denial paths.
 - Live-query privacy cleanup rejects `gonzbnet.live_query_enabled=true` and
   keeps public profiles from advertising unsupported live user search.
+- Pool RBAC cleanup authorizes federated gets before shared blob-cache reads and
+  prevents pool-less aggregator cache rows from bypassing search isolation.
 
 Maintained pages:
 
+- [Implementation Status](./implementation-status.md)
 - [Phase 1 Identity And Events](./phase-1-identity-and-events.md)
 - [Phase 2 ReleaseCard Publishing](./phase-2-releasecard-publishing.md)
 - [Phase 3 Manual Pull Sync](./phase-3-manual-pull-sync.md)
@@ -219,3 +222,4 @@ Maintained pages:
 - [Security: Manifest Response Limit](./security-manifest-response-limit.md)
 - [Security: Manifest Message-IDs](./security-manifest-message-ids.md)
 - [Live Query Privacy Hardening](./live-query-privacy-hardening.md)
+- [Pool RBAC And Cache Isolation](./rbac-cache-isolation.md)

@@ -86,7 +86,9 @@ func (m *Manager) SearchAllWithRequest(ctx context.Context, req app.SearchReques
 			m.logger.Warn("Failed to search aggregator_release_cache: %v", err)
 		} else {
 			for _, rel := range cacheResults {
-				if isGoNZBNetRelease(rel) && !principalHas(ctx, auth.PermissionGoNZBNetSearch) {
+				// The shared cache does not retain federation pool identity. GoNZBNet
+				// search results must come from its pool-filtered PostgreSQL source.
+				if isGoNZBNetRelease(rel) {
 					continue
 				}
 				addOrMerge(rel, false)
@@ -172,6 +174,25 @@ func (m *Manager) GetNZB(ctx context.Context, rel *domain.Release) (io.ReadClose
 		return nil, fmt.Errorf("gonzbnet get permission is required")
 	}
 
+	var src catalogSource
+	if isGoNZBNetRelease(rel) {
+		// Resolve the source before consulting the shared blob cache so pool
+		// authorization cannot be bypassed by a prior user's cached download.
+		m.mu.RLock()
+		src = m.sources[rel.Source]
+		m.mu.RUnlock()
+		if src == nil {
+			return nil, fmt.Errorf("aggregator source %s not found", rel.Source)
+		}
+		authorizer, ok := src.(getAuthorizer)
+		if !ok {
+			return nil, fmt.Errorf("gonzbnet source does not provide get authorization")
+		}
+		if err := authorizer.AuthorizeGet(ctx, rel); err != nil {
+			return nil, err
+		}
+	}
+
 	// Check the file store
 	if m.cacheEnabled && m.store.Exists(rel.ID) {
 		// ensure in-memory/current response reflects cached state.
@@ -186,14 +207,13 @@ func (m *Manager) GetNZB(ctx context.Context, rel *domain.Release) (io.ReadClose
 
 		return m.store.GetNZBReader(rel.ID)
 	}
-
-	// Find the indexer that provided this result.
-	m.mu.RLock()
-	src, ok := m.sources[rel.Source]
-	m.mu.RUnlock()
-
-	if !ok {
-		return nil, fmt.Errorf("aggregator source %s not found", rel.Source)
+	if src == nil {
+		m.mu.RLock()
+		src = m.sources[rel.Source]
+		m.mu.RUnlock()
+		if src == nil {
+			return nil, fmt.Errorf("aggregator source %s not found", rel.Source)
+		}
 	}
 
 	// This calls either the raw DownloadNZB or the local store indexer.

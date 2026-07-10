@@ -1,7 +1,9 @@
 # Final Checklist Audit
 
-The GoNZBNet addendum checklist is largely implemented through the phase and
-cleanup work documented in this directory.
+The GoNZBNet addendum checklist is substantially implemented through the phase
+and cleanup work documented in this directory, but the full implementation
+specification is not complete. See [Implementation Status](./implementation-status.md)
+for the verified remaining work.
 
 Implemented surfaces include:
 
@@ -48,3 +50,7 @@ Scanner coordination boundary:
   range and time-window claims in automatic coverage mode.
 - Time-window assignment execution is implemented by resolving windows to local
   article ranges.
+
+This page is evidence for implemented addendum surfaces only. It does not claim
+completion of receive-pipeline validation, pool-scoped get authorization, local
+manifest building, NNTP-backed validation, end-to-end testing, or observability.

@@ -99,14 +99,66 @@ func TestGetNZBRequiresResolveManifestPermission(t *testing.T) {
 	}
 }
 
+func TestGetNZBRequiresPoolGetAndResolveAccess(t *testing.T) {
+	resolver := &fakeResolver{}
+	store := &fakeStore{getAllowed: false}
+	ctx := auth.ContextWithPrincipal(context.Background(), &auth.Principal{
+		UserID:  "user-1",
+		RoleIDs: []string{"federated-viewer"},
+		Permissions: map[string]struct{}{
+			auth.PermissionGoNZBNetGet:             {},
+			auth.PermissionGoNZBNetResolveManifest: {},
+		},
+	})
+
+	_, err := NewWithResolver(store, resolver).GetNZB(ctx, &domain.Release{
+		Source: sourceName,
+		GUID:   "rel_1",
+	})
+	if err == nil || !strings.Contains(err.Error(), "pool get and resolve access") {
+		t.Fatalf("expected pool access denial, got %v", err)
+	}
+	if store.getChecks != 1 || resolver.calls != 0 {
+		t.Fatalf("unexpected denied get path: checks=%d resolver=%d", store.getChecks, resolver.calls)
+	}
+}
+
+func TestGetNZBResolvesForAuthorizedPoolPrincipal(t *testing.T) {
+	resolver := &fakeResolver{}
+	store := &fakeStore{getAllowed: true}
+	ctx := auth.ContextWithPrincipal(context.Background(), &auth.Principal{
+		UserID:  "user-1",
+		RoleIDs: []string{"federated-viewer"},
+		Permissions: map[string]struct{}{
+			auth.PermissionGoNZBNetGet:             {},
+			auth.PermissionGoNZBNetResolveManifest: {},
+		},
+	})
+
+	reader, err := NewWithResolver(store, resolver).GetNZB(ctx, &domain.Release{
+		Source: sourceName,
+		GUID:   "rel_1",
+	})
+	if err != nil {
+		t.Fatalf("get NZB: %v", err)
+	}
+	_ = reader.Close()
+	if store.getChecks != 1 || store.lastReleaseID != "rel_1" || resolver.calls != 1 {
+		t.Fatalf("unexpected authorized get path: checks=%d release=%q resolver=%d", store.getChecks, store.lastReleaseID, resolver.calls)
+	}
+}
+
 type fakeStore struct {
-	pools       []string
-	cards       []pgindex.FederatedReleaseCardSummary
-	poolLookups int
-	searches    int
-	lastUserID  string
-	lastRoleIDs []string
-	lastParams  pgindex.FederatedReleaseCardSearchParams
+	pools         []string
+	cards         []pgindex.FederatedReleaseCardSummary
+	poolLookups   int
+	searches      int
+	lastUserID    string
+	lastRoleIDs   []string
+	lastParams    pgindex.FederatedReleaseCardSearchParams
+	getAllowed    bool
+	getChecks     int
+	lastReleaseID string
 }
 
 func (s *fakeStore) ListFederationSearchPoolsForPrincipal(_ context.Context, userID string, roleIDs []string) ([]string, error) {
@@ -114,6 +166,14 @@ func (s *fakeStore) ListFederationSearchPoolsForPrincipal(_ context.Context, use
 	s.lastUserID = userID
 	s.lastRoleIDs = append([]string(nil), roleIDs...)
 	return append([]string(nil), s.pools...), nil
+}
+
+func (s *fakeStore) CanGetFederatedReleaseForPrincipal(_ context.Context, releaseID, userID string, roleIDs []string) (bool, error) {
+	s.getChecks++
+	s.lastReleaseID = releaseID
+	s.lastUserID = userID
+	s.lastRoleIDs = append([]string(nil), roleIDs...)
+	return s.getAllowed, nil
 }
 
 func (s *fakeStore) SearchFederatedReleaseCards(_ context.Context, params pgindex.FederatedReleaseCardSearchParams) ([]pgindex.FederatedReleaseCardSummary, error) {

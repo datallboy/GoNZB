@@ -375,6 +375,12 @@ func (s *Store) ListFederationSearchPoolsForPrincipal(ctx context.Context, userI
 			    FROM jsonb_array_elements_text($2::jsonb) role_ids(role_id)
 			    WHERE role_ids.role_id = r.role_id
 			  )
+			  AND NOT EXISTS (
+			    SELECT 1
+			    FROM user_federation_pool_access override
+			    WHERE override.user_id = NULLIF($1, '')
+			      AND override.pool_id = r.pool_id
+			  )
 		) pools
 		ORDER BY pool_id`, strings.TrimSpace(userID), string(roleIDsJSON))
 	if err != nil {
@@ -394,6 +400,54 @@ func (s *Store) ListFederationSearchPoolsForPrincipal(ctx context.Context, userI
 		return nil, fmt.Errorf("iterate federation search pools: %w", err)
 	}
 	return out, nil
+}
+
+func (s *Store) CanGetFederatedReleaseForPrincipal(ctx context.Context, releaseID, userID string, roleIDs []string) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, fmt.Errorf("pgindex store is not initialized")
+	}
+	releaseID = strings.TrimSpace(releaseID)
+	if releaseID == "" {
+		return false, nil
+	}
+	roleIDsJSON, err := json.Marshal(normalizeStrings(roleIDs))
+	if err != nil {
+		return false, err
+	}
+	var allowed bool
+	err = s.db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+		  SELECT 1
+		  FROM federated_release_sources source
+		  WHERE source.release_id = $1
+		    AND source.pool_id IN (
+		      SELECT pool_id
+		      FROM user_federation_pool_access
+		      WHERE user_id = NULLIF($2, '')
+		        AND can_get = TRUE
+		        AND can_resolve_manifest = TRUE
+		      UNION
+		      SELECT access.pool_id
+		      FROM role_federation_pool_access access
+		      WHERE access.can_get = TRUE
+		        AND access.can_resolve_manifest = TRUE
+		        AND EXISTS (
+		          SELECT 1
+		          FROM jsonb_array_elements_text($3::jsonb) role_ids(role_id)
+		          WHERE role_ids.role_id = access.role_id
+		        )
+		        AND NOT EXISTS (
+		          SELECT 1
+		          FROM user_federation_pool_access override
+		          WHERE override.user_id = NULLIF($2, '')
+		            AND override.pool_id = access.pool_id
+		        )
+		    )
+		)`, releaseID, strings.TrimSpace(userID), string(roleIDsJSON)).Scan(&allowed)
+	if err != nil {
+		return false, fmt.Errorf("check federation release pool access: %w", err)
+	}
+	return allowed, nil
 }
 
 func (s *Store) ListFederationRolePoolAccess(ctx context.Context, poolID string) ([]FederationRolePoolAccessRecord, error) {
