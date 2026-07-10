@@ -36,6 +36,13 @@ func (s *Store) GetCachedFederatedNZBByReleaseID(ctx context.Context, releaseID 
 		return nil, false, fmt.Errorf("pgindex store is not initialized")
 	}
 	var payload []byte
+	_, ttlDays := s.manifestCachePolicy()
+	ttlClause := ""
+	args := []any{strings.TrimSpace(releaseID)}
+	if ttlDays > 0 {
+		ttlClause = " AND rm.updated_at >= NOW() - ($2 * INTERVAL '1 day')"
+		args = append(args, ttlDays)
+	}
 	err := s.db.QueryRowContext(ctx, `
 		SELECT rm.generated_nzb
 		FROM resolution_manifests rm
@@ -54,8 +61,8 @@ func (s *Store) GetCachedFederatedNZBByReleaseID(ctx context.Context, releaseID 
 		        (t.target_type = 'release' AND t.target_id = c.release_id)
 		        OR (t.target_type = 'manifest' AND t.target_id = rm.manifest_id)
 		      )
-		  )
-		LIMIT 1`, strings.TrimSpace(releaseID)).Scan(&payload)
+		  )`+ttlClause+`
+		  LIMIT 1`, args...).Scan(&payload)
 	if err == nil {
 		return payload, true, nil
 	}
@@ -138,6 +145,14 @@ func (s *Store) StoreResolutionManifest(ctx context.Context, record ResolutionMa
 		return err
 	}
 	defer tx.Rollback()
+	_, ttlDays := s.manifestCachePolicy()
+	if ttlDays > 0 {
+		if _, err = tx.ExecContext(ctx, `
+			DELETE FROM resolution_manifests
+			WHERE updated_at < NOW() - ($1 * INTERVAL '1 day')`, ttlDays); err != nil {
+			return fmt.Errorf("purge expired resolution manifests: %w", err)
+		}
+	}
 	if _, err = tx.ExecContext(ctx, `
 		INSERT INTO resolution_manifests (
 			manifest_id, release_id, source_node_id, source_event_id, encoding,
@@ -206,6 +221,23 @@ func (s *Store) StoreResolutionManifest(ctx context.Context, record ResolutionMa
 	); err != nil {
 		return fmt.Errorf("enqueue validation task: %w", err)
 	}
+	if maxBytes, _ := s.manifestCachePolicy(); maxBytes > 0 {
+		if _, err := tx.ExecContext(ctx, `
+			WITH ranked AS (
+				SELECT manifest_id,
+				       SUM(COALESCE(octet_length(generated_nzb), 0) + COALESCE(octet_length(body_blob), 0))
+				         OVER (ORDER BY updated_at ASC, manifest_id ASC) AS removed,
+				       SUM(COALESCE(octet_length(generated_nzb), 0) + COALESCE(octet_length(body_blob), 0))
+				         OVER () AS total
+				FROM resolution_manifests
+			)
+			DELETE FROM resolution_manifests rm
+			USING ranked r
+			WHERE rm.manifest_id = r.manifest_id
+			  AND r.total - r.removed > $1`, maxBytes); err != nil {
+			return fmt.Errorf("prune resolution manifest cache: %w", err)
+		}
+	}
 	return tx.Commit()
 }
 
@@ -214,6 +246,13 @@ func (s *Store) GetResolutionManifest(ctx context.Context, manifestID string) (*
 		return nil, fmt.Errorf("pgindex store is not initialized")
 	}
 	var body []byte
+	_, ttlDays := s.manifestCachePolicy()
+	ttlClause := ""
+	args := []any{strings.TrimSpace(manifestID)}
+	if ttlDays > 0 {
+		ttlClause = " AND updated_at >= NOW() - ($2 * INTERVAL '1 day')"
+		args = append(args, ttlDays)
+	}
 	err := s.db.QueryRowContext(ctx, `
 		SELECT body_json
 		FROM resolution_manifests
@@ -228,7 +267,7 @@ func (s *Store) GetResolutionManifest(ctx context.Context, manifestID string) (*
 		      AND t.effective_at <= NOW()
 		      AND t.target_type = 'manifest'
 		      AND t.target_id = resolution_manifests.manifest_id
-		  )`, strings.TrimSpace(manifestID)).Scan(&body)
+		  )`+ttlClause, args...).Scan(&body)
 	if isNoRows(err) {
 		return nil, nil
 	}
@@ -266,6 +305,13 @@ func (s *Store) GetResolutionManifestEvent(ctx context.Context, manifestID strin
 		return nil, fmt.Errorf("pgindex store is not initialized")
 	}
 	var eventID string
+	_, ttlDays := s.manifestCachePolicy()
+	ttlClause := ""
+	args := []any{strings.TrimSpace(manifestID)}
+	if ttlDays > 0 {
+		ttlClause = " AND updated_at >= NOW() - ($2 * INTERVAL '1 day')"
+		args = append(args, ttlDays)
+	}
 	err := s.db.QueryRowContext(ctx, `
 		SELECT source_event_id
 		FROM resolution_manifests
@@ -281,7 +327,7 @@ func (s *Store) GetResolutionManifestEvent(ctx context.Context, manifestID strin
 		      AND t.effective_at <= NOW()
 		      AND t.target_type = 'manifest'
 		      AND t.target_id = resolution_manifests.manifest_id
-		  )`, strings.TrimSpace(manifestID)).Scan(&eventID)
+		  )`+ttlClause, args...).Scan(&eventID)
 	if isNoRows(err) {
 		return nil, nil
 	}

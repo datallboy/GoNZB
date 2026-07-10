@@ -14,6 +14,10 @@ import (
 type Store struct {
 	db *sql.DB
 
+	manifestCacheMu       sync.RWMutex
+	manifestCacheMaxBytes int64
+	manifestCacheTTLDays  int
+
 	yencSeedScanMu               sync.Mutex
 	yencSeedScanBackoffUntil     time.Time
 	yencSeedScanConsecutiveEmpty int
@@ -23,6 +27,24 @@ type Store struct {
 
 	yencApplyMu        sync.Mutex
 	yencLastApplyStats YEncRecoveryApplyStats
+}
+
+// SetGoNZBNetManifestCachePolicy applies the runtime limits used by the
+// federation manifest cache. A non-positive value disables that constraint.
+func (s *Store) SetGoNZBNetManifestCachePolicy(maxBytes int64, ttlDays int) {
+	if s == nil {
+		return
+	}
+	s.manifestCacheMu.Lock()
+	s.manifestCacheMaxBytes = maxBytes
+	s.manifestCacheTTLDays = ttlDays
+	s.manifestCacheMu.Unlock()
+}
+
+func (s *Store) manifestCachePolicy() (int64, int) {
+	s.manifestCacheMu.RLock()
+	defer s.manifestCacheMu.RUnlock()
+	return s.manifestCacheMaxBytes, s.manifestCacheTTLDays
 }
 
 // NewStore opens PostgreSQL by DSN and runs application-owned migrations.

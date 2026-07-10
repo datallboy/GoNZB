@@ -50,6 +50,14 @@ func (m *gonzbnetRuntimeModule) Build(ctx context.Context) error {
 		return err
 	}
 	m.publisher = publisher.New(nodeIdentity, store, m.appCtx.Config.GoNZBNet.LocalPoolID)
+	if policyStore, ok := m.appCtx.PGIndexStore.(interface {
+		SetGoNZBNetManifestCachePolicy(int64, int)
+	}); ok {
+		policyStore.SetGoNZBNetManifestCachePolicy(
+			m.appCtx.Config.GoNZBNet.ManifestCacheMaxBytes,
+			m.appCtx.Config.GoNZBNet.ManifestCacheTTLDays,
+		)
+	}
 	m.publisher.SetManifestAvailabilityPublishing(m.appCtx.Config.GoNZBNet.ManifestAvailabilityEnabled)
 	m.publisher.SetManifestBuilding(m.appCtx.Config.GoNZBNet.ManifestBuilderEnabled)
 	syncStore, ok := m.appCtx.PGIndexStore.(gonzbnetsync.Store)
