@@ -39,7 +39,7 @@ func TestFederationPoolAuthorizationIntegration(t *testing.T) {
 	if err := store.UpsertFederationNode(ctx, FederationNodeRecord{NodeID: nodeID, PublicKey: publicKey, Status: "known"}); err != nil {
 		t.Fatalf("store node: %v", err)
 	}
-	if err := store.UpsertTrustPool(ctx, TrustPoolRecord{PoolID: poolID, DisplayName: "Authorization Test", GenesisEventID: "genesis_" + poolID, PolicyJSON: json.RawMessage(`{}`), MembershipThreshold: 1, ModerationThreshold: 1, CheckpointWitnessThreshold: 1, AcceptMode: "pool_member", AcceptedEventTypes: []string{"ReleaseCard"}, Enabled: true, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}); err != nil {
+	if err := store.UpsertTrustPool(ctx, TrustPoolRecord{PoolID: poolID, DisplayName: "Authorization Test", PolicyJSON: json.RawMessage(`{}`), MembershipThreshold: 1, ModerationThreshold: 1, CheckpointWitnessThreshold: 1, AcceptMode: "pool_member", AcceptedEventTypes: []string{"ReleaseCard"}, Enabled: true, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}); err != nil {
 		t.Fatalf("store pool: %v", err)
 	}
 	if err := store.UpsertPoolMember(ctx, PoolMemberRecord{PoolID: poolID, NodeID: nodeID, Role: "member", Status: "active", AllowedCapabilities: []string{capability.Scanner, capability.Indexer}}); err != nil {

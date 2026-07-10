@@ -229,10 +229,7 @@ func (s *Store) ListUndeliveredFederationEvents(ctx context.Context, peerID int6
 	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
-			e.event_id, e.spec_version, e.event_type, e.author_node_id, e.author_public_key,
-			e.sequence, e.previous_event_id, e.body_schema, e.body_hash, e.signature_alg,
-			e.signature, e.body_json, e.pool_ids, e.visibility, e.created_at, e.not_before,
-			e.expires_at
+			e.event_id, e.signature, e.canonical_event_json
 		FROM federation_events e
 		LEFT JOIN federation_peer_deliveries d
 		  ON d.peer_id = $1
@@ -326,10 +323,7 @@ func (s *Store) GetFederationEvent(ctx context.Context, eventID string) (*events
 	}
 	event, err := scanFederationEvent(s.db.QueryRowContext(ctx, `
 		SELECT
-			event_id, spec_version, event_type, author_node_id, author_public_key,
-			sequence, previous_event_id, body_schema, body_hash, signature_alg,
-			signature, body_json, pool_ids, visibility, created_at, not_before,
-			expires_at
+			event_id, signature, canonical_event_json
 		FROM federation_events
 		WHERE event_id = $1
 		  AND validation_status = 'accepted'`, eventID))
@@ -399,10 +393,7 @@ func (s *Store) ListFederationOutboxEvents(ctx context.Context, params Federatio
 	args = append(args, limit+1)
 	query := fmt.Sprintf(`
 		SELECT
-			event_id, spec_version, event_type, author_node_id, author_public_key,
-			sequence, previous_event_id, body_schema, body_hash, signature_alg,
-			signature, body_json, pool_ids, visibility, created_at, not_before,
-			expires_at
+			event_id, signature, canonical_event_json
 		FROM federation_events
 		WHERE %s
 		ORDER BY created_at ASC, event_id ASC
@@ -441,55 +432,19 @@ type federationEventScanner interface {
 
 func scanFederationEvent(scanner federationEventScanner) (*events.SignedEvent, error) {
 	var (
-		event       events.SignedEvent
-		publicKey   []byte
-		signature   []byte
-		bodyJSON    []byte
-		poolIDsJSON []byte
-		previous    sql.NullString
-		notBefore   sql.NullTime
-		expiresAt   sql.NullTime
+		eventID       string
+		signature     []byte
+		canonicalJSON string
 	)
-	if err := scanner.Scan(
-		&event.EventID,
-		&event.SpecVersion,
-		&event.EventType,
-		&event.AuthorNodeID,
-		&publicKey,
-		&event.Sequence,
-		&previous,
-		&event.BodySchema,
-		&event.BodyHash,
-		&event.SignatureAlg,
-		&signature,
-		&bodyJSON,
-		&poolIDsJSON,
-		&event.Visibility,
-		&event.CreatedAt,
-		&notBefore,
-		&expiresAt,
-	); err != nil {
+	if err := scanner.Scan(&eventID, &signature, &canonicalJSON); err != nil {
 		return nil, err
 	}
-	if previous.Valid {
-		value := previous.String
-		event.PreviousEventID = &value
+	var event events.SignedEvent
+	if err := json.Unmarshal([]byte(canonicalJSON), &event); err != nil {
+		return nil, fmt.Errorf("decode canonical federation event: %w", err)
 	}
-	if notBefore.Valid {
-		value := notBefore.Time.UTC()
-		event.NotBefore = &value
-	}
-	if expiresAt.Valid {
-		value := expiresAt.Time.UTC()
-		event.ExpiresAt = &value
-	}
-	event.AuthorPublicKey = canonical.Base64URL(publicKey)
+	event.EventID = eventID
 	event.Signature = canonical.Base64URL(signature)
-	event.Body = append([]byte(nil), bodyJSON...)
-	if len(poolIDsJSON) > 0 {
-		_ = json.Unmarshal(poolIDsJSON, &event.PoolIDs)
-	}
-	event.CreatedAt = event.CreatedAt.UTC()
 	return &event, nil
 }
 
