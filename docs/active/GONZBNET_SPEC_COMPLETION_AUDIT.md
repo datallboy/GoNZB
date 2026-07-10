@@ -99,9 +99,10 @@ is limited to well-known metadata, node profile, and capabilities.
 7. Add the specified PostgreSQL-backed three-node end-to-end harness covering
     publish, pull/push, authorized search/get, manifest fetch, malicious-node
     rejection, revocation, and tombstone propagation.
-8. Add direct PostgreSQL integration tests for event append/rejection,
-    projections, pool authorization, and migration behavior. Current GoNZBNet
-    tests rely primarily on fakes.
+8. Partially complete. Direct PostgreSQL integration tests now cover migration,
+    accepted/rejected event persistence, chain continuity, and pending
+    projection lifecycle. Typed projection and pool-authorization integration
+    coverage remains to be added.
 9. Add the named GoNZBNet counters/histograms and fill remaining structured-log
     events from the observability section.
 
