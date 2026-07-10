@@ -1611,6 +1611,8 @@ func (ctrl *GoNZBNetController) profileConfig(c *echo.Context) profile.Config {
 		Scanner:                       cfg.ScannerEnabled,
 		Indexer:                       ctrl.appCtx.Config.Modules.UsenetIndexer.Enabled,
 		IndexProjection:               cfg.IndexProjectionEnabled,
+		PublishReleaseCards:           cfg.PublishReleaseCardsEnabled,
+		PublishHealthAttestations:     cfg.HealthAttestationsEnabled,
 		ManifestBuilder:               cfg.ManifestBuilderEnabled,
 		ManifestCache:                 cfg.ManifestCacheEnabled,
 		Validator:                     cfg.ValidatorEnabled,

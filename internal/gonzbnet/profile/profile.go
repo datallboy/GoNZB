@@ -147,6 +147,8 @@ type Config struct {
 	Scanner                       bool
 	Indexer                       bool
 	IndexProjection               bool
+	PublishReleaseCards           bool
+	PublishHealthAttestations     bool
 	ManifestBuilder               bool
 	ManifestCache                 bool
 	Validator                     bool
@@ -212,9 +214,6 @@ func NodeProfileFor(ctx context.Context, identity Identity, cfg Config, now time
 	if cfg.ValidationMaxManifestsPerHour < 0 {
 		cfg.ValidationMaxManifestsPerHour = 0
 	}
-	if len(cfg.ValidationTiers) == 0 {
-		cfg.ValidationTiers = []string{"metadata"}
-	}
 	providerDisclosure := strings.TrimSpace(cfg.ProviderDisclosure)
 	if providerDisclosure == "" {
 		providerDisclosure = "hash_only"
@@ -232,10 +231,14 @@ func NodeProfileFor(ctx context.Context, identity Identity, cfg Config, now time
 	if cfg.Validator {
 		validatorCapacity = &ValidatorCapacity{
 			MaxManifestsPerHour:          cfg.ValidationMaxManifestsPerHour,
-			ValidationTiers:              append([]string(nil), cfg.ValidationTiers...),
-			SupportsYEncSampleValidation: cfg.ValidationAllowSamplePayload,
-			SupportsPAR2Validation:       cfg.ValidationAllowPAR2,
+			ValidationTiers:              []string{"metadata"},
+			SupportsYEncSampleValidation: false,
+			SupportsPAR2Validation:       false,
 		}
+	}
+	webSocketEndpoint := ""
+	if cfg.WebSocketGossip {
+		webSocketEndpoint = baseURL + "/ws"
 	}
 	ts := now.UTC().Format(time.RFC3339)
 	return NodeProfile{
@@ -253,12 +256,12 @@ func NodeProfileFor(ctx context.Context, identity Identity, cfg Config, now time
 			Outbox:    baseURL + "/outbox",
 			Events:    baseURL + "/events/{event_id}",
 			Manifests: baseURL + "/manifests/{manifest_id}",
-			WS:        baseURL + "/ws",
+			WS:        webSocketEndpoint,
 		},
 		Capabilities: Capabilities{
-			ReleaseCards:        cfg.Scanner || cfg.Indexer,
-			ResolutionManifests: cfg.ManifestBuilder || cfg.ManifestCache,
-			HealthAttestations:  cfg.HealthChecker || cfg.Validator,
+			ReleaseCards:        cfg.Scanner && cfg.PublishReleaseCards,
+			ResolutionManifests: cfg.ManifestCache,
+			HealthAttestations:  cfg.HealthChecker && cfg.PublishHealthAttestations,
 			TrustPools:          true,
 			PoolWitness:         false,
 			WebSocketGossip:     cfg.WebSocketGossip,
@@ -267,7 +270,7 @@ func NodeProfileFor(ctx context.Context, identity Identity, cfg Config, now time
 			Consumer:            cfg.Consumer,
 			Scanner:             cfg.Scanner,
 			Indexer:             cfg.Indexer,
-			ManifestBuilder:     cfg.ManifestBuilder,
+			ManifestBuilder:     false,
 			ManifestCache:       cfg.ManifestCache,
 			Validator:           cfg.Validator,
 			HealthChecker:       cfg.HealthChecker,
@@ -342,7 +345,6 @@ func CapsFor(maxEventBytes, maxManifestBytes int) Caps {
 	return Caps{
 		SpecVersions: []string{SpecVersion},
 		EventTypes: []string{
-			"NodeProfile",
 			"ReleaseCard",
 			"ResolutionManifest",
 			"HealthAttestation",
@@ -369,7 +371,7 @@ func CapsFor(maxEventBytes, maxManifestBytes int) Caps {
 			"Tombstone",
 		},
 		Encodings:        []string{"jcs-json"},
-		Compressions:     []string{"none", "gzip", "zstd"},
+		Compressions:     []string{"none"},
 		Transports:       []string{"https"},
 		MaxEventBytes:    maxEventBytes,
 		MaxManifestBytes: maxManifestBytes,

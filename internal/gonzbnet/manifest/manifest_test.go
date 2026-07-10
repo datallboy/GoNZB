@@ -33,6 +33,20 @@ func TestValidateRejectsMalformedMessageIDs(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsUnimplementedManifestEncoding(t *testing.T) {
+	compressed := testManifest(t)
+	compressed.Compression = "zstd"
+	if _, err := Validate(compressed); err == nil {
+		t.Fatalf("expected unsupported compression rejection")
+	}
+
+	encrypted := testManifest(t)
+	encrypted.Encrypted = true
+	if _, err := Validate(encrypted); err == nil {
+		t.Fatalf("expected unsupported encryption rejection")
+	}
+}
+
 func TestGenerateNZBProducesParsableXML(t *testing.T) {
 	payload, err := GenerateNZB(testManifest(t))
 	if err != nil {

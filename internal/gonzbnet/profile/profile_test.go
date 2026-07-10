@@ -31,8 +31,8 @@ func TestNodeProfileAdvertisesValidatorOnlyCapabilities(t *testing.T) {
 	if !profile.Capabilities.ResolutionManifests {
 		t.Fatalf("manifest cache node should advertise resolution manifest support")
 	}
-	if !profile.Capabilities.HealthAttestations {
-		t.Fatalf("validator node should advertise health attestation support")
+	if profile.Capabilities.HealthAttestations {
+		t.Fatalf("validator-only node should not advertise health-attestation publication")
 	}
 	if !profile.Capabilities.Validator || profile.Capabilities.Scanner || profile.Capabilities.Indexer {
 		t.Fatalf("unexpected module capabilities: %+v", profile.Capabilities)
@@ -111,11 +111,73 @@ func TestNodeProfileAdvertisesCapacityAndModuleStatus(t *testing.T) {
 	if profile.ValidatorCapacity == nil || profile.ValidatorCapacity.MaxManifestsPerHour != 40 {
 		t.Fatalf("unexpected validator capacity: %+v", profile.ValidatorCapacity)
 	}
-	if len(profile.ValidatorCapacity.ValidationTiers) != 2 || !profile.ValidatorCapacity.SupportsYEncSampleValidation || profile.ValidatorCapacity.SupportsPAR2Validation {
+	if len(profile.ValidatorCapacity.ValidationTiers) != 1 || profile.ValidatorCapacity.ValidationTiers[0] != "metadata" || profile.ValidatorCapacity.SupportsYEncSampleValidation || profile.ValidatorCapacity.SupportsPAR2Validation {
 		t.Fatalf("unexpected validator tiers/support: %+v", profile.ValidatorCapacity)
 	}
 	if profile.ProviderScope.ProviderDisclosure != "hash_only" || profile.ProviderScope.ArticleNumberScope != "provider_local" {
 		t.Fatalf("unexpected provider scope: %+v", profile.ProviderScope)
+	}
+}
+
+func TestNodeProfileOnlyAdvertisesActiveProductionPaths(t *testing.T) {
+	node, err := identity.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("identity: %v", err)
+	}
+	profile, err := NodeProfileFor(context.Background(), node, Config{
+		AdvertiseURL:    "https://node.example/gonzbnet/v1",
+		Scanner:         true,
+		Indexer:         true,
+		ManifestBuilder: true,
+		HealthChecker:   true,
+	}, time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("node profile: %v", err)
+	}
+	if profile.Capabilities.ReleaseCards || profile.Capabilities.HealthAttestations || profile.Capabilities.ManifestBuilder {
+		t.Fatalf("disabled/unimplemented output paths must not be advertised: %+v", profile.Capabilities)
+	}
+	if profile.Endpoints.WS != "" {
+		t.Fatalf("disabled WebSocket endpoint must be omitted, got %q", profile.Endpoints.WS)
+	}
+	if profile.ModuleStatus.ManifestBuilder != "enabled" {
+		t.Fatalf("configured module status should remain visible: %+v", profile.ModuleStatus)
+	}
+}
+
+func TestNodeProfileAdvertisesEnabledReleaseAndHealthPublishers(t *testing.T) {
+	node, err := identity.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("identity: %v", err)
+	}
+	profile, err := NodeProfileFor(context.Background(), node, Config{
+		AdvertiseURL:              "https://node.example/gonzbnet/v1",
+		Scanner:                   true,
+		PublishReleaseCards:       true,
+		HealthChecker:             true,
+		PublishHealthAttestations: true,
+		WebSocketGossip:           true,
+	}, time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("node profile: %v", err)
+	}
+	if !profile.Capabilities.ReleaseCards || !profile.Capabilities.HealthAttestations {
+		t.Fatalf("enabled output paths should be advertised: %+v", profile.Capabilities)
+	}
+	if profile.Endpoints.WS == "" {
+		t.Fatalf("enabled WebSocket endpoint should be advertised")
+	}
+}
+
+func TestCapsOnlyAdvertiseImplementedWireFeatures(t *testing.T) {
+	caps := CapsFor(1, 2)
+	if len(caps.Compressions) != 1 || caps.Compressions[0] != "none" {
+		t.Fatalf("unexpected compression advertisement: %+v", caps.Compressions)
+	}
+	for _, eventType := range caps.EventTypes {
+		if eventType == "NodeProfile" {
+			t.Fatalf("signed NodeProfile events are not accepted and must not be advertised")
+		}
 	}
 }
 
