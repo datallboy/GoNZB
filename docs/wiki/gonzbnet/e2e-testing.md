@@ -101,6 +101,13 @@ modules of `gonzb serve`, controlled by each node YAML and the local admin API.
 The `gonzb indexer` commands above only create and process the local indexer
 fixture that Node A projects into federation.
 
+To test against an existing indexer database, use the GoNZBNet feature build
+(`v0.8.0` plus the GoNZBNet commits), stop the plain `v0.8.0` process, and test
+against a database copy first. Point Node A's `store.pg_dsn` at that copy and
+keep its existing E2E key directory. Starting the feature build applies newer
+database migrations, so do not continue running an older binary against the
+migrated database.
+
 After a public-ready release forms, wait for or trigger ReleaseCard publication
 and pull sync. Verify:
 
@@ -111,6 +118,12 @@ and pull sync. Verify:
   use the local cache.
 - Peer logs and request bodies contain node identity only, never local user
   credentials or histories.
+
+Receiving a ReleaseCard makes it searchable but does not fetch its manifest or
+queue validation by itself. On Node B, use **Manifest resolve** on the GoNZBNet
+admin page with the received `release_id`. The signed manifest is fetched from
+Node A, verified, cached, converted to an NZB, and queued for Node B's validator.
+The E2E publisher and validator intervals are one minute.
 
 ## Validator And Health Test
 
@@ -154,7 +167,10 @@ docker compose -p gonzbnet-e2e -f docker-compose.gonzbnet-e2e.yml exec postgres 
 
 docker compose -p gonzbnet-e2e -f docker-compose.gonzbnet-e2e.yml exec postgres \
   psql -U gonzb -d gonzbnet_c -c \
-  "select release_id, title, pool_id from federated_release_cards order by updated_at desc limit 20"
+  "select c.release_id, c.title, s.pool_id, s.source_node_id
+   from federated_release_cards c
+   join federated_release_sources s using (release_id)
+   order by c.updated_at desc limit 20"
 ```
 
 Use the same pattern for `federation_peers`, `pool_members`,

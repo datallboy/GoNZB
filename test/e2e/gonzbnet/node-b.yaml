@@ -8,6 +8,9 @@ modules:
   api: { enabled: true }
 api:
   cors_allowed_origins: ["http://127.0.0.1:18082"]
+aggregator:
+  sources:
+    gonzbnet: { enabled: true }
 gonzbnet:
   mode: integrated
   node_alias: "e2e-validator-b"
@@ -31,6 +34,8 @@ gonzbnet:
   coverage_enabled: false
   scheduler_enabled: false
   health_attestations_enabled: true
+  health_attestations_interval_minutes: 1
+  validation_interval_minutes: 1
   pull_sync_enabled: true
   pull_sync_interval_minutes: 1
   push_sync_enabled: true
