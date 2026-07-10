@@ -1,6 +1,6 @@
 # GoNZBNet Phase 1 Implementation Plan
 
-Status: in progress
+Status: complete
 
 Scope:
 

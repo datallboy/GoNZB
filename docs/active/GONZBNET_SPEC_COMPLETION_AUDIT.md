@@ -104,14 +104,12 @@ is limited to well-known metadata, node profile, and capabilities.
 
 ## Documentation Drift
 
-- `GONZBNET_PHASE1_IMPLEMENTATION_PLAN.md` still says `Status: in progress`
-  even though Phase 1 is implemented and merged.
 - The prior final-checklist audit overstated completion by treating phase pages
   and unit tests as proof of end-to-end conformance.
 - Phase B accurately documents structural-only validation, which is evidence of
   remaining work rather than completed validation-only operation.
-- Phase 7 accurately documents that local manifest building was out of scope;
-  the optional manifest-builder module still needs that behavior.
+- Phase 7 now distinguishes the original remote resolver scope from the
+  completed optional local manifest-builder module.
 
 ## Execution Order
 

@@ -76,6 +76,8 @@ resolver. Local Newznab authentication and RBAC remain unchanged:
 
 ## Current Limits
 
-Phase 7 does not build local manifests from indexed articles yet. It only
-defines, verifies, fetches, stores, and generates NZBs from signed manifests
-that are already available through trusted peers or local cache.
+The original Phase 7 resolver path does not build local manifests from indexed
+articles. The optional manifest-builder module now builds and caches complete
+local manifests; the resolver path continues to define, verify, fetch, store,
+and generate NZBs from signed manifests available through trusted peers or
+local cache.
