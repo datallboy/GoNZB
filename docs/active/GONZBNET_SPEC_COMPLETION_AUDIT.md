@@ -89,8 +89,10 @@ is limited to well-known metadata, node profile, and capabilities.
     enforcement.
 6. Pending projection state is now durable: accepted-event projection failures
     are recorded with event/type, retry attempts, error, and resolution state.
-    Full single-transaction append/projection remains a future optimization,
-    but accepted events no longer lack an explicit failure state.
+    Pull-sync startup now replays supported pending events and resolves rows
+    after successful projection. Full single-transaction append/projection
+    remains a future optimization, but accepted events no longer lack an
+    explicit failure or retry state.
 
 ### Verification and operations
 

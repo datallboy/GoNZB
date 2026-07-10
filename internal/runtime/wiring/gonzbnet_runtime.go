@@ -157,6 +157,13 @@ func (m *gonzbnetRuntimeModule) Start(ctx context.Context) error {
 		interval := time.Duration(m.appCtx.Config.GoNZBNet.PullSyncIntervalMin * float64(time.Minute))
 		m.appCtx.Logger.Info("starting gonzbnet pull sync interval=%s", interval)
 		go func() {
+			if resolved, err := m.pullSync.RetryPendingProjections(childCtx, 100); err != nil && childCtx.Err() == nil {
+				m.appCtx.Logger.Error("gonzbnet pending projection retry failed: %v", err)
+			} else if resolved > 0 {
+				m.appCtx.Logger.Info("gonzbnet resolved pending projections=%d", resolved)
+			}
+		}()
+		go func() {
 			if err := m.pullSync.Run(childCtx, interval); err != nil && childCtx.Err() == nil {
 				m.appCtx.Logger.Error("gonzbnet pull sync failed: %v", err)
 			}
