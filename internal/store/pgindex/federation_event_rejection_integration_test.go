@@ -2,6 +2,7 @@ package pgindex
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -41,6 +42,8 @@ func TestFederationAcceptedAndRejectedEventPersistence(t *testing.T) {
 		t.Fatalf("store node: %v", err)
 	}
 	t.Cleanup(func() {
+		_, _ = store.DB().ExecContext(ctx, `DELETE FROM federated_release_cards WHERE release_id = 'rel_pg_projection'`)
+		_, _ = store.DB().ExecContext(ctx, `DELETE FROM federation_rejected_events WHERE author_node_id = $1`, nodeID)
 		_, _ = store.DB().ExecContext(ctx, `DELETE FROM federation_events WHERE author_node_id = $1`, nodeID)
 		_, _ = store.DB().ExecContext(ctx, `DELETE FROM federation_nodes WHERE node_id = $1`, nodeID)
 	})
@@ -74,7 +77,12 @@ func TestFederationAcceptedAndRejectedEventPersistence(t *testing.T) {
 		t.Fatalf("project release card: %v", err)
 	}
 	var projectedTitle, projectedPool string
-	if err := store.DB().QueryRowContext(ctx, `SELECT title, pool_id FROM federated_release_cards WHERE release_id = $1`, card.ReleaseID).Scan(&projectedTitle, &projectedPool); err != nil {
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT card.title, source.pool_id
+		FROM federated_release_cards card
+		JOIN federated_release_sources source ON source.release_id = card.release_id
+		WHERE card.release_id = $1 AND source.source_node_id = $2 AND source.pool_id = $3`,
+		card.ReleaseID, nodeID, "pool.test").Scan(&projectedTitle, &projectedPool); err != nil {
 		t.Fatalf("read release-card projection: %v", err)
 	}
 	if projectedTitle != card.Title || projectedPool != "pool.test" {
@@ -91,8 +99,12 @@ func TestFederationAcceptedAndRejectedEventPersistence(t *testing.T) {
 	if err := store.DB().QueryRowContext(ctx, `SELECT validator_capacity FROM federation_node_capabilities WHERE node_id = $1`, nodeID).Scan(&capacityJSON); err != nil {
 		t.Fatalf("read validator capacity projection: %v", err)
 	}
-	if !strings.Contains(string(capacityJSON), `"max_tasks_per_hour":10`) {
-		t.Fatalf("validator capacity projection missing expected value: %s", capacityJSON)
+	var projectedCapacity validation.ValidatorCapacity
+	if err := json.Unmarshal(capacityJSON, &projectedCapacity); err != nil {
+		t.Fatalf("decode validator capacity projection: %v", err)
+	}
+	if projectedCapacity.MaxTasksPerHour != 10 {
+		t.Fatalf("validator capacity projection missing expected value: %+v", projectedCapacity)
 	}
 	coverageBody := coverage.ScannerCapacity{
 		SchemaVersion: "1.0", Type: coverage.TypeScannerCapacity, NodeID: nodeID,
@@ -141,11 +153,72 @@ func TestFederationAcceptedAndRejectedEventPersistence(t *testing.T) {
 	if err := store.AppendRejectedFederationEvent(ctx, rejectedID, nodeID, "NodeProfile", []byte(`{"bad":true}`), "malformed signature"); err != nil {
 		t.Fatalf("append rejected event: %v", err)
 	}
-	var rejected, reason string
-	if err := store.DB().QueryRowContext(ctx, `SELECT validation_status, rejection_reason FROM federation_events WHERE event_id = $1`, rejectedID).Scan(&rejected, &reason); err != nil {
+	var reason string
+	if err := store.DB().QueryRowContext(ctx, `SELECT rejection_reason FROM federation_rejected_events WHERE event_id = $1 ORDER BY received_at DESC LIMIT 1`, rejectedID).Scan(&reason); err != nil {
 		t.Fatalf("read rejected event: %v", err)
 	}
-	if rejected != "rejected" || reason != "malformed signature" {
-		t.Fatalf("unexpected rejection state status=%q reason=%q", rejected, reason)
+	if reason != "malformed signature" {
+		t.Fatalf("unexpected rejection reason=%q", reason)
+	}
+}
+
+func TestFederationEventStorePreservesSignedTimestampPrecision(t *testing.T) {
+	dsn := strings.TrimSpace(os.Getenv("GONZB_TEST_PG_DSN"))
+	if dsn == "" {
+		t.Skip("set GONZB_TEST_PG_DSN to run pgindex integration tests")
+	}
+	ctx := context.Background()
+	store, err := NewStore(dsn)
+	if err != nil {
+		t.Fatalf("open migrated store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	node, err := identity.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("identity: %v", err)
+	}
+	nodeID, err := node.NodeID(ctx)
+	if err != nil {
+		t.Fatalf("node id: %v", err)
+	}
+	publicKey, err := node.PublicKey(ctx)
+	if err != nil {
+		t.Fatalf("public key: %v", err)
+	}
+	if err := store.UpsertFederationNode(ctx, FederationNodeRecord{NodeID: nodeID, PublicKey: publicKey, Status: "known"}); err != nil {
+		t.Fatalf("store node: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = store.DB().ExecContext(context.Background(), `DELETE FROM federation_events WHERE author_node_id = $1`, nodeID)
+		_, _ = store.DB().ExecContext(context.Background(), `DELETE FROM federation_nodes WHERE node_id = $1`, nodeID)
+	})
+
+	event, validation, err := events.Create(ctx, node, events.CreateOptions{
+		EventType: "NodeProfile", Sequence: 1,
+		CreatedAt:  testIntegrationEventTime().Add(853298405 * time.Nanosecond),
+		Visibility: "public", BodySchema: "gonzbnet.NodeProfile/1.0",
+		Body: map[string]any{"schema_version": "1.0", "type": "NodeProfile", "node_id": nodeID},
+	})
+	if err != nil || validation == nil || !validation.OK {
+		t.Fatalf("create event: validation=%+v err=%v", validation, err)
+	}
+	if err := store.AppendVerifiedFederationEvent(ctx, event, validation); err != nil {
+		t.Fatalf("append event: %v", err)
+	}
+	storedEvent, err := store.GetFederationEvent(ctx, event.EventID)
+	if err != nil {
+		t.Fatalf("reload event: %v", err)
+	}
+	wireJSON, err := json.Marshal(storedEvent)
+	if err != nil {
+		t.Fatalf("marshal event: %v", err)
+	}
+	var wireEvent events.SignedEvent
+	if err := json.Unmarshal(wireJSON, &wireEvent); err != nil {
+		t.Fatalf("unmarshal event: %v", err)
+	}
+	wireValidation, err := events.Verify(&wireEvent)
+	if err != nil || wireValidation == nil || !wireValidation.OK {
+		t.Fatalf("verify reloaded wire event: validation=%+v err=%v", wireValidation, err)
 	}
 }

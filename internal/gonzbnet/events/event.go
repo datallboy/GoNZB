@@ -332,8 +332,5 @@ func formatTime(in time.Time) string {
 }
 
 func nonNilStrings(in []string) []string {
-	if in == nil {
-		return []string{}
-	}
-	return append([]string(nil), in...)
+	return append([]string{}, in...)
 }

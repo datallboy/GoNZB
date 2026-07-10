@@ -139,6 +139,26 @@ func TestSignedEventSignedFieldTamperFailsVerification(t *testing.T) {
 	}
 }
 
+func TestSignedEventEmptyPoolIDsRemainCanonical(t *testing.T) {
+	ctx := context.Background()
+	node, err := identity.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("load identity: %v", err)
+	}
+	opts := testCreateOptions()
+	opts.PoolIDs = nil
+	event, validation, err := Create(ctx, node, opts)
+	if err != nil || validation == nil || !validation.OK {
+		t.Fatalf("create event: validation=%+v err=%v", validation, err)
+	}
+
+	event.PoolIDs = []string{}
+	validation, err = Verify(event)
+	if err != nil || validation == nil || !validation.OK {
+		t.Fatalf("verify empty pool IDs: validation=%+v err=%v", validation, err)
+	}
+}
+
 func TestVerifyAtRejectsFutureAndExpiredEvents(t *testing.T) {
 	ctx := context.Background()
 	node, err := identity.LoadOrCreate(t.TempDir())
