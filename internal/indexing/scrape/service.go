@@ -78,6 +78,7 @@ type Options struct {
 	MaxBatches               int
 	BackfillUntilDateByGroup map[string]time.Time
 	RangeCoordinator         RangeCoordinator
+	RunObserver              func(context.Context, map[string]any, error)
 }
 
 type RangeCoordinator interface {
@@ -288,6 +289,9 @@ func (s *Service) runModeWithMetrics(ctx context.Context, mode string) (map[stri
 			return metrics.toMap(), fmt.Errorf("%v (also failed to finish scrape run: %w)", runErr, finishErr)
 		}
 		return metrics.toMap(), fmt.Errorf("finish scrape run: %w", finishErr)
+	}
+	if s.opts.RunObserver != nil {
+		s.opts.RunObserver(ctx, metrics.toMap(), runErr)
 	}
 
 	return metrics.toMap(), runErr

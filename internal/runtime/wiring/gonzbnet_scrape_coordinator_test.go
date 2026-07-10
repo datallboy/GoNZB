@@ -67,6 +67,29 @@ func TestGoNZBNetScrapeCoordinatorPublishesClaimAndComplete(t *testing.T) {
 	}
 }
 
+func TestGoNZBNetScrapeCoordinatorObservesRun(t *testing.T) {
+	nodeIdentity, err := identity.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("identity: %v", err)
+	}
+	store := &fakeScrapeCoordinatorStore{}
+	coord, err := newGoNZBNetScrapeRangeCoordinator(nodeIdentity, store, "pool.test", time.Minute, 0.5, "scope-hash", true, true, true)
+	if err != nil {
+		t.Fatalf("coordinator: %v", err)
+	}
+	coord.now = func() time.Time { return time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC) }
+	coord.ObserveScrapeRun(context.Background(), map[string]any{
+		"groups_total":         4,
+		"article_headers_seen": int64(120),
+	}, nil)
+	if len(store.events) != 2 {
+		t.Fatalf("expected capacity and heartbeat events, got %d", len(store.events))
+	}
+	if store.events[0].EventType != coverage.TypeScannerCapacity || store.events[1].EventType != coverage.TypeScannerHeartbeat {
+		t.Fatalf("unexpected event types: %s, %s", store.events[0].EventType, store.events[1].EventType)
+	}
+}
+
 func TestGoNZBNetScrapeCoordinatorListsAssignedRanges(t *testing.T) {
 	nodeIdentity, err := identity.LoadOrCreate(t.TempDir())
 	if err != nil {

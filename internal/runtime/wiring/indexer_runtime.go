@@ -141,6 +141,12 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 	if err != nil {
 		return nil, err
 	}
+	var scrapeObserver func(context.Context, map[string]any, error)
+	if observer, ok := rangeCoordinator.(interface {
+		ObserveScrapeRun(context.Context, map[string]any, error)
+	}); ok {
+		scrapeObserver = observer.ObserveScrapeRun
+	}
 
 	var (
 		scrapeLatestSvc         *scrape.Service
@@ -170,6 +176,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			MaxBatches:               runtimeCfg.ScrapeLatest.MaxBatches,
 			BackfillUntilDateByGroup: runtimeCfg.BackfillUntilDateByGroup,
 			RangeCoordinator:         rangeCoordinator,
+			RunObserver:              scrapeObserver,
 		},
 	)
 	scrapeBackfillSvc = scrape.NewService(
@@ -183,6 +190,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			MaxBatches:               runtimeCfg.ScrapeBackfill.MaxBatches,
 			BackfillUntilDateByGroup: runtimeCfg.BackfillUntilDateByGroup,
 			RangeCoordinator:         rangeCoordinator,
+			RunObserver:              scrapeObserver,
 		},
 	)
 
@@ -208,6 +216,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 					MaxBatches:               runtimeCfg.ScrapeLatest.MaxBatches,
 					BackfillUntilDateByGroup: runtimeCfg.BackfillUntilDateByGroup,
 					RangeCoordinator:         rangeCoordinator,
+					RunObserver:              scrapeObserver,
 				},
 			)
 			scrapeBackfillSvc = scrape.NewService(
@@ -221,6 +230,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 					MaxBatches:               runtimeCfg.ScrapeBackfill.MaxBatches,
 					BackfillUntilDateByGroup: runtimeCfg.BackfillUntilDateByGroup,
 					RangeCoordinator:         rangeCoordinator,
+					RunObserver:              scrapeObserver,
 				},
 			)
 		}
