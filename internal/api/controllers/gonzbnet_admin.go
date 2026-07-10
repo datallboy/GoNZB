@@ -1884,6 +1884,7 @@ func (ctrl *GoNZBNetAdminController) adminProfileConfig(c *echo.Context) profile
 		ValidationAllowSamplePayload:  cfg.ValidationAllowSamplePayload,
 		ValidationAllowPAR2:           cfg.ValidationAllowPAR2,
 		ProviderDisclosure:            cfg.CoverageProviderScopeMode,
+		ProviderBackboneHash:          providerBackboneHashForAppContext(ctrl.appCtx),
 		MaxEventBytes:                 cfg.MaxEventBytes,
 		MaxManifestBytes:              cfg.MaxManifestBytes,
 		MaxBatchEvents:                cfg.MaxBatchEvents,

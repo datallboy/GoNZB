@@ -19,7 +19,7 @@ func TestGoNZBNetScrapeCoordinatorPublishesClaimAndComplete(t *testing.T) {
 		t.Fatalf("identity: %v", err)
 	}
 	store := &fakeScrapeCoordinatorStore{}
-	coord, err := newGoNZBNetScrapeRangeCoordinator(nodeIdentity, store, "pool.test", time.Minute, 0.5, true)
+	coord, err := newGoNZBNetScrapeRangeCoordinator(nodeIdentity, store, "pool.test", time.Minute, 0.5, "scope-hash", true)
 	if err != nil {
 		t.Fatalf("coordinator: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestGoNZBNetScrapeCoordinatorSkipsBlockedRange(t *testing.T) {
 			AdvanceCheckpoint: true,
 		},
 	}
-	coord, err := newGoNZBNetScrapeRangeCoordinator(nodeIdentity, store, "pool.test", time.Minute, 0.5, true)
+	coord, err := newGoNZBNetScrapeRangeCoordinator(nodeIdentity, store, "pool.test", time.Minute, 0.5, "scope-hash", true)
 	if err != nil {
 		t.Fatalf("coordinator: %v", err)
 	}
@@ -89,16 +89,21 @@ func TestGoNZBNetScrapeCoordinatorSkipsBlockedRange(t *testing.T) {
 	if len(store.events) != 0 {
 		t.Fatalf("expected skipped range not to publish local claim, got %d events", len(store.events))
 	}
+	if store.lastBlockParams.ProviderBackboneHash != "scope-hash" || !store.lastBlockParams.RequireProviderScope {
+		t.Fatalf("expected provider scope block params, got %+v", store.lastBlockParams)
+	}
 }
 
 type fakeScrapeCoordinatorStore struct {
-	block     pgindex.CoverageRangeBlock
-	sequence  int64
-	events    []*events.SignedEvent
-	projected int
+	block           pgindex.CoverageRangeBlock
+	lastBlockParams pgindex.CoverageRangeBlockParams
+	sequence        int64
+	events          []*events.SignedEvent
+	projected       int
 }
 
-func (s *fakeScrapeCoordinatorStore) CheckCoverageRangeBlock(context.Context, pgindex.CoverageRangeBlockParams) (pgindex.CoverageRangeBlock, error) {
+func (s *fakeScrapeCoordinatorStore) CheckCoverageRangeBlock(_ context.Context, params pgindex.CoverageRangeBlockParams) (pgindex.CoverageRangeBlock, error) {
+	s.lastBlockParams = params
 	return s.block, nil
 }
 

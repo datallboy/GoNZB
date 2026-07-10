@@ -3,7 +3,10 @@ package profile
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -310,6 +313,23 @@ func enabledStatus(enabled bool) string {
 		return "enabled"
 	}
 	return "disabled"
+}
+
+func ProviderBackboneHash(parts []string) string {
+	values := make([]string, 0, len(parts))
+	for _, raw := range parts {
+		value := strings.ToLower(strings.TrimSpace(raw))
+		if value == "" {
+			continue
+		}
+		values = append(values, value)
+	}
+	if len(values) == 0 {
+		return ""
+	}
+	sort.Strings(values)
+	sum := sha256.Sum256([]byte(strings.Join(values, "\n")))
+	return hex.EncodeToString(sum[:])
 }
 
 func CapsFor(maxEventBytes, maxManifestBytes int) Caps {

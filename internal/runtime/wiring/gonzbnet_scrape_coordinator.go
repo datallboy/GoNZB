@@ -14,6 +14,7 @@ import (
 	"github.com/datallboy/gonzb/internal/gonzbnet/coverage"
 	"github.com/datallboy/gonzb/internal/gonzbnet/events"
 	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
+	"github.com/datallboy/gonzb/internal/gonzbnet/profile"
 	"github.com/datallboy/gonzb/internal/indexing/scrape"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
 )
@@ -33,6 +34,7 @@ type gonzbnetScrapeRangeCoordinator struct {
 	nodeID              string
 	claimTTL            time.Duration
 	minBlockingTrust    float64
+	providerScopeHash   string
 	respectRemoteClaims bool
 	now                 func() time.Time
 	mu                  sync.Mutex
@@ -63,11 +65,12 @@ func goNZBNetScrapeRangeCoordinatorFor(appCtx *app.Context) (scrape.RangeCoordin
 		cfg.LocalPoolID,
 		time.Duration(cfg.ScannerClaimTTLMinutes)*time.Minute,
 		cfg.CoverageMinTrustForClaim,
+		providerBackboneHashForIndexer(appCtx),
 		cfg.ScannerRespectRemoteClaims,
 	)
 }
 
-func newGoNZBNetScrapeRangeCoordinator(nodeIdentity *identity.Identity, store gonzbnetScrapeCoordinatorStore, poolID string, claimTTL time.Duration, minBlockingTrust float64, respectRemoteClaims bool) (*gonzbnetScrapeRangeCoordinator, error) {
+func newGoNZBNetScrapeRangeCoordinator(nodeIdentity *identity.Identity, store gonzbnetScrapeCoordinatorStore, poolID string, claimTTL time.Duration, minBlockingTrust float64, providerScopeHash string, respectRemoteClaims bool) (*gonzbnetScrapeRangeCoordinator, error) {
 	if nodeIdentity == nil || store == nil {
 		return nil, fmt.Errorf("gonzbnet scrape coordinator dependencies are required")
 	}
@@ -84,9 +87,29 @@ func newGoNZBNetScrapeRangeCoordinator(nodeIdentity *identity.Identity, store go
 		poolID:              poolID,
 		claimTTL:            claimTTL,
 		minBlockingTrust:    minBlockingTrust,
+		providerScopeHash:   strings.TrimSpace(providerScopeHash),
 		respectRemoteClaims: respectRemoteClaims,
 		now:                 time.Now,
 	}, nil
+}
+
+func providerBackboneHashForIndexer(appCtx *app.Context) string {
+	if appCtx == nil || appCtx.Config == nil || !appCtx.Config.GoNZBNet.ShareProviderBackbone {
+		return ""
+	}
+	servers := scopedIndexerServers(appCtx)
+	if len(servers) == 0 {
+		servers = appCtx.Config.Servers
+	}
+	parts := make([]string, 0, len(servers))
+	for _, server := range servers {
+		host := strings.TrimSpace(server.Host)
+		if host == "" {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s:%d:%t", host, server.Port, server.TLS))
+	}
+	return profile.ProviderBackboneHash(parts)
 }
 
 func (c *gonzbnetScrapeRangeCoordinator) BeginScrapeRange(ctx context.Context, request scrape.RangeRequest) (scrape.RangeDecision, error) {
@@ -103,6 +126,8 @@ func (c *gonzbnetScrapeRangeCoordinator) BeginScrapeRange(ctx context.Context, r
 		Group:                 request.Group,
 		RangeStart:            request.RangeStart,
 		RangeEnd:              request.RangeEnd,
+		ProviderBackboneHash:  c.providerScopeHash,
+		RequireProviderScope:  true,
 		MinBlockingTrustScore: c.minBlockingTrust,
 		RespectRemoteClaims:   c.respectRemoteClaims,
 		SkipCompleted:         true,

@@ -99,3 +99,17 @@ func TestNodeProfileAdvertisesCapacityAndModuleStatus(t *testing.T) {
 		t.Fatalf("unexpected provider scope: %+v", profile.ProviderScope)
 	}
 }
+
+func TestProviderBackboneHashIsDeterministicAndNormalized(t *testing.T) {
+	first := ProviderBackboneHash([]string{" News.Example:563 ", "backup.example:119"})
+	second := ProviderBackboneHash([]string{"backup.example:119", "news.example:563"})
+	if first == "" {
+		t.Fatal("expected provider backbone hash")
+	}
+	if first != second {
+		t.Fatalf("expected normalized hash, got %q and %q", first, second)
+	}
+	if first == ProviderBackboneHash([]string{"other.example:563"}) {
+		t.Fatal("expected different provider scopes to hash differently")
+	}
+}
