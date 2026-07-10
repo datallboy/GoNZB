@@ -49,6 +49,17 @@ func (m *gonzbnetRuntimeModule) Build(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	nodeID, err := nodeIdentity.NodeID(ctx)
+	if err != nil {
+		return fmt.Errorf("load gonzbnet node ID: %w", err)
+	}
+	publicKey, err := nodeIdentity.PublicKey(ctx)
+	if err != nil {
+		return fmt.Errorf("load gonzbnet public key: %w", err)
+	}
+	if err := store.UpsertFederationNodeIdentity(ctx, nodeID, publicKey); err != nil {
+		return fmt.Errorf("persist local gonzbnet node identity: %w", err)
+	}
 	m.publisher = publisher.New(nodeIdentity, store, m.appCtx.Config.GoNZBNet.LocalPoolID)
 	if checker, ok := m.appCtx.NNTP.(interface {
 		FetchBodyPrefixForScope(context.Context, string, string, []string, int64) ([]byte, error)
