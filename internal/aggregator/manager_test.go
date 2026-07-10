@@ -33,7 +33,7 @@ func TestSearchAllFiltersCachedGoNZBNetResultsWithoutPermission(t *testing.T) {
 	}
 }
 
-func TestSearchAllAllowsCachedGoNZBNetResultsWithPermission(t *testing.T) {
+func TestSearchAllNeverUsesPoollessCachedGoNZBNetResults(t *testing.T) {
 	store := &fakeManagerStore{
 		searchResults: []*domain.Release{
 			{ID: "fed", Source: gonzbnetSourceName, GUID: "rel_fed", Title: "Federated"},
@@ -52,8 +52,8 @@ func TestSearchAllAllowsCachedGoNZBNetResultsWithPermission(t *testing.T) {
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
-	if len(results) != 1 || results[0].Source != gonzbnetSourceName {
-		t.Fatalf("expected cached gonzbnet result, got %+v", results)
+	if len(results) != 0 {
+		t.Fatalf("expected poolless cached gonzbnet result to be ignored, got %+v", results)
 	}
 }
 
@@ -77,11 +77,59 @@ func TestGetNZBDeniesGoNZBNetReleaseWithoutPermission(t *testing.T) {
 	}
 }
 
+func TestGetNZBAuthorizesGoNZBNetBeforeBlobCache(t *testing.T) {
+	store := &fakeManagerStore{exists: true}
+	manager := NewManager(store, fakeLogger{}, true, false)
+	source := &fakeCatalogSource{name: gonzbnetSourceName, authorizeErr: io.EOF}
+	manager.AddSource(source)
+	ctx := auth.ContextWithPrincipal(context.Background(), &auth.Principal{
+		Permissions: map[string]struct{}{auth.PermissionGoNZBNetGet: {}},
+	})
+
+	_, err := manager.GetNZB(ctx, &domain.Release{
+		ID:     "cached-federated-result",
+		Source: gonzbnetSourceName,
+		GUID:   "rel_fed",
+	})
+	if err == nil {
+		t.Fatal("expected source authorization denial")
+	}
+	if source.authorizeCalls != 1 || store.cacheReads != 0 {
+		t.Fatalf("authorization must run before cache read: auth=%d reads=%d", source.authorizeCalls, store.cacheReads)
+	}
+}
+
+func TestGetNZBReturnsAuthorizedGoNZBNetBlobCache(t *testing.T) {
+	store := &fakeManagerStore{exists: true}
+	manager := NewManager(store, fakeLogger{}, true, false)
+	source := &fakeCatalogSource{name: gonzbnetSourceName}
+	manager.AddSource(source)
+	ctx := auth.ContextWithPrincipal(context.Background(), &auth.Principal{
+		Permissions: map[string]struct{}{auth.PermissionGoNZBNetGet: {}},
+	})
+
+	reader, err := manager.GetNZB(ctx, &domain.Release{
+		ID:     "cached-federated-result",
+		Source: gonzbnetSourceName,
+		GUID:   "rel_fed",
+	})
+	if err != nil {
+		t.Fatalf("get cached NZB: %v", err)
+	}
+	_ = reader.Close()
+	if source.authorizeCalls != 1 || source.gets != 0 || store.cacheReads != 1 {
+		t.Fatalf("unexpected authorized cache path: auth=%d gets=%d reads=%d", source.authorizeCalls, source.gets, store.cacheReads)
+	}
+}
+
 type fakeManagerStore struct {
 	searchResults []*domain.Release
+	exists        bool
+	cacheReads    int
 }
 
 func (s *fakeManagerStore) GetNZBReader(string) (io.ReadCloser, error) {
+	s.cacheReads++
 	return io.NopCloser(bytes.NewReader(nil)), nil
 }
 
@@ -90,7 +138,7 @@ func (s *fakeManagerStore) SaveNZBAtomically(string, []byte) error {
 }
 
 func (s *fakeManagerStore) Exists(string) bool {
-	return false
+	return s.exists
 }
 
 func (s *fakeManagerStore) UpsertAggregatorReleaseCache(context.Context, []*domain.Release) error {
@@ -113,8 +161,10 @@ func (fakeLogger) Warn(string, ...interface{})  {}
 func (fakeLogger) Error(string, ...interface{}) {}
 
 type fakeCatalogSource struct {
-	name string
-	gets int
+	name           string
+	gets           int
+	authorizeCalls int
+	authorizeErr   error
 }
 
 func (s *fakeCatalogSource) Name() string {
@@ -128,4 +178,9 @@ func (s *fakeCatalogSource) Search(context.Context, SearchRequest) ([]*domain.Re
 func (s *fakeCatalogSource) GetNZB(context.Context, *domain.Release) (io.ReadCloser, error) {
 	s.gets++
 	return io.NopCloser(bytes.NewReader([]byte("<nzb/>"))), nil
+}
+
+func (s *fakeCatalogSource) AuthorizeGet(context.Context, *domain.Release) error {
+	s.authorizeCalls++
+	return s.authorizeErr
 }

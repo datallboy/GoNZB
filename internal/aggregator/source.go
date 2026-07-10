@@ -35,6 +35,12 @@ type catalogSource interface {
 	GetNZB(ctx context.Context, rel *domain.Release) (io.ReadCloser, error)
 }
 
+// getAuthorizer is implemented by sources whose result access depends on
+// request-local policy beyond the source's global permission.
+type getAuthorizer interface {
+	AuthorizeGet(ctx context.Context, rel *domain.Release) error
+}
+
 type store interface {
 	GetNZBReader(id string) (io.ReadCloser, error)
 	SaveNZBAtomically(id string, data []byte) error
