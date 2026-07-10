@@ -786,7 +786,14 @@ func (s *Service) getSignedJSON(ctx context.Context, endpoint string, out any) e
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 		return fmt.Errorf("GET %s status=%d body=%s", endpoint, resp.StatusCode, strings.TrimSpace(string(body)))
 	}
-	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", endpoint, err)
+	}
+	if err := canonical.ValidateJSON(body); err != nil {
+		return fmt.Errorf("decode %s: %w", endpoint, err)
+	}
+	if err := json.Unmarshal(body, out); err != nil {
 		return fmt.Errorf("decode %s: %w", endpoint, err)
 	}
 	return nil

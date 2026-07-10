@@ -96,6 +96,23 @@ func TestSyncOncePullsAndProjectsHealthAttestation(t *testing.T) {
 	}
 }
 
+func TestSignedJSONReadRejectsDuplicateKeysBeforeDecode(t *testing.T) {
+	localIdentity, err := identity.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("local identity: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"schema_version":"1.0","events":[],"events":[]}`)
+	}))
+	defer server.Close()
+
+	var page OutboxPage
+	err = NewWithOptions(localIdentity, nil, nil, Options{AllowInsecurePeerHTTP: true}).getSignedJSON(context.Background(), server.URL+"/outbox", &page)
+	if err == nil || !strings.Contains(err.Error(), "Duplicate key") {
+		t.Fatalf("expected duplicate key rejection, got %v", err)
+	}
+}
+
 func TestSyncOnceRejectsTamperedRemoteEvent(t *testing.T) {
 	ctx := context.Background()
 	localIdentity, err := identity.LoadOrCreate(t.TempDir())

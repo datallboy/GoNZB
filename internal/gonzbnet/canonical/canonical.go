@@ -1,35 +1,74 @@
 package canonical
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/base32"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
-	"math"
-	"sort"
-	"strconv"
 	"strings"
+	"unicode/utf8"
+
+	jsoncanonicalizer "github.com/cyberphone/json-canonicalization/go/src/webpki.org/jsoncanonicalizer"
 )
 
 const HashPrefixSHA256 = "sha256:"
 
 var base32NoPadding = base32.StdEncoding.WithPadding(base32.NoPadding)
 
-// Marshal returns deterministic JSON bytes for signing and hashing.
+// Marshal returns RFC 8785 JSON Canonicalization Scheme bytes for signing and
+// hashing. Raw JSON is preserved until canonicalization so duplicate keys can
+// be rejected instead of being collapsed by encoding/json.
 func Marshal(v any) ([]byte, error) {
-	normalized, err := normalize(v)
-	if err != nil {
-		return nil, err
+	var raw []byte
+	switch value := v.(type) {
+	case json.RawMessage:
+		raw = append([]byte(nil), value...)
+	case []byte:
+		raw = append([]byte(nil), value...)
+	default:
+		var err error
+		raw, err = json.Marshal(v)
+		if err != nil {
+			return nil, fmt.Errorf("marshal json: %w", err)
+		}
+	}
+	return Canonicalize(raw)
+}
+
+// Canonicalize validates and transforms raw JSON using RFC 8785 JCS.
+func Canonicalize(raw []byte) ([]byte, error) {
+	if !utf8.Valid(raw) {
+		return nil, fmt.Errorf("canonicalize json: input is not valid UTF-8")
+	}
+	if !json.Valid(raw) {
+		return nil, fmt.Errorf("canonicalize json: invalid JSON")
 	}
 
-	var buf bytes.Buffer
-	if err := writeValue(&buf, normalized); err != nil {
-		return nil, err
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" {
+		return nil, fmt.Errorf("canonicalize json: empty input")
 	}
-	return buf.Bytes(), nil
+	if trimmed[0] != '{' && trimmed[0] != '[' {
+		wrapped, err := jsoncanonicalizer.Transform([]byte("[" + trimmed + "]"))
+		if err != nil {
+			return nil, fmt.Errorf("canonicalize json: %w", err)
+		}
+		return append([]byte(nil), wrapped[1:len(wrapped)-1]...), nil
+	}
+	canonicalJSON, err := jsoncanonicalizer.Transform([]byte(trimmed))
+	if err != nil {
+		return nil, fmt.Errorf("canonicalize json: %w", err)
+	}
+	return canonicalJSON, nil
+}
+
+// ValidateJSON applies the same strict parser used for canonicalization. It is
+// intended for receive boundaries that must reject duplicate object keys before
+// decoding into Go structs.
+func ValidateJSON(raw []byte) error {
+	_, err := Canonicalize(raw)
+	return err
 }
 
 func BodyHash(v any) (string, []byte, error) {
@@ -52,115 +91,4 @@ func Base64URL(b []byte) string {
 
 func DecodeBase64URL(s string) ([]byte, error) {
 	return base64.RawURLEncoding.DecodeString(strings.TrimSpace(s))
-}
-
-func normalize(v any) (any, error) {
-	switch t := v.(type) {
-	case nil:
-		return nil, nil
-	case json.RawMessage:
-		return normalizeRaw(t)
-	case []byte:
-		return normalizeRaw(t)
-	default:
-		b, err := json.Marshal(v)
-		if err != nil {
-			return nil, fmt.Errorf("marshal json: %w", err)
-		}
-		return normalizeRaw(b)
-	}
-}
-
-func normalizeRaw(raw []byte) (any, error) {
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.UseNumber()
-
-	var v any
-	if err := dec.Decode(&v); err != nil {
-		return nil, fmt.Errorf("decode json: %w", err)
-	}
-	var extra any
-	if err := dec.Decode(&extra); err != io.EOF {
-		if err == nil {
-			return nil, fmt.Errorf("decode json: trailing data")
-		}
-		return nil, fmt.Errorf("decode json: trailing data")
-	}
-	return v, nil
-}
-
-func writeValue(buf *bytes.Buffer, v any) error {
-	switch t := v.(type) {
-	case nil:
-		buf.WriteString("null")
-	case bool:
-		if t {
-			buf.WriteString("true")
-		} else {
-			buf.WriteString("false")
-		}
-	case string:
-		b, err := json.Marshal(t)
-		if err != nil {
-			return err
-		}
-		buf.Write(b)
-	case json.Number:
-		if err := validateJSONNumber(t.String()); err != nil {
-			return err
-		}
-		buf.WriteString(t.String())
-	case float64:
-		if math.IsNaN(t) || math.IsInf(t, 0) {
-			return fmt.Errorf("non-finite json number")
-		}
-		buf.WriteString(strconv.FormatFloat(t, 'g', -1, 64))
-	case []any:
-		buf.WriteByte('[')
-		for i, item := range t {
-			if i > 0 {
-				buf.WriteByte(',')
-			}
-			if err := writeValue(buf, item); err != nil {
-				return err
-			}
-		}
-		buf.WriteByte(']')
-	case map[string]any:
-		keys := make([]string, 0, len(t))
-		for key := range t {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-
-		buf.WriteByte('{')
-		for i, key := range keys {
-			if i > 0 {
-				buf.WriteByte(',')
-			}
-			keyBytes, err := json.Marshal(key)
-			if err != nil {
-				return err
-			}
-			buf.Write(keyBytes)
-			buf.WriteByte(':')
-			if err := writeValue(buf, t[key]); err != nil {
-				return err
-			}
-		}
-		buf.WriteByte('}')
-	default:
-		return fmt.Errorf("unsupported canonical value type %T", v)
-	}
-	return nil
-}
-
-func validateJSONNumber(value string) error {
-	if strings.TrimSpace(value) != value || value == "" {
-		return fmt.Errorf("invalid json number %q", value)
-	}
-	if _, err := strconv.ParseFloat(value, 64); err != nil {
-		return fmt.Errorf("invalid json number %q: %w", value, err)
-	}
-	return nil
 }

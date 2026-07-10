@@ -15,6 +15,8 @@ Completed during this audit:
 - protected federation reads use signed node requests and pool visibility;
 - pull synchronizes every supported event type, while pull, push, and gossip
   filter pool events for the remote node.
+- RFC 8785 canonicalization is covered by direct vectors, and federation receive
+  boundaries reject duplicate JSON object names before decoding.
 
 The current required work is:
 
@@ -24,7 +26,6 @@ The current required work is:
 - perform configured validator tiers against the local NNTP provider;
 - emit scanner capacity, heartbeat, observations, and periodic checkpoints;
 - enforce manifest-cache retention/serving limits;
-- prove canonical JSON behavior against RFC 8785 and reject duplicate keys;
 - enforce event-chain continuity and advertise only implemented capabilities;
 - add PostgreSQL-backed three-node end-to-end coverage and GoNZBNet metrics.
 

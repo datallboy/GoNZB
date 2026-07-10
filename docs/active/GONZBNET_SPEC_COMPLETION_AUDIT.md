@@ -41,6 +41,8 @@ Completed during this audit:
   to public visibility or active shared-pool membership.
 - Pull now signs outbox requests and synchronizes all supported event types;
   push and gossip apply the same destination-pool visibility filter.
+- Signed and hashed JSON now uses RFC 8785 canonicalization, with direct vectors
+  and duplicate-key rejection before federation payload decoding.
 
 ### Critical correctness and privacy
 
@@ -64,30 +66,27 @@ is limited to well-known metadata, node profile, and capabilities.
 
 ### Protocol and security conformance
 
-5. Replace or prove the canonical JSON implementation against RFC 8785 vectors,
-    including ECMAScript number serialization, UTF-16 property ordering, and
-    duplicate-key rejection. The package currently has no direct tests.
-6. Validate per-author chain continuity (`previous_event_id` and monotonic
+5. Validate per-author chain continuity (`previous_event_id` and monotonic
     sequence), not only same-sequence conflicts.
-7. Make capabilities truthful. The node currently advertises gzip/zstd and
+6. Make capabilities truthful. The node currently advertises gzip/zstd and
     event types that the normal receive path does not implement.
-8. Reconcile wire-body differences where current typed objects diverge from
+7. Reconcile wire-body differences where current typed objects diverge from
     the specification, especially `ManifestAvailability` and coverage events.
-9. Complete config semantics and aliases for controls that affect behavior,
+8. Complete config semantics and aliases for controls that affect behavior,
     including manifest-specific rate limits, remote get timeout, configurable
     route base path, and currently display-only addendum limits.
-10. Make accepted-event storage and projection atomic, or retain explicit
+9. Make accepted-event storage and projection atomic, or retain explicit
     pending/quarantine state until projection succeeds.
 
 ### Verification and operations
 
-11. Add the specified PostgreSQL-backed three-node end-to-end harness covering
+10. Add the specified PostgreSQL-backed three-node end-to-end harness covering
     publish, pull/push, authorized search/get, manifest fetch, malicious-node
     rejection, revocation, and tombstone propagation.
-12. Add direct PostgreSQL integration tests for event append/rejection,
+11. Add direct PostgreSQL integration tests for event append/rejection,
     projections, pool authorization, and migration behavior. Current GoNZBNet
     tests rely primarily on fakes.
-13. Add the named GoNZBNet counters/histograms and fill remaining structured-log
+12. Add the named GoNZBNet counters/histograms and fill remaining structured-log
     events from the observability section.
 
 ## Documentation Drift
@@ -103,7 +102,7 @@ is limited to well-known metadata, node profile, and capabilities.
 
 ## Execution Order
 
-1. Exact canonical JSON and event-chain continuity.
+1. Event-chain continuity and transactional receive projection.
 2. Local manifest building and validator/scanner contribution behavior.
 3. Config enforcement and truthful protocol advertisement.
 4. Integration/E2E tests and observability.
