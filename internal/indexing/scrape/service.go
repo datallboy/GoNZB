@@ -92,6 +92,8 @@ type RangeRequest struct {
 	Group        string
 	RangeStart   int64
 	RangeEnd     int64
+	WindowStart  *time.Time
+	WindowEnd    *time.Time
 }
 
 type RangeDecision struct {
@@ -100,6 +102,8 @@ type RangeDecision struct {
 	Group             string
 	RangeStart        int64
 	RangeEnd          int64
+	WindowStart       *time.Time
+	WindowEnd         *time.Time
 	Skipped           bool
 	AdvanceCheckpoint bool
 	Reason            string
@@ -166,6 +170,13 @@ type groupRunOutcome struct {
 	result groupRunResult
 	err    error
 }
+
+const (
+	assignedWindowProbeSpan      = 32
+	assignedWindowMaxDateProbes  = 96
+	assignedWindowProfileReason  = "gonzbnet_coverage_window_assignment"
+	assignedArticleProfileReason = "gonzbnet_coverage_assignment"
+)
 
 func NewService(repo repository, p provider, log logger, opts Options) *Service {
 	if opts.BatchSize <= 0 {
@@ -407,6 +418,14 @@ func (s *Service) hasAssignedRangeProvider() bool {
 	return ok
 }
 
+func hasValidArticleRange(start, end int64) bool {
+	return start > 0 && end >= start
+}
+
+func hasValidTimeWindow(start, end *time.Time) bool {
+	return start != nil && end != nil && end.After(*start)
+}
+
 func (s *Service) runAssignedRanges(ctx context.Context, providerID int64, mode string, metrics *runMetrics) error {
 	provider, ok := s.opts.RangeCoordinator.(assignedRangeProvider)
 	if !ok {
@@ -424,10 +443,19 @@ func (s *Service) runAssignedRanges(ctx context.Context, providerID int64, mode 
 		return fmt.Errorf("list assigned scrape ranges: %w", err)
 	}
 	for _, assignment := range assignments {
-		if strings.TrimSpace(assignment.Group) == "" || assignment.RangeStart <= 0 || assignment.RangeEnd < assignment.RangeStart {
+		if strings.TrimSpace(assignment.Group) == "" {
 			continue
 		}
-		result, err := s.runExplicitRange(ctx, providerID, mode, assignment)
+		var result groupRunResult
+		var err error
+		switch {
+		case hasValidArticleRange(assignment.RangeStart, assignment.RangeEnd):
+			result, err = s.runExplicitRange(ctx, providerID, mode, assignment)
+		case hasValidTimeWindow(assignment.WindowStart, assignment.WindowEnd):
+			result, err = s.runExplicitWindow(ctx, providerID, mode, assignment)
+		default:
+			continue
+		}
 		metrics.GroupsProcessed++
 		if result.HadWork {
 			metrics.GroupsWithWork++
@@ -453,7 +481,7 @@ func (s *Service) runExplicitRange(ctx context.Context, providerID int64, mode s
 	if err != nil {
 		return groupRunResult{}, fmt.Errorf("ensure newsgroup %s: %w", group, err)
 	}
-	if err := s.repo.UpsertIndexerGroupProfile(ctx, providerID, newsgroupID, "warm", "gonzbnet_coverage_assignment"); err != nil {
+	if err := s.repo.UpsertIndexerGroupProfile(ctx, providerID, newsgroupID, "warm", assignedArticleProfileReason); err != nil {
 		return groupRunResult{}, err
 	}
 	if deferred, err := s.deferRangeWhenRecoveryPressured(ctx, mode, providerID, newsgroupID, group, request.RangeStart, request.RangeEnd); err != nil {
@@ -492,6 +520,152 @@ func (s *Service) runExplicitRange(ctx context.Context, providerID int64, mode s
 		CutoffFiltered:     int64(cutoffFiltered),
 		AssignedRanges:     1,
 	}, nil
+}
+
+func (s *Service) runExplicitWindow(ctx context.Context, providerID int64, mode string, request RangeRequest) (groupRunResult, error) {
+	group := strings.TrimSpace(request.Group)
+	newsgroupID, err := s.repo.EnsureNewsgroup(ctx, group)
+	if err != nil {
+		return groupRunResult{}, fmt.Errorf("ensure newsgroup %s: %w", group, err)
+	}
+	stats, err := s.provider.GroupStats(ctx, group)
+	if err != nil {
+		return groupRunResult{}, fmt.Errorf("group stats %s: %w", group, err)
+	}
+	providerID, err = s.effectiveProviderID(ctx, providerID, stats.ProviderID)
+	if err != nil {
+		return groupRunResult{}, err
+	}
+	if err := s.repo.UpsertIndexerGroupProfile(ctx, providerID, newsgroupID, "warm", assignedWindowProfileReason); err != nil {
+		return groupRunResult{}, err
+	}
+	from, to, ok, err := s.resolveAssignedWindowRange(ctx, group, stats, *request.WindowStart, *request.WindowEnd)
+	if err != nil {
+		return groupRunResult{}, err
+	}
+	if !ok {
+		return groupRunResult{HadWork: true, RangesSkipped: 1, AssignedRanges: 1}, nil
+	}
+	request.RangeStart = from
+	request.RangeEnd = to
+	if deferred, err := s.deferRangeWhenRecoveryPressured(ctx, mode, providerID, newsgroupID, group, from, to); err != nil {
+		return groupRunResult{}, err
+	} else if deferred {
+		return groupRunResult{HadWork: true, DeferredRanges: 1, AssignedRanges: 1}, nil
+	}
+	decision, skipped, err := s.beginScrapeRangeForRequest(ctx, request)
+	if err != nil {
+		return groupRunResult{}, err
+	}
+	if skipped {
+		return groupRunResult{HadWork: true, RangesSkipped: 1, AssignedRanges: 1}, nil
+	}
+	headers, inserted, _, cutoffFiltered, actualProviderID, err := s.fetchInsertRange(ctx, providerID, newsgroupID, group, from, to, nil, stats.ProviderID)
+	if err != nil {
+		_ = s.failScrapeRange(ctx, decision, err)
+		return groupRunResult{}, err
+	}
+	_ = actualProviderID
+	if err := s.completeScrapeRange(ctx, decision, RangeResult{
+		Mode:             mode,
+		Group:            group,
+		RangeStart:       from,
+		RangeEnd:         to,
+		ArticleHeaders:   len(headers),
+		ArticlesInserted: inserted,
+	}); err != nil {
+		return groupRunResult{}, err
+	}
+	return groupRunResult{
+		HadWork:            true,
+		RangesFetched:      1,
+		ArticleHeadersSeen: int64(len(headers)),
+		ArticlesInserted:   inserted,
+		CutoffFiltered:     int64(cutoffFiltered),
+		AssignedRanges:     1,
+	}, nil
+}
+
+func (s *Service) resolveAssignedWindowRange(ctx context.Context, group string, stats GroupStats, windowStart, windowEnd time.Time) (int64, int64, bool, error) {
+	if stats.Low <= 0 || stats.High < stats.Low || !windowEnd.After(windowStart) {
+		return 0, 0, false, nil
+	}
+	startArticle, ok, err := s.findFirstArticleAtOrAfter(ctx, group, stats.Low, stats.High, windowStart.UTC())
+	if err != nil || !ok {
+		return 0, 0, false, err
+	}
+	endArticle := stats.High
+	if boundary, ok, err := s.findFirstArticleAtOrAfter(ctx, group, startArticle, stats.High, windowEnd.UTC()); err != nil {
+		return 0, 0, false, err
+	} else if ok {
+		endArticle = boundary - 1
+	}
+	if endArticle < startArticle {
+		return 0, 0, false, nil
+	}
+	return startArticle, endArticle, true, nil
+}
+
+func (s *Service) findFirstArticleAtOrAfter(ctx context.Context, group string, low, high int64, target time.Time) (int64, bool, error) {
+	if low <= 0 || high < low {
+		return 0, false, nil
+	}
+	target = target.UTC()
+	var found int64
+	probes := 0
+	for low <= high && probes < assignedWindowMaxDateProbes {
+		probes++
+		mid := low + (high-low)/2
+		article, postedAt, ok, err := s.probeArticleDateAtOrAfter(ctx, group, mid, high)
+		if err != nil {
+			return 0, false, err
+		}
+		if !ok {
+			low = mid + 1
+			continue
+		}
+		if !postedAt.Before(target) {
+			found = article
+			high = article - 1
+			continue
+		}
+		low = article + 1
+	}
+	if found <= 0 {
+		return 0, false, nil
+	}
+	return found, true, nil
+}
+
+func (s *Service) probeArticleDateAtOrAfter(ctx context.Context, group string, article, high int64) (int64, time.Time, bool, error) {
+	if article <= 0 || high < article {
+		return 0, time.Time{}, false, nil
+	}
+	to := article + assignedWindowProbeSpan - 1
+	if to > high {
+		to = high
+	}
+	rows, err := s.provider.XOver(ctx, group, article, to)
+	if err != nil {
+		return 0, time.Time{}, false, fmt.Errorf("probe xover date %s %d-%d: %w", group, article, to, err)
+	}
+	var (
+		bestArticle int64
+		bestDate    time.Time
+	)
+	for _, row := range rows {
+		if row.ArticleNumber < article || row.ArticleNumber > to || row.DateUTC == nil {
+			continue
+		}
+		if bestArticle == 0 || row.ArticleNumber < bestArticle {
+			bestArticle = row.ArticleNumber
+			bestDate = row.DateUTC.UTC()
+		}
+	}
+	if bestArticle == 0 {
+		return 0, time.Time{}, false, nil
+	}
+	return bestArticle, bestDate, true, nil
 }
 
 func (s *Service) runLatestGroup(ctx context.Context, providerID int64, group string) (groupRunResult, error) {
@@ -816,33 +990,45 @@ func (s *Service) runBackfillGroup(ctx context.Context, providerID int64, group 
 }
 
 func (s *Service) beginScrapeRange(ctx context.Context, mode, group string, from, to int64, assignmentID string) (RangeDecision, bool, error) {
-	if s.opts.RangeCoordinator == nil || from <= 0 || to < from {
-		return RangeDecision{}, false, nil
-	}
-	decision, err := s.opts.RangeCoordinator.BeginScrapeRange(ctx, RangeRequest{
+	return s.beginScrapeRangeForRequest(ctx, RangeRequest{
 		Mode:         mode,
 		AssignmentID: strings.TrimSpace(assignmentID),
 		Group:        group,
 		RangeStart:   from,
 		RangeEnd:     to,
 	})
+}
+
+func (s *Service) beginScrapeRangeForRequest(ctx context.Context, request RangeRequest) (RangeDecision, bool, error) {
+	if s.opts.RangeCoordinator == nil || request.RangeStart <= 0 || request.RangeEnd < request.RangeStart {
+		return RangeDecision{}, false, nil
+	}
+	request.AssignmentID = strings.TrimSpace(request.AssignmentID)
+	request.Group = strings.TrimSpace(request.Group)
+	decision, err := s.opts.RangeCoordinator.BeginScrapeRange(ctx, request)
 	if err != nil {
-		return RangeDecision{}, false, fmt.Errorf("begin coordinated scrape range %s %d-%d: %w", group, from, to, err)
+		return RangeDecision{}, false, fmt.Errorf("begin coordinated scrape range %s %d-%d: %w", request.Group, request.RangeStart, request.RangeEnd, err)
 	}
 	if decision.Group == "" {
-		decision.Group = group
+		decision.Group = request.Group
 	}
 	if decision.AssignmentID == "" {
-		decision.AssignmentID = strings.TrimSpace(assignmentID)
+		decision.AssignmentID = request.AssignmentID
 	}
 	if decision.RangeStart == 0 {
-		decision.RangeStart = from
+		decision.RangeStart = request.RangeStart
 	}
 	if decision.RangeEnd == 0 {
-		decision.RangeEnd = to
+		decision.RangeEnd = request.RangeEnd
+	}
+	if decision.WindowStart == nil {
+		decision.WindowStart = request.WindowStart
+	}
+	if decision.WindowEnd == nil {
+		decision.WindowEnd = request.WindowEnd
 	}
 	if decision.Skipped && s.log != nil {
-		s.log.Info("scrape %s skipped coordinated range: group=%s range=%d-%d reason=%s", mode, group, from, to, decision.Reason)
+		s.log.Info("scrape %s skipped coordinated range: group=%s range=%d-%d reason=%s", request.Mode, request.Group, request.RangeStart, request.RangeEnd, decision.Reason)
 	}
 	return decision, decision.Skipped, nil
 }

@@ -18,6 +18,7 @@ The runtime worker runs only when:
 - `gonzbnet.scheduler_enabled=true`
 - `gonzbnet.coverage_mode=automatic`
 
-`manual` and `scheduler` modes remain review-only. Time-window claims are still
-visible in diagnostics and scheduler plans, but this cleanup only reassigns
-article ranges because the current scrape loop consumes article-number ranges.
+`manual` and `scheduler` modes remain review-only. Time-window assignments can
+be executed by the scanner after local resolution to article ranges, but this
+cleanup only reassigns stale article-range claims. Stale time-window claim
+reassignment remains separate work.

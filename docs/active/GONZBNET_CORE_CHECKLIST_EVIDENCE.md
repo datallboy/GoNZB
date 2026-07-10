@@ -64,5 +64,6 @@ core v1 work already represented by the phase docs.
   into microservices.
 - Automatic creation of replacement `CoverageAssignment` events is implemented
   for stale article range claims when automatic coverage mode is enabled.
-- Time-window assignment execution in the scrape loop remains future work. Range
-  assignments are implemented and consumed.
+- Range assignments are consumed directly by the scrape loop. Time-window
+  assignments are resolved to article ranges locally, claimed with
+  `TimeWindowClaim`, and completed with range outcomes.

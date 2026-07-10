@@ -27,6 +27,9 @@ remaining GoNZBNet work.
   scanner coverage coordination is enabled.
 - Existing range `CoverageAssignment` suggestions can be consumed automatically
   by the local scrape loop without advancing latest/backfill cursors.
+- Existing time-window `CoverageAssignment` suggestions can be resolved locally
+  to article ranges, claimed with `TimeWindowClaim`, and consumed without
+  advancing latest/backfill cursors.
 - Stale article range claims can create signed replacement
   `CoverageAssignment` events when automatic coverage mode is enabled.
 - Article availability and checksum attestations project into validation-aware
@@ -59,5 +62,6 @@ trusted, provider-scope-compatible remote active/completed ranges without
 exposing user or provider credentials.
 
 Automatic creation of replacement assignments is implemented for stale article
-range claims in automatic coverage mode. Time-window assignment execution and
-failover remain future work.
+range claims in automatic coverage mode. Time-window assignment execution is
+implemented through local article-range resolution; stale time-window failover
+remains future work.

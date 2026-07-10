@@ -27,4 +27,4 @@ Optional post-v1 improvements:
 
 - Cross-node consensus on assignment plans.
 - UI controls for accepting generated plans.
-- Time-window assignment execution and failover.
+- Time-window stale-claim failover.

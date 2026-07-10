@@ -479,6 +479,12 @@ func (s *Store) SuggestCoverageWork(ctx context.Context, params CoverageWorkSugg
 		          AND c.range_start <= a.range_end
 		          AND c.range_end >= a.range_start
 		        )
+		        OR (
+		          c.window_start IS NOT NULL AND c.window_end IS NOT NULL
+		          AND a.window_start IS NOT NULL AND a.window_end IS NOT NULL
+		          AND c.window_start < a.window_end
+		          AND c.window_end > a.window_start
+		        )
 		      )
 		  )
 		  AND (

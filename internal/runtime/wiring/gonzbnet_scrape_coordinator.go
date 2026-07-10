@@ -137,7 +137,6 @@ func (c *gonzbnetScrapeRangeCoordinator) AssignedScrapeRanges(ctx context.Contex
 		Mode:                  "scanner",
 		Limit:                 limit,
 		MinBlockingTrustScore: c.minBlockingTrust,
-		RequireArticleRange:   true,
 	})
 	if err != nil {
 		return nil, err
@@ -145,16 +144,26 @@ func (c *gonzbnetScrapeRangeCoordinator) AssignedScrapeRanges(ctx context.Contex
 	out := make([]scrape.RangeRequest, 0, len(items))
 	for _, item := range items {
 		assignment := item.Assignment
-		if strings.TrimSpace(assignment.AssignmentID) == "" || strings.TrimSpace(assignment.Group) == "" || assignment.RangeStart <= 0 || assignment.RangeEnd < assignment.RangeStart {
+		if strings.TrimSpace(assignment.AssignmentID) == "" || strings.TrimSpace(assignment.Group) == "" {
 			continue
 		}
-		out = append(out, scrape.RangeRequest{
+		request := scrape.RangeRequest{
 			Mode:         mode,
 			AssignmentID: assignment.AssignmentID,
 			Group:        assignment.Group,
-			RangeStart:   assignment.RangeStart,
-			RangeEnd:     assignment.RangeEnd,
-		})
+		}
+		if assignment.RangeStart > 0 && assignment.RangeEnd >= assignment.RangeStart {
+			request.RangeStart = assignment.RangeStart
+			request.RangeEnd = assignment.RangeEnd
+		} else if assignment.WindowStart != nil && assignment.WindowEnd != nil && assignment.WindowEnd.After(*assignment.WindowStart) {
+			windowStart := assignment.WindowStart.UTC()
+			windowEnd := assignment.WindowEnd.UTC()
+			request.WindowStart = &windowStart
+			request.WindowEnd = &windowEnd
+		} else {
+			continue
+		}
+		out = append(out, request)
 	}
 	return out, nil
 }
@@ -195,10 +204,39 @@ func (c *gonzbnetScrapeRangeCoordinator) BeginScrapeRange(ctx context.Context, r
 			Group:             request.Group,
 			RangeStart:        request.RangeStart,
 			RangeEnd:          request.RangeEnd,
+			WindowStart:       request.WindowStart,
+			WindowEnd:         request.WindowEnd,
 		}, nil
 	}
 	now := c.now().UTC()
 	claimID := "claim-" + uuid.NewString()
+	if request.WindowStart != nil && request.WindowEnd != nil && request.WindowEnd.After(*request.WindowStart) {
+		body := coverage.TimeWindowClaim{
+			SchemaVersion: "1.0",
+			Type:          coverage.TypeTimeWindowClaim,
+			ClaimID:       claimID,
+			AssignmentID:  assignmentID,
+			PoolID:        c.poolID,
+			Group:         strings.TrimSpace(request.Group),
+			NodeID:        nodeID,
+			WindowStart:   request.WindowStart.UTC().Format(time.RFC3339),
+			WindowEnd:     request.WindowEnd.UTC().Format(time.RFC3339),
+			ClaimedAt:     now.Format(time.RFC3339),
+			ExpiresAt:     now.Add(c.claimTTL).Format(time.RFC3339),
+		}
+		if err := c.signAppendProject(ctx, coverage.TypeTimeWindowClaim, body); err != nil {
+			return scrape.RangeDecision{}, err
+		}
+		return scrape.RangeDecision{
+			ClaimID:      claimID,
+			AssignmentID: assignmentID,
+			Group:        request.Group,
+			RangeStart:   request.RangeStart,
+			RangeEnd:     request.RangeEnd,
+			WindowStart:  request.WindowStart,
+			WindowEnd:    request.WindowEnd,
+		}, nil
+	}
 	body := coverage.RangeClaim{
 		SchemaVersion: "1.0",
 		Type:          coverage.TypeRangeClaim,

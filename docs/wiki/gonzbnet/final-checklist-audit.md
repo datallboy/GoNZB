@@ -17,6 +17,8 @@ Implemented surfaces include:
   trusted, provider-scope-compatible remote active/completed range suppression;
 - assignment-driven scanner range consumption for existing
   `CoverageAssignment` suggestions;
+- assignment-driven scanner time-window consumption by resolving windows to
+  article ranges locally and claiming them with `TimeWindowClaim`;
 - automatic signed replacement assignment creation for stale article range
   claims when automatic coverage mode is enabled;
 - signed validation-request task admission for locally cached manifests;
@@ -42,4 +44,5 @@ Scanner coordination boundary:
 - Existing range `CoverageAssignment` suggestions can be consumed automatically.
 - Automatic creation of replacement assignments is implemented for stale article
   range claims in automatic coverage mode.
-- Time-window assignment execution and failover remain future work.
+- Time-window assignment execution is implemented by resolving windows to local
+  article ranges. Time-window stale-claim failover remains future work.

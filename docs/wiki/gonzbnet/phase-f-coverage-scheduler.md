@@ -25,7 +25,7 @@ containing:
 The endpoint does not create signed assignments. Operators or future automation
 can review the plan first, then create assignments through the Phase D admin
 assignment endpoint. Scanner coordination cleanup can consume existing range
-assignments assigned to the local node.
+and time-window assignments assigned to the local node.
 
 ## Stale Range Reassignment
 
@@ -40,5 +40,6 @@ rendezvous helper and the stale claimant is excluded from selection.
 
 ## Boundary
 
-Manual and scheduler modes remain review-gated. Time-window claim execution and
-time-window failover remain future work.
+Manual and scheduler modes remain review-gated. Time-window assignment execution
+is implemented in the scrape loop by resolving windows to article ranges.
+Time-window stale-claim failover remains future work.

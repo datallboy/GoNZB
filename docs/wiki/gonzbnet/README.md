@@ -120,6 +120,9 @@ Current implementation state:
   suppression.
 - Assignment-driven scanner cleanup lets the existing scrape loop consume local
   range `CoverageAssignment` suggestions without advancing scrape cursors.
+- Time-window scanner assignment cleanup lets the scrape loop resolve local
+  time-window `CoverageAssignment` suggestions to article ranges and claim them
+  with signed `TimeWindowClaim` events.
 - Stale-claim reassignment cleanup creates signed replacement range assignments
   in automatic coverage mode.
 - Config addendum alignment adds typed scanner, coverage, validation, and
@@ -131,7 +134,7 @@ Current implementation state:
 - Core checklist evidence maps the original final implementation checklist to
   current code and test coverage.
 - Final checklist audit documents implemented addendum requirements and the
-  remaining time-window assignment boundary.
+  remaining stale time-window failover boundary.
 - Security cleanup rejects remote signed events with future `created_at` /
   `not_before` windows, expired `expires_at` values, or event ages beyond
   `gonzbnet.max_event_age_hours`.
@@ -195,6 +198,7 @@ Maintained pages:
 - [Validation Request Endpoint](./validation-request-endpoint.md)
 - [Scanner Coordination Cleanup](./scanner-coordination-cleanup.md)
 - [Assignment-Driven Scanner Cleanup](./assignment-driven-scanner-cleanup.md)
+- [Time-Window Scanner Assignments](./time-window-scanner-assignments.md)
 - [Stale Claim Reassignment](./stale-claim-reassignment.md)
 - [Capability Profile Alignment](./capability-profile-alignment.md)
 - [Profile Capacity Alignment](./profile-capacity-alignment.md)
