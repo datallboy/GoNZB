@@ -9,7 +9,8 @@ The hook is enabled only when all of these are true:
 - `modules.gonzbnet.enabled`
 - `gonzbnet.scanner_enabled`
 - `gonzbnet.coverage_enabled`
-- `gonzbnet.scanner_allow_unassigned_work`
+- either `gonzbnet.scanner_allow_unassigned_work` is true or
+  `gonzbnet.coverage_mode` is `scheduler`/`automatic`
 
 When enabled, each configured scrape range asks the local GoNZBNet coordinator
 whether the range should be skipped. Trusted active remote `RangeClaim` events
@@ -26,8 +27,13 @@ append-only event log, and coverage projection path.
 
 This integration does not expose local users, API keys, searches, grabs,
 downloads, or NNTP credentials. It also does not add a standalone scanner
-process or assignment-driven automatic scanner work selection.
+process.
 
 Provider-scope matching uses the opt-in `share_provider_backbone_hash` setting.
 When no compatible provider-scope hash is available, remote article-number
 claims and completions do not suppress local scrape ranges.
+
+Scheduler/automatic coverage mode additionally lets the scrape loop consume
+existing range `CoverageAssignment` suggestions for the local node. Assignment
+fetches publish signed claims/outcomes with `assignment_id` and do not advance
+latest/backfill cursors.

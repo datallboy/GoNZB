@@ -3,6 +3,7 @@ package wiring
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -19,7 +20,7 @@ func TestGoNZBNetScrapeCoordinatorPublishesClaimAndComplete(t *testing.T) {
 		t.Fatalf("identity: %v", err)
 	}
 	store := &fakeScrapeCoordinatorStore{}
-	coord, err := newGoNZBNetScrapeRangeCoordinator(nodeIdentity, store, "pool.test", time.Minute, 0.5, "scope-hash", true)
+	coord, err := newGoNZBNetScrapeRangeCoordinator(nodeIdentity, store, "pool.test", time.Minute, 0.5, "scope-hash", true, true, true)
 	if err != nil {
 		t.Fatalf("coordinator: %v", err)
 	}
@@ -27,10 +28,11 @@ func TestGoNZBNetScrapeCoordinatorPublishesClaimAndComplete(t *testing.T) {
 	coord.now = func() time.Time { return now }
 
 	decision, err := coord.BeginScrapeRange(context.Background(), scrape.RangeRequest{
-		Mode:       "latest",
-		Group:      "alt.binaries.test",
-		RangeStart: 10,
-		RangeEnd:   20,
+		Mode:         "latest",
+		AssignmentID: "assignment-1",
+		Group:        "alt.binaries.test",
+		RangeStart:   10,
+		RangeEnd:     20,
 	})
 	if err != nil {
 		t.Fatalf("begin range: %v", err)
@@ -53,8 +55,50 @@ func TestGoNZBNetScrapeCoordinatorPublishesClaimAndComplete(t *testing.T) {
 	if store.events[0].EventType != coverage.TypeRangeClaim || store.events[1].EventType != coverage.TypeRangeComplete {
 		t.Fatalf("unexpected event types: %s, %s", store.events[0].EventType, store.events[1].EventType)
 	}
+	var claim coverage.RangeClaim
+	if err := json.Unmarshal(store.events[0].Body, &claim); err != nil {
+		t.Fatalf("decode claim: %v", err)
+	}
+	if claim.AssignmentID != "assignment-1" {
+		t.Fatalf("expected assignment claim, got %+v", claim)
+	}
 	if store.projected != 2 {
 		t.Fatalf("expected two projected events, got %d", store.projected)
+	}
+}
+
+func TestGoNZBNetScrapeCoordinatorListsAssignedRanges(t *testing.T) {
+	nodeIdentity, err := identity.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("identity: %v", err)
+	}
+	store := &fakeScrapeCoordinatorStore{
+		suggestions: []pgindex.CoverageWorkSuggestion{{
+			Assignment: pgindex.CoverageAssignmentRecord{
+				AssignmentID: "assignment-1",
+				Group:        "alt.binaries.test",
+				RangeStart:   10,
+				RangeEnd:     20,
+			},
+		}},
+	}
+	coord, err := newGoNZBNetScrapeRangeCoordinator(nodeIdentity, store, "pool.test", time.Minute, 0.5, "scope-hash", true, false, true)
+	if err != nil {
+		t.Fatalf("coordinator: %v", err)
+	}
+
+	ranges, err := coord.AssignedScrapeRanges(context.Background(), "latest", 5)
+	if err != nil {
+		t.Fatalf("assigned ranges: %v", err)
+	}
+	if len(ranges) != 1 {
+		t.Fatalf("expected one assigned range, got %+v", ranges)
+	}
+	if ranges[0].AssignmentID != "assignment-1" || ranges[0].Group != "alt.binaries.test" || ranges[0].RangeStart != 10 || ranges[0].RangeEnd != 20 {
+		t.Fatalf("unexpected assigned range: %+v", ranges[0])
+	}
+	if store.lastSuggestionParams.NodeID == "" || store.lastSuggestionParams.PoolID != "pool.test" {
+		t.Fatalf("expected node-scoped suggestion params, got %+v", store.lastSuggestionParams)
 	}
 }
 
@@ -70,7 +114,7 @@ func TestGoNZBNetScrapeCoordinatorSkipsBlockedRange(t *testing.T) {
 			AdvanceCheckpoint: true,
 		},
 	}
-	coord, err := newGoNZBNetScrapeRangeCoordinator(nodeIdentity, store, "pool.test", time.Minute, 0.5, "scope-hash", true)
+	coord, err := newGoNZBNetScrapeRangeCoordinator(nodeIdentity, store, "pool.test", time.Minute, 0.5, "scope-hash", true, true, true)
 	if err != nil {
 		t.Fatalf("coordinator: %v", err)
 	}
@@ -95,16 +139,23 @@ func TestGoNZBNetScrapeCoordinatorSkipsBlockedRange(t *testing.T) {
 }
 
 type fakeScrapeCoordinatorStore struct {
-	block           pgindex.CoverageRangeBlock
-	lastBlockParams pgindex.CoverageRangeBlockParams
-	sequence        int64
-	events          []*events.SignedEvent
-	projected       int
+	block                pgindex.CoverageRangeBlock
+	lastBlockParams      pgindex.CoverageRangeBlockParams
+	suggestions          []pgindex.CoverageWorkSuggestion
+	lastSuggestionParams pgindex.CoverageWorkSuggestionParams
+	sequence             int64
+	events               []*events.SignedEvent
+	projected            int
 }
 
 func (s *fakeScrapeCoordinatorStore) CheckCoverageRangeBlock(_ context.Context, params pgindex.CoverageRangeBlockParams) (pgindex.CoverageRangeBlock, error) {
 	s.lastBlockParams = params
 	return s.block, nil
+}
+
+func (s *fakeScrapeCoordinatorStore) SuggestCoverageWork(_ context.Context, params pgindex.CoverageWorkSuggestionParams) ([]pgindex.CoverageWorkSuggestion, error) {
+	s.lastSuggestionParams = params
+	return s.suggestions, nil
 }
 
 func (s *fakeScrapeCoordinatorStore) UpsertFederationNodeIdentity(context.Context, string, ed25519.PublicKey) error {

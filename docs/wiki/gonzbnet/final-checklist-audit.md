@@ -15,6 +15,8 @@ Implemented surfaces include:
   reads, stale-claim penalties, and dedup-aware work suggestions;
 - existing indexer scrape coordination with signed local claims/outcomes and
   trusted, provider-scope-compatible remote active/completed range suppression;
+- assignment-driven scanner range consumption for existing
+  `CoverageAssignment` suggestions;
 - signed validation-request task admission for locally cached manifests;
 - article availability and checksum attestation projections;
 - privacy boundaries that keep local users, API keys, searches, grabs,
@@ -35,5 +37,6 @@ Scanner coordination boundary:
   `RangeClaim`, `RangeComplete`, and `RangeFailed` events and honor trusted,
   provider-scope-compatible remote active/completed ranges when scanner
   coverage coordination is enabled.
-- Assignment-driven automatic scanner work selection remains future
-  scanner-module integration.
+- Existing range `CoverageAssignment` suggestions can be consumed automatically.
+- Automatic creation of replacement assignments for stale claims remains future
+  automation.

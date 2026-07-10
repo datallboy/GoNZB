@@ -25,6 +25,8 @@ remaining GoNZBNet work.
 - Existing indexer scrape ranges can publish local signed claims/outcomes and
   honor trusted, provider-scope-compatible remote active/completed ranges when
   scanner coverage coordination is enabled.
+- Existing range `CoverageAssignment` suggestions can be consumed automatically
+  by the local scrape loop without advancing latest/backfill cursors.
 - Article availability and checksum attestations project into validation-aware
   scores; checksum emission remains feature-flagged.
 - Signed validation requests can enqueue local validation tasks for manifests
@@ -54,6 +56,6 @@ work are enabled. It publishes local signed range claims/outcomes and skips
 trusted, provider-scope-compatible remote active/completed ranges without
 exposing user or provider credentials.
 
-Assignment-driven automatic scanner work selection remains a future scanner
-module integration. Current scheduler APIs continue to expose suggestions for
-operators or future automation.
+Automatic creation of replacement assignments for stale claims remains future
+automation. Current scheduler APIs continue to expose suggestions for operators
+or future assignment writers.

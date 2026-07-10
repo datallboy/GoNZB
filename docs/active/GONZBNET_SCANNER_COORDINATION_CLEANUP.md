@@ -7,8 +7,9 @@ microservice or changing default indexer behavior.
 
 - Add an optional scrape range coordinator hook to the existing indexer scrape
   service.
-- Wire a GoNZBNet coordinator only when the usenet-indexer module, GoNZBNet
-  module, scanner mode, coverage mode, and unassigned scanner work are enabled.
+- Wire a GoNZBNet coordinator when the usenet-indexer module, GoNZBNet module,
+  scanner mode, and coverage mode are enabled, and either unassigned scanner
+  work or assignment-driven scheduler mode is enabled.
 - Publish local signed `RangeClaim`, `RangeComplete`, and `RangeFailed` events
   around indexer scrape ranges.
 - Honor trusted, provider-scope-compatible remote active claims when

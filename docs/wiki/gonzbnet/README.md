@@ -118,6 +118,8 @@ Current implementation state:
 - Scanner coordination cleanup wires the existing usenet-indexer scrape loop to
   signed range claims/outcomes and provider-scope-compatible trusted range
   suppression.
+- Assignment-driven scanner cleanup lets the existing scrape loop consume local
+  range `CoverageAssignment` suggestions without advancing scrape cursors.
 - Config addendum alignment adds typed scanner, coverage, validation, and
   manifest-cache settings with direct `GONZBNET_*` aliases.
 - Security cleanup adds temporary in-memory throttling after repeated
@@ -125,7 +127,7 @@ Current implementation state:
 - Profile cleanup adds NodeProfile module status, scanner capacity, validator
   capacity, and provider-scope advertisement.
 - Final checklist audit documents implemented addendum requirements and the
-  remaining assignment-driven scanner automation boundary.
+  remaining automatic assignment-writer boundary.
 - Security cleanup rejects remote signed events with future `created_at` /
   `not_before` windows, expired `expires_at` values, or event ages beyond
   `gonzbnet.max_event_age_hours`.
@@ -188,6 +190,7 @@ Maintained pages:
 - [Public Coverage Write Endpoints](./public-coverage-write-endpoints.md)
 - [Validation Request Endpoint](./validation-request-endpoint.md)
 - [Scanner Coordination Cleanup](./scanner-coordination-cleanup.md)
+- [Assignment-Driven Scanner Cleanup](./assignment-driven-scanner-cleanup.md)
 - [Capability Profile Alignment](./capability-profile-alignment.md)
 - [Profile Capacity Alignment](./profile-capacity-alignment.md)
 - [Final Checklist Audit](./final-checklist-audit.md)

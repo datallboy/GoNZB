@@ -21,6 +21,7 @@ import (
 
 type gonzbnetScrapeCoordinatorStore interface {
 	CheckCoverageRangeBlock(ctx context.Context, params pgindex.CoverageRangeBlockParams) (pgindex.CoverageRangeBlock, error)
+	SuggestCoverageWork(ctx context.Context, params pgindex.CoverageWorkSuggestionParams) ([]pgindex.CoverageWorkSuggestion, error)
 	UpsertFederationNodeIdentity(ctx context.Context, nodeID string, publicKey ed25519.PublicKey) error
 	NextFederationEventSequence(ctx context.Context, authorNodeID string) (int64, *string, error)
 	AppendVerifiedFederationEvent(ctx context.Context, event *events.SignedEvent, validation *events.ValidationResult) error
@@ -35,6 +36,8 @@ type gonzbnetScrapeRangeCoordinator struct {
 	claimTTL            time.Duration
 	minBlockingTrust    float64
 	providerScopeHash   string
+	allowAssigned       bool
+	allowUnassigned     bool
 	respectRemoteClaims bool
 	now                 func() time.Time
 	mu                  sync.Mutex
@@ -48,7 +51,11 @@ func goNZBNetScrapeRangeCoordinatorFor(appCtx *app.Context) (scrape.RangeCoordin
 		return nil, nil
 	}
 	cfg := appCtx.Config.GoNZBNet
-	if !cfg.ScannerEnabled || !cfg.CoverageEnabled || !cfg.ScannerAllowUnassignedWork {
+	if !cfg.ScannerEnabled || !cfg.CoverageEnabled {
+		return nil, nil
+	}
+	allowAssigned := strings.EqualFold(cfg.CoverageMode, "scheduler") || strings.EqualFold(cfg.CoverageMode, "automatic")
+	if !cfg.ScannerAllowUnassignedWork && !allowAssigned {
 		return nil, nil
 	}
 	store, ok := appCtx.PGIndexStore.(gonzbnetScrapeCoordinatorStore)
@@ -66,11 +73,13 @@ func goNZBNetScrapeRangeCoordinatorFor(appCtx *app.Context) (scrape.RangeCoordin
 		time.Duration(cfg.ScannerClaimTTLMinutes)*time.Minute,
 		cfg.CoverageMinTrustForClaim,
 		providerBackboneHashForIndexer(appCtx),
+		allowAssigned,
+		cfg.ScannerAllowUnassignedWork,
 		cfg.ScannerRespectRemoteClaims,
 	)
 }
 
-func newGoNZBNetScrapeRangeCoordinator(nodeIdentity *identity.Identity, store gonzbnetScrapeCoordinatorStore, poolID string, claimTTL time.Duration, minBlockingTrust float64, providerScopeHash string, respectRemoteClaims bool) (*gonzbnetScrapeRangeCoordinator, error) {
+func newGoNZBNetScrapeRangeCoordinator(nodeIdentity *identity.Identity, store gonzbnetScrapeCoordinatorStore, poolID string, claimTTL time.Duration, minBlockingTrust float64, providerScopeHash string, allowAssigned, allowUnassigned, respectRemoteClaims bool) (*gonzbnetScrapeRangeCoordinator, error) {
 	if nodeIdentity == nil || store == nil {
 		return nil, fmt.Errorf("gonzbnet scrape coordinator dependencies are required")
 	}
@@ -88,6 +97,8 @@ func newGoNZBNetScrapeRangeCoordinator(nodeIdentity *identity.Identity, store go
 		claimTTL:            claimTTL,
 		minBlockingTrust:    minBlockingTrust,
 		providerScopeHash:   strings.TrimSpace(providerScopeHash),
+		allowAssigned:       allowAssigned,
+		allowUnassigned:     allowUnassigned,
 		respectRemoteClaims: respectRemoteClaims,
 		now:                 time.Now,
 	}, nil
@@ -112,8 +123,47 @@ func providerBackboneHashForIndexer(appCtx *app.Context) string {
 	return profile.ProviderBackboneHash(parts)
 }
 
+func (c *gonzbnetScrapeRangeCoordinator) AssignedScrapeRanges(ctx context.Context, mode string, limit int) ([]scrape.RangeRequest, error) {
+	if c == nil || !c.allowAssigned {
+		return nil, nil
+	}
+	nodeID, err := c.localNode(ctx)
+	if err != nil {
+		return nil, err
+	}
+	items, err := c.store.SuggestCoverageWork(ctx, pgindex.CoverageWorkSuggestionParams{
+		PoolID:                c.poolID,
+		NodeID:                nodeID,
+		Mode:                  "scanner",
+		Limit:                 limit,
+		MinBlockingTrustScore: c.minBlockingTrust,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]scrape.RangeRequest, 0, len(items))
+	for _, item := range items {
+		assignment := item.Assignment
+		if strings.TrimSpace(assignment.AssignmentID) == "" || strings.TrimSpace(assignment.Group) == "" || assignment.RangeStart <= 0 || assignment.RangeEnd < assignment.RangeStart {
+			continue
+		}
+		out = append(out, scrape.RangeRequest{
+			Mode:         mode,
+			AssignmentID: assignment.AssignmentID,
+			Group:        assignment.Group,
+			RangeStart:   assignment.RangeStart,
+			RangeEnd:     assignment.RangeEnd,
+		})
+	}
+	return out, nil
+}
+
 func (c *gonzbnetScrapeRangeCoordinator) BeginScrapeRange(ctx context.Context, request scrape.RangeRequest) (scrape.RangeDecision, error) {
 	if c == nil {
+		return scrape.RangeDecision{}, nil
+	}
+	assignmentID := strings.TrimSpace(request.AssignmentID)
+	if assignmentID == "" && !c.allowUnassigned {
 		return scrape.RangeDecision{}, nil
 	}
 	nodeID, err := c.localNode(ctx)
@@ -140,6 +190,7 @@ func (c *gonzbnetScrapeRangeCoordinator) BeginScrapeRange(ctx context.Context, r
 			Skipped:           true,
 			AdvanceCheckpoint: block.AdvanceCheckpoint,
 			Reason:            block.Reason,
+			AssignmentID:      assignmentID,
 			Group:             request.Group,
 			RangeStart:        request.RangeStart,
 			RangeEnd:          request.RangeEnd,
@@ -151,6 +202,7 @@ func (c *gonzbnetScrapeRangeCoordinator) BeginScrapeRange(ctx context.Context, r
 		SchemaVersion: "1.0",
 		Type:          coverage.TypeRangeClaim,
 		ClaimID:       claimID,
+		AssignmentID:  assignmentID,
 		PoolID:        c.poolID,
 		Group:         strings.TrimSpace(request.Group),
 		NodeID:        nodeID,
@@ -163,10 +215,11 @@ func (c *gonzbnetScrapeRangeCoordinator) BeginScrapeRange(ctx context.Context, r
 		return scrape.RangeDecision{}, err
 	}
 	return scrape.RangeDecision{
-		ClaimID:    claimID,
-		Group:      request.Group,
-		RangeStart: request.RangeStart,
-		RangeEnd:   request.RangeEnd,
+		ClaimID:      claimID,
+		AssignmentID: assignmentID,
+		Group:        request.Group,
+		RangeStart:   request.RangeStart,
+		RangeEnd:     request.RangeEnd,
 	}, nil
 }
 

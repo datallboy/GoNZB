@@ -24,7 +24,8 @@ containing:
 
 The endpoint does not create signed assignments. Operators or future automation
 can review the plan first, then create assignments through the Phase D admin
-assignment endpoint.
+assignment endpoint. Scanner coordination cleanup can consume existing range
+assignments assigned to the local node.
 
 ## Boundary
 

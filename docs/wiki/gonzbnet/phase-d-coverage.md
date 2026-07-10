@@ -75,5 +75,5 @@ verification, pool authorization, append-only log, and projection path.
 
 Phase D introduced the event schemas and manual APIs. Later scanner
 coordination cleanup wires the existing usenet-indexer scrape loop into these
-events for configured scrape ranges. Assignment-driven automatic scanner work
-selection remains future scanner-module integration.
+events for configured and assigned range work. Automatic creation of
+replacement assignments remains future automation.
