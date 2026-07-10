@@ -103,8 +103,10 @@ is limited to well-known metadata, node profile, and capabilities.
     tests cover migration, accepted/rejected event persistence, ReleaseCard,
     validator-capacity, scanner-capacity, article-attestation, chain,
     pending-projection, and active/revoked pool-authorization behavior.
-9. Add the named GoNZBNet counters/histograms and fill remaining structured-log
-    events from the observability section.
+9. The specification describes role-level reliability concepts but does not
+    define named counters, histograms, or a metrics backend. Existing structured
+    logs cover the implemented runtime workers; additional metrics can be
+    added when GoNZB establishes a repository-wide telemetry contract.
 
 ## Documentation Drift
 
