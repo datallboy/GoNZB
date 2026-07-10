@@ -8,6 +8,9 @@ modules:
   api: { enabled: true }
 api:
   cors_allowed_origins: ["http://127.0.0.1:18083"]
+aggregator:
+  sources:
+    gonzbnet: { enabled: true }
 gonzbnet:
   mode: relay
   node_alias: "e2e-consumer-relay-c"

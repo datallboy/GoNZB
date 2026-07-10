@@ -81,6 +81,18 @@ admin_post() {
   admin_request "$@" >/dev/null
 }
 
+admin_put() {
+  name="$1"
+  port="$2"
+  path="$3"
+  payload="$4"
+  dir="$STATE/$name"
+  csrf=$(cat "$dir/csrf-token")
+  curl -fsS -X PUT -b "$dir/cookies.txt" -H "X-CSRF-Token: $csrf" \
+    -H 'Content-Type: application/json' -d "$payload" \
+    "http://127.0.0.1:$port$path" >/dev/null
+}
+
 db_scalar() {
   database="$1"
   query="$2"
@@ -190,6 +202,11 @@ case "${1:-}" in
     bootstrap_node node-a 18081 "$password"
     bootstrap_node node-b 18082 "$password"
     bootstrap_node node-c 18083 "$password"
+    aggregator='{"aggregator":{"sources":{"local_blob":{"enabled":false},"usenet_indexer":{"enabled":false},"gonzbnet":{"enabled":true}}}}'
+    admin_put node-a 18081 /api/v1/admin/settings "$aggregator"
+    admin_put node-b 18082 /api/v1/admin/settings "$aggregator"
+    admin_put node-c 18083 /api/v1/admin/settings "$aggregator"
+    echo "GoNZBNet aggregator source enabled on all nodes"
     echo "Local admin password: $password"
     ;;
   configure-pool)

@@ -8,6 +8,9 @@ modules:
   api: { enabled: true }
 api:
   cors_allowed_origins: ["http://127.0.0.1:18081"]
+aggregator:
+  sources:
+    gonzbnet: { enabled: true }
 gonzbnet:
   mode: integrated
   node_alias: "e2e-scanner-a"
@@ -31,6 +34,7 @@ gonzbnet:
   coverage_enabled: true
   scheduler_enabled: true
   publish_release_cards_enabled: true
+  publish_release_cards_interval_minutes: 1
   manifest_availability_enabled: true
   pull_sync_enabled: true
   pull_sync_interval_minutes: 1
