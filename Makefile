@@ -8,7 +8,7 @@ PKG=./cmd/gonzb
 
 LDFLAGS=-ldflags "-X main.Version=$(VERSION) -X main.BuildTime=$(BUILD_TIME)"
 
-.PHONY: all build build-release ui-build clean test vet lint install
+.PHONY: all build build-release ui-build clean test vet lint install gonzbnet-e2e-start gonzbnet-e2e-bootstrap gonzbnet-e2e-verify gonzbnet-e2e-stop gonzbnet-e2e-status gonzbnet-e2e-reset
 
 all: build
 
@@ -58,3 +58,23 @@ clean:
 	rm -rf bin/
 	rm -f downloads/
 	rm -f *.nzb
+
+gonzbnet-e2e-start:
+	./scripts/gonzbnet_e2e.sh start
+
+gonzbnet-e2e-bootstrap:
+	./scripts/gonzbnet_e2e.sh bootstrap
+	./scripts/gonzbnet_e2e.sh configure-pool
+
+gonzbnet-e2e-verify:
+	./scripts/gonzbnet_e2e.sh smoke
+	./scripts/gonzbnet_e2e.sh federation-smoke
+
+gonzbnet-e2e-stop:
+	./scripts/gonzbnet_e2e.sh stop
+
+gonzbnet-e2e-status:
+	./scripts/gonzbnet_e2e.sh status
+
+gonzbnet-e2e-reset:
+	./scripts/gonzbnet_e2e.sh reset

@@ -1,0 +1,49 @@
+port: "18081"
+modules:
+  downloader: { enabled: false }
+  aggregator: { enabled: true }
+  usenet_indexer: { enabled: false }
+  gonzbnet: { enabled: true }
+  web_ui: { enabled: true }
+  api: { enabled: true }
+api:
+  cors_allowed_origins: ["http://127.0.0.1:18081"]
+gonzbnet:
+  mode: integrated
+  node_alias: "e2e-scanner-a"
+  advertise_url: "http://127.0.0.1:18081/gonzbnet/v1"
+  keys_dir: ".e2e/gonzbnet/node-a/keys"
+  http_enabled: true
+  allow_insecure_peer_http: true
+  private_network: true
+  network_id: "gonzbnet-e2e"
+  local_pool_id: "pool.e2e"
+  manual_peers:
+    - "http://127.0.0.1:18082"
+    - "http://127.0.0.1:18083"
+  consumer_enabled: true
+  scanner_enabled: true
+  index_projection_enabled: true
+  manifest_builder_enabled: true
+  manifest_cache_enabled: true
+  validator_enabled: false
+  health_checker_enabled: false
+  coverage_enabled: true
+  scheduler_enabled: true
+  publish_release_cards_enabled: true
+  manifest_availability_enabled: true
+  pull_sync_enabled: true
+  pull_sync_interval_minutes: 1
+  push_sync_enabled: true
+  push_sync_interval_minutes: 1
+  websocket_gossip_enabled: false
+  relay_enabled: false
+  live_query_enabled: false
+  send_user_context: false
+log: { path: ".e2e/gonzbnet/node-a/gonzb.log", level: "debug", include_stdout: true }
+store:
+  sqlite_path: ".e2e/gonzbnet/node-a/gonzb.db"
+  blob_dir: ".e2e/gonzbnet/node-a/blobs"
+  payload_cache_enabled: true
+  search_persistence_enabled: true
+  pg_dsn: "postgres://gonzb:gonzb@127.0.0.1:55432/gonzbnet_a?sslmode=disable"

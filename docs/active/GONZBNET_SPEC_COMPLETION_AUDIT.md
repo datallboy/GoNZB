@@ -96,9 +96,13 @@ is limited to well-known metadata, node profile, and capabilities.
 
 ### Verification and operations
 
-7. Add the specified PostgreSQL-backed three-node end-to-end harness covering
-    publish, pull/push, authorized search/get, manifest fetch, malicious-node
-    rejection, revocation, and tombstone propagation.
+7. Partially complete. The PostgreSQL-backed three-node harness now provisions
+    isolated node identities and stores, configures a shared trust pool, and
+    proves signed push/pull, exactly-once append/projection, local-session
+    isolation, protected-read authentication, and tombstone propagation.
+    Release publishing, authorized Newznab search/get, remote manifest fetch,
+    malicious signed-event rejection, and member revocation remain documented
+    fixture-dependent scenarios that need automated assertions.
 8. Complete for the current implemented paths. Direct PostgreSQL integration
     tests cover migration, accepted/rejected event persistence, ReleaseCard,
     validator-capacity, scanner-capacity, article-attestation, chain,

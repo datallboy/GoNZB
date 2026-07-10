@@ -178,6 +178,7 @@ Current implementation state:
 Maintained pages:
 
 - [Implementation Status](./implementation-status.md)
+- [Three-Node Federation Testing](./e2e-testing.md)
 - [Signed Pool Reads And Complete Pull](./signed-pool-reads-and-pull.md)
 - [Canonical JSON](./canonical-json.md)
 - [Event Chain Continuity](./event-chain-continuity.md)
