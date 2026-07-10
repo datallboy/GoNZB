@@ -1,6 +1,6 @@
 # GoNZBNet Coverage Wire Alignment
 
-Status: in progress
+Status: complete
 
 ## Spec Scope
 
@@ -45,7 +45,9 @@ progress, outcomes, and heartbeats.
   names, `reason_code`, and `retryable`.
 - Admin, reassignment, and scrape-coordinator writers populate the aligned
   fields. Remote outcomes derive assignment linkage from the stored claim.
-- Migration 019 projects aligned active-event fields into relational columns.
+- Migrations 019 and 020 project aligned active-event, capacity, observation,
+  checkpoint, and nested-plan fields into relational columns.
 
-Still open in this document: scanner capacity, heartbeat, group observation,
-coverage checkpoint, and the versioned nested CoveragePlan shape.
+The wire alignment is complete. Periodic production of capacity, heartbeat,
+observation, and checkpoint events from scanner execution remains a separate
+contribution-behavior item in the completion audit.

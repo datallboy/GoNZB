@@ -49,6 +49,8 @@ Completed during this audit:
   structural validation, uncompressed JCS JSON, and implemented event routes.
 - `ManifestAvailability` now uses the specified source/pool availability body
   and updates only the matching manifest source projection.
+- Coverage event bodies now use the addendum field names, nested plan shape,
+  provider scope, and relational projection columns.
 
 ### Critical correctness and privacy
 
@@ -72,24 +74,21 @@ is limited to well-known metadata, node profile, and capabilities.
 
 ### Protocol and security conformance
 
-5. Reconcile coverage event bodies with the addendum wire schemas. Current
-   coordination uses narrower local shapes for capacities, observations, plans,
-   claims, checkpoints, outcomes, and heartbeats.
-6. Complete config semantics and aliases for controls that affect behavior,
+5. Complete config semantics and aliases for controls that affect behavior,
     including manifest-specific rate limits, remote get timeout, configurable
     route base path, and currently display-only addendum limits.
-7. Make accepted-event storage and projection atomic, or retain explicit
+6. Make accepted-event storage and projection atomic, or retain explicit
     pending/quarantine state until projection succeeds.
 
 ### Verification and operations
 
-8. Add the specified PostgreSQL-backed three-node end-to-end harness covering
+7. Add the specified PostgreSQL-backed three-node end-to-end harness covering
     publish, pull/push, authorized search/get, manifest fetch, malicious-node
     rejection, revocation, and tombstone propagation.
-9. Add direct PostgreSQL integration tests for event append/rejection,
+8. Add direct PostgreSQL integration tests for event append/rejection,
     projections, pool authorization, and migration behavior. Current GoNZBNet
     tests rely primarily on fakes.
-10. Add the named GoNZBNet counters/histograms and fill remaining structured-log
+9. Add the named GoNZBNet counters/histograms and fill remaining structured-log
     events from the observability section.
 
 ## Documentation Drift

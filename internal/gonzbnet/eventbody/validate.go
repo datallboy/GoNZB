@@ -173,11 +173,17 @@ func validateCoverage(event *events.SignedEvent, now time.Time, futureTolerance 
 		if err := decode(event.Body, &item); err != nil {
 			return err
 		}
+		if item.NodeID != event.AuthorNodeID {
+			return fmt.Errorf("group observation node_id does not match event author")
+		}
 		body = item
 	case coverage.TypeCoveragePlan:
 		var item coverage.CoveragePlan
 		if err := decode(event.Body, &item); err != nil {
 			return err
+		}
+		if item.CreatedByNodeID != event.AuthorNodeID {
+			return fmt.Errorf("coverage plan created_by_node_id does not match event author")
 		}
 		body = item
 	case coverage.TypeCoverageAssignment:
@@ -208,6 +214,9 @@ func validateCoverage(event *events.SignedEvent, now time.Time, futureTolerance 
 		var item coverage.CoverageCheckpoint
 		if err := decode(event.Body, &item); err != nil {
 			return err
+		}
+		if item.NodeID != event.AuthorNodeID {
+			return fmt.Errorf("coverage checkpoint node_id does not match event author")
 		}
 		body = item
 	case coverage.TypeRangeComplete:

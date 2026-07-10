@@ -23,6 +23,8 @@ Completed during this audit:
   uncompressed JSON, and implemented signed-event paths.
 - ManifestAvailability uses the specified source/pool routing fields and scopes
   projection changes to the matching manifest source.
+- Coverage coordination bodies and nested plans use the specification wire
+  fields, with migrations for scheduler-readable projections.
 
 The current required work is:
 
@@ -32,7 +34,6 @@ The current required work is:
 - perform configured validator tiers against the local NNTP provider;
 - emit scanner capacity, heartbeat, observations, and periodic checkpoints;
 - enforce manifest-cache retention/serving limits;
-- align coverage event bodies with the addendum wire schemas;
 - add PostgreSQL-backed three-node end-to-end coverage and GoNZBNet metrics.
 
 The standalone relay process is not on this list. The specification explicitly

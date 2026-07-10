@@ -18,7 +18,8 @@ errors, and an optional range fingerprint. Failures use `failure_id`,
 `reason_code`, and `retryable`. The projection derives an assignment from the
 claim when the wire body does not contain internal assignment linkage.
 
-Migration 019 stores these routing and operational fields in relational columns
-while retaining the complete signed body in JSONB. Capacity, heartbeat,
-observation, checkpoint, and versioned plan bodies are still being aligned and
-remain tracked by `docs/active/GONZBNET_COVERAGE_WIRE_ALIGNMENT.md`.
+Migrations 019 and 020 store these routing and operational fields in relational
+columns while retaining the complete signed body in JSONB. Capacity, heartbeat,
+observation, checkpoint, and nested plan schemas are aligned. Periodic
+production of those events from scanner execution remains a separate runtime
+contribution task.

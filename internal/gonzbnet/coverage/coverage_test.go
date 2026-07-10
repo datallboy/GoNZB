@@ -67,6 +67,43 @@ func TestActiveCoverageBodiesUseAddendumWireNames(t *testing.T) {
 	)
 }
 
+func TestRemainingCoverageBodiesValidateSpecFields(t *testing.T) {
+	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
+	if err := Validate(TypeScannerCapacity, ScannerCapacity{
+		SchemaVersion: "1.0", Type: TypeScannerCapacity, NodeID: "node_1", PoolID: "pool.local",
+		CreatedAt: now.Format(time.RFC3339), MaxGroups: 10, MaxArticlesPerHour: 100,
+	}, now, 2*time.Minute); err != nil {
+		t.Fatalf("capacity validation: %v", err)
+	}
+	if err := Validate(TypeScannerHeartbeat, ScannerHeartbeat{
+		SchemaVersion: "1.0", Type: TypeScannerHeartbeat, NodeID: "node_1", PoolID: "pool.local",
+		CreatedAt: now.Format(time.RFC3339), Status: "healthy",
+	}, now, 2*time.Minute); err != nil {
+		t.Fatalf("heartbeat validation: %v", err)
+	}
+	if err := Validate(TypeGroupObservation, GroupObservation{
+		SchemaVersion: "1.0", Type: TypeGroupObservation, ObservationID: "obs_1", NodeID: "node_1",
+		PoolID: "pool.local", Group: "alt.binaries.example", ObservedAt: now.Format(time.RFC3339),
+		LowWatermark: 1, HighWatermark: 2, ScanSupported: true,
+	}, now, 2*time.Minute); err != nil {
+		t.Fatalf("observation validation: %v", err)
+	}
+	if err := Validate(TypeCoveragePlan, CoveragePlan{
+		SchemaVersion: "1.0", Type: TypeCoveragePlan, PlanID: "plan_1", PoolID: "pool.local",
+		Version: 1, CreatedAt: now.Format(time.RFC3339), CreatedByNodeID: "node_1",
+		Assignments: []CoveragePlanAssignment{{AssignmentID: "assign_1", Group: "alt.binaries.example", Mode: "article_range", PrimaryNodes: []string{"node_1"}}},
+	}, now, 2*time.Minute); err != nil {
+		t.Fatalf("plan validation: %v", err)
+	}
+	if err := Validate(TypeCoverageCheckpoint, CoverageCheckpoint{
+		SchemaVersion: "1.0", Type: TypeCoverageCheckpoint, CheckpointID: "chk_1", PoolID: "pool.local",
+		NodeID: "node_1", Group: "alt.binaries.example", ClaimID: "claim_1", RangeStart: 1,
+		RangeCurrent: 2, RangeEnd: 3, CheckedAt: now.Format(time.RFC3339),
+	}, now, 2*time.Minute); err != nil {
+		t.Fatalf("checkpoint validation: %v", err)
+	}
+}
+
 func assertCoverageJSONKeys(t *testing.T, value any, required, forbidden []string) {
 	t.Helper()
 	raw, err := json.Marshal(value)
@@ -121,10 +158,10 @@ func TestScannerHeartbeatValidationAndHash(t *testing.T) {
 		Type:          TypeScannerHeartbeat,
 		NodeID:        "node_1",
 		PoolID:        "pool.local",
-		PublishedAt:   now.Format(time.RFC3339),
+		CreatedAt:     now.Format(time.RFC3339),
 		Groups:        []string{"alt.binaries.example"},
 		ActiveClaims:  []string{"claim_1"},
-		Status:        "online",
+		Status:        "healthy",
 	}
 	if err := Validate(TypeScannerHeartbeat, item, now, 2*time.Minute); err != nil {
 		t.Fatalf("validate heartbeat: %v", err)

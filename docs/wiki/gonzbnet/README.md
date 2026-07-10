@@ -164,6 +164,8 @@ Current implementation state:
   event, publisher, and WebSocket claims from public profiles and caps.
 - Manifest availability cleanup aligns signed source/pool routing fields and
   isolates availability projection changes by source node.
+- Coverage wire cleanup aligns active leases/outcomes, capacity observations,
+  checkpoints, and nested plans with provider-scoped relational projections.
 
 Maintained pages:
 
