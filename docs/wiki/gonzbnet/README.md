@@ -172,6 +172,7 @@ Maintained pages:
 - [Canonical JSON](./canonical-json.md)
 - [Event Chain Continuity](./event-chain-continuity.md)
 - [Manifest Availability](./manifest-availability.md)
+- [Coverage Wire Alignment](./coverage-wire-alignment.md)
 - [Phase 1 Identity And Events](./phase-1-identity-and-events.md)
 - [Phase 2 ReleaseCard Publishing](./phase-2-releasecard-publishing.md)
 - [Phase 3 Manual Pull Sync](./phase-3-manual-pull-sync.md)

@@ -219,10 +219,12 @@ func (c *gonzbnetScrapeRangeCoordinator) BeginScrapeRange(ctx context.Context, r
 			PoolID:        c.poolID,
 			Group:         strings.TrimSpace(request.Group),
 			NodeID:        nodeID,
+			ProviderScope: c.providerScopeHash,
 			WindowStart:   request.WindowStart.UTC().Format(time.RFC3339),
 			WindowEnd:     request.WindowEnd.UTC().Format(time.RFC3339),
 			ClaimedAt:     now.Format(time.RFC3339),
 			ExpiresAt:     now.Add(c.claimTTL).Format(time.RFC3339),
+			ClaimMode:     "primary_scan",
 		}
 		if err := c.signAppendProject(ctx, coverage.TypeTimeWindowClaim, body); err != nil {
 			return scrape.RangeDecision{}, err
@@ -238,17 +240,20 @@ func (c *gonzbnetScrapeRangeCoordinator) BeginScrapeRange(ctx context.Context, r
 		}, nil
 	}
 	body := coverage.RangeClaim{
-		SchemaVersion: "1.0",
-		Type:          coverage.TypeRangeClaim,
-		ClaimID:       claimID,
-		AssignmentID:  assignmentID,
-		PoolID:        c.poolID,
-		Group:         strings.TrimSpace(request.Group),
-		NodeID:        nodeID,
-		RangeStart:    request.RangeStart,
-		RangeEnd:      request.RangeEnd,
-		ClaimedAt:     now.Format(time.RFC3339),
-		ExpiresAt:     now.Add(c.claimTTL).Format(time.RFC3339),
+		SchemaVersion:                     "1.0",
+		Type:                              coverage.TypeRangeClaim,
+		ClaimID:                           claimID,
+		AssignmentID:                      assignmentID,
+		PoolID:                            c.poolID,
+		Group:                             strings.TrimSpace(request.Group),
+		NodeID:                            nodeID,
+		ProviderScope:                     c.providerScopeHash,
+		RangeStart:                        request.RangeStart,
+		RangeEnd:                          request.RangeEnd,
+		ClaimedAt:                         now.Format(time.RFC3339),
+		ExpiresAt:                         now.Add(c.claimTTL).Format(time.RFC3339),
+		ClaimMode:                         "primary_scan",
+		ExpectedCheckpointIntervalSeconds: 300,
 	}
 	if err := c.signAppendProject(ctx, coverage.TypeRangeClaim, body); err != nil {
 		return scrape.RangeDecision{}, err
@@ -272,17 +277,20 @@ func (c *gonzbnetScrapeRangeCoordinator) CompleteScrapeRange(ctx context.Context
 	}
 	now := c.now().UTC()
 	body := coverage.RangeComplete{
-		SchemaVersion: "1.0",
-		Type:          coverage.TypeRangeComplete,
-		OutcomeID:     decision.ClaimID + "-complete",
-		ClaimID:       decision.ClaimID,
-		AssignmentID:  strings.TrimSpace(decision.AssignmentID),
-		PoolID:        c.poolID,
-		Group:         strings.TrimSpace(result.Group),
-		NodeID:        nodeID,
-		RangeStart:    result.RangeStart,
-		RangeEnd:      result.RangeEnd,
-		CompletedAt:   now.Format(time.RFC3339),
+		SchemaVersion:    "1.0",
+		Type:             coverage.TypeRangeComplete,
+		OutcomeID:        decision.ClaimID + "-complete",
+		ClaimID:          decision.ClaimID,
+		AssignmentID:     strings.TrimSpace(decision.AssignmentID),
+		PoolID:           c.poolID,
+		Group:            strings.TrimSpace(result.Group),
+		NodeID:           nodeID,
+		ProviderScope:    c.providerScopeHash,
+		RangeStart:       result.RangeStart,
+		RangeEnd:         result.RangeEnd,
+		ArticlesSeen:     max(0, result.RangeEnd-result.RangeStart+1),
+		HeadersProcessed: int64(result.ArticleHeaders),
+		CompletedAt:      now.Format(time.RFC3339),
 	}
 	return c.signAppendProject(ctx, coverage.TypeRangeComplete, body)
 }
@@ -312,9 +320,11 @@ func (c *gonzbnetScrapeRangeCoordinator) FailScrapeRange(ctx context.Context, de
 		PoolID:        c.poolID,
 		Group:         strings.TrimSpace(decision.Group),
 		NodeID:        nodeID,
+		ProviderScope: c.providerScopeHash,
 		RangeStart:    decision.RangeStart,
 		RangeEnd:      decision.RangeEnd,
 		Reason:        reason,
+		Retryable:     true,
 		FailedAt:      now.Format(time.RFC3339),
 	}
 	return c.signAppendProject(ctx, coverage.TypeRangeFailed, body)

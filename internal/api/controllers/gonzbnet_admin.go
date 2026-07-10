@@ -1559,13 +1559,17 @@ func (ctrl *GoNZBNetAdminController) CreateCoverageAssignment(c *echo.Context) e
 		PlanID:         strings.TrimSpace(req.PlanID),
 		PoolID:         firstNonBlank(req.PoolID, ctrl.appCtx.Config.GoNZBNet.LocalPoolID, "pool.local"),
 		Group:          strings.TrimSpace(req.Group),
+		Mode:           coverageAssignmentMode(req.RangeStart, req.RangeEnd, req.WindowStart, req.WindowEnd),
+		Role:           "primary_scanner",
 		AssignedNodeID: strings.TrimSpace(req.AssignedNodeID),
+		ProviderScope:  providerBackboneHashForAppContext(ctrl.appCtx),
 		RangeStart:     req.RangeStart,
 		RangeEnd:       req.RangeEnd,
 		WindowStart:    strings.TrimSpace(req.WindowStart),
 		WindowEnd:      strings.TrimSpace(req.WindowEnd),
 		Priority:       req.Priority,
 		DueAt:          strings.TrimSpace(req.DueAt),
+		ExpiresAt:      strings.TrimSpace(req.DueAt),
 		CreatedAt:      now.Format(time.RFC3339),
 	}
 	return ctrl.signAndProjectCoverage(c, coverage.TypeCoverageAssignment, body, body.PoolID)
@@ -1592,25 +1596,30 @@ func (ctrl *GoNZBNetAdminController) CreateCoverageClaim(c *echo.Context) error 
 			PoolID:        poolID,
 			Group:         strings.TrimSpace(req.Group),
 			NodeID:        nodeID,
+			ProviderScope: providerBackboneHashForAppContext(ctrl.appCtx),
 			WindowStart:   strings.TrimSpace(req.WindowStart),
 			WindowEnd:     strings.TrimSpace(req.WindowEnd),
 			ClaimedAt:     now.Format(time.RFC3339),
 			ExpiresAt:     expiresAt,
+			ClaimMode:     "primary_scan",
 		}
 		return ctrl.signAndProjectCoverage(c, coverage.TypeTimeWindowClaim, body, poolID)
 	}
 	body := coverage.RangeClaim{
-		SchemaVersion: "1.0",
-		Type:          coverage.TypeRangeClaim,
-		ClaimID:       firstNonBlank(req.ClaimID, coverageID("claim", now)),
-		AssignmentID:  strings.TrimSpace(req.AssignmentID),
-		PoolID:        poolID,
-		Group:         strings.TrimSpace(req.Group),
-		NodeID:        nodeID,
-		RangeStart:    req.RangeStart,
-		RangeEnd:      req.RangeEnd,
-		ClaimedAt:     now.Format(time.RFC3339),
-		ExpiresAt:     expiresAt,
+		SchemaVersion:                     "1.0",
+		Type:                              coverage.TypeRangeClaim,
+		ClaimID:                           firstNonBlank(req.ClaimID, coverageID("claim", now)),
+		AssignmentID:                      strings.TrimSpace(req.AssignmentID),
+		PoolID:                            poolID,
+		Group:                             strings.TrimSpace(req.Group),
+		NodeID:                            nodeID,
+		ProviderScope:                     providerBackboneHashForAppContext(ctrl.appCtx),
+		RangeStart:                        req.RangeStart,
+		RangeEnd:                          req.RangeEnd,
+		ClaimedAt:                         now.Format(time.RFC3339),
+		ExpiresAt:                         expiresAt,
+		ClaimMode:                         "primary_scan",
+		ExpectedCheckpointIntervalSeconds: ctrl.appCtx.Config.GoNZBNet.ScannerCheckpointIntervalSecs,
 	}
 	return ctrl.signAndProjectCoverage(c, coverage.TypeRangeClaim, body, poolID)
 }
@@ -1635,6 +1644,7 @@ func (ctrl *GoNZBNetAdminController) CreateCoverageComplete(c *echo.Context) err
 		PoolID:        poolID,
 		Group:         strings.TrimSpace(req.Group),
 		NodeID:        nodeID,
+		ProviderScope: providerBackboneHashForAppContext(ctrl.appCtx),
 		RangeStart:    req.RangeStart,
 		RangeEnd:      req.RangeEnd,
 		ReleaseCount:  req.ReleaseCount,
@@ -1663,12 +1673,24 @@ func (ctrl *GoNZBNetAdminController) CreateCoverageFailed(c *echo.Context) error
 		PoolID:        poolID,
 		Group:         strings.TrimSpace(req.Group),
 		NodeID:        nodeID,
+		ProviderScope: providerBackboneHashForAppContext(ctrl.appCtx),
 		RangeStart:    req.RangeStart,
 		RangeEnd:      req.RangeEnd,
 		Reason:        strings.TrimSpace(req.Reason),
+		Retryable:     true,
 		FailedAt:      now.Format(time.RFC3339),
 	}
 	return ctrl.signAndProjectCoverage(c, coverage.TypeRangeFailed, body, poolID)
+}
+
+func coverageAssignmentMode(rangeStart, rangeEnd int64, windowStart, windowEnd string) string {
+	if strings.TrimSpace(windowStart) != "" || strings.TrimSpace(windowEnd) != "" {
+		return "time_window"
+	}
+	if rangeStart > 0 || rangeEnd > 0 {
+		return "article_range"
+	}
+	return ""
 }
 
 func (ctrl *GoNZBNetAdminController) signAndProjectCoverage(c *echo.Context, eventType string, body any, poolID string) error {
