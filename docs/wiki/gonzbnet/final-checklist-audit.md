@@ -14,7 +14,7 @@ Implemented surfaces include:
 - coverage observations, assignments, claims, checkpoints, outcomes, dashboard
   reads, stale-claim penalties, and dedup-aware work suggestions;
 - existing indexer scrape coordination with signed local claims/outcomes and
-  trusted remote active/completed range suppression;
+  trusted, provider-scope-compatible remote active/completed range suppression;
 - signed validation-request task admission for locally cached manifests;
 - article availability and checksum attestation projections;
 - privacy boundaries that keep local users, API keys, searches, grabs,
@@ -32,7 +32,8 @@ Validation request boundary:
 Scanner coordination boundary:
 
 - The existing usenet-indexer scrape loop can publish signed local
-  `RangeClaim`, `RangeComplete`, and `RangeFailed` events and honor trusted
-  remote active/completed ranges when scanner coverage coordination is enabled.
+  `RangeClaim`, `RangeComplete`, and `RangeFailed` events and honor trusted,
+  provider-scope-compatible remote active/completed ranges when scanner
+  coverage coordination is enabled.
 - Assignment-driven automatic scanner work selection remains future
   scanner-module integration.

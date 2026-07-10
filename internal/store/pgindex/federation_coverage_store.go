@@ -99,6 +99,8 @@ type CoverageRangeBlockParams struct {
 	Group                 string
 	RangeStart            int64
 	RangeEnd              int64
+	ProviderBackboneHash  string
+	RequireProviderScope  bool
 	MinBlockingTrustScore float64
 	RespectRemoteClaims   bool
 	SkipCompleted         bool
@@ -334,6 +336,7 @@ func (s *Store) CheckCoverageRangeBlock(ctx context.Context, params CoverageRang
 	if group == "" || params.RangeStart <= 0 || params.RangeEnd < params.RangeStart {
 		return out, nil
 	}
+	providerHash := strings.TrimSpace(params.ProviderBackboneHash)
 	minTrust := params.MinBlockingTrustScore
 	if minTrust <= 0 {
 		minTrust = 0.25
@@ -343,6 +346,7 @@ func (s *Store) CheckCoverageRangeBlock(ctx context.Context, params CoverageRang
 			SELECT c.claim_id, c.node_id
 			FROM coverage_claims c
 			JOIN federation_nodes n ON n.node_id = c.node_id
+			LEFT JOIN federation_node_capabilities cap ON cap.node_id = c.node_id
 			WHERE c.pool_id = $1
 			  AND c.group_name = $2
 			  AND c.status = 'active'
@@ -353,9 +357,14 @@ func (s *Store) CheckCoverageRangeBlock(ctx context.Context, params CoverageRang
 			  AND c.range_end >= $3
 			  AND c.node_id <> $5
 			  AND COALESCE(n.local_trust_score, 0) >= $6
+			  AND (
+			    $7 = FALSE
+			    OR ($8 <> '' AND cap.provider_scope->>'backbone_hash' = $8)
+			  )
 			ORDER BY c.expires_at DESC
 			LIMIT 1`,
-			poolID, group, params.RangeStart, params.RangeEnd, nodeID, minTrust)
+			poolID, group, params.RangeStart, params.RangeEnd, nodeID, minTrust,
+			params.RequireProviderScope, providerHash)
 		var claimID, blockingNodeID string
 		if err := row.Scan(&claimID, &blockingNodeID); err == nil {
 			return CoverageRangeBlock{
@@ -374,15 +383,26 @@ func (s *Store) CheckCoverageRangeBlock(ctx context.Context, params CoverageRang
 			SELECT o.outcome_id, o.node_id
 			FROM coverage_range_outcomes o
 			LEFT JOIN federation_nodes n ON n.node_id = o.node_id
+			LEFT JOIN federation_node_capabilities cap ON cap.node_id = o.node_id
 			WHERE o.pool_id = $1
 			  AND o.group_name = $2
 			  AND o.outcome_type = 'complete'
 			  AND o.range_start <= $4
 			  AND o.range_end >= $3
-			  AND (o.node_id = $5 OR COALESCE(n.local_trust_score, 0) >= $6)
+			  AND (
+			    o.node_id = $5
+			    OR (
+			      COALESCE(n.local_trust_score, 0) >= $6
+			      AND (
+			        $7 = FALSE
+			        OR ($8 <> '' AND cap.provider_scope->>'backbone_hash' = $8)
+			      )
+			    )
+			  )
 			ORDER BY o.occurred_at DESC
 			LIMIT 1`,
-			poolID, group, params.RangeStart, params.RangeEnd, nodeID, minTrust)
+			poolID, group, params.RangeStart, params.RangeEnd, nodeID, minTrust,
+			params.RequireProviderScope, providerHash)
 		var outcomeID, completedNodeID string
 		if err := row.Scan(&outcomeID, &completedNodeID); err == nil {
 			return CoverageRangeBlock{

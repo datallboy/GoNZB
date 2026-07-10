@@ -116,7 +116,8 @@ Current implementation state:
 - Validation cleanup adds a signed node-to-node validation request endpoint for
   locally cached manifests.
 - Scanner coordination cleanup wires the existing usenet-indexer scrape loop to
-  signed range claims/outcomes and trusted range suppression.
+  signed range claims/outcomes and provider-scope-compatible trusted range
+  suppression.
 - Config addendum alignment adds typed scanner, coverage, validation, and
   manifest-cache settings with direct `GONZBNET_*` aliases.
 - Security cleanup adds temporary in-memory throttling after repeated

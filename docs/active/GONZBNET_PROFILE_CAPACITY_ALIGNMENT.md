@@ -15,6 +15,8 @@ Implemented:
 - `NodeProfile.provider_scope` advertises privacy-preserving provider scope
   metadata, defaulting to `hash_only` disclosure and `provider_local` article
   numbering.
+- When `gonzbnet.share_provider_backbone_hash` is enabled, provider scope
+  includes a deterministic hash of configured indexer NNTP server scope values.
 - Peer sync persists module status, scanner capacity, validator capacity, and
   provider scope into `federation_node_capabilities`.
 

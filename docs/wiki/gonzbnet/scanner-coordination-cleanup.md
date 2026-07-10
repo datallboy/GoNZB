@@ -14,8 +14,10 @@ The hook is enabled only when all of these are true:
 When enabled, each configured scrape range asks the local GoNZBNet coordinator
 whether the range should be skipped. Trusted active remote `RangeClaim` events
 can temporarily block duplicate primary work when
-`gonzbnet.scanner_respect_remote_claims` is true. Trusted completed ranges can
-advance the local scrape cursor without fetching the same range again.
+`gonzbnet.scanner_respect_remote_claims` is true and the remote provider scope
+matches the local provider scope. Trusted completed ranges can advance the local
+scrape cursor without fetching the same range again under the same provider
+scope rule.
 
 If the range is not blocked, the coordinator publishes a signed local
 `RangeClaim` before XOVER. Successful ranges publish `RangeComplete`; failed
@@ -25,3 +27,7 @@ append-only event log, and coverage projection path.
 This integration does not expose local users, API keys, searches, grabs,
 downloads, or NNTP credentials. It also does not add a standalone scanner
 process or assignment-driven automatic scanner work selection.
+
+Provider-scope matching uses the opt-in `share_provider_backbone_hash` setting.
+When no compatible provider-scope hash is available, remote article-number
+claims and completions do not suppress local scrape ranges.

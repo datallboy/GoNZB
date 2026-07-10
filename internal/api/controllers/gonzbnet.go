@@ -1499,6 +1499,7 @@ func (ctrl *GoNZBNetController) profileConfig(c *echo.Context) profile.Config {
 		ValidationAllowSamplePayload:  cfg.ValidationAllowSamplePayload,
 		ValidationAllowPAR2:           cfg.ValidationAllowPAR2,
 		ProviderDisclosure:            cfg.CoverageProviderScopeMode,
+		ProviderBackboneHash:          providerBackboneHashForAppContext(ctrl.appCtx),
 		MaxEventBytes:                 cfg.MaxEventBytes,
 		MaxManifestBytes:              cfg.MaxManifestBytes,
 		MaxBatchEvents:                cfg.MaxBatchEvents,
@@ -1516,4 +1517,19 @@ func (ctrl *GoNZBNetController) baseURL(c *echo.Context) string {
 		basePath = "/gonzbnet/v1"
 	}
 	return fmt.Sprintf("%s://%s%s", c.Scheme(), c.Request().Host, basePath)
+}
+
+func providerBackboneHashForAppContext(appCtx *app.Context) string {
+	if appCtx == nil || appCtx.Config == nil || !appCtx.Config.GoNZBNet.ShareProviderBackbone {
+		return ""
+	}
+	parts := make([]string, 0, len(appCtx.Config.Servers))
+	for _, server := range appCtx.Config.Servers {
+		host := strings.TrimSpace(server.Host)
+		if host == "" {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s:%d:%t", host, server.Port, server.TLS))
+	}
+	return profile.ProviderBackboneHash(parts)
 }
