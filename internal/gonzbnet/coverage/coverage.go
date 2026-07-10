@@ -33,51 +33,93 @@ const (
 )
 
 type ScannerCapacity struct {
-	SchemaVersion    string   `json:"schema_version"`
-	Type             string   `json:"type"`
-	NodeID           string   `json:"node_id"`
-	PublishedAt      string   `json:"published_at"`
-	Groups           []string `json:"groups"`
-	MaxRangesPerHour int      `json:"max_ranges_per_hour"`
-	MaxBytesPerHour  int64    `json:"max_bytes_per_hour"`
+	SchemaVersion            string   `json:"schema_version"`
+	Type                     string   `json:"type"`
+	NodeID                   string   `json:"node_id"`
+	PoolID                   string   `json:"pool_id"`
+	CreatedAt                string   `json:"created_at"`
+	MaxGroups                int      `json:"max_groups"`
+	MaxArticlesPerHour       int64    `json:"max_articles_per_hour"`
+	MaxHeaderBytesPerHour    int64    `json:"max_header_bytes_per_hour,omitempty"`
+	PreferredGroupPatterns   []string `json:"preferred_group_patterns,omitempty"`
+	ExcludedGroupPatterns    []string `json:"excluded_group_patterns,omitempty"`
+	SupportsArticleRangeScan bool     `json:"supports_article_range_scan"`
+	SupportsTimeWindowScan   bool     `json:"supports_time_window_scan"`
+	RetentionDaysObserved    int      `json:"retention_days_observed"`
+	ProviderScope            string   `json:"provider_scope_hash,omitempty"`
+	PublishedAt              string   `json:"-"`
+	Groups                   []string `json:"-"`
+	MaxRangesPerHour         int      `json:"-"`
+	MaxBytesPerHour          int64    `json:"-"`
 }
 
 type ScannerHeartbeat struct {
-	SchemaVersion string   `json:"schema_version"`
-	Type          string   `json:"type"`
-	NodeID        string   `json:"node_id"`
-	PoolID        string   `json:"pool_id"`
-	PublishedAt   string   `json:"published_at"`
-	Groups        []string `json:"groups"`
-	ActiveClaims  []string `json:"active_claims"`
-	Status        string   `json:"status"`
+	SchemaVersion            string   `json:"schema_version"`
+	Type                     string   `json:"type"`
+	NodeID                   string   `json:"node_id"`
+	PoolID                   string   `json:"pool_id"`
+	CreatedAt                string   `json:"created_at"`
+	ActiveClaims             []string `json:"active_claims"`
+	QueueDepth               int      `json:"queue_depth"`
+	CurrentArticlesPerMinute int64    `json:"current_articles_per_minute"`
+	Status                   string   `json:"status"`
+	PublishedAt              string   `json:"-"`
+	Groups                   []string `json:"-"`
 }
 
 type GroupObservation struct {
-	SchemaVersion string  `json:"schema_version"`
-	Type          string  `json:"type"`
-	ObservationID string  `json:"observation_id"`
-	PoolID        string  `json:"pool_id"`
-	Group         string  `json:"group"`
-	ObservedAt    string  `json:"observed_at"`
-	LowWatermark  int64   `json:"low_watermark"`
-	HighWatermark int64   `json:"high_watermark"`
-	RetentionDays int     `json:"retention_days"`
-	Confidence    float64 `json:"confidence"`
+	SchemaVersion        string  `json:"schema_version"`
+	Type                 string  `json:"type"`
+	ObservationID        string  `json:"observation_id"`
+	NodeID               string  `json:"node_id"`
+	PoolID               string  `json:"pool_id"`
+	Group                string  `json:"group"`
+	ProviderScope        string  `json:"provider_scope_hash,omitempty"`
+	ObservedAt           string  `json:"observed_at"`
+	LowWatermark         int64   `json:"low_water"`
+	HighWatermark        int64   `json:"high_water"`
+	EstimatedCount       int64   `json:"estimated_count"`
+	PostsPerHourEstimate float64 `json:"posts_per_hour_estimate"`
+	ScanSupported        bool    `json:"scan_supported"`
+	RetentionDays        int     `json:"retention_days_observed"`
+	Confidence           float64 `json:"confidence,omitempty"`
 }
 
 type CoveragePlan struct {
-	SchemaVersion string `json:"schema_version"`
-	Type          string `json:"type"`
-	PlanID        string `json:"plan_id"`
-	PoolID        string `json:"pool_id"`
-	Group         string `json:"group"`
-	RangeStart    int64  `json:"range_start,omitempty"`
-	RangeEnd      int64  `json:"range_end,omitempty"`
-	WindowStart   string `json:"window_start,omitempty"`
-	WindowEnd     string `json:"window_end,omitempty"`
-	Priority      int    `json:"priority"`
-	CreatedAt     string `json:"created_at"`
+	SchemaVersion        string                   `json:"schema_version"`
+	Type                 string                   `json:"type"`
+	PlanID               string                   `json:"plan_id"`
+	PoolID               string                   `json:"pool_id"`
+	Version              int                      `json:"version"`
+	CreatedAt            string                   `json:"created_at"`
+	CreatedByNodeID      string                   `json:"created_by_node_id"`
+	RequiresPoolApproval bool                     `json:"requires_pool_approval"`
+	Policy               CoveragePlanPolicy       `json:"policy"`
+	Assignments          []CoveragePlanAssignment `json:"assignments"`
+	Group                string                   `json:"-"`
+	RangeStart           int64                    `json:"-"`
+	RangeEnd             int64                    `json:"-"`
+	WindowStart          string                   `json:"-"`
+	WindowEnd            string                   `json:"-"`
+	Priority             int                      `json:"-"`
+}
+
+type CoveragePlanPolicy struct {
+	DefaultClaimTTLMinutes  int     `json:"default_claim_ttl_minutes"`
+	MinValidatorOverlapPct  int     `json:"min_validator_overlap_percent"`
+	TrustedClaimMinScore    float64 `json:"trusted_claim_min_score"`
+	AllowUnassignedScanning bool    `json:"allow_unassigned_scanning"`
+}
+
+type CoveragePlanAssignment struct {
+	AssignmentID         string   `json:"assignment_id"`
+	Group                string   `json:"group"`
+	Mode                 string   `json:"mode"`
+	PrimaryNodes         []string `json:"primary_nodes"`
+	ValidatorNodes       []string `json:"validator_nodes"`
+	ManifestBuilderNodes []string `json:"manifest_builder_nodes"`
+	Priority             int      `json:"priority"`
+	MinRedundancy        int      `json:"min_redundancy"`
 }
 
 type CoverageAssignment struct {
@@ -135,14 +177,26 @@ type TimeWindowClaim struct {
 }
 
 type CoverageCheckpoint struct {
-	SchemaVersion string `json:"schema_version"`
-	Type          string `json:"type"`
-	CheckpointID  string `json:"checkpoint_id"`
-	PoolID        string `json:"pool_id"`
-	Group         string `json:"group"`
-	LowWatermark  int64  `json:"low_watermark"`
-	HighWatermark int64  `json:"high_watermark"`
-	CreatedAt     string `json:"created_at"`
+	SchemaVersion       string `json:"schema_version"`
+	Type                string `json:"type"`
+	CheckpointID        string `json:"checkpoint_id"`
+	PoolID              string `json:"pool_id"`
+	NodeID              string `json:"node_id"`
+	Group               string `json:"group"`
+	ProviderScope       string `json:"provider_scope_hash,omitempty"`
+	ClaimID             string `json:"claim_id"`
+	RangeStart          int64  `json:"range_start"`
+	RangeCurrent        int64  `json:"range_current"`
+	RangeEnd            int64  `json:"range_end"`
+	WindowStart         string `json:"window_start,omitempty"`
+	WindowEnd           string `json:"window_end,omitempty"`
+	ReleaseCardsEmitted int    `json:"release_cards_emitted"`
+	ManifestsEmitted    int    `json:"manifests_emitted"`
+	Errors              int    `json:"errors"`
+	CheckedAt           string `json:"checked_at"`
+	LowWatermark        int64  `json:"-"`
+	HighWatermark       int64  `json:"-"`
+	CreatedAt           string `json:"-"`
 }
 
 type RangeComplete struct {
@@ -302,13 +356,13 @@ func validateScannerCapacity(in ScannerCapacity, now time.Time, tolerance time.D
 	if err := base(in.SchemaVersion, in.Type, TypeScannerCapacity); err != nil {
 		return err
 	}
-	if strings.TrimSpace(in.NodeID) == "" {
-		return fmt.Errorf("node_id is required")
+	if strings.TrimSpace(in.NodeID) == "" || strings.TrimSpace(in.PoolID) == "" {
+		return fmt.Errorf("node_id and pool_id are required")
 	}
-	if err := validateTimestamp("published_at", in.PublishedAt, now, tolerance); err != nil {
+	if err := validateTimestamp("created_at", in.CreatedAt, now, tolerance); err != nil {
 		return err
 	}
-	if in.MaxRangesPerHour < 0 || in.MaxBytesPerHour < 0 {
+	if in.MaxGroups < 0 || in.MaxArticlesPerHour < 0 || in.MaxHeaderBytesPerHour < 0 || in.RetentionDaysObserved < 0 {
 		return fmt.Errorf("capacity values must not be negative")
 	}
 	return nil
@@ -321,7 +375,7 @@ func validateScannerHeartbeat(in ScannerHeartbeat, now time.Time, tolerance time
 	if strings.TrimSpace(in.NodeID) == "" || strings.TrimSpace(in.PoolID) == "" {
 		return fmt.Errorf("node_id and pool_id are required")
 	}
-	if err := validateTimestamp("published_at", in.PublishedAt, now, tolerance); err != nil {
+	if err := validateTimestamp("created_at", in.CreatedAt, now, tolerance); err != nil {
 		return err
 	}
 	status := strings.TrimSpace(in.Status)
@@ -329,7 +383,7 @@ func validateScannerHeartbeat(in ScannerHeartbeat, now time.Time, tolerance time
 		return fmt.Errorf("status is required")
 	}
 	switch status {
-	case "online", "degraded", "paused", "offline":
+	case "healthy", "degraded", "paused", "offline":
 		return nil
 	default:
 		return fmt.Errorf("unsupported scanner heartbeat status")
@@ -340,11 +394,14 @@ func validateGroupObservation(in GroupObservation, now time.Time, tolerance time
 	if err := base(in.SchemaVersion, in.Type, TypeGroupObservation); err != nil {
 		return err
 	}
-	if strings.TrimSpace(in.ObservationID) == "" || strings.TrimSpace(in.PoolID) == "" || strings.TrimSpace(in.Group) == "" {
-		return fmt.Errorf("observation_id, pool_id, and group are required")
+	if strings.TrimSpace(in.ObservationID) == "" || strings.TrimSpace(in.NodeID) == "" || strings.TrimSpace(in.PoolID) == "" || strings.TrimSpace(in.Group) == "" {
+		return fmt.Errorf("observation_id, node_id, pool_id, and group are required")
 	}
 	if err := validateTimestamp("observed_at", in.ObservedAt, now, tolerance); err != nil {
 		return err
+	}
+	if in.EstimatedCount < 0 || in.PostsPerHourEstimate < 0 || in.RetentionDays < 0 || in.Confidence < 0 || in.Confidence > 1 {
+		return fmt.Errorf("observation values are invalid")
 	}
 	return validateRange(in.LowWatermark, in.HighWatermark)
 }
@@ -353,13 +410,27 @@ func validatePlan(in CoveragePlan, now time.Time, tolerance time.Duration) error
 	if err := base(in.SchemaVersion, in.Type, TypeCoveragePlan); err != nil {
 		return err
 	}
-	if strings.TrimSpace(in.PlanID) == "" || strings.TrimSpace(in.PoolID) == "" || strings.TrimSpace(in.Group) == "" {
-		return fmt.Errorf("plan_id, pool_id, and group are required")
+	if strings.TrimSpace(in.PlanID) == "" || strings.TrimSpace(in.PoolID) == "" || strings.TrimSpace(in.CreatedByNodeID) == "" {
+		return fmt.Errorf("plan_id, pool_id, and created_by_node_id are required")
+	}
+	if in.Version <= 0 || len(in.Assignments) == 0 {
+		return fmt.Errorf("plan version and assignments are required")
 	}
 	if err := validateTimestamp("created_at", in.CreatedAt, now, tolerance); err != nil {
 		return err
 	}
-	return validateRangeOrWindow(in.RangeStart, in.RangeEnd, in.WindowStart, in.WindowEnd)
+	if in.Policy.DefaultClaimTTLMinutes < 0 || in.Policy.MinValidatorOverlapPct < 0 || in.Policy.MinValidatorOverlapPct > 100 || in.Policy.TrustedClaimMinScore < 0 || in.Policy.TrustedClaimMinScore > 1 {
+		return fmt.Errorf("plan policy values are invalid")
+	}
+	for _, assignment := range in.Assignments {
+		if strings.TrimSpace(assignment.AssignmentID) == "" || strings.TrimSpace(assignment.Group) == "" || strings.TrimSpace(assignment.Mode) == "" {
+			return fmt.Errorf("plan assignment fields are required")
+		}
+		if len(assignment.PrimaryNodes) == 0 && len(assignment.ValidatorNodes) == 0 && len(assignment.ManifestBuilderNodes) == 0 {
+			return fmt.Errorf("plan assignment must name at least one node")
+		}
+	}
+	return nil
 }
 
 func validateAssignment(in CoverageAssignment, now time.Time, tolerance time.Duration) error {
@@ -437,13 +508,16 @@ func validateCheckpoint(in CoverageCheckpoint, now time.Time, tolerance time.Dur
 	if err := base(in.SchemaVersion, in.Type, TypeCoverageCheckpoint); err != nil {
 		return err
 	}
-	if strings.TrimSpace(in.CheckpointID) == "" || strings.TrimSpace(in.PoolID) == "" || strings.TrimSpace(in.Group) == "" {
-		return fmt.Errorf("checkpoint_id, pool_id, and group are required")
+	if strings.TrimSpace(in.CheckpointID) == "" || strings.TrimSpace(in.NodeID) == "" || strings.TrimSpace(in.PoolID) == "" || strings.TrimSpace(in.Group) == "" || strings.TrimSpace(in.ClaimID) == "" {
+		return fmt.Errorf("checkpoint_id, node_id, pool_id, group, and claim_id are required")
 	}
-	if err := validateTimestamp("created_at", in.CreatedAt, now, tolerance); err != nil {
+	if err := validateTimestamp("checked_at", in.CheckedAt, now, tolerance); err != nil {
 		return err
 	}
-	return validateRange(in.LowWatermark, in.HighWatermark)
+	if in.RangeStart <= 0 || in.RangeCurrent < in.RangeStart || in.RangeEnd < in.RangeCurrent || in.ReleaseCardsEmitted < 0 || in.ManifestsEmitted < 0 || in.Errors < 0 {
+		return fmt.Errorf("checkpoint progress is invalid")
+	}
+	return nil
 }
 
 func validateRangeComplete(in RangeComplete, now time.Time, tolerance time.Duration) error {

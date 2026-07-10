@@ -2,6 +2,7 @@ package pgindex
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -142,14 +143,19 @@ func (s *Store) ProjectCoverageEvent(ctx context.Context, event *events.SignedEv
 			return err
 		}
 		bodyJSON, _ := json.Marshal(body)
-		groupsJSON, _ := json.Marshal(body.Groups)
-		publishedAt, _ := time.Parse(time.RFC3339, body.PublishedAt)
+		groupsJSON, _ := json.Marshal(body.PreferredGroupPatterns)
+		excludedGroupsJSON, _ := json.Marshal(body.ExcludedGroupPatterns)
+		publishedAt, _ := time.Parse(time.RFC3339, body.CreatedAt)
 		_, err := s.db.ExecContext(ctx, `
-			INSERT INTO scanner_capacities (
+		INSERT INTO scanner_capacities (
 				node_id, published_at, groups_json, max_ranges_per_hour,
-				max_bytes_per_hour, body_json, source_event_id, updated_at
+				max_bytes_per_hour, body_json, source_event_id, pool_id, max_groups,
+				max_articles_per_hour, max_header_bytes_per_hour, preferred_group_patterns,
+				excluded_group_patterns, supports_article_range_scan, supports_time_window_scan,
+				retention_days_observed, provider_scope_hash, updated_at
 			)
-			VALUES ($1, $2, $3::jsonb, $4, $5, $6::jsonb, $7, NOW())
+			VALUES ($1, $2, $3::jsonb, $4, $5, $6::jsonb, $7, $8, $9, $10, $11,
+			        $12::jsonb, $13::jsonb, $14, $15, $16, NULLIF($17, ''), NOW())
 			ON CONFLICT (node_id) DO UPDATE SET
 				published_at = EXCLUDED.published_at,
 				groups_json = EXCLUDED.groups_json,
@@ -157,9 +163,23 @@ func (s *Store) ProjectCoverageEvent(ctx context.Context, event *events.SignedEv
 				max_bytes_per_hour = EXCLUDED.max_bytes_per_hour,
 				body_json = EXCLUDED.body_json,
 				source_event_id = EXCLUDED.source_event_id,
+				pool_id = EXCLUDED.pool_id,
+				max_groups = EXCLUDED.max_groups,
+				max_articles_per_hour = EXCLUDED.max_articles_per_hour,
+				max_header_bytes_per_hour = EXCLUDED.max_header_bytes_per_hour,
+				preferred_group_patterns = EXCLUDED.preferred_group_patterns,
+				excluded_group_patterns = EXCLUDED.excluded_group_patterns,
+				supports_article_range_scan = EXCLUDED.supports_article_range_scan,
+				supports_time_window_scan = EXCLUDED.supports_time_window_scan,
+				retention_days_observed = EXCLUDED.retention_days_observed,
+				provider_scope_hash = EXCLUDED.provider_scope_hash,
 				updated_at = NOW()`,
-			body.NodeID, publishedAt.UTC(), string(groupsJSON), body.MaxRangesPerHour,
-			body.MaxBytesPerHour, string(bodyJSON), event.EventID)
+			body.NodeID, publishedAt.UTC(), string(groupsJSON), body.MaxGroups,
+			body.MaxArticlesPerHour, string(bodyJSON), event.EventID, body.PoolID,
+			body.MaxGroups, body.MaxArticlesPerHour, body.MaxHeaderBytesPerHour,
+			string(groupsJSON), string(excludedGroupsJSON),
+			body.SupportsArticleRangeScan, body.SupportsTimeWindowScan,
+			body.RetentionDaysObserved, body.ProviderScope)
 		return err
 	case coverage.TypeScannerHeartbeat:
 		var body coverage.ScannerHeartbeat
@@ -170,15 +190,16 @@ func (s *Store) ProjectCoverageEvent(ctx context.Context, event *events.SignedEv
 			return err
 		}
 		bodyJSON, _ := json.Marshal(body)
-		groupsJSON, _ := json.Marshal(body.Groups)
+		groupsJSON, _ := json.Marshal([]string{})
 		activeClaimsJSON, _ := json.Marshal(body.ActiveClaims)
-		publishedAt, _ := time.Parse(time.RFC3339, body.PublishedAt)
+		publishedAt, _ := time.Parse(time.RFC3339, body.CreatedAt)
 		_, err := s.db.ExecContext(ctx, `
 			INSERT INTO scanner_heartbeats (
 				node_id, pool_id, published_at, groups_json, active_claims_json,
-				status, body_json, source_event_id, updated_at
+				status, body_json, source_event_id, queue_depth,
+				current_articles_per_minute, updated_at
 			)
-			VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7::jsonb, $8, NOW())
+			VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7::jsonb, $8, $9, $10, NOW())
 			ON CONFLICT (node_id, pool_id) DO UPDATE SET
 				published_at = EXCLUDED.published_at,
 				groups_json = EXCLUDED.groups_json,
@@ -186,9 +207,12 @@ func (s *Store) ProjectCoverageEvent(ctx context.Context, event *events.SignedEv
 				status = EXCLUDED.status,
 				body_json = EXCLUDED.body_json,
 				source_event_id = EXCLUDED.source_event_id,
+				queue_depth = EXCLUDED.queue_depth,
+				current_articles_per_minute = EXCLUDED.current_articles_per_minute,
 				updated_at = NOW()`,
 			body.NodeID, body.PoolID, publishedAt.UTC(), string(groupsJSON),
-			string(activeClaimsJSON), body.Status, string(bodyJSON), event.EventID)
+			string(activeClaimsJSON), body.Status, string(bodyJSON), event.EventID,
+			body.QueueDepth, body.CurrentArticlesPerMinute)
 		return err
 	case coverage.TypeGroupObservation:
 		var body coverage.GroupObservation
@@ -204,9 +228,10 @@ func (s *Store) ProjectCoverageEvent(ctx context.Context, event *events.SignedEv
 			INSERT INTO coverage_group_observations (
 				observation_id, pool_id, group_name, observed_at, low_watermark,
 				high_watermark, retention_days, confidence, author_node_id,
-				body_json, source_event_id, updated_at
+				body_json, source_event_id, node_id, provider_scope_hash,
+				estimated_count, posts_per_hour_estimate, scan_supported, updated_at
 			)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, NOW())
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, NULLIF($13, ''), $14, $15, $16, NOW())
 			ON CONFLICT (observation_id) DO UPDATE SET
 				observed_at = EXCLUDED.observed_at,
 				low_watermark = EXCLUDED.low_watermark,
@@ -215,10 +240,16 @@ func (s *Store) ProjectCoverageEvent(ctx context.Context, event *events.SignedEv
 				confidence = EXCLUDED.confidence,
 				body_json = EXCLUDED.body_json,
 				source_event_id = EXCLUDED.source_event_id,
+				node_id = EXCLUDED.node_id,
+				provider_scope_hash = EXCLUDED.provider_scope_hash,
+				estimated_count = EXCLUDED.estimated_count,
+				posts_per_hour_estimate = EXCLUDED.posts_per_hour_estimate,
+				scan_supported = EXCLUDED.scan_supported,
 				updated_at = NOW()`,
 			body.ObservationID, body.PoolID, body.Group, observedAt.UTC(), body.LowWatermark,
 			body.HighWatermark, body.RetentionDays, body.Confidence, event.AuthorNodeID,
-			string(bodyJSON), event.EventID)
+			string(bodyJSON), event.EventID, body.NodeID, body.ProviderScope,
+			body.EstimatedCount, body.PostsPerHourEstimate, body.ScanSupported)
 		return err
 	case coverage.TypeCoveragePlan:
 		var body coverage.CoveragePlan
@@ -706,24 +737,93 @@ func (s *Store) CoverageAssignmentExists(ctx context.Context, assignmentID strin
 func (s *Store) projectCoveragePlan(ctx context.Context, body coverage.CoveragePlan, event *events.SignedEvent) error {
 	bodyJSON, _ := json.Marshal(body)
 	createdAt, _ := time.Parse(time.RFC3339, body.CreatedAt)
-	windowStart := parseNullableTime(body.WindowStart)
-	windowEnd := parseNullableTime(body.WindowEnd)
-	_, err := s.db.ExecContext(ctx, `
+	firstGroup := ""
+	firstPriority := 0
+	if len(body.Assignments) > 0 {
+		firstGroup = body.Assignments[0].Group
+		firstPriority = body.Assignments[0].Priority
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	_, err = tx.ExecContext(ctx, `
 		INSERT INTO coverage_plans (
 			plan_id, pool_id, group_name, range_start, range_end, window_start,
 			window_end, priority, author_node_id, body_json, source_event_id,
 			created_at, updated_at
 		)
-		VALUES ($1, $2, $3, NULLIF($4, 0), NULLIF($5, 0), $6, $7, $8, $9, $10::jsonb, $11, $12, NOW())
+		VALUES ($1, $2, $3, NULL, NULL, NULL, NULL, $4, $5, $6::jsonb, $7, $8, NOW())
 		ON CONFLICT (plan_id) DO UPDATE SET
 			priority = EXCLUDED.priority,
 			body_json = EXCLUDED.body_json,
 			source_event_id = EXCLUDED.source_event_id,
 			updated_at = NOW()`,
-		body.PlanID, body.PoolID, body.Group, body.RangeStart, body.RangeEnd,
-		windowStart, windowEnd, body.Priority, event.AuthorNodeID,
+		body.PlanID, body.PoolID, firstGroup, firstPriority, event.AuthorNodeID,
 		string(bodyJSON), event.EventID, createdAt.UTC())
-	return err
+	if err != nil {
+		return err
+	}
+	for _, assignment := range body.Assignments {
+		if err := projectNestedCoverageAssignment(ctx, tx, body, assignment, event, createdAt); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func projectNestedCoverageAssignment(ctx context.Context, tx *sql.Tx, plan coverage.CoveragePlan, assignment coverage.CoveragePlanAssignment, event *events.SignedEvent, createdAt time.Time) error {
+	type target struct {
+		node string
+		role string
+	}
+	targets := make([]target, 0, len(assignment.PrimaryNodes)+len(assignment.ValidatorNodes)+len(assignment.ManifestBuilderNodes))
+	for _, node := range assignment.PrimaryNodes {
+		targets = append(targets, target{node: node, role: "primary_scanner"})
+	}
+	for _, node := range assignment.ValidatorNodes {
+		targets = append(targets, target{node: node, role: "validator"})
+	}
+	for _, node := range assignment.ManifestBuilderNodes {
+		targets = append(targets, target{node: node, role: "manifest_builder"})
+	}
+	expiresAt := createdAt
+	if plan.Policy.DefaultClaimTTLMinutes > 0 {
+		expiresAt = expiresAt.Add(time.Duration(plan.Policy.DefaultClaimTTLMinutes) * time.Minute)
+	}
+	for index, target := range targets {
+		assignmentID := assignment.AssignmentID
+		if index > 0 {
+			assignmentID = fmt.Sprintf("%s:%s:%d", assignment.AssignmentID, target.role, index)
+		}
+		bodyJSON, _ := json.Marshal(assignment)
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO coverage_assignments (
+				assignment_id, plan_id, pool_id, group_name, assigned_node_id,
+				range_start, range_end, window_start, window_end, priority, due_at,
+				status, author_node_id, body_json, source_event_id, created_at,
+				mode, assignment_role, expires_at, updated_at
+			)
+			VALUES ($1, $2, $3, $4, $5, NULL, NULL, NULL, NULL, $6, $7,
+			        'assigned', $8, $9::jsonb, $10, $11, $12, $13, $7, NOW())
+			ON CONFLICT (assignment_id) DO UPDATE SET
+				assigned_node_id = EXCLUDED.assigned_node_id,
+				priority = EXCLUDED.priority,
+				mode = EXCLUDED.mode,
+				assignment_role = EXCLUDED.assignment_role,
+				expires_at = EXCLUDED.expires_at,
+				body_json = EXCLUDED.body_json,
+				source_event_id = EXCLUDED.source_event_id,
+				updated_at = NOW()`,
+			assignmentID, plan.PlanID, plan.PoolID, assignment.Group, target.node,
+			assignment.Priority, expiresAt.UTC(), event.AuthorNodeID, string(bodyJSON),
+			event.EventID, createdAt.UTC(), assignment.Mode, target.role)
+		if err != nil {
+			return fmt.Errorf("project nested coverage assignment: %w", err)
+		}
+	}
+	return nil
 }
 
 func (s *Store) projectCoverageAssignment(ctx context.Context, body coverage.CoverageAssignment, event *events.SignedEvent) error {
@@ -818,22 +918,37 @@ func (s *Store) projectTimeWindowClaim(ctx context.Context, body coverage.TimeWi
 
 func (s *Store) projectCoverageCheckpoint(ctx context.Context, body coverage.CoverageCheckpoint, event *events.SignedEvent) error {
 	bodyJSON, _ := json.Marshal(body)
-	createdAt, _ := time.Parse(time.RFC3339, body.CreatedAt)
+	createdAt, _ := time.Parse(time.RFC3339, body.CheckedAt)
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO coverage_checkpoints (
 			checkpoint_id, pool_id, group_name, low_watermark, high_watermark,
-			author_node_id, body_json, source_event_id, created_at, updated_at
+			author_node_id, body_json, source_event_id, node_id, provider_scope_hash,
+			claim_id, range_start, range_current, range_end, release_cards_emitted,
+			manifests_emitted, errors, checked_at, created_at, updated_at
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, NOW())
+			VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, NULLIF($10, ''), NULLIF($11, ''),
+			        $12, $13, $14, $15, $16, $17, $18, $19, NOW())
 		ON CONFLICT (checkpoint_id) DO UPDATE SET
 			low_watermark = EXCLUDED.low_watermark,
 			high_watermark = EXCLUDED.high_watermark,
 			body_json = EXCLUDED.body_json,
 			source_event_id = EXCLUDED.source_event_id,
+			node_id = EXCLUDED.node_id,
+			provider_scope_hash = EXCLUDED.provider_scope_hash,
+			claim_id = EXCLUDED.claim_id,
+			range_start = EXCLUDED.range_start,
+			range_current = EXCLUDED.range_current,
+			range_end = EXCLUDED.range_end,
+			release_cards_emitted = EXCLUDED.release_cards_emitted,
+			manifests_emitted = EXCLUDED.manifests_emitted,
+			errors = EXCLUDED.errors,
+			checked_at = EXCLUDED.checked_at,
 			updated_at = NOW()`,
-		body.CheckpointID, body.PoolID, body.Group, body.LowWatermark,
-		body.HighWatermark, event.AuthorNodeID, string(bodyJSON), event.EventID,
-		createdAt.UTC())
+		body.CheckpointID, body.PoolID, body.Group, body.RangeStart,
+		body.RangeEnd, event.AuthorNodeID, string(bodyJSON), event.EventID, body.NodeID,
+		body.ProviderScope, body.ClaimID, body.RangeStart, body.RangeCurrent,
+		body.RangeEnd, body.ReleaseCardsEmitted, body.ManifestsEmitted, body.Errors,
+		createdAt.UTC(), createdAt.UTC())
 	return err
 }
 
