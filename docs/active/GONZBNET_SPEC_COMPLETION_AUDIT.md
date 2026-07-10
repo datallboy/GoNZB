@@ -47,6 +47,8 @@ Completed during this audit:
   resolve partial-sync gaps, and retain fork evidence with suspicious status.
 - Node profiles and `/caps` now advertise only active publication paths,
   structural validation, uncompressed JCS JSON, and implemented event routes.
+- `ManifestAvailability` now uses the specified source/pool availability body
+  and updates only the matching manifest source projection.
 
 ### Critical correctness and privacy
 
@@ -70,8 +72,9 @@ is limited to well-known metadata, node profile, and capabilities.
 
 ### Protocol and security conformance
 
-5. Reconcile wire-body differences where current typed objects diverge from
-    the specification, especially `ManifestAvailability` and coverage events.
+5. Reconcile coverage event bodies with the addendum wire schemas. Current
+   coordination uses narrower local shapes for capacities, observations, plans,
+   claims, checkpoints, outcomes, and heartbeats.
 6. Complete config semantics and aliases for controls that affect behavior,
     including manifest-specific rate limits, remote get timeout, configurable
     route base path, and currently display-only addendum limits.

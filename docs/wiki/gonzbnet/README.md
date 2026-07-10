@@ -162,6 +162,8 @@ Current implementation state:
   partial-sync gaps, and preserves fork evidence without projection.
 - Capability cleanup removes unsupported compression, encryption, validation,
   event, publisher, and WebSocket claims from public profiles and caps.
+- Manifest availability cleanup aligns signed source/pool routing fields and
+  isolates availability projection changes by source node.
 
 Maintained pages:
 
@@ -169,6 +171,7 @@ Maintained pages:
 - [Signed Pool Reads And Complete Pull](./signed-pool-reads-and-pull.md)
 - [Canonical JSON](./canonical-json.md)
 - [Event Chain Continuity](./event-chain-continuity.md)
+- [Manifest Availability](./manifest-availability.md)
 - [Phase 1 Identity And Events](./phase-1-identity-and-events.md)
 - [Phase 2 ReleaseCard Publishing](./phase-2-releasecard-publishing.md)
 - [Phase 3 Manual Pull Sync](./phase-3-manual-pull-sync.md)

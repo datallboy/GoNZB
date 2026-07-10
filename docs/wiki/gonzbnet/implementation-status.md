@@ -21,6 +21,8 @@ Completed during this audit:
   and retain fork evidence without projecting alternate branches.
 - profiles and caps advertise only active publishers, structural validation,
   uncompressed JSON, and implemented signed-event paths.
+- ManifestAvailability uses the specified source/pool routing fields and scopes
+  projection changes to the matching manifest source.
 
 The current required work is:
 
@@ -30,7 +32,7 @@ The current required work is:
 - perform configured validator tiers against the local NNTP provider;
 - emit scanner capacity, heartbeat, observations, and periodic checkpoints;
 - enforce manifest-cache retention/serving limits;
-- align divergent wire bodies with the specification;
+- align coverage event bodies with the addendum wire schemas;
 - add PostgreSQL-backed three-node end-to-end coverage and GoNZBNet metrics.
 
 The standalone relay process is not on this list. The specification explicitly

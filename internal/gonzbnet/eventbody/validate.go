@@ -117,6 +117,9 @@ func Validate(event *events.SignedEvent, now time.Time, futureTolerance time.Dur
 		if err := decode(event.Body, &body); err != nil {
 			return err
 		}
+		if body.SourceNodeID != event.AuthorNodeID {
+			return fmt.Errorf("manifest availability source_node_id does not match event author")
+		}
 		return manifestavailability.Validate(body, now, futureTolerance)
 	case pools.EventTypePoolGenesis:
 		var body pools.Genesis

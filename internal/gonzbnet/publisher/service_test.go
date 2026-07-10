@@ -10,6 +10,7 @@ import (
 	"github.com/datallboy/gonzb/internal/gonzbnet/health"
 	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
 	"github.com/datallboy/gonzb/internal/gonzbnet/manifest"
+	"github.com/datallboy/gonzb/internal/gonzbnet/manifestavailability"
 	"github.com/datallboy/gonzb/internal/gonzbnet/releasecard"
 	"github.com/datallboy/gonzb/internal/gonzbnet/validation"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
@@ -68,6 +69,7 @@ func TestPublishOnceUsesScanOutputWithoutIndexerCandidates(t *testing.T) {
 		eventsByBodyHash: make(map[string]string),
 	}
 	svc := New(node, store, "pool.local")
+	svc.SetManifestAvailabilityPublishing(true)
 	svc.now = func() time.Time { return time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC) }
 
 	result, err := svc.PublishOnce(ctx, 10)
@@ -82,6 +84,13 @@ func TestPublishOnceUsesScanOutputWithoutIndexerCandidates(t *testing.T) {
 	}
 	if len(store.projections) != 1 || store.projections[0].Card.Source.Kind != "local_scan_output" {
 		t.Fatalf("expected local_scan_output projection, got %+v", store.projections)
+	}
+	if len(store.manifestAvailability) != 1 {
+		t.Fatalf("expected one manifest availability projection, got %d", len(store.manifestAvailability))
+	}
+	availability := store.manifestAvailability[0].Attestation
+	if availability.SourceNodeID != store.nodeID || availability.PoolID != "pool.local" || !availability.Available || availability.FetchPolicy != manifestavailability.FetchPolicyLocalOnly {
+		t.Fatalf("unexpected manifest availability body: %+v", availability)
 	}
 }
 
