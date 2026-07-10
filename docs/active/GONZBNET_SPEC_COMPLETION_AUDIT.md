@@ -66,9 +66,10 @@ is limited to well-known metadata, node profile, and capabilities.
 2. Execute validator tiers against the local NNTP provider. The current
    validator emits structural `unverified` attestations and does not perform the
    spec's article/segment existence checks.
-3. Publish scanner capacity/heartbeat/group observations and periodic coverage
-   checkpoints from scanner execution. The schemas and projections exist, but
-   the scanner loop currently emits claims and terminal outcomes only.
+3. Partially complete. Claimed range completion now emits and projects signed
+   provider-scoped `CoverageCheckpoint` events. Scanner capacity/heartbeat,
+   group observations, and richer periodic checkpoint production remain to be
+   connected to scanner runtime metrics.
 4. Complete for retention and serving reads. The PostgreSQL manifest store now
    applies TTL expiry and byte-budget pruning, and excludes expired manifests
    from local manifest/NZB/event reads. Manifest serving remains restricted to

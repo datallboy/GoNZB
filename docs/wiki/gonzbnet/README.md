@@ -171,6 +171,9 @@ Current implementation state:
   `/gonzbnet/v1` retained as the default and the well-known endpoint unchanged.
 - Coverage wire cleanup aligns active leases/outcomes, capacity observations,
   checkpoints, and nested plans with provider-scoped relational projections.
+- Scanner coordination now emits signed, provider-scoped coverage checkpoints
+  when claimed ranges complete; broader heartbeat, capacity, and observation
+  production remains a runtime follow-up.
 
 Maintained pages:
 

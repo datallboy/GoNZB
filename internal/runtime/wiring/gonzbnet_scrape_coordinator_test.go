@@ -49,11 +49,11 @@ func TestGoNZBNetScrapeCoordinatorPublishesClaimAndComplete(t *testing.T) {
 		t.Fatalf("complete range: %v", err)
 	}
 
-	if len(store.events) != 2 {
-		t.Fatalf("expected claim and complete events, got %d", len(store.events))
+	if len(store.events) != 3 {
+		t.Fatalf("expected claim, checkpoint, and complete events, got %d", len(store.events))
 	}
-	if store.events[0].EventType != coverage.TypeRangeClaim || store.events[1].EventType != coverage.TypeRangeComplete {
-		t.Fatalf("unexpected event types: %s, %s", store.events[0].EventType, store.events[1].EventType)
+	if store.events[0].EventType != coverage.TypeRangeClaim || store.events[1].EventType != coverage.TypeCoverageCheckpoint || store.events[2].EventType != coverage.TypeRangeComplete {
+		t.Fatalf("unexpected event types: %s, %s, %s", store.events[0].EventType, store.events[1].EventType, store.events[2].EventType)
 	}
 	var claim coverage.RangeClaim
 	if err := json.Unmarshal(store.events[0].Body, &claim); err != nil {
@@ -62,8 +62,8 @@ func TestGoNZBNetScrapeCoordinatorPublishesClaimAndComplete(t *testing.T) {
 	if claim.AssignmentID != "assignment-1" {
 		t.Fatalf("expected assignment claim, got %+v", claim)
 	}
-	if store.projected != 2 {
-		t.Fatalf("expected two projected events, got %d", store.projected)
+	if store.projected != 3 {
+		t.Fatalf("expected three projected events, got %d", store.projected)
 	}
 }
 
