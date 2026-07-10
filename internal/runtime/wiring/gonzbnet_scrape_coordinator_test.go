@@ -97,8 +97,93 @@ func TestGoNZBNetScrapeCoordinatorListsAssignedRanges(t *testing.T) {
 	if ranges[0].AssignmentID != "assignment-1" || ranges[0].Group != "alt.binaries.test" || ranges[0].RangeStart != 10 || ranges[0].RangeEnd != 20 {
 		t.Fatalf("unexpected assigned range: %+v", ranges[0])
 	}
-	if store.lastSuggestionParams.NodeID == "" || store.lastSuggestionParams.PoolID != "pool.test" || !store.lastSuggestionParams.RequireArticleRange {
+	if store.lastSuggestionParams.NodeID == "" || store.lastSuggestionParams.PoolID != "pool.test" || store.lastSuggestionParams.RequireArticleRange {
 		t.Fatalf("expected node-scoped suggestion params, got %+v", store.lastSuggestionParams)
+	}
+}
+
+func TestGoNZBNetScrapeCoordinatorListsAssignedWindows(t *testing.T) {
+	nodeIdentity, err := identity.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("identity: %v", err)
+	}
+	windowStart := time.Date(2026, 7, 9, 10, 0, 0, 0, time.UTC)
+	windowEnd := windowStart.Add(time.Hour)
+	store := &fakeScrapeCoordinatorStore{
+		suggestions: []pgindex.CoverageWorkSuggestion{{
+			Assignment: pgindex.CoverageAssignmentRecord{
+				AssignmentID: "assignment-window-1",
+				Group:        "alt.binaries.test",
+				WindowStart:  &windowStart,
+				WindowEnd:    &windowEnd,
+			},
+		}},
+	}
+	coord, err := newGoNZBNetScrapeRangeCoordinator(nodeIdentity, store, "pool.test", time.Minute, 0.5, "scope-hash", true, false, true)
+	if err != nil {
+		t.Fatalf("coordinator: %v", err)
+	}
+
+	ranges, err := coord.AssignedScrapeRanges(context.Background(), "latest", 5)
+	if err != nil {
+		t.Fatalf("assigned windows: %v", err)
+	}
+	if len(ranges) != 1 {
+		t.Fatalf("expected one assigned window, got %+v", ranges)
+	}
+	if ranges[0].AssignmentID != "assignment-window-1" || ranges[0].RangeStart != 0 || ranges[0].RangeEnd != 0 {
+		t.Fatalf("unexpected assigned window request: %+v", ranges[0])
+	}
+	if ranges[0].WindowStart == nil || ranges[0].WindowEnd == nil || !ranges[0].WindowStart.Equal(windowStart) || !ranges[0].WindowEnd.Equal(windowEnd) {
+		t.Fatalf("expected assigned window bounds, got %+v", ranges[0])
+	}
+	if store.lastSuggestionParams.RequireArticleRange {
+		t.Fatalf("window-capable scrape suggestions must not require article ranges: %+v", store.lastSuggestionParams)
+	}
+}
+
+func TestGoNZBNetScrapeCoordinatorPublishesTimeWindowClaim(t *testing.T) {
+	nodeIdentity, err := identity.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("identity: %v", err)
+	}
+	store := &fakeScrapeCoordinatorStore{}
+	coord, err := newGoNZBNetScrapeRangeCoordinator(nodeIdentity, store, "pool.test", time.Minute, 0.5, "scope-hash", true, true, true)
+	if err != nil {
+		t.Fatalf("coordinator: %v", err)
+	}
+	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
+	windowStart := now.Add(-2 * time.Hour)
+	windowEnd := now.Add(-time.Hour)
+	coord.now = func() time.Time { return now }
+
+	decision, err := coord.BeginScrapeRange(context.Background(), scrape.RangeRequest{
+		Mode:         "latest",
+		AssignmentID: "assignment-window-1",
+		Group:        "alt.binaries.test",
+		RangeStart:   100,
+		RangeEnd:     120,
+		WindowStart:  &windowStart,
+		WindowEnd:    &windowEnd,
+	})
+	if err != nil {
+		t.Fatalf("begin window range: %v", err)
+	}
+	if decision.ClaimID == "" || decision.WindowStart == nil || decision.WindowEnd == nil {
+		t.Fatalf("expected local time-window claim decision, got %+v", decision)
+	}
+	if len(store.events) != 1 {
+		t.Fatalf("expected one claim event, got %d", len(store.events))
+	}
+	if store.events[0].EventType != coverage.TypeTimeWindowClaim {
+		t.Fatalf("expected time-window claim event, got %s", store.events[0].EventType)
+	}
+	var claim coverage.TimeWindowClaim
+	if err := json.Unmarshal(store.events[0].Body, &claim); err != nil {
+		t.Fatalf("decode claim: %v", err)
+	}
+	if claim.AssignmentID != "assignment-window-1" || claim.WindowStart != windowStart.Format(time.RFC3339) || claim.WindowEnd != windowEnd.Format(time.RFC3339) {
+		t.Fatalf("unexpected time-window claim body: %+v", claim)
 	}
 }
 

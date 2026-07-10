@@ -360,6 +360,78 @@ func TestRunLatestProcessesAssignedRangeWithoutConfiguredGroups(t *testing.T) {
 	}
 }
 
+func TestRunLatestProcessesAssignedTimeWindowWithoutConfiguredGroups(t *testing.T) {
+	repo := &fakeScrapeRepo{}
+	windowStart := time.Date(2026, 7, 9, 2, 0, 0, 0, time.UTC)
+	windowEnd := time.Date(2026, 7, 9, 5, 0, 0, 0, time.UTC)
+	coord := &fakeRangeCoordinator{
+		beginDecision: RangeDecision{ClaimID: "claim-window-1", AssignmentID: "assignment-window-1"},
+		assigned: []RangeRequest{{
+			AssignmentID: "assignment-window-1",
+			Group:        "alt.binaries.window",
+			WindowStart:  &windowStart,
+			WindowEnd:    &windowEnd,
+		}},
+	}
+	base := time.Date(2026, 7, 9, 0, 0, 0, 0, time.UTC)
+	headers := make([]OverviewHeader, 0, 10)
+	for n := int64(100); n <= 109; n++ {
+		postedAt := base.Add(time.Duration(n-100) * time.Hour)
+		headers = append(headers, OverviewHeader{
+			ArticleNumber: n,
+			MessageID:     fmt.Sprintf("<%d@test>", n),
+			DateUTC:       &postedAt,
+		})
+	}
+	var gotGroup string
+	var gotFrom, gotTo int64
+	provider := fakeScrapeProvider{
+		stats: GroupStats{Low: 100, High: 109},
+		xoverFn: func(_ context.Context, group string, from, to int64) ([]OverviewHeader, error) {
+			gotGroup = group
+			gotFrom = from
+			gotTo = to
+			out := make([]OverviewHeader, 0, len(headers))
+			for _, header := range headers {
+				if header.ArticleNumber >= from && header.ArticleNumber <= to {
+					out = append(out, header)
+				}
+			}
+			return out, nil
+		},
+	}
+	svc := NewService(repo, provider, testScrapeLogger{}, Options{
+		BatchSize:        3,
+		RangeCoordinator: coord,
+	})
+
+	metrics, err := svc.RunLatestOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("RunLatestOnceWithMetrics() error = %v", err)
+	}
+	if gotGroup != "alt.binaries.window" || gotFrom != 102 || gotTo != 104 {
+		t.Fatalf("expected resolved window XOVER range, got group=%s range=%d-%d", gotGroup, gotFrom, gotTo)
+	}
+	if len(coord.requests) != 1 {
+		t.Fatalf("expected one coordinated claim request, got %+v", coord.requests)
+	}
+	if coord.requests[0].RangeStart != 102 || coord.requests[0].RangeEnd != 104 || coord.requests[0].WindowStart == nil || coord.requests[0].WindowEnd == nil {
+		t.Fatalf("expected resolved window claim request, got %+v", coord.requests[0])
+	}
+	if len(coord.completed) != 1 || coord.completed[0].RangeStart != 102 || coord.completed[0].RangeEnd != 104 {
+		t.Fatalf("expected resolved window completion, got %+v", coord.completed)
+	}
+	if repo.latestCheckpointUpdated || repo.backfillCheckpointUpdated {
+		t.Fatalf("assigned time window should not update scrape cursors")
+	}
+	if got := metrics["assigned_ranges"]; got != 1 {
+		t.Fatalf("expected assigned_ranges=1, got %+v", got)
+	}
+	if got := metrics["articles_inserted"]; got != int64(3) {
+		t.Fatalf("expected articles_inserted=3, got %+v", got)
+	}
+}
+
 func TestRunLatestJumpsToHeadAndSeedsBackfillForLargeGap(t *testing.T) {
 	repo := &fakeScrapeRepo{latestCheckpoint: 100, backfillCheckpoint: 25}
 	var gotFrom, gotTo int64
