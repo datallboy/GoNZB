@@ -211,6 +211,104 @@ func TestRunLatestAdvancesSingleBatchPerRun(t *testing.T) {
 	}
 }
 
+func TestRunLatestSkipsCoordinatedActiveClaimWithoutAdvancing(t *testing.T) {
+	repo := &fakeScrapeRepo{latestCheckpoint: 100}
+	var xoverCalls int
+	provider := fakeScrapeProvider{
+		stats: GroupStats{Low: 1, High: 110},
+		xoverFn: func(context.Context, string, int64, int64) ([]OverviewHeader, error) {
+			xoverCalls++
+			return nil, nil
+		},
+	}
+	svc := NewService(repo, provider, testScrapeLogger{}, Options{
+		Newsgroups: []string{"alt.binaries.test"},
+		BatchSize:  10,
+		RangeCoordinator: &fakeRangeCoordinator{beginDecision: RangeDecision{
+			Skipped:           true,
+			AdvanceCheckpoint: false,
+			Reason:            "active_claim",
+		}},
+	})
+
+	metrics, err := svc.RunLatestOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("RunLatestOnceWithMetrics() error = %v", err)
+	}
+	if xoverCalls != 0 {
+		t.Fatalf("expected coordinated skip to avoid XOVER, got %d calls", xoverCalls)
+	}
+	if repo.latestCheckpointUpdated {
+		t.Fatalf("expected active claim skip not to advance latest checkpoint")
+	}
+	if got := metrics["ranges_skipped"]; got != 1 {
+		t.Fatalf("expected ranges_skipped=1, got %+v", got)
+	}
+}
+
+func TestRunLatestSkipsCompletedCoordinatedRangeAndAdvances(t *testing.T) {
+	repo := &fakeScrapeRepo{latestCheckpoint: 100}
+	var xoverCalls int
+	provider := fakeScrapeProvider{
+		stats: GroupStats{Low: 1, High: 110},
+		xoverFn: func(context.Context, string, int64, int64) ([]OverviewHeader, error) {
+			xoverCalls++
+			return nil, nil
+		},
+	}
+	svc := NewService(repo, provider, testScrapeLogger{}, Options{
+		Newsgroups: []string{"alt.binaries.test"},
+		BatchSize:  10,
+		RangeCoordinator: &fakeRangeCoordinator{beginDecision: RangeDecision{
+			Skipped:           true,
+			AdvanceCheckpoint: true,
+			Reason:            "completed_range",
+		}},
+	})
+
+	metrics, err := svc.RunLatestOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("RunLatestOnceWithMetrics() error = %v", err)
+	}
+	if xoverCalls != 0 {
+		t.Fatalf("expected coordinated skip to avoid XOVER, got %d calls", xoverCalls)
+	}
+	if repo.latestCheckpointValue != 110 {
+		t.Fatalf("expected completed skip to advance latest checkpoint to 110, got %d", repo.latestCheckpointValue)
+	}
+	if got := metrics["checkpoint_updates"]; got != 1 {
+		t.Fatalf("expected checkpoint_updates=1, got %+v", got)
+	}
+}
+
+func TestRunLatestCompletesCoordinatedRangeAfterFetch(t *testing.T) {
+	repo := &fakeScrapeRepo{latestCheckpoint: 100}
+	coord := &fakeRangeCoordinator{beginDecision: RangeDecision{ClaimID: "claim-1"}}
+	provider := fakeScrapeProvider{
+		stats: GroupStats{Low: 1, High: 101},
+		headers: []OverviewHeader{{
+			ArticleNumber: 101,
+			MessageID:     "<msg-101@test>",
+		}},
+	}
+	svc := NewService(repo, provider, testScrapeLogger{}, Options{
+		Newsgroups:       []string{"alt.binaries.test"},
+		BatchSize:        1,
+		RangeCoordinator: coord,
+	})
+
+	if _, err := svc.RunLatestOnceWithMetrics(context.Background()); err != nil {
+		t.Fatalf("RunLatestOnceWithMetrics() error = %v", err)
+	}
+	if len(coord.completed) != 1 {
+		t.Fatalf("expected one completed range, got %+v", coord.completed)
+	}
+	got := coord.completed[0]
+	if got.Group != "alt.binaries.test" || got.RangeStart != 101 || got.RangeEnd != 101 || got.ArticlesInserted != 1 {
+		t.Fatalf("unexpected completed range: %+v", got)
+	}
+}
+
 func TestRunLatestJumpsToHeadAndSeedsBackfillForLargeGap(t *testing.T) {
 	repo := &fakeScrapeRepo{latestCheckpoint: 100, backfillCheckpoint: 25}
 	var gotFrom, gotTo int64
@@ -485,6 +583,31 @@ type observedScrapeRange struct {
 	from         int64
 	to           int64
 	observations []pgindex.ScrapeRangeObservation
+}
+
+type fakeRangeCoordinator struct {
+	beginDecision RangeDecision
+	beginErr      error
+	completeErr   error
+	failErr       error
+	requests      []RangeRequest
+	completed     []RangeResult
+	failed        []error
+}
+
+func (f *fakeRangeCoordinator) BeginScrapeRange(_ context.Context, request RangeRequest) (RangeDecision, error) {
+	f.requests = append(f.requests, request)
+	return f.beginDecision, f.beginErr
+}
+
+func (f *fakeRangeCoordinator) CompleteScrapeRange(_ context.Context, _ RangeDecision, result RangeResult) error {
+	f.completed = append(f.completed, result)
+	return f.completeErr
+}
+
+func (f *fakeRangeCoordinator) FailScrapeRange(_ context.Context, _ RangeDecision, cause error) error {
+	f.failed = append(f.failed, cause)
+	return f.failErr
 }
 
 func (f *fakeScrapeRepo) EnsureProvider(_ context.Context, providerKey, _ string) (int64, error) {

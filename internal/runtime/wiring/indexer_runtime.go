@@ -137,6 +137,10 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 	if appCtx.DisableReleasePurgeArchivedSources {
 		runtimeCfg.ReleasePurgeArchivedSourcesStage.Enabled = false
 	}
+	rangeCoordinator, err := goNZBNetScrapeRangeCoordinatorFor(appCtx)
+	if err != nil {
+		return nil, err
+	}
 
 	var (
 		scrapeLatestSvc         *scrape.Service
@@ -165,6 +169,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			Concurrency:              runtimeCfg.ScrapeLatest.Concurrency,
 			MaxBatches:               runtimeCfg.ScrapeLatest.MaxBatches,
 			BackfillUntilDateByGroup: runtimeCfg.BackfillUntilDateByGroup,
+			RangeCoordinator:         rangeCoordinator,
 		},
 	)
 	scrapeBackfillSvc = scrape.NewService(
@@ -177,6 +182,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			Concurrency:              runtimeCfg.ScrapeBackfill.Concurrency,
 			MaxBatches:               runtimeCfg.ScrapeBackfill.MaxBatches,
 			BackfillUntilDateByGroup: runtimeCfg.BackfillUntilDateByGroup,
+			RangeCoordinator:         rangeCoordinator,
 		},
 	)
 
@@ -201,6 +207,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 					Concurrency:              runtimeCfg.ScrapeLatest.Concurrency,
 					MaxBatches:               runtimeCfg.ScrapeLatest.MaxBatches,
 					BackfillUntilDateByGroup: runtimeCfg.BackfillUntilDateByGroup,
+					RangeCoordinator:         rangeCoordinator,
 				},
 			)
 			scrapeBackfillSvc = scrape.NewService(
@@ -213,6 +220,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 					Concurrency:              runtimeCfg.ScrapeBackfill.Concurrency,
 					MaxBatches:               runtimeCfg.ScrapeBackfill.MaxBatches,
 					BackfillUntilDateByGroup: runtimeCfg.BackfillUntilDateByGroup,
+					RangeCoordinator:         rangeCoordinator,
 				},
 			)
 		}

@@ -93,6 +93,26 @@ type CoverageSchedulerPlan struct {
 	Mode        string                   `json:"mode"`
 }
 
+type CoverageRangeBlockParams struct {
+	PoolID                string
+	NodeID                string
+	Group                 string
+	RangeStart            int64
+	RangeEnd              int64
+	MinBlockingTrustScore float64
+	RespectRemoteClaims   bool
+	SkipCompleted         bool
+}
+
+type CoverageRangeBlock struct {
+	Blocked           bool
+	Reason            string
+	ClaimID           string
+	OutcomeID         string
+	NodeID            string
+	AdvanceCheckpoint bool
+}
+
 func (s *Store) ProjectCoverageEvent(ctx context.Context, event *events.SignedEvent) error {
 	if s == nil || s.db == nil {
 		return fmt.Errorf("pgindex store is not initialized")
@@ -300,6 +320,82 @@ func (s *Store) ListCoverageDashboard(ctx context.Context, poolID string) (Cover
 	out.Gaps = gaps
 	out.Duplicates = duplicates
 	out.CoverageScore = score
+	return out, nil
+}
+
+func (s *Store) CheckCoverageRangeBlock(ctx context.Context, params CoverageRangeBlockParams) (CoverageRangeBlock, error) {
+	var out CoverageRangeBlock
+	if s == nil || s.db == nil {
+		return out, fmt.Errorf("pgindex store is not initialized")
+	}
+	poolID := firstNonBlank(params.PoolID, "pool.local")
+	nodeID := strings.TrimSpace(params.NodeID)
+	group := strings.TrimSpace(params.Group)
+	if group == "" || params.RangeStart <= 0 || params.RangeEnd < params.RangeStart {
+		return out, nil
+	}
+	minTrust := params.MinBlockingTrustScore
+	if minTrust <= 0 {
+		minTrust = 0.25
+	}
+	if params.RespectRemoteClaims {
+		row := s.db.QueryRowContext(ctx, `
+			SELECT c.claim_id, c.node_id
+			FROM coverage_claims c
+			JOIN federation_nodes n ON n.node_id = c.node_id
+			WHERE c.pool_id = $1
+			  AND c.group_name = $2
+			  AND c.status = 'active'
+			  AND c.expires_at > NOW()
+			  AND c.range_start IS NOT NULL
+			  AND c.range_end IS NOT NULL
+			  AND c.range_start <= $4
+			  AND c.range_end >= $3
+			  AND c.node_id <> $5
+			  AND COALESCE(n.local_trust_score, 0) >= $6
+			ORDER BY c.expires_at DESC
+			LIMIT 1`,
+			poolID, group, params.RangeStart, params.RangeEnd, nodeID, minTrust)
+		var claimID, blockingNodeID string
+		if err := row.Scan(&claimID, &blockingNodeID); err == nil {
+			return CoverageRangeBlock{
+				Blocked:           true,
+				Reason:            "active_claim",
+				ClaimID:           claimID,
+				NodeID:            blockingNodeID,
+				AdvanceCheckpoint: false,
+			}, nil
+		} else if !isNoRows(err) {
+			return out, fmt.Errorf("check active coverage claims: %w", err)
+		}
+	}
+	if params.SkipCompleted {
+		row := s.db.QueryRowContext(ctx, `
+			SELECT o.outcome_id, o.node_id
+			FROM coverage_range_outcomes o
+			LEFT JOIN federation_nodes n ON n.node_id = o.node_id
+			WHERE o.pool_id = $1
+			  AND o.group_name = $2
+			  AND o.outcome_type = 'complete'
+			  AND o.range_start <= $4
+			  AND o.range_end >= $3
+			  AND (o.node_id = $5 OR COALESCE(n.local_trust_score, 0) >= $6)
+			ORDER BY o.occurred_at DESC
+			LIMIT 1`,
+			poolID, group, params.RangeStart, params.RangeEnd, nodeID, minTrust)
+		var outcomeID, completedNodeID string
+		if err := row.Scan(&outcomeID, &completedNodeID); err == nil {
+			return CoverageRangeBlock{
+				Blocked:           true,
+				Reason:            "completed_range",
+				OutcomeID:         outcomeID,
+				NodeID:            completedNodeID,
+				AdvanceCheckpoint: true,
+			}, nil
+		} else if !isNoRows(err) {
+			return out, fmt.Errorf("check completed coverage ranges: %w", err)
+		}
+	}
 	return out, nil
 }
 
