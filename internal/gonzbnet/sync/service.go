@@ -65,6 +65,7 @@ type Store interface {
 
 type pendingProjectionRecorder interface {
 	RecordFederationProjectionFailure(context.Context, string, string, string, error) error
+	ResolveFederationProjection(context.Context, string) error
 }
 
 type Logger interface {
@@ -89,6 +90,15 @@ func (s *Service) recordProjectionFailure(ctx context.Context, event *events.Sig
 	}
 	if recorder, ok := s.store.(pendingProjectionRecorder); ok {
 		_ = recorder.RecordFederationProjectionFailure(ctx, event.EventID, event.EventType, kind, err)
+	}
+}
+
+func (s *Service) resolveProjection(ctx context.Context, event *events.SignedEvent) {
+	if s == nil || event == nil {
+		return
+	}
+	if recorder, ok := s.store.(pendingProjectionRecorder); ok {
+		_ = recorder.ResolveFederationProjection(ctx, event.EventID)
 	}
 }
 
@@ -456,17 +466,20 @@ func (s *Service) syncPeer(ctx context.Context, peer pgindex.FederationPeerRecor
 					s.recordProjectionFailure(ctx, &event, "release_card", err)
 					return result, err
 				}
+				s.resolveProjection(ctx, &event)
 				result.Projected++
 			}
 			if err := s.projectValidationEvent(ctx, &event, raw); err != nil {
 				s.recordProjectionFailure(ctx, &event, "validation", err)
 				return result, err
 			}
+			s.resolveProjection(ctx, &event)
 			if isSyncCoverageEvent(event.EventType) {
 				if err := s.store.ProjectCoverageEvent(ctx, &event); err != nil {
 					s.recordProjectionFailure(ctx, &event, "coverage", err)
 					return result, err
 				}
+				s.resolveProjection(ctx, &event)
 				result.Projected++
 			}
 		}
