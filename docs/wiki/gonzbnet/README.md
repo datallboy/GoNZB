@@ -158,12 +158,15 @@ Current implementation state:
   applies pool visibility to pull/push/gossip, and pulls all supported events.
 - Canonical JSON cleanup uses RFC 8785 for signed and hashed data and rejects
   duplicate object names before federation payload decoding.
+- Event-chain cleanup validates known predecessor/successor links, tracks
+  partial-sync gaps, and preserves fork evidence without projection.
 
 Maintained pages:
 
 - [Implementation Status](./implementation-status.md)
 - [Signed Pool Reads And Complete Pull](./signed-pool-reads-and-pull.md)
 - [Canonical JSON](./canonical-json.md)
+- [Event Chain Continuity](./event-chain-continuity.md)
 - [Phase 1 Identity And Events](./phase-1-identity-and-events.md)
 - [Phase 2 ReleaseCard Publishing](./phase-2-releasecard-publishing.md)
 - [Phase 3 Manual Pull Sync](./phase-3-manual-pull-sync.md)

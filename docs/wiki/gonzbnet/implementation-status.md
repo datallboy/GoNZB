@@ -17,6 +17,8 @@ Completed during this audit:
   filter pool events for the remote node.
 - RFC 8785 canonicalization is covered by direct vectors, and federation receive
   boundaries reject duplicate JSON object names before decoding.
+- per-author append transactions validate chain links, track partial-sync gaps,
+  and retain fork evidence without projecting alternate branches.
 
 The current required work is:
 
@@ -26,7 +28,7 @@ The current required work is:
 - perform configured validator tiers against the local NNTP provider;
 - emit scanner capacity, heartbeat, observations, and periodic checkpoints;
 - enforce manifest-cache retention/serving limits;
-- enforce event-chain continuity and advertise only implemented capabilities;
+- advertise only implemented capabilities and align divergent wire bodies;
 - add PostgreSQL-backed three-node end-to-end coverage and GoNZBNet metrics.
 
 The standalone relay process is not on this list. The specification explicitly

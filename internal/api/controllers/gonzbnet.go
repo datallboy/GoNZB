@@ -1477,8 +1477,11 @@ func (ctrl *GoNZBNetController) acceptInboxEvent(ctx context.Context, store gonz
 		}
 	}
 	if err := store.AppendVerifiedFederationEvent(ctx, event, validation); err != nil {
-		if errors.Is(err, pgindex.ErrFederationSequenceConflict) {
-			reason := "sequence_conflict"
+		if errors.Is(err, pgindex.ErrFederationSequenceConflict) || errors.Is(err, pgindex.ErrFederationForkDetected) {
+			reason := "fork_detected"
+			if errors.Is(err, pgindex.ErrFederationSequenceConflict) {
+				reason = "sequence_conflict"
+			}
 			_ = store.AppendRejectedFederationEvent(ctx, event.EventID, event.AuthorNodeID, event.EventType, raw, reason)
 			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: federationVerificationCode(reason), Message: reason}
 		}

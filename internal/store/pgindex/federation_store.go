@@ -14,7 +14,10 @@ import (
 	"github.com/datallboy/gonzb/internal/gonzbnet/events"
 )
 
-var ErrFederationSequenceConflict = errors.New("federation sequence conflict")
+var (
+	ErrFederationSequenceConflict = errors.New("federation sequence conflict")
+	ErrFederationForkDetected     = errors.New("federation event fork detected")
+)
 
 type FederationNodeRecord struct {
 	NodeID            string
@@ -76,7 +79,11 @@ func (s *Store) UpsertFederationNode(ctx context.Context, node FederationNodeRec
 			base_url = EXCLUDED.base_url,
 			capabilities = EXCLUDED.capabilities,
 			profile_json = EXCLUDED.profile_json,
-			status = EXCLUDED.status,
+			status = CASE
+				WHEN federation_nodes.status IN ('blocked', 'forked') AND EXCLUDED.status <> 'local'
+					THEN federation_nodes.status
+				ELSE EXCLUDED.status
+			END,
 			last_seen_at = NOW(),
 			last_verified_at = EXCLUDED.last_verified_at,
 			updated_at = NOW()`,
@@ -331,19 +338,6 @@ func (s *Store) AppendFederationEvent(ctx context.Context, record FederationEven
 		}
 		canonicalEventJSON = unsigned
 	}
-	existingEventID, err := s.findFederationEventByAuthorSequence(ctx, event.AuthorNodeID, event.Sequence)
-	if err != nil {
-		return err
-	}
-	if existingEventID != "" && existingEventID != event.EventID {
-		return fmt.Errorf("%w: author_node_id=%s sequence=%d existing_event_id=%s",
-			ErrFederationSequenceConflict,
-			event.AuthorNodeID,
-			event.Sequence,
-			existingEventID,
-		)
-	}
-
 	publicKey, err := canonical.DecodeBase64URL(event.AuthorPublicKey)
 	if err != nil {
 		return fmt.Errorf("decode author public key: %w", err)
@@ -357,7 +351,43 @@ func (s *Store) AppendFederationEvent(ctx context.Context, record FederationEven
 		return fmt.Errorf("marshal pool ids: %w", err)
 	}
 
-	_, err = s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin federation event append: %w", err)
+	}
+	defer tx.Rollback()
+
+	var chainState federationChainState
+	var chainDecision federationChainDecision
+	if status == "accepted" {
+		if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, event.AuthorNodeID); err != nil {
+			return fmt.Errorf("lock federation author chain: %w", err)
+		}
+		chainState, err = loadFederationChainState(ctx, tx, event)
+		if err != nil {
+			return err
+		}
+		chainDecision, err = validateFederationChain(event, chainState)
+		if err != nil {
+			issueErr := recordFederationChainIssue(ctx, tx, event, chainDecision, "fork")
+			if issueErr != nil {
+				return issueErr
+			}
+			if _, issueErr = tx.ExecContext(ctx, `
+				UPDATE federation_nodes
+				SET status = CASE WHEN status IN ('local', 'blocked') THEN status ELSE 'forked' END,
+				    updated_at = NOW()
+				WHERE node_id = $1`, event.AuthorNodeID); issueErr != nil {
+				return fmt.Errorf("mark forked federation node: %w", issueErr)
+			}
+			if issueErr = tx.Commit(); issueErr != nil {
+				return fmt.Errorf("commit federation chain issue: %w", issueErr)
+			}
+			return err
+		}
+	}
+
+	_, err = tx.ExecContext(ctx, `
 		INSERT INTO federation_events (
 			event_id, spec_version, event_type, author_node_id, author_public_key,
 			sequence, previous_event_id, body_schema, body_hash, signature_alg,
@@ -395,24 +425,36 @@ func (s *Store) AppendFederationEvent(ctx context.Context, record FederationEven
 	if err != nil {
 		return fmt.Errorf("append federation event: %w", err)
 	}
+	if status == "accepted" {
+		if chainDecision.Gap {
+			if err := recordFederationChainIssue(ctx, tx, event, chainDecision, "sequence_gap"); err != nil {
+				return err
+			}
+		} else if _, err := tx.ExecContext(ctx, `
+			UPDATE federation_event_chain_issues
+			SET resolved_at = NOW()
+			WHERE author_node_id = $1
+			  AND event_id = $2
+			  AND issue_type = 'sequence_gap'
+			  AND resolved_at IS NULL`, event.AuthorNodeID, event.EventID); err != nil {
+			return fmt.Errorf("resolve federation event chain gap: %w", err)
+		}
+		if chainState.Successor != nil && chainState.Successor.PreviousEventID == event.EventID {
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE federation_event_chain_issues
+				SET resolved_at = NOW()
+				WHERE author_node_id = $1
+				  AND event_id = $2
+				  AND issue_type = 'sequence_gap'
+				  AND resolved_at IS NULL`, event.AuthorNodeID, chainState.Successor.EventID); err != nil {
+				return fmt.Errorf("resolve successor federation event chain gap: %w", err)
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit federation event append: %w", err)
+	}
 	return nil
-}
-
-func (s *Store) findFederationEventByAuthorSequence(ctx context.Context, authorNodeID string, sequence int64) (string, error) {
-	var eventID string
-	err := s.db.QueryRowContext(ctx, `
-		SELECT event_id
-		FROM federation_events
-		WHERE author_node_id = $1
-		  AND sequence = $2
-		LIMIT 1`, strings.TrimSpace(authorNodeID), sequence).Scan(&eventID)
-	if err == sql.ErrNoRows {
-		return "", nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("find federation event by author sequence: %w", err)
-	}
-	return eventID, nil
 }
 
 func (s *Store) AppendRejectedFederationEvent(ctx context.Context, eventID, authorNodeID, eventType string, rawEventJSON []byte, reason string) error {

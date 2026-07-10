@@ -62,6 +62,19 @@ func TestFreshBaselineMigration(t *testing.T) {
 	if hasLegacyBinaries {
 		t.Fatalf("fresh v0.8.0 baseline must not create retired public.binaries")
 	}
+	var hasFederationChainIssues bool
+	if err := store.DB().QueryRowContext(context.Background(), `
+		SELECT EXISTS (
+			SELECT 1
+			FROM information_schema.tables
+			WHERE table_schema = 'public'
+			  AND table_name = 'federation_event_chain_issues'
+		)`).Scan(&hasFederationChainIssues); err != nil {
+		t.Fatalf("check federation chain issue table: %v", err)
+	}
+	if !hasFederationChainIssues {
+		t.Fatalf("fresh schema must create federation_event_chain_issues")
+	}
 
 	report, err := store.CheckCriticalIndexerIntegrity(context.Background(), false)
 	if err != nil {
