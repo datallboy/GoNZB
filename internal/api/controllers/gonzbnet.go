@@ -54,6 +54,7 @@ type gonzbnetStore interface {
 	ProjectFederationPoolEvent(ctx context.Context, event *events.SignedEvent) error
 	CanAcceptFederationEventForPools(ctx context.Context, authorNodeID string, poolIDs []string, eventType string) (pgindex.PoolAuthorizationResult, error)
 	IsActivePoolMember(ctx context.Context, poolID, nodeID string) (bool, error)
+	IsActiveFederationPoolMember(ctx context.Context, nodeID string) (bool, error)
 	ListFederationNodeCapabilities(ctx context.Context) ([]pgindex.NodeCapabilityView, error)
 	ListCoverageGroupCatalog(ctx context.Context, poolID string) ([]pgindex.CoverageGroupCatalogItem, error)
 	SuggestCoverageWork(ctx context.Context, params pgindex.CoverageWorkSuggestionParams) ([]pgindex.CoverageWorkSuggestion, error)
@@ -282,11 +283,23 @@ func (ctrl *GoNZBNetController) Outbox(c *echo.Context) error {
 	if !ok {
 		return federationJSONError(c, http.StatusServiceUnavailable, "internal_error", "gonzbnet store is unavailable")
 	}
+	verified, ok := ctrl.verifyNodeRead(c, store)
+	if !ok {
+		return nil
+	}
+	active, err := store.IsActiveFederationPoolMember(c.Request().Context(), verified.NodeID)
+	if err != nil {
+		return federationJSONError(c, http.StatusInternalServerError, "internal_error", err.Error())
+	}
+	if !active {
+		return federationJSONError(c, http.StatusForbidden, "not_pool_member", "requesting node is not an active pool member")
+	}
 	page, err := store.ListFederationOutboxEvents(c.Request().Context(), pgindex.FederationOutboxParams{
-		Since:     queryParamTrimmed(c, "since"),
-		PoolID:    queryParamTrimmed(c, "pool"),
-		EventType: queryParamTrimmed(c, "type"),
-		Limit:     parseIntDefault(queryParamTrimmed(c, "limit"), 100),
+		Since:            queryParamTrimmed(c, "since"),
+		PoolID:           queryParamTrimmed(c, "pool"),
+		EventType:        queryParamTrimmed(c, "type"),
+		RequestingNodeID: verified.NodeID,
+		Limit:            parseIntDefault(queryParamTrimmed(c, "limit"), 100),
 	})
 	if err != nil {
 		return federationJSONError(c, http.StatusInternalServerError, "internal_error", err.Error())
@@ -305,12 +318,32 @@ func (ctrl *GoNZBNetController) Event(c *echo.Context) error {
 	if !ok {
 		return federationJSONError(c, http.StatusServiceUnavailable, "internal_error", "gonzbnet store is unavailable")
 	}
+	verified, ok := ctrl.verifyNodeRead(c, store)
+	if !ok {
+		return nil
+	}
 	event, err := store.GetFederationEvent(c.Request().Context(), pathParamTrimmed(c, "event_id"))
 	if err != nil {
 		return federationJSONError(c, http.StatusInternalServerError, "internal_error", err.Error())
 	}
 	if event == nil {
 		return federationJSONError(c, http.StatusNotFound, "invalid_event_id", "event not found")
+	}
+	if strings.TrimSpace(event.Visibility) != "public" {
+		allowed := false
+		for _, poolID := range event.PoolIDs {
+			active, err := store.IsActivePoolMember(c.Request().Context(), poolID, verified.NodeID)
+			if err != nil {
+				return federationJSONError(c, http.StatusInternalServerError, "internal_error", err.Error())
+			}
+			if active {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return federationJSONError(c, http.StatusForbidden, "not_pool_member", "requesting node cannot read this event")
+		}
 	}
 	return c.JSON(http.StatusOK, event)
 }
@@ -323,6 +356,9 @@ func (ctrl *GoNZBNetController) PoolMembers(c *echo.Context) error {
 	poolID := pathParamTrimmed(c, "pool_id")
 	if poolID == "" {
 		return federationJSONError(c, http.StatusBadRequest, "invalid_schema", "pool_id is required")
+	}
+	if _, ok := ctrl.authorizePathPoolRead(c, store, poolID); !ok {
+		return nil
 	}
 	members, err := store.ListPoolMembers(c.Request().Context(), poolID)
 	if err != nil {
@@ -344,6 +380,9 @@ func (ctrl *GoNZBNetController) PoolCheckpoint(c *echo.Context) error {
 	poolID := pathParamTrimmed(c, "pool_id")
 	if poolID == "" {
 		return federationJSONError(c, http.StatusBadRequest, "invalid_schema", "pool_id is required")
+	}
+	if _, ok := ctrl.authorizePathPoolRead(c, store, poolID); !ok {
+		return nil
 	}
 	event, err := store.GetPoolCheckpointEvent(c.Request().Context(), poolID)
 	if err != nil {
@@ -372,6 +411,17 @@ func (ctrl *GoNZBNetController) Peers(c *echo.Context) error {
 	store, ok := ctrl.appCtx.PGIndexStore.(gonzbnetStore)
 	if !ok {
 		return federationJSONError(c, http.StatusServiceUnavailable, "internal_error", "gonzbnet store is unavailable")
+	}
+	verified, ok := ctrl.verifyNodeRead(c, store)
+	if !ok {
+		return nil
+	}
+	active, err := store.IsActiveFederationPoolMember(c.Request().Context(), verified.NodeID)
+	if err != nil {
+		return federationJSONError(c, http.StatusInternalServerError, "internal_error", err.Error())
+	}
+	if !active {
+		return federationJSONError(c, http.StatusForbidden, "not_pool_member", "requesting node is not an active pool member")
 	}
 	records, err := store.ListEnabledFederationPeers(c.Request().Context())
 	if err != nil {
@@ -786,6 +836,49 @@ func (ctrl *GoNZBNetController) authorizedPoolRead(c *echo.Context) (gonzbnetSto
 		return nil, empty, "", false
 	}
 	return store, verified, poolID, true
+}
+
+func (ctrl *GoNZBNetController) verifyNodeRead(c *echo.Context, store gonzbnetStore) (requestauth.VerificationResult, bool) {
+	var empty requestauth.VerificationResult
+	if store == nil {
+		_ = federationJSONError(c, http.StatusServiceUnavailable, "internal_error", "gonzbnet store is unavailable")
+		return empty, false
+	}
+	cfg := ctrl.appCtx.Config.GoNZBNet
+	verified, err := requestauth.Verify(
+		c.Request().Context(),
+		store,
+		requestauth.HeaderFromRequest(c.Request()),
+		c.Request().Method,
+		c.Request().URL.Path,
+		c.Request().URL.RawQuery,
+		nil,
+		time.Now(),
+		time.Duration(cfg.TimeToleranceSeconds)*time.Second,
+		time.Duration(cfg.NonceTTLSeconds)*time.Second,
+	)
+	if err != nil {
+		_ = federationJSONError(c, http.StatusUnauthorized, federationAuthErrorCode(err), err.Error())
+		return empty, false
+	}
+	return verified, true
+}
+
+func (ctrl *GoNZBNetController) authorizePathPoolRead(c *echo.Context, store gonzbnetStore, poolID string) (requestauth.VerificationResult, bool) {
+	verified, ok := ctrl.verifyNodeRead(c, store)
+	if !ok {
+		return requestauth.VerificationResult{}, false
+	}
+	active, err := store.IsActivePoolMember(c.Request().Context(), poolID, verified.NodeID)
+	if err != nil {
+		_ = federationJSONError(c, http.StatusInternalServerError, "internal_error", err.Error())
+		return requestauth.VerificationResult{}, false
+	}
+	if !active {
+		_ = federationJSONError(c, http.StatusForbidden, "not_pool_member", "requesting node is not authorized for this pool")
+		return requestauth.VerificationResult{}, false
+	}
+	return verified, true
 }
 
 func (ctrl *GoNZBNetController) coverageWorkParams(c *echo.Context, poolID, nodeID string) pgindex.CoverageWorkSuggestionParams {

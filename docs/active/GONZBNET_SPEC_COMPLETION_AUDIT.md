@@ -37,57 +37,57 @@ Completed during this audit:
   ReleaseCard identity is recomputed and private user/context fields are
   rejected.
 - PoolMemberApproved now signs and projects allowed capabilities and limits.
+- Protected federation reads now require signed node requests and filter events
+  to public visibility or active shared-pool membership.
+- Pull now signs outbox requests and synchronizes all supported event types;
+  push and gossip apply the same destination-pool visibility filter.
 
 ### Critical correctness and privacy
 
-1. Protect pool-scoped outbox, event, member, checkpoint, and peer reads with
-   signed node requests and pool visibility checks. The current core read
-   endpoints are public even in private-pool mode.
-2. Sign pull outbox requests and synchronize all accepted event types. The
-   current pull client requests only `ReleaseCard`, so pull-only peers do not
-   receive health, trust, moderation, pool, validation, or coverage events.
+No open item remains in this category from the current audit. Public discovery
+is limited to well-known metadata, node profile, and capabilities.
 
 ### Missing contribution behavior
 
-3. Build and cache ResolutionManifests from local indexer/scan data when
+1. Build and cache ResolutionManifests from local indexer/scan data when
    `manifest_builder_enabled` is active. At present manifests only enter the
    cache through remote resolution, so a network has no complete local manifest
    origin path.
-4. Execute validator tiers against the local NNTP provider. The current
+2. Execute validator tiers against the local NNTP provider. The current
    validator emits structural `unverified` attestations and does not perform the
    spec's article/segment existence checks.
-5. Publish scanner capacity/heartbeat/group observations and periodic coverage
+3. Publish scanner capacity/heartbeat/group observations and periodic coverage
    checkpoints from scanner execution. The schemas and projections exist, but
    the scanner loop currently emits claims and terminal outcomes only.
-6. Enforce manifest-cache byte/TTL/serving settings. These settings are typed
+4. Enforce manifest-cache byte/TTL/serving settings. These settings are typed
    and displayed but do not currently control cache retention or serving.
 
 ### Protocol and security conformance
 
-7. Replace or prove the canonical JSON implementation against RFC 8785 vectors,
+5. Replace or prove the canonical JSON implementation against RFC 8785 vectors,
     including ECMAScript number serialization, UTF-16 property ordering, and
     duplicate-key rejection. The package currently has no direct tests.
-8. Validate per-author chain continuity (`previous_event_id` and monotonic
+6. Validate per-author chain continuity (`previous_event_id` and monotonic
     sequence), not only same-sequence conflicts.
-9. Make capabilities truthful. The node currently advertises gzip/zstd and
+7. Make capabilities truthful. The node currently advertises gzip/zstd and
     event types that the normal receive path does not implement.
-10. Reconcile wire-body differences where current typed objects diverge from
+8. Reconcile wire-body differences where current typed objects diverge from
     the specification, especially `ManifestAvailability` and coverage events.
-11. Complete config semantics and aliases for controls that affect behavior,
+9. Complete config semantics and aliases for controls that affect behavior,
     including manifest-specific rate limits, remote get timeout, configurable
     route base path, and currently display-only addendum limits.
-12. Make accepted-event storage and projection atomic, or retain explicit
+10. Make accepted-event storage and projection atomic, or retain explicit
     pending/quarantine state until projection succeeds.
 
 ### Verification and operations
 
-13. Add the specified PostgreSQL-backed three-node end-to-end harness covering
+11. Add the specified PostgreSQL-backed three-node end-to-end harness covering
     publish, pull/push, authorized search/get, manifest fetch, malicious-node
     rejection, revocation, and tombstone propagation.
-14. Add direct PostgreSQL integration tests for event append/rejection,
+12. Add direct PostgreSQL integration tests for event append/rejection,
     projections, pool authorization, and migration behavior. Current GoNZBNet
     tests rely primarily on fakes.
-15. Add the named GoNZBNet counters/histograms and fill remaining structured-log
+13. Add the named GoNZBNet counters/histograms and fill remaining structured-log
     events from the observability section.
 
 ## Documentation Drift
@@ -103,7 +103,7 @@ Completed during this audit:
 
 ## Execution Order
 
-1. Receive pipeline validation/quarantine and exact canonical JSON.
-2. Signed pool-visible read transport and complete pull projection.
-3. Local manifest building and validator/scanner contribution behavior.
-4. Config enforcement, integration/E2E tests, and observability.
+1. Exact canonical JSON and event-chain continuity.
+2. Local manifest building and validator/scanner contribution behavior.
+3. Config enforcement and truthful protocol advertisement.
+4. Integration/E2E tests and observability.

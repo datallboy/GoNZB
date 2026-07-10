@@ -727,6 +727,24 @@ func (s *Store) IsActivePoolMember(ctx context.Context, poolID, nodeID string) (
 	return ok, nil
 }
 
+func (s *Store) IsActiveFederationPoolMember(ctx context.Context, nodeID string) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, fmt.Errorf("pgindex store is not initialized")
+	}
+	var active bool
+	err := s.db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+		  SELECT 1
+		  FROM pool_members
+		  WHERE node_id = $1
+		    AND status = 'active'
+		)`, strings.TrimSpace(nodeID)).Scan(&active)
+	if err != nil {
+		return false, fmt.Errorf("check active federation pool membership: %w", err)
+	}
+	return active, nil
+}
+
 func (s *Store) PoolMemberHasCapability(ctx context.Context, poolID, nodeID string, required []string) (bool, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT role, allowed_capabilities

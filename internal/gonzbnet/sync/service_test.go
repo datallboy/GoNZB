@@ -11,7 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/datallboy/gonzb/internal/gonzbnet/canonical"
 	"github.com/datallboy/gonzb/internal/gonzbnet/events"
+	"github.com/datallboy/gonzb/internal/gonzbnet/health"
 	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
 	"github.com/datallboy/gonzb/internal/gonzbnet/profile"
 	"github.com/datallboy/gonzb/internal/gonzbnet/releasecard"
@@ -46,6 +48,51 @@ func TestSyncOnceAcceptsAndProjectsRemoteReleaseCard(t *testing.T) {
 	}
 	if store.successCursor == "" {
 		t.Fatalf("expected cursor to be stored")
+	}
+}
+
+func TestSyncOncePullsAndProjectsHealthAttestation(t *testing.T) {
+	ctx := context.Background()
+	localIdentity, err := identity.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("local identity: %v", err)
+	}
+	remoteIdentity, err := identity.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("remote identity: %v", err)
+	}
+	body := health.Attestation{
+		SchemaVersion:     "1.0",
+		Type:              health.Type,
+		ReleaseID:         "rel_abcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrst",
+		CheckedAt:         time.Now().UTC().Format(time.RFC3339),
+		Status:            health.StatusComplete,
+		ArticlesTotal:     1,
+		ArticlesAvailable: 1,
+		Confidence:        1,
+		Method:            "article_stat",
+	}
+	event, validation, err := events.Create(ctx, remoteIdentity, events.CreateOptions{
+		EventType:  health.Type,
+		Sequence:   1,
+		CreatedAt:  time.Now().UTC(),
+		PoolIDs:    []string{"pool.local"},
+		Visibility: "pool",
+		BodySchema: health.BodySchema,
+		Body:       body,
+	})
+	if err != nil || validation == nil || !validation.OK {
+		t.Fatalf("create health event: validation=%+v err=%v", validation, err)
+	}
+	server := testPeerServer(t, remoteIdentity, []events.SignedEvent{*event})
+	store := &fakeSyncStore{peers: []pgindex.FederationPeerRecord{{ID: 1, PeerURL: server.URL}}}
+
+	result, err := NewWithOptions(localIdentity, store, nil, Options{AllowInsecurePeerHTTP: true}).SyncOnce(ctx)
+	if err != nil {
+		t.Fatalf("sync once: %v", err)
+	}
+	if result.Accepted != 1 || result.Rejected != 0 || len(store.healthProjections) != 1 {
+		t.Fatalf("unexpected health pull result: result=%+v projections=%d", result, len(store.healthProjections))
 	}
 }
 
@@ -286,6 +333,10 @@ func TestPushOnceSendsSignedEventBatchAndRecordsDelivery(t *testing.T) {
 	if len(store.deliveries) != 1 {
 		t.Fatalf("expected delivery record")
 	}
+	remoteNodeID, _ := remoteIdentity.NodeID(ctx)
+	if store.lastUndeliveredNodeID != remoteNodeID {
+		t.Fatalf("expected delivery selection to use remote node %q, got %q", remoteNodeID, store.lastUndeliveredNodeID)
+	}
 	if store.deliveries[0].PeerID != 7 || store.deliveries[0].EventID != event.EventID || store.deliveries[0].Status != "accepted" {
 		t.Fatalf("unexpected delivery: %+v", store.deliveries[0])
 	}
@@ -346,6 +397,7 @@ func testPeerServer(t *testing.T, nodeIdentity *identity.Identity, outbox []even
 	if err != nil {
 		t.Fatalf("well known: %v", err)
 	}
+	authStore := &fakeRequestAuthStore{keys: map[string]ed25519.PublicKey{}, nonces: map[string]bool{}}
 	mux.HandleFunc("/.well-known/gonzbnet", func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(wellKnown)
 	})
@@ -356,10 +408,31 @@ func testPeerServer(t *testing.T, nodeIdentity *identity.Identity, outbox []even
 		_ = json.NewEncoder(w).Encode(profile.CapsFor(262144, 10485760))
 	})
 	mux.HandleFunc("/gonzbnet/v1/handshake", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid handshake", http.StatusBadRequest)
+			return
+		}
+		nodeID, _ := body["node_id"].(string)
+		publicKeyRaw, _ := body["public_key"].(string)
+		publicKey, err := canonical.DecodeBase64URL(publicKeyRaw)
+		if err != nil {
+			http.Error(w, "invalid public key", http.StatusBadRequest)
+			return
+		}
+		authStore.keys[nodeID] = ed25519.PublicKey(publicKey)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"accepted"}`))
 	})
 	mux.HandleFunc("/gonzbnet/v1/outbox", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("type") != "" {
+			http.Error(w, "pull must not filter to one event type", http.StatusBadRequest)
+			return
+		}
+		if _, err := requestauth.Verify(context.Background(), authStore, r.Header.Get("Authorization"), r.Method, r.URL.Path, r.URL.RawQuery, nil, time.Now(), 2*time.Minute, 10*time.Minute); err != nil {
+			http.Error(w, err.Error(), http.StatusUnauthorized)
+			return
+		}
 		_ = json.NewEncoder(w).Encode(OutboxPage{
 			SchemaVersion: "1.0",
 			Type:          "OutboxPage",
@@ -514,17 +587,19 @@ func testSyncLocalRelease() releasecard.LocalRelease {
 }
 
 type fakeSyncStore struct {
-	peers         []pgindex.FederationPeerRecord
-	nodes         []pgindex.FederationNodeRecord
-	events        []*events.SignedEvent
-	rejected      []string
-	projections   []releasecard.Projection
-	undelivered   []*events.SignedEvent
-	deliveries    []pgindex.FederationDeliveryResult
-	successCursor string
-	failures      []string
-	authorization *pgindex.PoolAuthorizationResult
-	appendErr     error
+	peers                 []pgindex.FederationPeerRecord
+	nodes                 []pgindex.FederationNodeRecord
+	events                []*events.SignedEvent
+	rejected              []string
+	projections           []releasecard.Projection
+	healthProjections     []pgindex.HealthAttestationProjection
+	undelivered           []*events.SignedEvent
+	deliveries            []pgindex.FederationDeliveryResult
+	successCursor         string
+	failures              []string
+	authorization         *pgindex.PoolAuthorizationResult
+	appendErr             error
+	lastUndeliveredNodeID string
 }
 
 func (s *fakeSyncStore) UpsertFederationPeerURL(context.Context, string) (int64, error) {
@@ -578,6 +653,15 @@ func (s *fakeSyncStore) ProjectTrustAttestation(context.Context, pgindex.TrustAt
 	return nil
 }
 
+func (s *fakeSyncStore) ProjectHealthAttestation(_ context.Context, projection pgindex.HealthAttestationProjection) error {
+	s.healthProjections = append(s.healthProjections, projection)
+	return nil
+}
+
+func (s *fakeSyncStore) ProjectTombstone(context.Context, pgindex.TombstoneProjection) error {
+	return nil
+}
+
 func (s *fakeSyncStore) ProjectCoverageEvent(context.Context, *events.SignedEvent) error {
 	return nil
 }
@@ -592,7 +676,8 @@ func (s *fakeSyncStore) MarkFederationPeerSyncFailure(_ context.Context, _ int64
 	return nil
 }
 
-func (s *fakeSyncStore) ListUndeliveredFederationEvents(_ context.Context, _ int64, _ int) ([]*events.SignedEvent, error) {
+func (s *fakeSyncStore) ListUndeliveredFederationEvents(_ context.Context, _ int64, nodeID string, _ int) ([]*events.SignedEvent, error) {
+	s.lastUndeliveredNodeID = nodeID
 	return s.undelivered, nil
 }
 

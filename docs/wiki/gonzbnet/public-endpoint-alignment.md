@@ -23,10 +23,12 @@ capabilities, limits, and membership timestamps.
 WebSocket gossip. When `gonzbnet.peer_exchange_enabled` is false, it returns an
 empty list.
 
-These routes are public federation routes, so they are only registered when
-`modules.gonzbnet.enabled` and `gonzbnet.http_enabled` are true. They do not
-expose local user identity, API keys, search history, grab history, download
-history, or role-to-pool RBAC mappings.
+These routes are federation HTTP routes, so they are only registered when
+`modules.gonzbnet.enabled` and `gonzbnet.http_enabled` are true. The read routes
+require node-signed requests. Pool members and checkpoints require active
+membership in the named pool; enabled peer discovery requires active membership
+in at least one local pool. They do not expose local user identity, API keys,
+search history, grab history, download history, or role-to-pool RBAC mappings.
 
 Checkpoint creation remains event-driven; this endpoint exposes the latest
 accepted checkpoint rather than inventing a checkpoint from local JSONB state.

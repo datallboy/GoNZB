@@ -19,8 +19,10 @@ import (
 	"github.com/datallboy/gonzb/internal/gonzbnet/eventbody"
 	"github.com/datallboy/gonzb/internal/gonzbnet/events"
 	"github.com/datallboy/gonzb/internal/gonzbnet/gossip"
+	"github.com/datallboy/gonzb/internal/gonzbnet/health"
 	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
 	"github.com/datallboy/gonzb/internal/gonzbnet/manifestavailability"
+	"github.com/datallboy/gonzb/internal/gonzbnet/moderation"
 	"github.com/datallboy/gonzb/internal/gonzbnet/pools"
 	"github.com/datallboy/gonzb/internal/gonzbnet/profile"
 	"github.com/datallboy/gonzb/internal/gonzbnet/releasecard"
@@ -49,10 +51,12 @@ type Store interface {
 	ProjectChecksumAttestation(ctx context.Context, projection pgindex.ChecksumAttestationProjection) error
 	ProjectManifestAvailability(ctx context.Context, projection pgindex.ManifestAvailabilityProjection) error
 	ProjectTrustAttestation(ctx context.Context, projection pgindex.TrustAttestationProjection) error
+	ProjectHealthAttestation(ctx context.Context, projection pgindex.HealthAttestationProjection) error
+	ProjectTombstone(ctx context.Context, projection pgindex.TombstoneProjection) error
 	ProjectCoverageEvent(ctx context.Context, event *events.SignedEvent) error
 	MarkFederationPeerSyncSuccess(ctx context.Context, peerID int64, nodeID, cursor, lastEventID string) error
 	MarkFederationPeerSyncFailure(ctx context.Context, peerID int64, errText string) error
-	ListUndeliveredFederationEvents(ctx context.Context, peerID int64, limit int) ([]*events.SignedEvent, error)
+	ListUndeliveredFederationEvents(ctx context.Context, peerID int64, nodeID string, limit int) ([]*events.SignedEvent, error)
 	RecordFederationPeerDelivery(ctx context.Context, result pgindex.FederationDeliveryResult) error
 	ValidateFederationPoolControlEvent(ctx context.Context, event *events.SignedEvent) error
 	ProjectFederationPoolEvent(ctx context.Context, event *events.SignedEvent) error
@@ -482,7 +486,7 @@ func (s *Service) pushPeer(ctx context.Context, peer pgindex.FederationPeerRecor
 	if err := s.store.UpsertFederationNode(ctx, federationNodeRecordFromProfile(nodeProfile, wellKnown.BaseURL, ed25519.PublicKey(publicKey))); err != nil {
 		return result, err
 	}
-	items, err := s.store.ListUndeliveredFederationEvents(ctx, peer.ID, limit)
+	items, err := s.store.ListUndeliveredFederationEvents(ctx, peer.ID, nodeProfile.NodeID, limit)
 	if err != nil {
 		return result, err
 	}
@@ -563,7 +567,7 @@ func (s *Service) gossipPeer(ctx context.Context, peer pgindex.FederationPeerRec
 	if !nodeProfile.Capabilities.WebSocketGossip {
 		return result, fmt.Errorf("peer does not advertise websocket gossip")
 	}
-	items, err := s.store.ListUndeliveredFederationEvents(ctx, peer.ID, limit)
+	items, err := s.store.ListUndeliveredFederationEvents(ctx, peer.ID, nodeProfile.NodeID, limit)
 	if err != nil {
 		return result, err
 	}
@@ -745,16 +749,47 @@ func (s *Service) fetchOutbox(ctx context.Context, baseURL, cursor string) (Outb
 		return out, err
 	}
 	q := u.Query()
-	q.Set("type", "ReleaseCard")
 	q.Set("limit", "100")
 	if strings.TrimSpace(cursor) != "" {
 		q.Set("since", strings.TrimSpace(cursor))
 	}
 	u.RawQuery = q.Encode()
-	if err := s.getJSON(ctx, u.String(), &out); err != nil {
+	if err := s.getSignedJSON(ctx, u.String(), &out); err != nil {
 		return out, err
 	}
 	return out, nil
+}
+
+func (s *Service) getSignedJSON(ctx context.Context, endpoint string, out any) error {
+	if err := transportpolicy.ValidateHTTPURL(endpoint, s.allowInsecurePeerHTTP); err != nil {
+		return err
+	}
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return err
+	}
+	authorization, err := requestauth.Sign(ctx, s.identity, http.MethodGet, parsed.Path, parsed.RawQuery, nil, time.Now())
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", authorization)
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return fmt.Errorf("GET %s status=%d body=%s", endpoint, resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		return fmt.Errorf("decode %s: %w", endpoint, err)
+	}
+	return nil
 }
 
 func (s *Service) getJSON(ctx context.Context, endpoint string, out any) error {
@@ -893,6 +928,29 @@ func (s *Service) projectValidationEvent(ctx context.Context, event *events.Sign
 		poolID = event.PoolIDs[0]
 	}
 	switch event.EventType {
+	case pools.EventTypeHealthAttestation:
+		var body health.Attestation
+		if err := json.Unmarshal(event.Body, &body); err != nil {
+			_ = s.store.AppendRejectedFederationEvent(ctx, event.EventID, event.AuthorNodeID, event.EventType, raw, "invalid health attestation body")
+			return nil
+		}
+		return s.store.ProjectHealthAttestation(ctx, pgindex.HealthAttestationProjection{
+			Attestation:  body,
+			EventID:      event.EventID,
+			AuthorNodeID: event.AuthorNodeID,
+			PoolID:       poolID,
+		})
+	case pools.EventTypeTombstone:
+		var body moderation.Tombstone
+		if err := json.Unmarshal(event.Body, &body); err != nil {
+			_ = s.store.AppendRejectedFederationEvent(ctx, event.EventID, event.AuthorNodeID, event.EventType, raw, "invalid tombstone body")
+			return nil
+		}
+		return s.store.ProjectTombstone(ctx, pgindex.TombstoneProjection{
+			Tombstone:    body,
+			EventID:      event.EventID,
+			AuthorNodeID: event.AuthorNodeID,
+		})
 	case pools.EventTypeValidatorCapacity:
 		var body validation.ValidatorCapacity
 		if err := json.Unmarshal(event.Body, &body); err != nil {

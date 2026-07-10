@@ -12,14 +12,14 @@ Completed during this audit:
 - typed event bodies are validated before accepted storage, including
   ReleaseCard identity recomputation and private-field rejection;
 - pool-member capability grants and limits are signed in approval events.
+- protected federation reads use signed node requests and pool visibility;
+- pull synchronizes every supported event type, while pull, push, and gossip
+  filter pool events for the remote node.
 
 The current required work is:
 
 - make accepted append plus projection transactional so database projection
   failures cannot leave an accepted, unprojected event;
-- authenticate pool-scoped read endpoints and apply pool visibility to outbox
-  and event reads;
-- make manual pull synchronize and project all supported event types;
 - build local manifests when the manifest-builder module is enabled;
 - perform configured validator tiers against the local NNTP provider;
 - emit scanner capacity, heartbeat, observations, and periodic checkpoints;
