@@ -164,6 +164,9 @@ Current implementation state:
   event, publisher, and WebSocket claims from public profiles and caps.
 - Manifest availability cleanup aligns signed source/pool routing fields and
   isolates availability projection changes by source node.
+- Local manifest cache policy enforces configured TTL expiry and byte-budget
+  pruning in the PostgreSQL store while retaining active trusted-pool serving
+  authorization.
 - Coverage wire cleanup aligns active leases/outcomes, capacity observations,
   checkpoints, and nested plans with provider-scoped relational projections.
 

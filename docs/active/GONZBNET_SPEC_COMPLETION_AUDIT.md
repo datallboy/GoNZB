@@ -69,8 +69,10 @@ is limited to well-known metadata, node profile, and capabilities.
 3. Publish scanner capacity/heartbeat/group observations and periodic coverage
    checkpoints from scanner execution. The schemas and projections exist, but
    the scanner loop currently emits claims and terminal outcomes only.
-4. Enforce manifest-cache byte/TTL/serving settings. These settings are typed
-   and displayed but do not currently control cache retention or serving.
+4. Complete for retention and serving reads. The PostgreSQL manifest store now
+   applies TTL expiry and byte-budget pruning, and excludes expired manifests
+   from local manifest/NZB/event reads. Manifest serving remains restricted to
+   active trusted pool members.
 
 ### Protocol and security conformance
 
