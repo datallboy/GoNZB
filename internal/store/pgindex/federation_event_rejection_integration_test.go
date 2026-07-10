@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/datallboy/gonzb/internal/gonzbnet/coverage"
 	"github.com/datallboy/gonzb/internal/gonzbnet/events"
 	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
 	"github.com/datallboy/gonzb/internal/gonzbnet/releasecard"
@@ -92,6 +93,31 @@ func TestFederationAcceptedAndRejectedEventPersistence(t *testing.T) {
 	}
 	if !strings.Contains(string(capacityJSON), `"max_tasks_per_hour":10`) {
 		t.Fatalf("validator capacity projection missing expected value: %s", capacityJSON)
+	}
+	coverageBody := coverage.ScannerCapacity{
+		SchemaVersion: "1.0", Type: coverage.TypeScannerCapacity, NodeID: nodeID,
+		PoolID: "pool.test", CreatedAt: time.Now().UTC().Format(time.RFC3339), MaxGroups: 3,
+	}
+	coverageEvent, coverageValidation, err := events.Create(ctx, node, events.CreateOptions{
+		EventType: coverage.TypeScannerCapacity, Sequence: 2, PreviousEventID: &event.EventID,
+		CreatedAt: time.Now().UTC(), PoolIDs: []string{"pool.test"}, Visibility: "pool",
+		BodySchema: coverage.ScannerCapacityBodySchema, Body: coverageBody,
+	})
+	if err != nil || coverageValidation == nil || !coverageValidation.OK {
+		t.Fatalf("create coverage event: validation=%+v err=%v", coverageValidation, err)
+	}
+	if err := store.AppendVerifiedFederationEvent(ctx, coverageEvent, coverageValidation); err != nil {
+		t.Fatalf("append coverage event: %v", err)
+	}
+	if err := store.ProjectCoverageEvent(ctx, coverageEvent); err != nil {
+		t.Fatalf("project coverage event: %v", err)
+	}
+	var projectedMaxGroups int
+	if err := store.DB().QueryRowContext(ctx, `SELECT max_groups FROM scanner_capacities WHERE node_id = $1`, nodeID).Scan(&projectedMaxGroups); err != nil {
+		t.Fatalf("read scanner capacity projection: %v", err)
+	}
+	if projectedMaxGroups != 3 {
+		t.Fatalf("unexpected scanner capacity max_groups=%d", projectedMaxGroups)
 	}
 	rejectedID := event.EventID + "-rejected"
 	if err := store.AppendRejectedFederationEvent(ctx, rejectedID, nodeID, "NodeProfile", []byte(`{"bad":true}`), "malformed signature"); err != nil {
