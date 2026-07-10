@@ -320,3 +320,16 @@ func assertRouteMissing(t *testing.T, routes map[string]struct{}, path string) {
 		t.Fatalf("expected route %s to be absent", path)
 	}
 }
+
+func TestGoNZBNetHTTPBasePath(t *testing.T) {
+	tests := map[string]string{
+		"":                "/gonzbnet/v1",
+		"/gonzbnet/v2/":   "/gonzbnet/v2",
+		"gonzbnet/custom": "/gonzbnet/custom",
+	}
+	for input, want := range tests {
+		if got := gonzbnetHTTPBasePath(input); got != want {
+			t.Errorf("gonzbnetHTTPBasePath(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
