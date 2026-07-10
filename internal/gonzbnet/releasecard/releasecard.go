@@ -1,6 +1,7 @@
 package releasecard
 
 import (
+	"fmt"
 	"strings"
 	"time"
 	"unicode"
@@ -259,4 +260,125 @@ func NormalizeTitle(title string) string {
 func HashBody(card ReleaseCard) (string, error) {
 	hash, _, err := canonical.BodyHash(card)
 	return hash, err
+}
+
+func Validate(card ReleaseCard, now time.Time, futureTolerance time.Duration) error {
+	if strings.TrimSpace(card.SchemaVersion) != "1.0" || strings.TrimSpace(card.Type) != "ReleaseCard" {
+		return fmt.Errorf("unsupported release card schema or type")
+	}
+	if !validHashID(card.ReleaseID, "rel") {
+		return fmt.Errorf("release_id is invalid")
+	}
+	if strings.TrimSpace(card.Title) == "" || strings.TrimSpace(card.NormalizedTitle) == "" {
+		return fmt.Errorf("title and normalized_title are required")
+	}
+	if NormalizeTitle(card.Title) != strings.TrimSpace(card.NormalizedTitle) {
+		return fmt.Errorf("normalized_title does not match title")
+	}
+	if card.SizeBytes < 0 || card.FileCount < 0 || card.SegmentCount < 0 {
+		return fmt.Errorf("release counts and size must not be negative")
+	}
+	if card.Source.Confidence < 0 || card.Source.Confidence > 1 {
+		return fmt.Errorf("source confidence must be between 0 and 1")
+	}
+	for _, category := range card.NewznabCategories {
+		if category <= 0 {
+			return fmt.Errorf("newznab categories must be positive")
+		}
+	}
+	for _, group := range card.Groups {
+		if !validGroupName(group) {
+			return fmt.Errorf("invalid group name")
+		}
+	}
+	if strings.TrimSpace(card.ManifestID) != "" && !validHashID(card.ManifestID, "man") {
+		return fmt.Errorf("manifest_id is invalid")
+	}
+	if strings.TrimSpace(card.SubjectFingerprint) == "" || strings.TrimSpace(card.FileFingerprint) == "" {
+		return fmt.Errorf("subject_fingerprint and file_fingerprint are required")
+	}
+	futureTolerance = positiveDuration(futureTolerance, 2*time.Minute)
+	postedAt, err := parseReleaseCardTime("posted_at", card.PostedAt)
+	if err != nil {
+		return err
+	}
+	if !now.IsZero() && postedAt != nil && postedAt.After(now.UTC().Add(futureTolerance)) {
+		return fmt.Errorf("posted_at is too far in the future")
+	}
+	expiresAt, err := parseReleaseCardTime("expires_at", card.ExpiresAt)
+	if err != nil {
+		return err
+	}
+	if !now.IsZero() && expiresAt != nil && !expiresAt.After(now.UTC()) {
+		return fmt.Errorf("release card expired")
+	}
+	expected, err := releaseID(releaseIdentityCore{
+		NormalizedTitle:    strings.TrimSpace(card.NormalizedTitle),
+		SizeBytes:          card.SizeBytes,
+		PostedAtDay:        postedAtDay(postedAt),
+		Groups:             normalizeStrings(card.Groups),
+		FileCount:          card.FileCount,
+		SegmentCount:       card.SegmentCount,
+		SubjectFingerprint: strings.TrimSpace(card.SubjectFingerprint),
+		FileFingerprint:    strings.TrimSpace(card.FileFingerprint),
+	})
+	if err != nil {
+		return err
+	}
+	if expected != card.ReleaseID {
+		return fmt.Errorf("release_id mismatch")
+	}
+	return nil
+}
+
+func parseReleaseCardTime(field, value string) (*time.Time, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, nil
+	}
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return nil, fmt.Errorf("%s must be RFC3339", field)
+	}
+	parsed = parsed.UTC()
+	return &parsed, nil
+}
+
+func positiveDuration(value, fallback time.Duration) time.Duration {
+	if value <= 0 {
+		return fallback
+	}
+	return value
+}
+
+func validHashID(value, prefix string) bool {
+	value = strings.TrimSpace(value)
+	wantPrefix := prefix + "_"
+	if !strings.HasPrefix(value, wantPrefix) || len(value) != len(wantPrefix)+52 {
+		return false
+	}
+	for _, r := range value[len(wantPrefix):] {
+		if (r < 'a' || r > 'z') && (r < '2' || r > '7') {
+			return false
+		}
+	}
+	return true
+}
+
+func validGroupName(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.HasPrefix(value, ".") || strings.HasSuffix(value, ".") || !strings.Contains(value, ".") {
+		return false
+	}
+	for _, part := range strings.Split(value, ".") {
+		if part == "" {
+			return false
+		}
+		for _, r := range part {
+			if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '-' && r != '_' && r != '+' {
+				return false
+			}
+		}
+	}
+	return true
 }

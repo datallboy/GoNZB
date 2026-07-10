@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -70,6 +71,48 @@ func TestSyncOnceRejectsTamperedRemoteEvent(t *testing.T) {
 	}
 	if len(store.rejected) != 1 {
 		t.Fatalf("expected rejected event")
+	}
+}
+
+func TestSyncOnceRejectsSignedMalformedReleaseCardBeforeAppend(t *testing.T) {
+	ctx := context.Background()
+	localIdentity, err := identity.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("local identity: %v", err)
+	}
+	remoteIdentity, err := identity.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("remote identity: %v", err)
+	}
+	card, err := releasecard.MapLocalRelease(testSyncLocalRelease())
+	if err != nil {
+		t.Fatalf("map release: %v", err)
+	}
+	card.Title = ""
+	event, result, err := events.Create(ctx, remoteIdentity, events.CreateOptions{
+		EventType:  "ReleaseCard",
+		Sequence:   1,
+		CreatedAt:  time.Now().UTC(),
+		PoolIDs:    []string{"pool.local"},
+		Visibility: "pool",
+		BodySchema: releasecard.BodySchema,
+		Body:       card,
+	})
+	if err != nil || result == nil || !result.OK {
+		t.Fatalf("create signed malformed event: result=%+v err=%v", result, err)
+	}
+	server := testPeerServer(t, remoteIdentity, []events.SignedEvent{*event})
+	store := &fakeSyncStore{peers: []pgindex.FederationPeerRecord{{ID: 1, PeerURL: server.URL}}}
+
+	syncResult, err := NewWithOptions(localIdentity, store, nil, Options{AllowInsecurePeerHTTP: true}).SyncOnce(ctx)
+	if err != nil {
+		t.Fatalf("sync once: %v", err)
+	}
+	if syncResult.Accepted != 0 || syncResult.Rejected != 1 || len(store.events) != 0 || len(store.projections) != 0 {
+		t.Fatalf("malformed body reached accepted storage: result=%+v events=%d projections=%d", syncResult, len(store.events), len(store.projections))
+	}
+	if len(store.rejected) != 1 || !strings.Contains(store.rejected[0], "title") {
+		t.Fatalf("expected typed body rejection, got %+v", store.rejected)
 	}
 }
 

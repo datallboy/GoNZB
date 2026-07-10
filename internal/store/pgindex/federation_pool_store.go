@@ -207,11 +207,13 @@ func (s *Store) ProjectFederationPoolEvent(ctx context.Context, event *events.Si
 			role = pools.RoleMember
 		}
 		return s.UpsertPoolMember(ctx, PoolMemberRecord{
-			PoolID:          body.PoolID,
-			NodeID:          body.SubjectNodeID,
-			Role:            role,
-			Status:          pools.StatusActive,
-			ApprovedEventID: event.EventID,
+			PoolID:              body.PoolID,
+			NodeID:              body.SubjectNodeID,
+			Role:                role,
+			Status:              pools.StatusActive,
+			ApprovedEventID:     event.EventID,
+			AllowedCapabilities: body.AllowedCapabilities,
+			LimitsJSON:          body.Limits,
 		})
 	case pools.EventTypePoolMemberRevoked:
 		var body pools.MemberRevoked

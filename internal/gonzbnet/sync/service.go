@@ -16,6 +16,7 @@ import (
 
 	"github.com/datallboy/gonzb/internal/gonzbnet/canonical"
 	"github.com/datallboy/gonzb/internal/gonzbnet/coverage"
+	"github.com/datallboy/gonzb/internal/gonzbnet/eventbody"
 	"github.com/datallboy/gonzb/internal/gonzbnet/events"
 	"github.com/datallboy/gonzb/internal/gonzbnet/gossip"
 	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
@@ -374,6 +375,11 @@ func (s *Service) syncPeer(ctx context.Context, peer pgindex.FederationPeerRecor
 			}
 			if !pools.EventTypeSupported(event.EventType) {
 				_ = s.store.AppendRejectedFederationEvent(ctx, event.EventID, event.AuthorNodeID, event.EventType, raw, "unsupported event_type")
+				result.Rejected++
+				continue
+			}
+			if err := eventbody.Validate(&event, time.Now().UTC(), s.eventTimeTolerance); err != nil {
+				_ = s.store.AppendRejectedFederationEvent(ctx, event.EventID, event.AuthorNodeID, event.EventType, raw, err.Error())
 				result.Rejected++
 				continue
 			}

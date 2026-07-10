@@ -315,7 +315,7 @@ func TestGoNZBNetAdminApprovePoolMemberSignsAppendsAndProjectsEvent(t *testing.T
 		},
 	}
 	e := echo.New()
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/gonzbnet/pools/pool.remote/members/node_candidate/approve", bytes.NewReader([]byte(`{"role":"member","proposal_event_id":"evt_join"}`)))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/gonzbnet/pools/pool.remote/members/node_candidate/approve", bytes.NewReader([]byte(`{"role":"member","proposal_event_id":"evt_join","allowed_capabilities":["scanner"]}`)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	c := e.NewContext(req, rec)
@@ -353,6 +353,9 @@ func TestGoNZBNetAdminApprovePoolMemberSignsAppendsAndProjectsEvent(t *testing.T
 	}
 	if body.PoolID != "pool.remote" || body.SubjectNodeID != "node_candidate" || body.ProposalEventID != "evt_join" {
 		t.Fatalf("unexpected approval body: %+v", body)
+	}
+	if len(body.AllowedCapabilities) != 1 || body.AllowedCapabilities[0] != "scanner" {
+		t.Fatalf("expected signed capability grant, got %+v", body.AllowedCapabilities)
 	}
 	if body.ApprovalsRequired != 1 || len(body.Approvals) != 1 {
 		t.Fatalf("expected one required local approval, got %+v", body)
