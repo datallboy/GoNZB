@@ -126,6 +126,8 @@ Current implementation state:
   federation rate-limit violations.
 - Profile cleanup adds NodeProfile module status, scanner capacity, validator
   capacity, and provider-scope advertisement.
+- Core checklist evidence maps the original final implementation checklist to
+  current code and test coverage.
 - Final checklist audit documents implemented addendum requirements and the
   remaining automatic assignment-writer boundary.
 - Security cleanup rejects remote signed events with future `created_at` /
@@ -193,6 +195,7 @@ Maintained pages:
 - [Assignment-Driven Scanner Cleanup](./assignment-driven-scanner-cleanup.md)
 - [Capability Profile Alignment](./capability-profile-alignment.md)
 - [Profile Capacity Alignment](./profile-capacity-alignment.md)
+- [Core Checklist Evidence](./core-checklist-evidence.md)
 - [Final Checklist Audit](./final-checklist-audit.md)
 - [Test Coverage Cleanup](./test-coverage-cleanup.md)
 - [Security: Node Key Encryption](./security-key-encryption.md)
