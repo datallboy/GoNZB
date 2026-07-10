@@ -94,6 +94,34 @@ func TestPublishOnceUsesScanOutputWithoutIndexerCandidates(t *testing.T) {
 	}
 }
 
+func TestPublishOnceBuildsAndCachesLocalManifestWhenEnabled(t *testing.T) {
+	ctx := context.Background()
+	node, err := identity.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("identity: %v", err)
+	}
+	store := &fakeStore{
+		candidates:       []releasecard.LocalRelease{testPublisherRelease()},
+		eventsByBodyHash: make(map[string]string),
+	}
+	svc := New(node, store, "pool.local")
+	svc.SetManifestBuilding(true)
+	svc.now = func() time.Time { return time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC) }
+	if _, err := svc.PublishOnce(ctx, 10); err != nil {
+		t.Fatalf("publish with local builder: %v", err)
+	}
+	if len(store.storedManifests) != 1 {
+		t.Fatalf("expected one stored local manifest, got %d", len(store.storedManifests))
+	}
+	stored := store.storedManifests[0]
+	if stored.Manifest.ManifestID == "" || stored.Manifest.ReleaseID != store.projections[0].Card.ReleaseID || len(stored.GeneratedNZB) == 0 {
+		t.Fatalf("unexpected local manifest record: %+v", stored.Manifest)
+	}
+	if _, err := manifest.Validate(stored.Manifest); err != nil {
+		t.Fatalf("stored local manifest should validate: %v", err)
+	}
+}
+
 func TestPublishHealthOnceSignsCompleteAndIncompleteAttestations(t *testing.T) {
 	ctx := context.Background()
 	node, err := identity.LoadOrCreate(t.TempDir())
@@ -194,6 +222,7 @@ type fakeStore struct {
 	availabilityProjections []pgindex.ArticleAvailabilityProjection
 	checksumProjections     []pgindex.ChecksumAttestationProjection
 	manifestAvailability    []pgindex.ManifestAvailabilityProjection
+	storedManifests         []pgindex.ResolutionManifestRecord
 	publishedScanOutputs    map[string]string
 	completedTasks          map[int64]string
 	nodeID                  string
@@ -247,6 +276,11 @@ func (s *fakeStore) UpsertFederatedReleaseCardProjection(_ context.Context, proj
 
 func (s *fakeStore) ProjectManifestAvailability(_ context.Context, projection pgindex.ManifestAvailabilityProjection) error {
 	s.manifestAvailability = append(s.manifestAvailability, projection)
+	return nil
+}
+
+func (s *fakeStore) StoreResolutionManifest(_ context.Context, record pgindex.ResolutionManifestRecord) error {
+	s.storedManifests = append(s.storedManifests, record)
 	return nil
 }
 

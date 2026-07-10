@@ -3,6 +3,8 @@ package releasecard
 import (
 	"testing"
 	"time"
+
+	"github.com/datallboy/gonzb/internal/gonzbnet/manifest"
 )
 
 func TestMapLocalReleaseIsDeterministicAcrossInputOrdering(t *testing.T) {
@@ -31,6 +33,17 @@ func TestMapLocalReleaseIsDeterministicAcrossInputOrdering(t *testing.T) {
 	}
 	if firstCard.ManifestID != secondCard.ManifestID {
 		t.Fatalf("expected stable manifest id %q, got %q", firstCard.ManifestID, secondCard.ManifestID)
+	}
+	core, err := ManifestCoreForLocalRelease(first)
+	if err != nil {
+		t.Fatalf("manifest core: %v", err)
+	}
+	expectedManifestID, _, err := manifest.ComputeID(core)
+	if err != nil {
+		t.Fatalf("manifest id: %v", err)
+	}
+	if firstCard.ManifestID != expectedManifestID {
+		t.Fatalf("release card manifest id %q does not match manifest id %q", firstCard.ManifestID, expectedManifestID)
 	}
 
 	firstHash, err := HashBody(firstCard)

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/datallboy/gonzb/internal/gonzbnet/canonical"
+	"github.com/datallboy/gonzb/internal/gonzbnet/manifest"
 )
 
 type releaseIdentityCore struct {
@@ -34,31 +35,6 @@ type subjectFingerprintItem struct {
 	Subject   string `json:"subject"`
 }
 
-type manifestCore struct {
-	Groups []string           `json:"groups"`
-	Files  []manifestCoreFile `json:"files"`
-	NZB    manifestCoreNZB    `json:"nzb"`
-}
-
-type manifestCoreFile struct {
-	Name      string                `json:"name"`
-	Subject   string                `json:"subject,omitempty"`
-	Date      string                `json:"date,omitempty"`
-	SizeBytes int64                 `json:"size_bytes"`
-	Segments  []manifestCoreSegment `json:"segments"`
-}
-
-type manifestCoreSegment struct {
-	Number    int    `json:"number"`
-	Bytes     int64  `json:"bytes"`
-	MessageID string `json:"message_id"`
-}
-
-type manifestCoreNZB struct {
-	Generator  string `json:"generator"`
-	XMLCharset string `json:"xml_charset"`
-}
-
 func releaseID(core releaseIdentityCore) (string, error) {
 	payload, err := canonical.Marshal(core)
 	if err != nil {
@@ -67,21 +43,26 @@ func releaseID(core releaseIdentityCore) (string, error) {
 	return canonical.HashID("rel", payload), nil
 }
 
-func manifestID(groups []string, files []LocalFile) (string, error) {
+func ManifestCoreForLocalRelease(in LocalRelease) (manifest.ManifestCore, error) {
+	groups := normalizeStrings(in.Groups)
+	files := normalizeFiles(in.Files)
 	if len(groups) == 0 || len(files) == 0 {
-		return "", nil
+		return manifest.ManifestCore{}, nil
 	}
-	coreFiles := make([]manifestCoreFile, 0, len(files))
+	coreFiles := make([]manifest.ManifestFile, 0, len(files))
+	poster := ""
+	baseFiles := 0
+	volumeFiles := 0
 	for _, file := range files {
 		if len(file.Segments) == 0 {
-			return "", nil
+			return manifest.ManifestCore{}, nil
 		}
-		segments := make([]manifestCoreSegment, 0, len(file.Segments))
+		segments := make([]manifest.ManifestSegment, 0, len(file.Segments))
 		for _, segment := range file.Segments {
 			if strings.TrimSpace(segment.MessageID) == "" || segment.Number <= 0 || segment.Bytes <= 0 {
-				return "", nil
+				return manifest.ManifestCore{}, nil
 			}
-			segments = append(segments, manifestCoreSegment{
+			segments = append(segments, manifest.ManifestSegment{
 				Number:    segment.Number,
 				Bytes:     segment.Bytes,
 				MessageID: strings.TrimSpace(segment.MessageID),
@@ -90,7 +71,15 @@ func manifestID(groups []string, files []LocalFile) (string, error) {
 		sort.Slice(segments, func(i, j int) bool {
 			return segments[i].Number < segments[j].Number
 		})
-		coreFiles = append(coreFiles, manifestCoreFile{
+		if poster == "" {
+			poster = strings.TrimSpace(file.Poster)
+		}
+		if file.IsPars {
+			volumeFiles++
+		} else {
+			baseFiles++
+		}
+		coreFiles = append(coreFiles, manifest.ManifestFile{
 			Name:      strings.TrimSpace(file.Name),
 			Subject:   strings.TrimSpace(file.Subject),
 			Date:      formatOptionalTime(file.PostedAt),
@@ -104,18 +93,23 @@ func manifestID(groups []string, files []LocalFile) (string, error) {
 		}
 		return coreFiles[i].Name < coreFiles[j].Name
 	})
-	payload, err := canonical.Marshal(manifestCore{
-		Groups: groups,
-		Files:  coreFiles,
-		NZB: manifestCoreNZB{
-			Generator:  "GoNZBNet",
-			XMLCharset: "utf-8",
-		},
-	})
-	if err != nil {
+	return manifest.ManifestCore{
+		Groups:   groups,
+		Poster:   poster,
+		PostedAt: formatOptionalTime(in.PostedAt),
+		Files:    coreFiles,
+		PAR2:     manifest.PAR2{Present: in.HasPAR2, BaseFiles: baseFiles, VolumeFiles: volumeFiles},
+		NZB:      manifest.NZBInfo{Generator: "GoNZBNet", XMLCharset: "utf-8"},
+	}, nil
+}
+
+func manifestID(in LocalRelease) (string, error) {
+	core, err := ManifestCoreForLocalRelease(in)
+	if err != nil || len(core.Files) == 0 {
 		return "", err
 	}
-	return canonical.HashID("man", payload), nil
+	id, _, err := manifest.ComputeID(core)
+	return id, err
 }
 
 func normalizeStrings(in []string) []string {

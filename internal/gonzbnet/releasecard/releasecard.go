@@ -165,7 +165,7 @@ func MapLocalRelease(in LocalRelease) (ReleaseCard, error) {
 		return ReleaseCard{}, err
 	}
 
-	manifestID, err := manifestID(groups, files)
+	manifestID, err := manifestID(in)
 	if err != nil {
 		return ReleaseCard{}, err
 	}
