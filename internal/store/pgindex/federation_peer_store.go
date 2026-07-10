@@ -27,10 +27,11 @@ type FederationPeerRecord struct {
 }
 
 type FederationOutboxParams struct {
-	Since     string
-	PoolID    string
-	EventType string
-	Limit     int
+	Since            string
+	PoolID           string
+	EventType        string
+	RequestingNodeID string
+	Limit            int
 }
 
 type FederationOutboxPage struct {
@@ -215,12 +216,16 @@ func (s *Store) MarkFederationPeerSyncFailure(ctx context.Context, peerID int64,
 	return nil
 }
 
-func (s *Store) ListUndeliveredFederationEvents(ctx context.Context, peerID int64, limit int) ([]*events.SignedEvent, error) {
+func (s *Store) ListUndeliveredFederationEvents(ctx context.Context, peerID int64, nodeID string, limit int) ([]*events.SignedEvent, error) {
 	if s == nil || s.db == nil {
 		return nil, fmt.Errorf("pgindex store is not initialized")
 	}
 	if limit <= 0 || limit > 100 {
 		limit = 100
+	}
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return []*events.SignedEvent{}, nil
 	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
@@ -235,6 +240,16 @@ func (s *Store) ListUndeliveredFederationEvents(ctx context.Context, peerID int6
 		WHERE e.validation_status = 'accepted'
 		  AND e.visibility <> 'local'
 		  AND (
+		    e.visibility = 'public'
+		    OR EXISTS (
+		      SELECT 1
+		      FROM pool_members member
+		      WHERE member.node_id = $2
+		        AND member.status = 'active'
+		        AND e.pool_ids ? member.pool_id
+		    )
+		  )
+		  AND (
 		    d.event_id IS NULL
 		    OR (
 		      d.status NOT IN ('accepted', 'duplicate')
@@ -242,7 +257,7 @@ func (s *Store) ListUndeliveredFederationEvents(ctx context.Context, peerID int6
 		    )
 		  )
 		ORDER BY e.created_at ASC, e.event_id ASC
-		LIMIT $2`, peerID, limit)
+		LIMIT $3`, peerID, nodeID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list undelivered federation events: %w", err)
 	}
@@ -340,6 +355,20 @@ func (s *Store) ListFederationOutboxEvents(ctx context.Context, params Federatio
 	clauses := []string{"validation_status = 'accepted'", "visibility <> 'local'"}
 	args := make([]any, 0, 6)
 	arg := 1
+	if nodeID := strings.TrimSpace(params.RequestingNodeID); nodeID != "" {
+		clauses = append(clauses, fmt.Sprintf(`(
+			visibility = 'public'
+			OR EXISTS (
+			  SELECT 1
+			  FROM pool_members member
+			  WHERE member.node_id = $%d
+			    AND member.status = 'active'
+			    AND pool_ids ? member.pool_id
+			)
+		)`, arg))
+		args = append(args, nodeID)
+		arg++
+	}
 	if eventType := strings.TrimSpace(params.EventType); eventType != "" {
 		clauses = append(clauses, fmt.Sprintf("event_type = $%d", arg))
 		args = append(args, eventType)
