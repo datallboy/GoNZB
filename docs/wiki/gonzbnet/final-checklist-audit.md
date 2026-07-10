@@ -13,18 +13,19 @@ Implemented surfaces include:
 - pool-approved capabilities and event acceptance gates;
 - coverage observations, assignments, claims, checkpoints, outcomes, dashboard
   reads, stale-claim penalties, and dedup-aware work suggestions;
+- signed validation-request task admission for locally cached manifests;
 - article availability and checksum attestation projections;
 - privacy boundaries that keep local users, API keys, searches, grabs,
   downloads, and NNTP credentials local.
 
-Remaining explicit gap:
+Validation request boundary:
 
-- `POST /gonzbnet/v1/validation/request`
-
-That endpoint is named by the addendum but lacks a concrete request schema,
-signed event type, target-node behavior, idempotency contract, and validation
-task admission policy. Validation work is currently admitted when a signed
-ResolutionManifest is cached locally.
+- `POST /gonzbnet/v1/validation/request` is a signed node-to-node HTTP request,
+  not a signed append-only federation event.
+- It admits validation work only for manifests already cached locally.
+- The requester must be an active pool member, the signature must match
+  `requesting_node_id`, and an optional `target_node_id` must match the local
+  node.
 
 Deferred operational work:
 

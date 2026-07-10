@@ -23,7 +23,4 @@ separately:
 
 - `POST /gonzbnet/v1/coverage/claim`
 - `POST /gonzbnet/v1/coverage/checkpoint`
-
-Remaining future cleanup:
-
 - `POST /gonzbnet/v1/validation/request`

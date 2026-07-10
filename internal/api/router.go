@@ -155,6 +155,7 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 			fed.GET("/coverage/work", gonzbnetCtrl.CoverageWork)
 			fed.POST("/coverage/claim", gonzbnetCtrl.CoverageClaim, federationRateLimit)
 			fed.POST("/coverage/checkpoint", gonzbnetCtrl.CoverageCheckpoint, federationRateLimit)
+			fed.POST("/validation/request", gonzbnetCtrl.ValidationRequest, federationRateLimit)
 			fed.GET("/capabilities/nodes", gonzbnetCtrl.NodeCapabilities)
 			fed.GET("/pools/:pool_id/checkpoint", gonzbnetCtrl.PoolCheckpoint)
 			fed.GET("/pools/:pool_id/members", gonzbnetCtrl.PoolMembers)

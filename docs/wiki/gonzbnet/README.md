@@ -113,6 +113,8 @@ Current implementation state:
   work, and node capability read endpoints.
 - Public coverage write cleanup adds signed node-to-node coverage claim and
   checkpoint convenience endpoints.
+- Validation cleanup adds a signed node-to-node validation request endpoint for
+  locally cached manifests.
 - Config addendum alignment adds typed scanner, coverage, validation, and
   manifest-cache settings with direct `GONZBNET_*` aliases.
 - Security cleanup adds temporary in-memory throttling after repeated
@@ -120,7 +122,7 @@ Current implementation state:
 - Profile cleanup adds NodeProfile module status, scanner capacity, validator
   capacity, and provider-scope advertisement.
 - Final checklist audit documents implemented addendum requirements and the
-  remaining validation-request/scanner-loop boundaries.
+  remaining scanner-loop boundary.
 - Security cleanup rejects remote signed events with future `created_at` /
   `not_before` windows, expired `expires_at` values, or event ages beyond
   `gonzbnet.max_event_age_hours`.
@@ -181,6 +183,7 @@ Maintained pages:
 - [Trust Attestations](./trust-attestations.md)
 - [Public Coverage Read Endpoints](./public-coverage-read-endpoints.md)
 - [Public Coverage Write Endpoints](./public-coverage-write-endpoints.md)
+- [Validation Request Endpoint](./validation-request-endpoint.md)
 - [Capability Profile Alignment](./capability-profile-alignment.md)
 - [Profile Capacity Alignment](./profile-capacity-alignment.md)
 - [Final Checklist Audit](./final-checklist-audit.md)

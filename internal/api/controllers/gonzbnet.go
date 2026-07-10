@@ -65,6 +65,7 @@ type gonzbnetStore interface {
 	ProjectValidatorCapacity(ctx context.Context, projection pgindex.ValidatorCapacityProjection) error
 	ProjectArticleAvailabilityAttestation(ctx context.Context, projection pgindex.ArticleAvailabilityProjection) error
 	ProjectChecksumAttestation(ctx context.Context, projection pgindex.ChecksumAttestationProjection) error
+	EnqueueFederationValidationTask(ctx context.Context, request pgindex.ValidationTaskRequest) (bool, error)
 	ProjectManifestAvailability(ctx context.Context, projection pgindex.ManifestAvailabilityProjection) error
 	ProjectCoverageEvent(ctx context.Context, event *events.SignedEvent) error
 	ProjectTombstone(ctx context.Context, projection pgindex.TombstoneProjection) error
@@ -456,6 +457,175 @@ func (ctrl *GoNZBNetController) CoverageCheckpoint(c *echo.Context) error {
 		coverage.TypeCoverageCheckpoint: {},
 		coverage.TypeRangeComplete:      {},
 		coverage.TypeRangeFailed:        {},
+	})
+}
+
+func (ctrl *GoNZBNetController) ValidationRequest(c *echo.Context) error {
+	store, ok := ctrl.appCtx.PGIndexStore.(gonzbnetStore)
+	if !ok {
+		return federationJSONError(c, http.StatusServiceUnavailable, "internal_error", "gonzbnet store is unavailable")
+	}
+	if !ctrl.appCtx.Config.GoNZBNet.ValidatorEnabled {
+		return c.JSON(http.StatusForbidden, gonzbnetvalidation.Response{
+			SchemaVersion: "1.0",
+			Type:          "ValidationResponse",
+			Status:        "error",
+			Code:          "validator_disabled",
+			Message:       "local validator module is disabled",
+		})
+	}
+	body, err := io.ReadAll(c.Request().Body)
+	if err != nil {
+		code := federationBodyReadErrorCode(err)
+		status := http.StatusBadRequest
+		if code == "payload_too_large" {
+			status = http.StatusRequestEntityTooLarge
+		}
+		return federationJSONError(c, status, code, "read validation request body")
+	}
+	cfg := ctrl.appCtx.Config.GoNZBNet
+	verified, err := requestauth.Verify(
+		c.Request().Context(),
+		store,
+		requestauth.HeaderFromRequest(c.Request()),
+		c.Request().Method,
+		c.Request().URL.Path,
+		c.Request().URL.RawQuery,
+		body,
+		time.Now(),
+		time.Duration(cfg.TimeToleranceSeconds)*time.Second,
+		time.Duration(cfg.NonceTTLSeconds)*time.Second,
+	)
+	if err != nil {
+		return federationJSONError(c, http.StatusUnauthorized, federationAuthErrorCode(err), err.Error())
+	}
+	var req gonzbnetvalidation.Request
+	if err := json.Unmarshal(body, &req); err != nil {
+		return federationJSONError(c, http.StatusBadRequest, "invalid_json", "invalid validation request json")
+	}
+	if err := gonzbnetvalidation.ValidateRequest(req, time.Now().UTC(), time.Duration(cfg.TimeToleranceSeconds)*time.Second); err != nil {
+		return c.JSON(http.StatusBadRequest, gonzbnetvalidation.Response{
+			SchemaVersion: "1.0",
+			Type:          "ValidationResponse",
+			RequestID:     req.RequestID,
+			Status:        "error",
+			Code:          "invalid_schema",
+			Message:       err.Error(),
+		})
+	}
+	if req.RequestingNodeID != verified.NodeID {
+		return c.JSON(http.StatusForbidden, gonzbnetvalidation.Response{
+			SchemaVersion: "1.0",
+			Type:          "ValidationResponse",
+			RequestID:     req.RequestID,
+			Status:        "error",
+			Code:          "requesting_node_mismatch",
+			Message:       "requesting node does not match request signature",
+		})
+	}
+	if strings.TrimSpace(req.TargetNodeID) != "" {
+		id, err := ctrl.localIdentity()
+		if err != nil {
+			return federationJSONError(c, http.StatusServiceUnavailable, "internal_error", err.Error())
+		}
+		localNodeID, err := id.NodeID(c.Request().Context())
+		if err != nil {
+			return federationJSONError(c, http.StatusServiceUnavailable, "internal_error", err.Error())
+		}
+		if req.TargetNodeID != localNodeID {
+			return c.JSON(http.StatusForbidden, gonzbnetvalidation.Response{
+				SchemaVersion: "1.0",
+				Type:          "ValidationResponse",
+				RequestID:     req.RequestID,
+				Status:        "error",
+				Code:          "target_node_mismatch",
+				Message:       "target node does not match local node",
+			})
+		}
+	}
+	active, err := store.IsActivePoolMember(c.Request().Context(), req.PoolID, verified.NodeID)
+	if err != nil {
+		return federationJSONError(c, http.StatusInternalServerError, "internal_error", err.Error())
+	}
+	if !active {
+		return c.JSON(http.StatusForbidden, gonzbnetvalidation.Response{
+			SchemaVersion: "1.0",
+			Type:          "ValidationResponse",
+			RequestID:     req.RequestID,
+			Status:        "error",
+			Code:          "not_pool_member",
+			Message:       "requesting node is not authorized for this pool",
+		})
+	}
+	allowed, err := store.CanFetchResolutionManifest(c.Request().Context(), req.ManifestID, verified.NodeID)
+	if err != nil {
+		return federationJSONError(c, http.StatusInternalServerError, "internal_error", err.Error())
+	}
+	if !allowed {
+		return c.JSON(http.StatusForbidden, gonzbnetvalidation.Response{
+			SchemaVersion: "1.0",
+			Type:          "ValidationResponse",
+			RequestID:     req.RequestID,
+			Status:        "error",
+			Code:          "not_pool_member",
+			Message:       "requesting node is not authorized for this manifest",
+		})
+	}
+	item, err := store.GetResolutionManifest(c.Request().Context(), req.ManifestID)
+	if err != nil {
+		return federationJSONError(c, http.StatusInternalServerError, "internal_error", err.Error())
+	}
+	if item == nil {
+		return c.JSON(http.StatusNotFound, gonzbnetvalidation.Response{
+			SchemaVersion: "1.0",
+			Type:          "ValidationResponse",
+			RequestID:     req.RequestID,
+			Status:        "error",
+			Code:          "manifest_not_found",
+			Message:       "manifest not found",
+		})
+	}
+	if item.ReleaseID != req.ReleaseID {
+		return c.JSON(http.StatusBadRequest, gonzbnetvalidation.Response{
+			SchemaVersion: "1.0",
+			Type:          "ValidationResponse",
+			RequestID:     req.RequestID,
+			Status:        "error",
+			Code:          "release_id_mismatch",
+			Message:       "release_id does not match cached manifest",
+		})
+	}
+	var dueAt *time.Time
+	if strings.TrimSpace(req.DueAt) != "" {
+		parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(req.DueAt))
+		if err != nil {
+			return c.JSON(http.StatusBadRequest, gonzbnetvalidation.Response{
+				SchemaVersion: "1.0",
+				Type:          "ValidationResponse",
+				RequestID:     req.RequestID,
+				Status:        "error",
+				Code:          "invalid_schema",
+				Message:       "due_at must be RFC3339",
+			})
+		}
+		dueAt = &parsed
+	}
+	queued, err := store.EnqueueFederationValidationTask(c.Request().Context(), pgindex.ValidationTaskRequest{
+		ManifestID: req.ManifestID,
+		ReleaseID:  req.ReleaseID,
+		PoolID:     req.PoolID,
+		Priority:   req.Priority,
+		DueAt:      dueAt,
+	})
+	if err != nil {
+		return federationJSONError(c, http.StatusInternalServerError, "internal_error", err.Error())
+	}
+	return c.JSON(http.StatusAccepted, gonzbnetvalidation.Response{
+		SchemaVersion: "1.0",
+		Type:          "ValidationResponse",
+		RequestID:     req.RequestID,
+		Status:        "accepted",
+		Queued:        queued,
 	})
 }
 

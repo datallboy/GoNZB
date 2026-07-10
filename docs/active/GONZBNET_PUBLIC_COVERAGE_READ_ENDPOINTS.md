@@ -22,10 +22,4 @@ Implemented separately:
 
 - `POST /gonzbnet/v1/coverage/claim`
 - `POST /gonzbnet/v1/coverage/checkpoint`
-
-Out of scope:
-
 - `POST /gonzbnet/v1/validation/request`
-
-The validation request route needs a concrete request/event schema and task
-admission policy before implementation.

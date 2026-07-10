@@ -17,5 +17,6 @@ The HTTP request must be signed by the same node that authored each event. Pool
 membership and capability checks are enforced by the existing event acceptance
 pipeline before events are appended or projected.
 
-`POST /gonzbnet/v1/validation/request` remains pending until the implementation
-has a concrete validation-request schema and task admission policy.
+`POST /gonzbnet/v1/validation/request` is implemented separately as a signed
+node-to-node request, not as a signed append-only federation event. It admits
+validation work only for manifests that are already cached locally.

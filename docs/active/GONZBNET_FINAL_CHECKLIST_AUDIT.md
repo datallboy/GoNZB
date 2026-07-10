@@ -24,22 +24,24 @@ remaining GoNZBNet work.
 - Stale claims can be detected and materialized as reputation penalties.
 - Article availability and checksum attestations project into validation-aware
   scores; checksum emission remains feature-flagged.
+- Signed validation requests can enqueue local validation tasks for manifests
+  that are already cached locally.
 - Coverage dashboard/admin reads expose gaps, stale claims, active work, and
   duplicate work diagnostics.
 - Federation request/event paths authenticate nodes, not users, and do not
   include local usernames, API keys, searches, grabs, downloads, or NNTP
   credentials.
 
-## Remaining Explicit Gap
+## Validation Request Boundary
 
-`POST /gonzbnet/v1/validation/request` remains intentionally unimplemented.
-The implementation spec names the endpoint but does not define a concrete
-request body, signed event type, idempotency key, target-node semantics, or task
-admission policy.
+`POST /gonzbnet/v1/validation/request` is implemented as a signed node-to-node
+HTTP request, not a signed append-only federation event. The request is
+admitted only when the requester is an active pool member, the request signature
+matches `requesting_node_id`, an optional `target_node_id` matches the local
+node, and the referenced manifest is already cached locally.
 
-Existing validation tasks are currently enqueued when a signed
-`ResolutionManifest` is cached locally. Validator capacity and validation
-attestation events flow through the signed inbox path.
+Validator capacity and validation attestation events continue to flow through
+the signed inbox path.
 
 ## Deferred Operational Work
 

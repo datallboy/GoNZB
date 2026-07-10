@@ -60,3 +60,38 @@ func TestChecksumValidationRejectsBadCounts(t *testing.T) {
 		t.Fatalf("expected invalid checksum counts to fail")
 	}
 }
+
+func TestValidationRequestAllowsFutureDueAt(t *testing.T) {
+	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
+	item := Request{
+		SchemaVersion:    "1.0",
+		Type:             TypeValidationRequest,
+		RequestID:        "valreq_1",
+		ReleaseID:        "rel_1",
+		ManifestID:       "man_1",
+		PoolID:           "pool.local",
+		RequestingNodeID: "node_requester",
+		CreatedAt:        now.Format(time.RFC3339),
+		DueAt:            now.Add(24 * time.Hour).Format(time.RFC3339),
+	}
+	if err := ValidateRequest(item, now, 2*time.Minute); err != nil {
+		t.Fatalf("expected validation request to validate: %v", err)
+	}
+}
+
+func TestValidationRequestRejectsMismatchedType(t *testing.T) {
+	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
+	item := Request{
+		SchemaVersion:    "1.0",
+		Type:             TypeArticleAvailabilityAttestation,
+		RequestID:        "valreq_1",
+		ReleaseID:        "rel_1",
+		ManifestID:       "man_1",
+		PoolID:           "pool.local",
+		RequestingNodeID: "node_requester",
+		CreatedAt:        now.Format(time.RFC3339),
+	}
+	if err := ValidateRequest(item, now, 2*time.Minute); err == nil {
+		t.Fatal("expected validation request type mismatch to fail")
+	}
+}

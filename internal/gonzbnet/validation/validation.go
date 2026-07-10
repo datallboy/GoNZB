@@ -12,6 +12,7 @@ const (
 	TypeValidatorCapacity              = "ValidatorCapacity"
 	TypeArticleAvailabilityAttestation = "ArticleAvailabilityAttestation"
 	TypeChecksumAttestation            = "ChecksumAttestation"
+	TypeValidationRequest              = "ValidationRequest"
 
 	ValidatorCapacityBodySchema              = "gonzbnet.ValidatorCapacity/1.0"
 	ArticleAvailabilityAttestationBodySchema = "gonzbnet.ArticleAvailabilityAttestation/1.0"
@@ -64,6 +65,31 @@ type ChecksumAttestation struct {
 	ChecksumsFailed   int     `json:"checksums_failed"`
 	Confidence        float64 `json:"confidence"`
 	Method            string  `json:"method"`
+}
+
+type Request struct {
+	SchemaVersion    string `json:"schema_version"`
+	Type             string `json:"type"`
+	RequestID        string `json:"request_id"`
+	ReleaseID        string `json:"release_id"`
+	ManifestID       string `json:"manifest_id"`
+	PoolID           string `json:"pool_id"`
+	RequestingNodeID string `json:"requesting_node_id"`
+	TargetNodeID     string `json:"target_node_id,omitempty"`
+	Reason           string `json:"reason,omitempty"`
+	Priority         int    `json:"priority,omitempty"`
+	DueAt            string `json:"due_at,omitempty"`
+	CreatedAt        string `json:"created_at"`
+}
+
+type Response struct {
+	SchemaVersion string `json:"schema_version"`
+	Type          string `json:"type"`
+	RequestID     string `json:"request_id"`
+	Status        string `json:"status"`
+	Code          string `json:"code,omitempty"`
+	Message       string `json:"message,omitempty"`
+	Queued        bool   `json:"queued"`
 }
 
 type ProviderScope struct {
@@ -142,6 +168,39 @@ func ValidateChecksum(in ChecksumAttestation, now time.Time, futureTolerance tim
 	}
 	if in.Confidence < 0 || in.Confidence > 1 {
 		return fmt.Errorf("confidence must be between 0 and 1")
+	}
+	return nil
+}
+
+func ValidateRequest(in Request, now time.Time, futureTolerance time.Duration) error {
+	if strings.TrimSpace(in.SchemaVersion) != "1.0" {
+		return fmt.Errorf("unsupported validation request schema_version")
+	}
+	if strings.TrimSpace(in.Type) != TypeValidationRequest {
+		return fmt.Errorf("unsupported validation request type")
+	}
+	if strings.TrimSpace(in.RequestID) == "" {
+		return fmt.Errorf("request_id is required")
+	}
+	if strings.TrimSpace(in.ReleaseID) == "" || strings.TrimSpace(in.ManifestID) == "" {
+		return fmt.Errorf("release_id and manifest_id are required")
+	}
+	if strings.TrimSpace(in.PoolID) == "" {
+		return fmt.Errorf("pool_id is required")
+	}
+	if strings.TrimSpace(in.RequestingNodeID) == "" {
+		return fmt.Errorf("requesting_node_id is required")
+	}
+	if in.Priority < 0 {
+		return fmt.Errorf("priority must not be negative")
+	}
+	if err := validateTime("created_at", in.CreatedAt, now, futureTolerance); err != nil {
+		return err
+	}
+	if strings.TrimSpace(in.DueAt) != "" {
+		if _, err := time.Parse(time.RFC3339, strings.TrimSpace(in.DueAt)); err != nil {
+			return fmt.Errorf("due_at must be RFC3339")
+		}
 	}
 	return nil
 }

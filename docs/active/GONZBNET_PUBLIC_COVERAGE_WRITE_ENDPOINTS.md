@@ -23,8 +23,9 @@ Behavior:
 
 Out of scope:
 
-- `POST /gonzbnet/v1/validation/request`
+- remote manifest transfer during validation request admission;
+- autonomous scanner execution.
 
-The validation request endpoint still needs a concrete request/event schema and
-task admission policy before implementation. Existing validator attestations
-continue to flow through the signed inbox path.
+`POST /gonzbnet/v1/validation/request` is implemented separately as a signed
+node-to-node task admission endpoint. Existing validator attestations continue
+to flow through the signed inbox path.
