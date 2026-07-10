@@ -22,11 +22,12 @@ func TestValidateMemberApprovalRequiresThreshold(t *testing.T) {
 		adminKeys[nodeID] = publicKey
 	}
 	body := MemberApproved{
-		PoolID:            "pool.private.movies",
-		SubjectNodeID:     "node_subject",
-		Role:              RoleMember,
-		ProposalEventID:   "evt_join",
-		ApprovalsRequired: 2,
+		PoolID:              "pool.private.movies",
+		SubjectNodeID:       "node_subject",
+		Role:                RoleMember,
+		ProposalEventID:     "evt_join",
+		AllowedCapabilities: []string{"scanner"},
+		ApprovalsRequired:   2,
 	}
 	body.Approvals = []Approval{
 		signApproval(t, admin1, body, "2026-07-09T12:00:00Z"),
@@ -34,6 +35,11 @@ func TestValidateMemberApprovalRequiresThreshold(t *testing.T) {
 	}
 	if err := ValidateMemberApproval(body, adminKeys); err != nil {
 		t.Fatalf("expected approval threshold to pass: %v", err)
+	}
+	tampered := body
+	tampered.AllowedCapabilities = []string{"scanner", "admin"}
+	if err := ValidateMemberApproval(tampered, adminKeys); err == nil {
+		t.Fatal("expected capability grant tampering to invalidate approvals")
 	}
 
 	body.Approvals = body.Approvals[:1]
@@ -158,13 +164,7 @@ func testIdentity(t *testing.T) *identity.Identity {
 func signApproval(t *testing.T, signer *identity.Identity, body MemberApproved, approvedAt string) Approval {
 	t.Helper()
 	nodeID, _ := signer.NodeID(context.Background())
-	payload, err := canonical.Marshal(map[string]any{
-		"pool_id":           body.PoolID,
-		"proposal_event_id": body.ProposalEventID,
-		"subject_node_id":   body.SubjectNodeID,
-		"role":              body.Role,
-		"approved_at":       approvedAt,
-	})
+	payload, err := canonical.Marshal(MemberApprovalPayload(body, approvedAt))
 	if err != nil {
 		t.Fatalf("canonical approval: %v", err)
 	}

@@ -14,6 +14,7 @@ import (
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/gonzbnet/canonical"
 	"github.com/datallboy/gonzb/internal/gonzbnet/coverage"
+	"github.com/datallboy/gonzb/internal/gonzbnet/eventbody"
 	"github.com/datallboy/gonzb/internal/gonzbnet/events"
 	"github.com/datallboy/gonzb/internal/gonzbnet/gossip"
 	"github.com/datallboy/gonzb/internal/gonzbnet/health"
@@ -1210,6 +1211,11 @@ func (ctrl *GoNZBNetController) acceptInboxEvent(ctx context.Context, store gonz
 		reason := "unsupported event_type"
 		_ = store.AppendRejectedFederationEvent(ctx, event.EventID, event.AuthorNodeID, event.EventType, raw, reason)
 		return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: federationVerificationCode(reason), Message: reason}
+	}
+	if err := eventbody.Validate(event, time.Now().UTC(), time.Duration(cfg.TimeToleranceSeconds)*time.Second); err != nil {
+		reason := err.Error()
+		_ = store.AppendRejectedFederationEvent(ctx, event.EventID, event.AuthorNodeID, event.EventType, raw, reason)
+		return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "invalid_schema", Message: reason}
 	}
 	if pools.EventIsPoolControl(event.EventType) {
 		if err := store.ValidateFederationPoolControlEvent(ctx, event); err != nil {

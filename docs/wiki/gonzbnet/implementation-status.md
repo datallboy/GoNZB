@@ -9,11 +9,14 @@ Completed during this audit:
 
 - pool-level get/resolve authorization now runs before shared blob-cache reads;
 - shared aggregator cache rows are no longer used for GoNZBNet search results.
+- typed event bodies are validated before accepted storage, including
+  ReleaseCard identity recomputation and private-field rejection;
+- pool-member capability grants and limits are signed in approval events.
 
 The current required work is:
 
-- validate typed event bodies before accepted storage and keep projection
-  failures quarantined;
+- make accepted append plus projection transactional so database projection
+  failures cannot leave an accepted, unprojected event;
 - authenticate pool-scoped read endpoints and apply pool visibility to outbox
   and event reads;
 - make manual pull synchronize and project all supported event types;

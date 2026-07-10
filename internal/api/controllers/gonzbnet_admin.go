@@ -124,10 +124,12 @@ type poolJoinResponse struct {
 }
 
 type poolMemberApprovalRequest struct {
-	Role              string           `json:"role"`
-	ProposalEventID   string           `json:"proposal_event_id"`
-	ApprovalsRequired int              `json:"approvals_required"`
-	Approvals         []pools.Approval `json:"approvals"`
+	Role                string           `json:"role"`
+	ProposalEventID     string           `json:"proposal_event_id"`
+	AllowedCapabilities []string         `json:"allowed_capabilities"`
+	Limits              json.RawMessage  `json:"limits"`
+	ApprovalsRequired   int              `json:"approvals_required"`
+	Approvals           []pools.Approval `json:"approvals"`
 }
 
 type poolMemberApprovalResponse struct {
@@ -776,14 +778,16 @@ func (ctrl *GoNZBNetAdminController) ApprovePoolMember(c *echo.Context) error {
 	}
 	now := time.Now().UTC()
 	body := pools.MemberApproved{
-		SchemaVersion:     "1.0",
-		Type:              pools.EventTypePoolMemberApproved,
-		PoolID:            poolID,
-		SubjectNodeID:     subjectNodeID,
-		Role:              role,
-		ProposalEventID:   proposalEventID,
-		ApprovalsRequired: required,
-		Approvals:         append([]pools.Approval(nil), req.Approvals...),
+		SchemaVersion:       "1.0",
+		Type:                pools.EventTypePoolMemberApproved,
+		PoolID:              poolID,
+		SubjectNodeID:       subjectNodeID,
+		Role:                role,
+		ProposalEventID:     proposalEventID,
+		AllowedCapabilities: capability.Normalize(req.AllowedCapabilities),
+		Limits:              req.Limits,
+		ApprovalsRequired:   required,
+		Approvals:           append([]pools.Approval(nil), req.Approvals...),
 	}
 	approval, err := signPoolMemberApproval(c.Request().Context(), nodeIdentity, body, now.Format(time.RFC3339))
 	if err != nil {
@@ -1783,13 +1787,7 @@ func signPoolMemberApproval(ctx context.Context, signer events.Identity, body po
 	if err != nil {
 		return pools.Approval{}, err
 	}
-	payload, err := canonical.Marshal(map[string]any{
-		"pool_id":           body.PoolID,
-		"proposal_event_id": body.ProposalEventID,
-		"subject_node_id":   body.SubjectNodeID,
-		"role":              body.Role,
-		"approved_at":       approvedAt,
-	})
+	payload, err := canonical.Marshal(pools.MemberApprovalPayload(body, approvedAt))
 	if err != nil {
 		return pools.Approval{}, fmt.Errorf("canonical approval: %w", err)
 	}

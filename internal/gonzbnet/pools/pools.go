@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -97,14 +98,16 @@ type Approval struct {
 }
 
 type MemberApproved struct {
-	SchemaVersion     string     `json:"schema_version"`
-	Type              string     `json:"type"`
-	PoolID            string     `json:"pool_id"`
-	SubjectNodeID     string     `json:"subject_node_id"`
-	Role              string     `json:"role"`
-	ProposalEventID   string     `json:"proposal_event_id"`
-	ApprovalsRequired int        `json:"approvals_required"`
-	Approvals         []Approval `json:"approvals"`
+	SchemaVersion       string          `json:"schema_version"`
+	Type                string          `json:"type"`
+	PoolID              string          `json:"pool_id"`
+	SubjectNodeID       string          `json:"subject_node_id"`
+	Role                string          `json:"role"`
+	ProposalEventID     string          `json:"proposal_event_id"`
+	AllowedCapabilities []string        `json:"allowed_capabilities,omitempty"`
+	Limits              json.RawMessage `json:"limits,omitempty"`
+	ApprovalsRequired   int             `json:"approvals_required"`
+	Approvals           []Approval      `json:"approvals"`
 }
 
 type MemberRevoked struct {
@@ -262,14 +265,25 @@ func ValidateMemberApproval(body MemberApproved, adminKeys map[string]ed25519.Pu
 		required = 1
 	}
 	return validateApprovals(required, body.Approvals, adminKeys, func(approval Approval) (map[string]any, error) {
-		return map[string]any{
-			"pool_id":           body.PoolID,
-			"proposal_event_id": body.ProposalEventID,
-			"subject_node_id":   body.SubjectNodeID,
-			"role":              body.Role,
-			"approved_at":       approval.ApprovedAt,
-		}, nil
+		return MemberApprovalPayload(body, approval.ApprovedAt), nil
 	})
+}
+
+func MemberApprovalPayload(body MemberApproved, approvedAt string) map[string]any {
+	payload := map[string]any{
+		"pool_id":           body.PoolID,
+		"proposal_event_id": body.ProposalEventID,
+		"subject_node_id":   body.SubjectNodeID,
+		"role":              body.Role,
+		"approved_at":       approvedAt,
+	}
+	if len(body.AllowedCapabilities) > 0 {
+		payload["allowed_capabilities"] = body.AllowedCapabilities
+	}
+	if len(body.Limits) > 0 {
+		payload["limits"] = body.Limits
+	}
+	return payload
 }
 
 func ValidateMemberRevocation(body MemberRevoked, adminKeys map[string]ed25519.PublicKey) error {

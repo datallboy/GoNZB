@@ -152,6 +152,8 @@ Current implementation state:
   keeps public profiles from advertising unsupported live user search.
 - Pool RBAC cleanup authorizes federated gets before shared blob-cache reads and
   prevents pool-less aggregator cache rows from bypassing search isolation.
+- Receive validation cleanup rejects malformed typed bodies before accepted
+  storage and signs pool-member capability grants as part of approval events.
 
 Maintained pages:
 
@@ -223,3 +225,4 @@ Maintained pages:
 - [Security: Manifest Message-IDs](./security-manifest-message-ids.md)
 - [Live Query Privacy Hardening](./live-query-privacy-hardening.md)
 - [Pool RBAC And Cache Isolation](./rbac-cache-isolation.md)
+- [Receive Body Validation](./receive-body-validation.md)

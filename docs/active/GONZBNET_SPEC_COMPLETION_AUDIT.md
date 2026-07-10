@@ -33,43 +33,46 @@ Completed during this audit:
   generic aggregator blob-cache reads.
 - Shared `aggregator_release_cache` rows are no longer used as GoNZBNet search
   results because they do not retain pool identity.
+- Inbox, gossip, and pull now validate typed bodies before accepted storage;
+  ReleaseCard identity is recomputed and private user/context fields are
+  rejected.
+- PoolMemberApproved now signs and projects allowed capabilities and limits.
 
 ### Critical correctness and privacy
 
-1. Validate every event body schema before an event is marked accepted. The
-   current inbox and pull paths append envelope-valid events before some
-   projection validators run, and ReleaseCard has no receive-side validator.
-2. Protect pool-scoped outbox, event, member, checkpoint, and peer reads with
+1. Protect pool-scoped outbox, event, member, checkpoint, and peer reads with
    signed node requests and pool visibility checks. The current core read
    endpoints are public even in private-pool mode.
-3. Sign pull outbox requests and synchronize all accepted event types. The
+2. Sign pull outbox requests and synchronize all accepted event types. The
    current pull client requests only `ReleaseCard`, so pull-only peers do not
    receive health, trust, moderation, pool, validation, or coverage events.
 
 ### Missing contribution behavior
 
-4. Build and cache ResolutionManifests from local indexer/scan data when
+3. Build and cache ResolutionManifests from local indexer/scan data when
    `manifest_builder_enabled` is active. At present manifests only enter the
    cache through remote resolution, so a network has no complete local manifest
    origin path.
-5. Execute validator tiers against the local NNTP provider. The current
+4. Execute validator tiers against the local NNTP provider. The current
    validator emits structural `unverified` attestations and does not perform the
    spec's article/segment existence checks.
-6. Publish scanner capacity/heartbeat/group observations and periodic coverage
+5. Publish scanner capacity/heartbeat/group observations and periodic coverage
    checkpoints from scanner execution. The schemas and projections exist, but
    the scanner loop currently emits claims and terminal outcomes only.
-7. Enforce manifest-cache byte/TTL/serving settings. These settings are typed
+6. Enforce manifest-cache byte/TTL/serving settings. These settings are typed
    and displayed but do not currently control cache retention or serving.
 
 ### Protocol and security conformance
 
-8. Replace or prove the canonical JSON implementation against RFC 8785 vectors,
+7. Replace or prove the canonical JSON implementation against RFC 8785 vectors,
     including ECMAScript number serialization, UTF-16 property ordering, and
     duplicate-key rejection. The package currently has no direct tests.
-9. Validate per-author chain continuity (`previous_event_id` and monotonic
+8. Validate per-author chain continuity (`previous_event_id` and monotonic
     sequence), not only same-sequence conflicts.
-10. Make capabilities truthful. The node currently advertises gzip/zstd and
+9. Make capabilities truthful. The node currently advertises gzip/zstd and
     event types that the normal receive path does not implement.
+10. Reconcile wire-body differences where current typed objects diverge from
+    the specification, especially `ManifestAvailability` and coverage events.
 11. Complete config semantics and aliases for controls that affect behavior,
     including manifest-specific rate limits, remote get timeout, configurable
     route base path, and currently display-only addendum limits.

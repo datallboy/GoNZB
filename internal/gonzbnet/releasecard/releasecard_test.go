@@ -62,6 +62,33 @@ func TestMapLocalReleaseDoesNotGenerateManifestIDWithoutSegments(t *testing.T) {
 	}
 }
 
+func TestValidateRecomputesReleaseID(t *testing.T) {
+	card, err := MapLocalRelease(testLocalRelease())
+	if err != nil {
+		t.Fatalf("map release: %v", err)
+	}
+	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
+	if err := Validate(card, now, 2*time.Minute); err != nil {
+		t.Fatalf("validate release card: %v", err)
+	}
+
+	card.SizeBytes++
+	if err := Validate(card, now, 2*time.Minute); err == nil {
+		t.Fatal("expected changed release identity core to fail validation")
+	}
+}
+
+func TestValidateRejectsMalformedReleaseCard(t *testing.T) {
+	card, err := MapLocalRelease(testLocalRelease())
+	if err != nil {
+		t.Fatalf("map release: %v", err)
+	}
+	card.Groups = []string{"invalid group"}
+	if err := Validate(card, time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC), 2*time.Minute); err == nil {
+		t.Fatal("expected invalid group to fail validation")
+	}
+}
+
 func testLocalRelease() LocalRelease {
 	posted := time.Date(2026, 7, 7, 10, 55, 0, 0, time.UTC)
 	file1Posted := time.Date(2026, 7, 7, 10, 56, 0, 0, time.UTC)
