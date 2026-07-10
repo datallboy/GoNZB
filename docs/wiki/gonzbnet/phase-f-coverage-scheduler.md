@@ -41,5 +41,6 @@ rendezvous helper and the stale claimant is excluded from selection.
 ## Boundary
 
 Manual and scheduler modes remain review-gated. Time-window assignment execution
-is implemented in the scrape loop by resolving windows to article ranges.
-Time-window stale-claim failover remains future work.
+is implemented in the scrape loop by resolving windows to article ranges. Stale
+time-window failover uses the same signed replacement assignment flow as stale
+article ranges.

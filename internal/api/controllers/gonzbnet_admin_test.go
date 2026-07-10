@@ -854,6 +854,10 @@ func (s *fakeGoNZBNetAdminStore) ListStaleCoverageRangeClaims(context.Context, s
 	return s.staleClaims, nil
 }
 
+func (s *fakeGoNZBNetAdminStore) ListStaleCoverageTimeWindowClaims(context.Context, string, int) ([]pgindex.CoverageClaimRecord, error) {
+	return nil, nil
+}
+
 func (s *fakeGoNZBNetAdminStore) ListCoverageScannerNodes(context.Context, string, float64) ([]pgindex.CoverageScannerNode, error) {
 	return s.scannerNodes, nil
 }

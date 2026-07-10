@@ -62,6 +62,7 @@ type gonzbnetAdminStore interface {
 	SuggestCoverageWork(ctx context.Context, params pgindex.CoverageWorkSuggestionParams) ([]pgindex.CoverageWorkSuggestion, error)
 	BuildCoverageSchedulerPlan(ctx context.Context, params pgindex.CoverageWorkSuggestionParams) (pgindex.CoverageSchedulerPlan, error)
 	ListStaleCoverageRangeClaims(ctx context.Context, poolID string, limit int) ([]pgindex.CoverageClaimRecord, error)
+	ListStaleCoverageTimeWindowClaims(ctx context.Context, poolID string, limit int) ([]pgindex.CoverageClaimRecord, error)
 	ListCoverageScannerNodes(ctx context.Context, poolID string, minTrustScore float64) ([]pgindex.CoverageScannerNode, error)
 	CoverageAssignmentExists(ctx context.Context, assignmentID string) (bool, error)
 	ListFederationNodeCapabilities(ctx context.Context) ([]pgindex.NodeCapabilityView, error)

@@ -123,8 +123,8 @@ Current implementation state:
 - Time-window scanner assignment cleanup lets the scrape loop resolve local
   time-window `CoverageAssignment` suggestions to article ranges and claim them
   with signed `TimeWindowClaim` events.
-- Stale-claim reassignment cleanup creates signed replacement range assignments
-  in automatic coverage mode.
+- Stale-claim reassignment cleanup creates signed replacement range and
+  time-window assignments in automatic coverage mode.
 - Config addendum alignment adds typed scanner, coverage, validation, and
   manifest-cache settings with direct `GONZBNET_*` aliases.
 - Security cleanup adds temporary in-memory throttling after repeated
@@ -133,8 +133,8 @@ Current implementation state:
   capacity, and provider-scope advertisement.
 - Core checklist evidence maps the original final implementation checklist to
   current code and test coverage.
-- Final checklist audit documents implemented addendum requirements and the
-  remaining stale time-window failover boundary.
+- Final checklist audit documents implemented addendum requirements and current
+  deferred standalone relay boundaries.
 - Security cleanup rejects remote signed events with future `created_at` /
   `not_before` windows, expired `expires_at` values, or event ages beyond
   `gonzbnet.max_event_age_hours`.

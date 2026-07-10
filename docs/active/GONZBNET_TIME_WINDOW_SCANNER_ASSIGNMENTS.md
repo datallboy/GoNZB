@@ -23,5 +23,5 @@ expressed as a time window instead of a concrete article-number range.
   the target group/provider.
 - If a window cannot be resolved to a concrete range, the scrape loop skips it
   without publishing a claim or mutating scrape cursors.
-- Stale time-window reassignment remains separate from stale article-range
-  reassignment.
+- Stale time-window reassignment is handled by the stale-claim reassigner in
+  automatic coverage mode.

@@ -62,6 +62,5 @@ trusted, provider-scope-compatible remote active/completed ranges without
 exposing user or provider credentials.
 
 Automatic creation of replacement assignments is implemented for stale article
-range claims in automatic coverage mode. Time-window assignment execution is
-implemented through local article-range resolution; stale time-window failover
-remains future work.
+range and time-window claims in automatic coverage mode. Time-window assignment
+execution is implemented through local article-range resolution.

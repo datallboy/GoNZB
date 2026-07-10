@@ -43,6 +43,6 @@ Scanner coordination boundary:
   coverage coordination is enabled.
 - Existing range `CoverageAssignment` suggestions can be consumed automatically.
 - Automatic creation of replacement assignments is implemented for stale article
-  range claims in automatic coverage mode.
+  range and time-window claims in automatic coverage mode.
 - Time-window assignment execution is implemented by resolving windows to local
-  article ranges. Time-window stale-claim failover remains future work.
+  article ranges.

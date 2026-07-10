@@ -37,17 +37,19 @@ type CoverageAssignmentRecord struct {
 }
 
 type CoverageClaimRecord struct {
-	ClaimID      string    `json:"claim_id"`
-	ClaimType    string    `json:"claim_type"`
-	AssignmentID string    `json:"assignment_id,omitempty"`
-	PoolID       string    `json:"pool_id"`
-	Group        string    `json:"group"`
-	NodeID       string    `json:"node_id"`
-	RangeStart   int64     `json:"range_start,omitempty"`
-	RangeEnd     int64     `json:"range_end,omitempty"`
-	ClaimedAt    time.Time `json:"claimed_at"`
-	ExpiresAt    time.Time `json:"expires_at"`
-	Status       string    `json:"status"`
+	ClaimID      string     `json:"claim_id"`
+	ClaimType    string     `json:"claim_type"`
+	AssignmentID string     `json:"assignment_id,omitempty"`
+	PoolID       string     `json:"pool_id"`
+	Group        string     `json:"group"`
+	NodeID       string     `json:"node_id"`
+	RangeStart   int64      `json:"range_start,omitempty"`
+	RangeEnd     int64      `json:"range_end,omitempty"`
+	WindowStart  *time.Time `json:"window_start,omitempty"`
+	WindowEnd    *time.Time `json:"window_end,omitempty"`
+	ClaimedAt    time.Time  `json:"claimed_at"`
+	ExpiresAt    time.Time  `json:"expires_at"`
+	Status       string     `json:"status"`
 }
 
 type CoverageOutcomeRecord struct {
@@ -593,6 +595,53 @@ func (s *Store) ListStaleCoverageRangeClaims(ctx context.Context, poolID string,
 	return out, rows.Err()
 }
 
+func (s *Store) ListStaleCoverageTimeWindowClaims(ctx context.Context, poolID string, limit int) ([]CoverageClaimRecord, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("pgindex store is not initialized")
+	}
+	poolID = firstNonBlank(poolID, "pool.local")
+	if limit <= 0 || limit > 100 {
+		limit = 25
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT c.claim_id, COALESCE(c.assignment_id, ''), c.pool_id,
+		       c.group_name, c.node_id, c.window_start, c.window_end,
+		       c.claimed_at, c.expires_at, c.status
+		FROM coverage_claims c
+		WHERE c.pool_id = $1
+		  AND c.claim_type = 'time_window'
+		  AND c.status = 'active'
+		  AND c.expires_at <= NOW()
+		  AND c.window_start IS NOT NULL
+		  AND c.window_end IS NOT NULL
+		  AND c.window_end > c.window_start
+		  AND NOT EXISTS (
+		    SELECT 1 FROM coverage_range_outcomes o
+		    WHERE o.claim_id = c.claim_id
+		  )
+		ORDER BY c.expires_at
+		LIMIT $2`, poolID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []CoverageClaimRecord{}
+	for rows.Next() {
+		var item CoverageClaimRecord
+		var windowStart, windowEnd time.Time
+		item.ClaimType = "time_window"
+		if err := rows.Scan(&item.ClaimID, &item.AssignmentID, &item.PoolID, &item.Group, &item.NodeID, &windowStart, &windowEnd, &item.ClaimedAt, &item.ExpiresAt, &item.Status); err != nil {
+			return nil, err
+		}
+		windowStart = windowStart.UTC()
+		windowEnd = windowEnd.UTC()
+		item.WindowStart = &windowStart
+		item.WindowEnd = &windowEnd
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) ListCoverageScannerNodes(ctx context.Context, poolID string, minTrustScore float64) ([]CoverageScannerNode, error) {
 	if s == nil || s.db == nil {
 		return nil, fmt.Errorf("pgindex store is not initialized")
@@ -870,7 +919,8 @@ func (s *Store) listCoverageClaims(ctx context.Context, poolID string, stale boo
 	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`
 		SELECT c.claim_id, c.claim_type, COALESCE(c.assignment_id, ''), c.pool_id,
 		       c.group_name, c.node_id, COALESCE(c.range_start, 0),
-		       COALESCE(c.range_end, 0), c.claimed_at, c.expires_at, c.status
+		       COALESCE(c.range_end, 0), c.window_start, c.window_end,
+		       c.claimed_at, c.expires_at, c.status
 		FROM coverage_claims c
 		WHERE c.pool_id = $1
 		  AND c.status = 'active'
@@ -888,9 +938,12 @@ func (s *Store) listCoverageClaims(ctx context.Context, poolID string, stale boo
 	out := []CoverageClaimRecord{}
 	for rows.Next() {
 		var item CoverageClaimRecord
-		if err := rows.Scan(&item.ClaimID, &item.ClaimType, &item.AssignmentID, &item.PoolID, &item.Group, &item.NodeID, &item.RangeStart, &item.RangeEnd, &item.ClaimedAt, &item.ExpiresAt, &item.Status); err != nil {
+		var windowStart, windowEnd nullableTime
+		if err := rows.Scan(&item.ClaimID, &item.ClaimType, &item.AssignmentID, &item.PoolID, &item.Group, &item.NodeID, &item.RangeStart, &item.RangeEnd, &windowStart, &windowEnd, &item.ClaimedAt, &item.ExpiresAt, &item.Status); err != nil {
 			return nil, err
 		}
+		item.WindowStart = windowStart.ptr()
+		item.WindowEnd = windowEnd.ptr()
 		out = append(out, item)
 	}
 	return out, rows.Err()
