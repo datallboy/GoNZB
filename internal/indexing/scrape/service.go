@@ -87,10 +87,11 @@ type RangeCoordinator interface {
 }
 
 type RangeRequest struct {
-	Mode       string
-	Group      string
-	RangeStart int64
-	RangeEnd   int64
+	Mode         string
+	AssignmentID string
+	Group        string
+	RangeStart   int64
+	RangeEnd     int64
 }
 
 type RangeDecision struct {
@@ -144,6 +145,7 @@ type runMetrics struct {
 	CheckpointUpdates  int
 	DeferredRanges     int
 	RangesSkipped      int
+	AssignedRanges     int
 	RotationStartIndex int
 	RotationNextIndex  int
 }
@@ -157,6 +159,7 @@ type groupRunResult struct {
 	CheckpointUpdates  int
 	DeferredRanges     int
 	RangesSkipped      int
+	AssignedRanges     int
 }
 
 type groupRunOutcome struct {
@@ -233,7 +236,8 @@ func (s *Service) runModeWithMetrics(ctx context.Context, mode string) (map[stri
 	}
 
 	groups := s.effectiveGroups()
-	if len(groups) == 0 {
+	hasAssignedRanges := s.hasAssignedRangeProvider()
+	if len(groups) == 0 && !hasAssignedRanges {
 		return (&runMetrics{Mode: mode, BatchSize: s.opts.BatchSize}).toMap(), nil
 	}
 	if s.provider == nil {
@@ -256,7 +260,10 @@ func (s *Service) runModeWithMetrics(ctx context.Context, mode string) (map[stri
 	}
 
 	metrics := &runMetrics{Mode: mode, BatchSize: s.opts.BatchSize}
-	runErr := s.runGroups(ctx, providerID, mode, groups, metrics)
+	runErr := s.runAssignedRanges(ctx, providerID, mode, metrics)
+	if runErr == nil {
+		runErr = s.runGroups(ctx, providerID, mode, groups, metrics)
+	}
 
 	status := "completed"
 	errText := ""
@@ -366,6 +373,7 @@ func (s *Service) runGroups(ctx context.Context, providerID int64, mode string, 
 		metrics.CheckpointUpdates += outcome.result.CheckpointUpdates
 		metrics.DeferredRanges += outcome.result.DeferredRanges
 		metrics.RangesSkipped += outcome.result.RangesSkipped
+		metrics.AssignedRanges += outcome.result.AssignedRanges
 
 		if outcome.err != nil && !isContextCancellation(outcome.err) && firstErr == nil {
 			firstErr = outcome.err
@@ -385,6 +393,105 @@ func (s *Service) runGroup(ctx context.Context, providerID int64, mode, group st
 	default:
 		return groupRunResult{}, fmt.Errorf("unsupported scrape mode %q", mode)
 	}
+}
+
+type assignedRangeProvider interface {
+	AssignedScrapeRanges(ctx context.Context, mode string, limit int) ([]RangeRequest, error)
+}
+
+func (s *Service) hasAssignedRangeProvider() bool {
+	if s == nil || s.opts.RangeCoordinator == nil {
+		return false
+	}
+	_, ok := s.opts.RangeCoordinator.(assignedRangeProvider)
+	return ok
+}
+
+func (s *Service) runAssignedRanges(ctx context.Context, providerID int64, mode string, metrics *runMetrics) error {
+	provider, ok := s.opts.RangeCoordinator.(assignedRangeProvider)
+	if !ok {
+		return nil
+	}
+	limit := s.opts.MaxBatches
+	if limit <= 0 {
+		limit = s.opts.Concurrency
+	}
+	if limit <= 0 {
+		limit = 1
+	}
+	assignments, err := provider.AssignedScrapeRanges(ctx, mode, limit)
+	if err != nil {
+		return fmt.Errorf("list assigned scrape ranges: %w", err)
+	}
+	for _, assignment := range assignments {
+		if strings.TrimSpace(assignment.Group) == "" || assignment.RangeStart <= 0 || assignment.RangeEnd < assignment.RangeStart {
+			continue
+		}
+		result, err := s.runExplicitRange(ctx, providerID, mode, assignment)
+		metrics.GroupsProcessed++
+		if result.HadWork {
+			metrics.GroupsWithWork++
+		}
+		metrics.RangesFetched += result.RangesFetched
+		metrics.ArticleHeadersSeen += result.ArticleHeadersSeen
+		metrics.ArticlesInserted += result.ArticlesInserted
+		metrics.CutoffFiltered += result.CutoffFiltered
+		metrics.CheckpointUpdates += result.CheckpointUpdates
+		metrics.DeferredRanges += result.DeferredRanges
+		metrics.RangesSkipped += result.RangesSkipped
+		metrics.AssignedRanges += result.AssignedRanges
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Service) runExplicitRange(ctx context.Context, providerID int64, mode string, request RangeRequest) (groupRunResult, error) {
+	group := strings.TrimSpace(request.Group)
+	newsgroupID, err := s.repo.EnsureNewsgroup(ctx, group)
+	if err != nil {
+		return groupRunResult{}, fmt.Errorf("ensure newsgroup %s: %w", group, err)
+	}
+	if err := s.repo.UpsertIndexerGroupProfile(ctx, providerID, newsgroupID, "warm", "gonzbnet_coverage_assignment"); err != nil {
+		return groupRunResult{}, err
+	}
+	if deferred, err := s.deferRangeWhenRecoveryPressured(ctx, mode, providerID, newsgroupID, group, request.RangeStart, request.RangeEnd); err != nil {
+		return groupRunResult{}, err
+	} else if deferred {
+		return groupRunResult{HadWork: true, DeferredRanges: 1, AssignedRanges: 1}, nil
+	}
+	decision, skipped, err := s.beginScrapeRange(ctx, mode, group, request.RangeStart, request.RangeEnd, request.AssignmentID)
+	if err != nil {
+		return groupRunResult{}, err
+	}
+	if skipped {
+		return groupRunResult{HadWork: true, RangesSkipped: 1, AssignedRanges: 1}, nil
+	}
+	headers, inserted, _, cutoffFiltered, actualProviderID, err := s.fetchInsertRange(ctx, providerID, newsgroupID, group, request.RangeStart, request.RangeEnd, nil, "")
+	if err != nil {
+		_ = s.failScrapeRange(ctx, decision, err)
+		return groupRunResult{}, err
+	}
+	_ = actualProviderID
+	if err := s.completeScrapeRange(ctx, decision, RangeResult{
+		Mode:             mode,
+		Group:            group,
+		RangeStart:       request.RangeStart,
+		RangeEnd:         request.RangeEnd,
+		ArticleHeaders:   len(headers),
+		ArticlesInserted: inserted,
+	}); err != nil {
+		return groupRunResult{}, err
+	}
+	return groupRunResult{
+		HadWork:            true,
+		RangesFetched:      1,
+		ArticleHeadersSeen: int64(len(headers)),
+		ArticlesInserted:   inserted,
+		CutoffFiltered:     int64(cutoffFiltered),
+		AssignedRanges:     1,
+	}, nil
 }
 
 func (s *Service) runLatestGroup(ctx context.Context, providerID int64, group string) (groupRunResult, error) {
@@ -469,7 +576,7 @@ func (s *Service) runLatestGroup(ctx context.Context, providerID int64, group st
 	} else if deferred {
 		return groupRunResult{HadWork: true, DeferredRanges: 1}, nil
 	}
-	decision, skipped, err := s.beginScrapeRange(ctx, "latest", group, start, to)
+	decision, skipped, err := s.beginScrapeRange(ctx, "latest", group, start, to, "")
 	if err != nil {
 		return groupRunResult{}, err
 	}
@@ -619,7 +726,7 @@ func (s *Service) runBackfillGroup(ctx context.Context, providerID int64, group 
 		}
 		return groupRunResult{HadWork: true, DeferredRanges: 1, CheckpointUpdates: 1}, nil
 	}
-	decision, skipped, err := s.beginScrapeRange(ctx, "backfill", group, start, end)
+	decision, skipped, err := s.beginScrapeRange(ctx, "backfill", group, start, end, "")
 	if err != nil {
 		return groupRunResult{}, err
 	}
@@ -708,21 +815,25 @@ func (s *Service) runBackfillGroup(ctx context.Context, providerID int64, group 
 	}, nil
 }
 
-func (s *Service) beginScrapeRange(ctx context.Context, mode, group string, from, to int64) (RangeDecision, bool, error) {
+func (s *Service) beginScrapeRange(ctx context.Context, mode, group string, from, to int64, assignmentID string) (RangeDecision, bool, error) {
 	if s.opts.RangeCoordinator == nil || from <= 0 || to < from {
 		return RangeDecision{}, false, nil
 	}
 	decision, err := s.opts.RangeCoordinator.BeginScrapeRange(ctx, RangeRequest{
-		Mode:       mode,
-		Group:      group,
-		RangeStart: from,
-		RangeEnd:   to,
+		Mode:         mode,
+		AssignmentID: strings.TrimSpace(assignmentID),
+		Group:        group,
+		RangeStart:   from,
+		RangeEnd:     to,
 	})
 	if err != nil {
 		return RangeDecision{}, false, fmt.Errorf("begin coordinated scrape range %s %d-%d: %w", group, from, to, err)
 	}
 	if decision.Group == "" {
 		decision.Group = group
+	}
+	if decision.AssignmentID == "" {
+		decision.AssignmentID = strings.TrimSpace(assignmentID)
 	}
 	if decision.RangeStart == 0 {
 		decision.RangeStart = from
@@ -962,6 +1073,7 @@ func (m *runMetrics) toMap() map[string]any {
 		"checkpoint_updates":   m.CheckpointUpdates,
 		"deferred_ranges":      m.DeferredRanges,
 		"ranges_skipped":       m.RangesSkipped,
+		"assigned_ranges":      m.AssignedRanges,
 		"batch_size":           m.BatchSize,
 		"rotation_start_index": m.RotationStartIndex,
 		"rotation_next_index":  m.RotationNextIndex,

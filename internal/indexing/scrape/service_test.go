@@ -309,6 +309,57 @@ func TestRunLatestCompletesCoordinatedRangeAfterFetch(t *testing.T) {
 	}
 }
 
+func TestRunLatestProcessesAssignedRangeWithoutConfiguredGroups(t *testing.T) {
+	repo := &fakeScrapeRepo{}
+	coord := &fakeRangeCoordinator{
+		beginDecision: RangeDecision{ClaimID: "claim-1", AssignmentID: "assignment-1"},
+		assigned: []RangeRequest{{
+			AssignmentID: "assignment-1",
+			Group:        "alt.binaries.assigned",
+			RangeStart:   50,
+			RangeEnd:     52,
+		}},
+	}
+	var gotGroup string
+	var gotFrom, gotTo int64
+	provider := fakeScrapeProvider{
+		xoverFn: func(_ context.Context, group string, from, to int64) ([]OverviewHeader, error) {
+			gotGroup = group
+			gotFrom = from
+			gotTo = to
+			return []OverviewHeader{
+				{ArticleNumber: 50, MessageID: "<50@test>"},
+				{ArticleNumber: 51, MessageID: "<51@test>"},
+				{ArticleNumber: 52, MessageID: "<52@test>"},
+			}, nil
+		},
+	}
+	svc := NewService(repo, provider, testScrapeLogger{}, Options{
+		BatchSize:        3,
+		RangeCoordinator: coord,
+	})
+
+	metrics, err := svc.RunLatestOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("RunLatestOnceWithMetrics() error = %v", err)
+	}
+	if gotGroup != "alt.binaries.assigned" || gotFrom != 50 || gotTo != 52 {
+		t.Fatalf("expected assigned XOVER range, got group=%s range=%d-%d", gotGroup, gotFrom, gotTo)
+	}
+	if len(coord.completed) != 1 || coord.completed[0].RangeStart != 50 || coord.completed[0].RangeEnd != 52 {
+		t.Fatalf("expected assigned range completion, got %+v", coord.completed)
+	}
+	if repo.latestCheckpointUpdated || repo.backfillCheckpointUpdated {
+		t.Fatalf("assigned range should not update scrape cursors")
+	}
+	if got := metrics["assigned_ranges"]; got != 1 {
+		t.Fatalf("expected assigned_ranges=1, got %+v", got)
+	}
+	if got := metrics["articles_inserted"]; got != int64(3) {
+		t.Fatalf("expected articles_inserted=3, got %+v", got)
+	}
+}
+
 func TestRunLatestJumpsToHeadAndSeedsBackfillForLargeGap(t *testing.T) {
 	repo := &fakeScrapeRepo{latestCheckpoint: 100, backfillCheckpoint: 25}
 	var gotFrom, gotTo int64
@@ -590,9 +641,14 @@ type fakeRangeCoordinator struct {
 	beginErr      error
 	completeErr   error
 	failErr       error
+	assigned      []RangeRequest
 	requests      []RangeRequest
 	completed     []RangeResult
 	failed        []error
+}
+
+func (f *fakeRangeCoordinator) AssignedScrapeRanges(context.Context, string, int) ([]RangeRequest, error) {
+	return f.assigned, nil
 }
 
 func (f *fakeRangeCoordinator) BeginScrapeRange(_ context.Context, request RangeRequest) (RangeDecision, error) {
