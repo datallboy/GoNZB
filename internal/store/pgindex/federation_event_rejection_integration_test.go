@@ -5,10 +5,12 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/datallboy/gonzb/internal/gonzbnet/events"
 	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
 	"github.com/datallboy/gonzb/internal/gonzbnet/releasecard"
+	"github.com/datallboy/gonzb/internal/gonzbnet/validation"
 )
 
 func TestFederationAcceptedAndRejectedEventPersistence(t *testing.T) {
@@ -41,15 +43,15 @@ func TestFederationAcceptedAndRejectedEventPersistence(t *testing.T) {
 		_, _ = store.DB().ExecContext(ctx, `DELETE FROM federation_events WHERE author_node_id = $1`, nodeID)
 		_, _ = store.DB().ExecContext(ctx, `DELETE FROM federation_nodes WHERE node_id = $1`, nodeID)
 	})
-	event, validation, err := events.Create(ctx, node, events.CreateOptions{
+	event, eventValidation, err := events.Create(ctx, node, events.CreateOptions{
 		EventType: "NodeProfile", Sequence: 1, CreatedAt: testIntegrationEventTime(),
 		Visibility: "public", BodySchema: "gonzbnet.NodeProfile/1.0",
 		Body: map[string]any{"schema_version": "1.0", "type": "NodeProfile", "node_id": nodeID},
 	})
-	if err != nil || validation == nil || !validation.OK {
-		t.Fatalf("create event: validation=%+v err=%v", validation, err)
+	if err != nil || eventValidation == nil || !eventValidation.OK {
+		t.Fatalf("create event: validation=%+v err=%v", eventValidation, err)
 	}
-	if err := store.AppendVerifiedFederationEvent(ctx, event, validation); err != nil {
+	if err := store.AppendVerifiedFederationEvent(ctx, event, eventValidation); err != nil {
 		t.Fatalf("append accepted event: %v", err)
 	}
 	var accepted string
@@ -76,6 +78,20 @@ func TestFederationAcceptedAndRejectedEventPersistence(t *testing.T) {
 	}
 	if projectedTitle != card.Title || projectedPool != "pool.test" {
 		t.Fatalf("unexpected release-card projection title=%q pool=%q", projectedTitle, projectedPool)
+	}
+	capacity := validation.ValidatorCapacity{
+		SchemaVersion: "1.0", Type: validation.TypeValidatorCapacity, NodeID: nodeID,
+		PublishedAt: time.Now().UTC().Format(time.RFC3339), MaxTasksPerHour: 10,
+	}
+	if err := store.ProjectValidatorCapacity(ctx, ValidatorCapacityProjection{Capacity: capacity, EventID: event.EventID, AuthorNodeID: nodeID}); err != nil {
+		t.Fatalf("project validator capacity: %v", err)
+	}
+	var capacityJSON []byte
+	if err := store.DB().QueryRowContext(ctx, `SELECT validator_capacity FROM federation_node_capabilities WHERE node_id = $1`, nodeID).Scan(&capacityJSON); err != nil {
+		t.Fatalf("read validator capacity projection: %v", err)
+	}
+	if !strings.Contains(string(capacityJSON), `"max_tasks_per_hour":10`) {
+		t.Fatalf("validator capacity projection missing expected value: %s", capacityJSON)
 	}
 	rejectedID := event.EventID + "-rejected"
 	if err := store.AppendRejectedFederationEvent(ctx, rejectedID, nodeID, "NodeProfile", []byte(`{"bad":true}`), "malformed signature"); err != nil {
