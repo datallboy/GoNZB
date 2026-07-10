@@ -43,6 +43,48 @@ type gonzbnetScrapeRangeCoordinator struct {
 	mu                  sync.Mutex
 }
 
+// ObserveScrapeRun publishes node-level scanner health and capacity from the
+// existing indexer stage metrics. It is intentionally optional so the indexer
+// remains independent of GoNZBNet.
+func (c *gonzbnetScrapeRangeCoordinator) ObserveScrapeRun(ctx context.Context, metrics map[string]any, runErr error) {
+	if c == nil {
+		return
+	}
+	nodeID, err := c.localNode(ctx)
+	if err != nil {
+		return
+	}
+	now := c.now().UTC().Format(time.RFC3339)
+	status := "healthy"
+	if runErr != nil {
+		status = "degraded"
+	}
+	maxGroups := 0
+	if value, ok := metrics["groups_total"].(int); ok {
+		maxGroups = value
+	}
+	maxArticles := int64(0)
+	if value, ok := metrics["article_headers_seen"].(int64); ok {
+		maxArticles = value
+	}
+	capacity := coverage.ScannerCapacity{
+		SchemaVersion: "1.0", Type: coverage.TypeScannerCapacity,
+		NodeID: nodeID, PoolID: c.poolID, CreatedAt: now,
+		MaxGroups: maxGroups, MaxArticlesPerHour: maxArticles,
+		SupportsArticleRangeScan: true, SupportsTimeWindowScan: true,
+		ProviderScope: c.providerScopeHash,
+	}
+	heartbeat := coverage.ScannerHeartbeat{
+		SchemaVersion: "1.0", Type: coverage.TypeScannerHeartbeat,
+		NodeID: nodeID, PoolID: c.poolID, CreatedAt: now,
+		QueueDepth: 0, CurrentArticlesPerMinute: maxArticles, Status: status,
+	}
+	if err := c.signAppendProject(ctx, coverage.TypeScannerCapacity, capacity); err != nil {
+		return
+	}
+	_ = c.signAppendProject(ctx, coverage.TypeScannerHeartbeat, heartbeat)
+}
+
 func goNZBNetScrapeRangeCoordinatorFor(appCtx *app.Context) (scrape.RangeCoordinator, error) {
 	if appCtx == nil || appCtx.Config == nil {
 		return nil, nil

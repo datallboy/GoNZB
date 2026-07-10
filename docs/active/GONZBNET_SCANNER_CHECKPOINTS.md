@@ -9,5 +9,7 @@ and the scan timestamp, then projects through the same append-only event path
 as claims and terminal outcomes.
 
 This establishes checkpoint production at the scanner lifecycle boundary.
-Periodic heartbeats, capacity publication, group observations, and richer
-release/manifest counters remain to be connected to scanner runtime metrics.
+The scrape service also exposes an optional run observer. When GoNZBNet is
+enabled, the coordinator consumes completed scrape metrics to publish signed
+`ScannerCapacity` and `ScannerHeartbeat` events through the same event chain.
+Group observations and richer in-progress checkpoint counters remain open.

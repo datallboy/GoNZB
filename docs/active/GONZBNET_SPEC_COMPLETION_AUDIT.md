@@ -67,9 +67,10 @@ is limited to well-known metadata, node profile, and capabilities.
    validator emits structural `unverified` attestations and does not perform the
    spec's article/segment existence checks.
 3. Partially complete. Claimed range completion now emits and projects signed
-   provider-scoped `CoverageCheckpoint` events. Scanner capacity/heartbeat,
-   group observations, and richer periodic checkpoint production remain to be
-   connected to scanner runtime metrics.
+   provider-scoped `CoverageCheckpoint` events, and the scrape run observer now
+   publishes `ScannerCapacity` and `ScannerHeartbeat`. Group observations and
+   richer periodic checkpoint counters remain to be connected to scanner
+   runtime metrics.
 4. Complete for retention and serving reads. The PostgreSQL manifest store now
    applies TTL expiry and byte-budget pruning, and excludes expired manifests
    from local manifest/NZB/event reads. Manifest serving remains restricted to
