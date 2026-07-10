@@ -9,3 +9,6 @@ existing terminal failure event without a successful checkpoint.
 The scrape service has an optional run observer. GoNZBNet uses it to publish
 `ScannerCapacity` and `ScannerHeartbeat` from completed scrape metrics without
 creating a second scanner loop.
+
+Successful range completion also emits a provider-scoped `GroupObservation`
+with the observed article bounds and processed-header estimate.

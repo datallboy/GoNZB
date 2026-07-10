@@ -12,4 +12,6 @@ This establishes checkpoint production at the scanner lifecycle boundary.
 The scrape service also exposes an optional run observer. When GoNZBNet is
 enabled, the coordinator consumes completed scrape metrics to publish signed
 `ScannerCapacity` and `ScannerHeartbeat` events through the same event chain.
-Group observations and richer in-progress checkpoint counters remain open.
+Successful range completion also emits a provider-scoped `GroupObservation`
+using the observed article range and processed-header count. Richer in-progress
+checkpoint counters remain open.
