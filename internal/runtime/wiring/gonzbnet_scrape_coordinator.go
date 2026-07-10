@@ -137,6 +137,7 @@ func (c *gonzbnetScrapeRangeCoordinator) AssignedScrapeRanges(ctx context.Contex
 		Mode:                  "scanner",
 		Limit:                 limit,
 		MinBlockingTrustScore: c.minBlockingTrust,
+		RequireArticleRange:   true,
 	})
 	if err != nil {
 		return nil, err
