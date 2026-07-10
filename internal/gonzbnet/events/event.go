@@ -260,6 +260,9 @@ func (e *SignedEvent) unsignedPayload() map[string]any {
 }
 
 func (e *SignedEvent) validateRequiredForSigning() error {
+	if e.Sequence <= 0 {
+		return fmt.Errorf("sequence must be positive")
+	}
 	if strings.TrimSpace(e.EventType) == "" {
 		return fmt.Errorf("event_type is required")
 	}
@@ -284,6 +287,9 @@ func (e *SignedEvent) validateRequiredForVerification() error {
 	}
 	if strings.TrimSpace(e.AuthorPublicKey) == "" {
 		return fmt.Errorf("author_public_key is required")
+	}
+	if e.Sequence <= 0 {
+		return fmt.Errorf("sequence must be positive")
 	}
 	if e.CreatedAt.IsZero() {
 		return fmt.Errorf("created_at is required")

@@ -321,6 +321,31 @@ func TestSyncOnceDeadLettersSequenceConflict(t *testing.T) {
 	}
 }
 
+func TestSyncOnceDeadLettersChainFork(t *testing.T) {
+	ctx := context.Background()
+	localIdentity, err := identity.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("local identity: %v", err)
+	}
+	remoteIdentity, event := testRemoteReleaseCardEvent(t)
+	server := testPeerServer(t, remoteIdentity, []events.SignedEvent{*event})
+	store := &fakeSyncStore{
+		peers:     []pgindex.FederationPeerRecord{{ID: 1, PeerURL: server.URL}},
+		appendErr: pgindex.ErrFederationForkDetected,
+	}
+
+	result, err := NewWithOptions(localIdentity, store, nil, Options{AllowInsecurePeerHTTP: true}).SyncOnce(ctx)
+	if err != nil {
+		t.Fatalf("sync once: %v", err)
+	}
+	if result.Accepted != 0 || result.Projected != 0 || result.Rejected != 1 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if len(store.rejected) != 1 || store.rejected[0] != "fork_detected" {
+		t.Fatalf("expected fork_detected rejection, got %+v", store.rejected)
+	}
+}
+
 func TestPushOnceSendsSignedEventBatchAndRecordsDelivery(t *testing.T) {
 	ctx := context.Background()
 	localIdentity, event := testRemoteReleaseCardEvent(t)

@@ -47,6 +47,18 @@ func TestSignedEventVerifiesAndEventIDIsDeterministic(t *testing.T) {
 	}
 }
 
+func TestCreateRejectsNonPositiveSequence(t *testing.T) {
+	node, err := identity.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("load identity: %v", err)
+	}
+	opts := testCreateOptions()
+	opts.Sequence = 0
+	if _, _, err := Create(context.Background(), node, opts); err == nil || !strings.Contains(err.Error(), "sequence must be positive") {
+		t.Fatalf("expected positive sequence validation, got %v", err)
+	}
+}
+
 func TestSignedEventBodyTamperFailsVerification(t *testing.T) {
 	ctx := context.Background()
 	node, err := identity.LoadOrCreate(t.TempDir())

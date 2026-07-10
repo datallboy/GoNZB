@@ -405,8 +405,12 @@ func (s *Service) syncPeer(ctx context.Context, peer pgindex.FederationPeerRecor
 				}
 			}
 			if err := s.store.AppendVerifiedFederationEvent(ctx, &event, validation); err != nil {
-				if errors.Is(err, pgindex.ErrFederationSequenceConflict) {
-					_ = s.store.AppendRejectedFederationEvent(ctx, event.EventID, event.AuthorNodeID, event.EventType, raw, "sequence_conflict")
+				if errors.Is(err, pgindex.ErrFederationSequenceConflict) || errors.Is(err, pgindex.ErrFederationForkDetected) {
+					reason := "fork_detected"
+					if errors.Is(err, pgindex.ErrFederationSequenceConflict) {
+						reason = "sequence_conflict"
+					}
+					_ = s.store.AppendRejectedFederationEvent(ctx, event.EventID, event.AuthorNodeID, event.EventType, raw, reason)
 					result.Rejected++
 					continue
 				}
