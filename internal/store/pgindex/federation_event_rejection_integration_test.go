@@ -8,6 +8,7 @@ import (
 
 	"github.com/datallboy/gonzb/internal/gonzbnet/events"
 	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
+	"github.com/datallboy/gonzb/internal/gonzbnet/releasecard"
 )
 
 func TestFederationAcceptedAndRejectedEventPersistence(t *testing.T) {
@@ -57,6 +58,24 @@ func TestFederationAcceptedAndRejectedEventPersistence(t *testing.T) {
 	}
 	if accepted != "accepted" {
 		t.Fatalf("expected accepted status, got %q", accepted)
+	}
+	card := releasecard.ReleaseCard{
+		SchemaVersion: "1.0", Type: "ReleaseCard", ReleaseID: "rel_pg_projection",
+		Title: "PG projection", NormalizedTitle: "pg projection", Groups: []string{"alt.test"},
+		FileCount: 1, SegmentCount: 1, SubjectFingerprint: "subject", FileFingerprint: "file",
+		NZBGUID: func() *string { value := "guid"; return &value }(),
+	}
+	if err := store.UpsertFederatedReleaseCardProjection(ctx, releasecard.Projection{
+		Card: card, EventID: event.EventID, SourceNodeID: nodeID, PoolID: "pool.test",
+	}); err != nil {
+		t.Fatalf("project release card: %v", err)
+	}
+	var projectedTitle, projectedPool string
+	if err := store.DB().QueryRowContext(ctx, `SELECT title, pool_id FROM federated_release_cards WHERE release_id = $1`, card.ReleaseID).Scan(&projectedTitle, &projectedPool); err != nil {
+		t.Fatalf("read release-card projection: %v", err)
+	}
+	if projectedTitle != card.Title || projectedPool != "pool.test" {
+		t.Fatalf("unexpected release-card projection title=%q pool=%q", projectedTitle, projectedPool)
 	}
 	rejectedID := event.EventID + "-rejected"
 	if err := store.AppendRejectedFederationEvent(ctx, rejectedID, nodeID, "NodeProfile", []byte(`{"bad":true}`), "malformed signature"); err != nil {
