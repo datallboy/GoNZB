@@ -80,6 +80,7 @@ type CoverageWorkSuggestionParams struct {
 	Mode                  string
 	Limit                 int
 	MinBlockingTrustScore float64
+	RequireArticleRange   bool
 }
 
 type CoverageWorkSuggestion struct {
@@ -446,6 +447,15 @@ func (s *Store) SuggestCoverageWork(ctx context.Context, params CoverageWorkSugg
 		WHERE a.pool_id = $1
 		  AND a.status = 'assigned'
 		  AND ($2 = '' OR a.assigned_node_id = $2)
+		  AND (
+		    $6 = FALSE
+		    OR (
+		      a.range_start IS NOT NULL
+		      AND a.range_end IS NOT NULL
+		      AND a.range_start > 0
+		      AND a.range_end >= a.range_start
+		    )
+		  )
 		  AND NOT EXISTS (
 		    SELECT 1
 		    FROM coverage_claims c
@@ -489,6 +499,7 @@ func (s *Store) SuggestCoverageWork(ctx context.Context, params CoverageWorkSugg
 		limit,
 		minTrust,
 		skipCompleted,
+		params.RequireArticleRange,
 	)
 	if err != nil {
 		return nil, err

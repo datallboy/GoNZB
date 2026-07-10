@@ -97,7 +97,7 @@ func TestGoNZBNetScrapeCoordinatorListsAssignedRanges(t *testing.T) {
 	if ranges[0].AssignmentID != "assignment-1" || ranges[0].Group != "alt.binaries.test" || ranges[0].RangeStart != 10 || ranges[0].RangeEnd != 20 {
 		t.Fatalf("unexpected assigned range: %+v", ranges[0])
 	}
-	if store.lastSuggestionParams.NodeID == "" || store.lastSuggestionParams.PoolID != "pool.test" {
+	if store.lastSuggestionParams.NodeID == "" || store.lastSuggestionParams.PoolID != "pool.test" || !store.lastSuggestionParams.RequireArticleRange {
 		t.Fatalf("expected node-scoped suggestion params, got %+v", store.lastSuggestionParams)
 	}
 }

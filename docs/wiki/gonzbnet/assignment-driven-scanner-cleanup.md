@@ -11,6 +11,10 @@ through the normal indexer header path, and reported with signed
 `RangeClaim`/`RangeComplete`/`RangeFailed` events that include the
 `assignment_id`.
 
+The scrape-loop suggestion request now requires executable article ranges.
+Time-window-only assignments still appear in admin and scheduler views, but they
+do not consume the assigned-range fetch limit for the article-range scraper.
+
 Assigned range fetches do not update latest or backfill scrape cursors. They are
 tracked through GoNZBNet coverage outcomes instead.
 
