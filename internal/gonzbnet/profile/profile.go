@@ -300,7 +300,7 @@ func NodeProfileFor(ctx context.Context, identity Identity, cfg Config, now time
 		},
 		Policy: Policy{
 			PrivateNetwork:                  cfg.PrivateNetwork,
-			LiveQuerySupported:              cfg.LiveQueryEnabled,
+			LiveQuerySupported:              false,
 			ManifestFetchRequiresMembership: true,
 		},
 		CreatedAt: ts,

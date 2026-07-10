@@ -35,6 +35,8 @@ core v1 work already represented by the phase docs.
   `internal/store/pgindex/federation_releasecard_store.go`.
 - Newznab search uses the local federated cache through the local aggregator
   source; remote peers are not live-broadcast user search queries.
+- `gonzbnet.live_query_enabled=true` is rejected during config validation, and
+  public node profiles do not advertise live-query support.
 - Newznab get resolves missing manifests through trusted manifest sources,
   verifies the signed `ResolutionManifest`, validates `manifest_id`, caches the
   manifest, generates an NZB, and returns it locally. Evidence:

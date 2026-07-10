@@ -55,6 +55,7 @@ func TestGoNZBNetAdminNodeProfileReturnsPublicIdentity(t *testing.T) {
 func TestGoNZBNetAdminConfigValidationRedactsSensitiveValues(t *testing.T) {
 	cfg := testGoNZBNetAdminConfig(t)
 	cfg.GoNZBNet.SendUserContext = true
+	cfg.GoNZBNet.LiveQueryEnabled = true
 	cfg.GoNZBNet.KeyPassword = "secret-password"
 	cfg.GoNZBNet.RelayAPIKey = "relay-secret"
 	cfg.GoNZBNet.ManualPeers = []string{"https://peer.example/gonzbnet/v1"}
@@ -77,6 +78,9 @@ func TestGoNZBNetAdminConfigValidationRedactsSensitiveValues(t *testing.T) {
 	if body.Valid {
 		t.Fatalf("expected invalid config when send_user_context is true")
 	}
+	if !configValidationHasIssue(body.Issues, "gonzbnet.live_query_enabled", "error") {
+		t.Fatalf("expected live query config error, got %+v", body.Issues)
+	}
 	if body.Summary.ManualPeers != 1 {
 		t.Fatalf("expected peer count only, got %d", body.Summary.ManualPeers)
 	}
@@ -86,6 +90,15 @@ func TestGoNZBNetAdminConfigValidationRedactsSensitiveValues(t *testing.T) {
 			t.Fatalf("response leaked sensitive value %q: %s", secret, raw)
 		}
 	}
+}
+
+func configValidationHasIssue(issues []gonzbnetAdminConfigIssue, field, severity string) bool {
+	for _, issue := range issues {
+		if issue.Field == field && issue.Severity == severity {
+			return true
+		}
+	}
+	return false
 }
 
 func TestGoNZBNetAdminResolveManifestRequiresReleaseID(t *testing.T) {

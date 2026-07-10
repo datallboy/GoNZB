@@ -41,6 +41,8 @@ remaining GoNZBNet work.
 - Federation request/event paths authenticate nodes, not users, and do not
   include local usernames, API keys, searches, grabs, downloads, or NNTP
   credentials.
+- `gonzbnet.live_query_enabled=true` is rejected so searches remain local-cache
+  based and are not broadcast to peers.
 
 ## Validation Request Boundary
 

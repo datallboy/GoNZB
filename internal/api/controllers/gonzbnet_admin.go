@@ -386,7 +386,7 @@ func (ctrl *GoNZBNetAdminController) ConfigValidation(c *echo.Context) error {
 		issue("warning", "gonzbnet.http_enabled", "disabled while inbound push, gossip, or relay features are enabled")
 	}
 	if cfg.LiveQueryEnabled {
-		issue("warning", "gonzbnet.live_query_enabled", "live query is enabled; user searches should normally use the local federated cache")
+		issue("error", "gonzbnet.live_query_enabled", "reserved; searches must use the local federated cache")
 	}
 	if cfg.PublishReleaseCardsEnabled && !ctrl.appCtx.Config.Modules.UsenetIndexer.Enabled && !cfg.ScannerEnabled {
 		issue("warning", "gonzbnet.publish_release_cards_enabled", "enabled without the local indexer module or scanner capability")

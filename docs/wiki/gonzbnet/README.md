@@ -148,6 +148,8 @@ Current implementation state:
   before caching or NZB generation.
 - Test cleanup adds direct coverage for non-member event rejection and local
   GoNZBNet RBAC denial paths.
+- Live-query privacy cleanup rejects `gonzbnet.live_query_enabled=true` and
+  keeps public profiles from advertising unsupported live user search.
 
 Maintained pages:
 
@@ -216,3 +218,4 @@ Maintained pages:
 - [Security: Sequence Conflicts](./security-sequence-conflicts.md)
 - [Security: Manifest Response Limit](./security-manifest-response-limit.md)
 - [Security: Manifest Message-IDs](./security-manifest-message-ids.md)
+- [Live Query Privacy Hardening](./live-query-privacy-hardening.md)

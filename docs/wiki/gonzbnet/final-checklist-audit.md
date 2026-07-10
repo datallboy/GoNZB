@@ -25,6 +25,8 @@ Implemented surfaces include:
 - article availability and checksum attestation projections;
 - privacy boundaries that keep local users, API keys, searches, grabs,
   downloads, and NNTP credentials local.
+- reserved live-query config is rejected so user searches remain local-cache
+  based.
 
 Validation request boundary:
 
