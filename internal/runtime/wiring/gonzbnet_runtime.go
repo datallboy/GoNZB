@@ -3,11 +3,13 @@ package wiring
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
 	"github.com/datallboy/gonzb/internal/gonzbnet/publisher"
+	"github.com/datallboy/gonzb/internal/gonzbnet/reassigner"
 	gonzbnetsync "github.com/datallboy/gonzb/internal/gonzbnet/sync"
 )
 
@@ -17,6 +19,7 @@ type gonzbnetRuntimeModule struct {
 	appCtx    *app.Context
 	publisher *publisher.Service
 	pullSync  *gonzbnetsync.Service
+	reassign  *reassigner.Service
 	cancel    context.CancelFunc
 	running   bool
 }
@@ -31,6 +34,7 @@ func (m *gonzbnetRuntimeModule) Build(ctx context.Context) error {
 	m.stop()
 	m.publisher = nil
 	m.pullSync = nil
+	m.reassign = nil
 	if !m.Enabled() {
 		return nil
 	}
@@ -59,6 +63,14 @@ func (m *gonzbnetRuntimeModule) Build(ctx context.Context) error {
 	if err := m.pullSync.UpsertManualPeers(ctx, m.appCtx.Config.GoNZBNet.ManualPeers); err != nil {
 		return err
 	}
+	reassignStore, ok := m.appCtx.PGIndexStore.(reassigner.Store)
+	if !ok {
+		return fmt.Errorf("pgindex store does not support gonzbnet stale claim reassignment")
+	}
+	m.reassign, err = reassigner.New(nodeIdentity, reassignStore, m.appCtx.Config.GoNZBNet.LocalPoolID, m.appCtx.Config.GoNZBNet.CoverageMinTrustForClaim)
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -76,7 +88,11 @@ func (m *gonzbnetRuntimeModule) Start(ctx context.Context) error {
 	pullEnabled := m.pullSync != nil && m.appCtx.Config.GoNZBNet.PullSyncEnabled
 	pushEnabled := m.pullSync != nil && m.appCtx.Config.GoNZBNet.PushSyncEnabled
 	gossipEnabled := m.pullSync != nil && m.appCtx.Config.GoNZBNet.WebSocketGossipEnabled
-	if !publishEnabled && !healthEnabled && !validationEnabled && !pullEnabled && !pushEnabled && !gossipEnabled {
+	reassignEnabled := m.reassign != nil &&
+		m.appCtx.Config.GoNZBNet.CoverageEnabled &&
+		m.appCtx.Config.GoNZBNet.SchedulerEnabled &&
+		strings.EqualFold(m.appCtx.Config.GoNZBNet.CoverageMode, "automatic")
+	if !publishEnabled && !healthEnabled && !validationEnabled && !pullEnabled && !pushEnabled && !gossipEnabled && !reassignEnabled {
 		return nil
 	}
 	if m.running {
@@ -155,6 +171,22 @@ func (m *gonzbnetRuntimeModule) Start(ctx context.Context) error {
 			}
 		}()
 	}
+	if reassignEnabled {
+		interval := time.Duration(m.appCtx.Config.GoNZBNet.ScannerCheckpointIntervalSecs) * time.Second
+		if interval <= 0 {
+			interval = 5 * time.Minute
+		}
+		limit := m.appCtx.Config.GoNZBNet.ScannerMaxGroups
+		if limit <= 0 {
+			limit = 25
+		}
+		m.appCtx.Logger.Info("starting gonzbnet stale claim reassigner interval=%s limit=%d", interval, limit)
+		go func() {
+			if err := m.reassign.Run(childCtx, interval, limit); err != nil && childCtx.Err() == nil {
+				m.appCtx.Logger.Error("gonzbnet stale claim reassigner failed: %v", err)
+			}
+		}()
+	}
 	return nil
 }
 
@@ -183,6 +215,7 @@ func (m *gonzbnetRuntimeModule) ReadinessChecks(context.Context) []app.RuntimeCh
 		runtimeBoolCheck("gonzbnet_pgindex_store", m.appCtx.PGIndexStore != nil, "pgindex store is required"),
 		runtimeBoolCheck("gonzbnet_publisher", m.publisher != nil, "gonzbnet publisher is required"),
 		runtimeBoolCheck("gonzbnet_pull_sync", m.pullSync != nil, "gonzbnet pull sync is required"),
+		runtimeBoolCheck("gonzbnet_reassigner", m.reassign != nil, "gonzbnet stale claim reassigner is required"),
 	}
 	return checks
 }

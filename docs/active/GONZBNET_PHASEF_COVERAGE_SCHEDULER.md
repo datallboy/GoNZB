@@ -20,9 +20,11 @@ Optional post-v1 improvements:
    assignments.
 4. Document that actual automatic failover is intentionally not enabled until
    operators can review generated plans.
+5. Later cleanup adds signed stale range reassignment in automatic mode and a
+   local admin one-shot action.
 
 ## Out Of Scope
 
-- Background worker that creates assignments automatically.
 - Cross-node consensus on assignment plans.
 - UI controls for accepting generated plans.
+- Time-window assignment execution and failover.

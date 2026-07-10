@@ -62,8 +62,7 @@ core v1 work already represented by the phase docs.
 - The standalone `gonzbnet-relay` process remains deferred. Phase 11 implements
   relay-ready modular-monolith controls because v1 is intentionally not split
   into microservices.
-- Automatic creation of replacement `CoverageAssignment` events for stale
-  scanner claims remains future automation. Current code exposes suggestions and
-  can consume existing range assignments.
+- Automatic creation of replacement `CoverageAssignment` events is implemented
+  for stale article range claims when automatic coverage mode is enabled.
 - Time-window assignment execution in the scrape loop remains future work. Range
   assignments are implemented and consumed.

@@ -203,6 +203,7 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		v1AdminGoNZBNet.POST("/coverage/complete", gonzbnetAdminCtrl.CreateCoverageComplete)
 		v1AdminGoNZBNet.POST("/coverage/failed", gonzbnetAdminCtrl.CreateCoverageFailed)
 		v1AdminGoNZBNet.POST("/coverage/stale-penalties", gonzbnetAdminCtrl.MaterializeStaleClaimPenalties)
+		v1AdminGoNZBNet.POST("/coverage/stale-reassignments", gonzbnetAdminCtrl.CreateStaleClaimReassignments)
 
 		v1AdminGoNZBNetPeers := e.Group("/api/v1/admin/gonzbnet", bodyLimitMiddleware(adminJSONBodyLimit, defaultMultipartBodyLimit))
 		v1AdminGoNZBNetPeers.Use(authMiddleware(authSvc, false, auth.PermissionGoNZBNetAdminPeers))

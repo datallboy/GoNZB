@@ -75,5 +75,6 @@ verification, pool authorization, append-only log, and projection path.
 
 Phase D introduced the event schemas and manual APIs. Later scanner
 coordination cleanup wires the existing usenet-indexer scrape loop into these
-events for configured and assigned range work. Automatic creation of
-replacement assignments remains future automation.
+events for configured and assigned range work. Stale range reassignment cleanup
+adds signed replacement assignments for expired article range claims in
+automatic coverage mode.

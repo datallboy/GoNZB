@@ -21,6 +21,5 @@ work through the existing usenet-indexer scrape loop.
 
 - Only article range assignments are consumed by this cleanup.
 - Time-window assignment execution remains future work.
-- GoNZBNet still does not mint replacement assignments automatically for stale
-  claims; operators or future automation create signed `CoverageAssignment`
-  events.
+- Automatic stale-claim reassignment is handled separately for article ranges
+  when automatic coverage mode is enabled.

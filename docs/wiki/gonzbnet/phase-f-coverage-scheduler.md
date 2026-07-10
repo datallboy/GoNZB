@@ -1,7 +1,7 @@
 # Phase F Automated Coverage Improvements
 
-Phase F adds optional foundations for automated coverage planning. It does not
-enable an automatic assignment writer.
+Phase F adds optional foundations for automated coverage planning. Later cleanup
+adds an automatic stale range reassignment writer for automatic mode.
 
 ## Weighted Rendezvous Helpers
 
@@ -27,8 +27,18 @@ can review the plan first, then create assignments through the Phase D admin
 assignment endpoint. Scanner coordination cleanup can consume existing range
 assignments assigned to the local node.
 
+## Stale Range Reassignment
+
+The stale-claim reassignment cleanup adds a signed local assignment writer for
+expired article range claims. It runs automatically only when
+`gonzbnet.coverage_mode=automatic` and `gonzbnet.scheduler_enabled=true`, and it
+can also be triggered through
+`POST /api/v1/admin/gonzbnet/coverage/stale-reassignments`.
+
+Replacement scanner nodes are chosen with the same deterministic weighted
+rendezvous helper and the stale claimant is excluded from selection.
+
 ## Boundary
 
-Automatic failover remains review-gated. Stale claims are surfaced, but GoNZBNet
-does not yet mint replacement `CoverageAssignment` events without an explicit
-local action.
+Manual and scheduler modes remain review-gated. Time-window claim execution and
+time-window failover remain future work.

@@ -17,6 +17,8 @@ Implemented surfaces include:
   trusted, provider-scope-compatible remote active/completed range suppression;
 - assignment-driven scanner range consumption for existing
   `CoverageAssignment` suggestions;
+- automatic signed replacement assignment creation for stale article range
+  claims when automatic coverage mode is enabled;
 - signed validation-request task admission for locally cached manifests;
 - article availability and checksum attestation projections;
 - privacy boundaries that keep local users, API keys, searches, grabs,
@@ -38,5 +40,6 @@ Scanner coordination boundary:
   provider-scope-compatible remote active/completed ranges when scanner
   coverage coordination is enabled.
 - Existing range `CoverageAssignment` suggestions can be consumed automatically.
-- Automatic creation of replacement assignments for stale claims remains future
-  automation.
+- Automatic creation of replacement assignments is implemented for stale article
+  range claims in automatic coverage mode.
+- Time-window assignment execution and failover remain future work.

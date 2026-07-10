@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/datallboy/gonzb/internal/app"
+	"github.com/datallboy/gonzb/internal/gonzbnet/coverage"
 	"github.com/datallboy/gonzb/internal/gonzbnet/events"
 	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
 	"github.com/datallboy/gonzb/internal/gonzbnet/moderation"
@@ -519,6 +520,61 @@ func TestGoNZBNetAdminRecomputeScoresUsesRequestedPool(t *testing.T) {
 	}
 }
 
+func TestGoNZBNetAdminCreateStaleClaimReassignmentsSignsAssignment(t *testing.T) {
+	cfg := testGoNZBNetAdminConfig(t)
+	store := &fakeGoNZBNetAdminStore{
+		staleClaims: []pgindex.CoverageClaimRecord{{
+			ClaimID:    "claim-1",
+			ClaimType:  "range",
+			PoolID:     "pool.test",
+			Group:      "alt.binaries.test",
+			NodeID:     "node_stale",
+			RangeStart: 10,
+			RangeEnd:   20,
+			Status:     "active",
+		}},
+		scannerNodes: []pgindex.CoverageScannerNode{
+			{NodeID: "node_stale", Weight: 100, LocalTrustScore: 1},
+			{NodeID: "node_fresh", Weight: 1, LocalTrustScore: 1},
+		},
+	}
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/gonzbnet/coverage/stale-reassignments?pool_id=pool.test&limit=5", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	ctrl := &GoNZBNetAdminController{appCtx: &app.Context{Config: cfg}, storeOverride: store}
+
+	if err := ctrl.CreateStaleClaimReassignments(c); err != nil {
+		t.Fatalf("CreateStaleClaimReassignments returned error: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if store.appended == nil || store.appended.EventType != coverage.TypeCoverageAssignment {
+		t.Fatalf("expected coverage assignment event, got %+v", store.appended)
+	}
+	var body coverage.CoverageAssignment
+	if err := json.Unmarshal(store.appended.Body, &body); err != nil {
+		t.Fatalf("decode assignment: %v", err)
+	}
+	if body.AssignedNodeID != "node_fresh" || body.RangeStart != 10 || body.RangeEnd != 20 {
+		t.Fatalf("unexpected assignment body: %+v", body)
+	}
+	var response struct {
+		Status string `json:"status"`
+		Result struct {
+			StaleClaims        int `json:"stale_claims"`
+			AssignmentsCreated int `json:"assignments_created"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Status != "ok" || response.Result.StaleClaims != 1 || response.Result.AssignmentsCreated != 1 {
+		t.Fatalf("unexpected response: %+v", response)
+	}
+}
+
 func TestGoNZBNetAdminUpsertRolePoolAccessStoresGrant(t *testing.T) {
 	store := &fakeGoNZBNetAdminStore{}
 	e := echo.New()
@@ -621,6 +677,10 @@ type fakeGoNZBNetAdminStore struct {
 	scorePoolID     string
 	scoreResult     pgindex.FederatedScoreRecomputeResult
 	roleAccess      pgindex.FederationRolePoolAccessRecord
+
+	staleClaims         []pgindex.CoverageClaimRecord
+	scannerNodes        []pgindex.CoverageScannerNode
+	existingAssignments map[string]bool
 
 	activePoolAdmin       bool
 	activePoolAdminPoolID string
@@ -788,6 +848,18 @@ func (s *fakeGoNZBNetAdminStore) SuggestCoverageWork(context.Context, pgindex.Co
 
 func (s *fakeGoNZBNetAdminStore) BuildCoverageSchedulerPlan(context.Context, pgindex.CoverageWorkSuggestionParams) (pgindex.CoverageSchedulerPlan, error) {
 	return pgindex.CoverageSchedulerPlan{}, nil
+}
+
+func (s *fakeGoNZBNetAdminStore) ListStaleCoverageRangeClaims(context.Context, string, int) ([]pgindex.CoverageClaimRecord, error) {
+	return s.staleClaims, nil
+}
+
+func (s *fakeGoNZBNetAdminStore) ListCoverageScannerNodes(context.Context, string, float64) ([]pgindex.CoverageScannerNode, error) {
+	return s.scannerNodes, nil
+}
+
+func (s *fakeGoNZBNetAdminStore) CoverageAssignmentExists(_ context.Context, assignmentID string) (bool, error) {
+	return s.existingAssignments != nil && s.existingAssignments[assignmentID], nil
 }
 
 func (s *fakeGoNZBNetAdminStore) ListFederationNodeCapabilities(context.Context) ([]pgindex.NodeCapabilityView, error) {

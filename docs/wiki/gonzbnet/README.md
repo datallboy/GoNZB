@@ -47,8 +47,8 @@ Current implementation state:
   APIs, active/stale claim projection, and coverage dashboard reads.
 - Addendum Phase E adds local dedup-aware coverage work suggestions, gap and
   duplicate detection, and coverage score computation.
-- Addendum Phase F adds deterministic weighted rendezvous scheduler helpers and
-  read-only coverage plans for stale-claim failover review.
+- Addendum Phase F adds deterministic weighted rendezvous scheduler helpers,
+  read-only coverage plans, and later automatic stale range reassignment.
 - Addendum Phase G adds ScannerHeartbeat, node capability admin reads, group
   catalog reads, validation-gap reads, and stale-claim penalty materialization.
 - Addendum Phase H adds the local GoNZBNet admin WebUI for capability,
@@ -120,6 +120,8 @@ Current implementation state:
   suppression.
 - Assignment-driven scanner cleanup lets the existing scrape loop consume local
   range `CoverageAssignment` suggestions without advancing scrape cursors.
+- Stale-claim reassignment cleanup creates signed replacement range assignments
+  in automatic coverage mode.
 - Config addendum alignment adds typed scanner, coverage, validation, and
   manifest-cache settings with direct `GONZBNET_*` aliases.
 - Security cleanup adds temporary in-memory throttling after repeated
@@ -129,7 +131,7 @@ Current implementation state:
 - Core checklist evidence maps the original final implementation checklist to
   current code and test coverage.
 - Final checklist audit documents implemented addendum requirements and the
-  remaining automatic assignment-writer boundary.
+  remaining time-window assignment boundary.
 - Security cleanup rejects remote signed events with future `created_at` /
   `not_before` windows, expired `expires_at` values, or event ages beyond
   `gonzbnet.max_event_age_hours`.
@@ -193,6 +195,7 @@ Maintained pages:
 - [Validation Request Endpoint](./validation-request-endpoint.md)
 - [Scanner Coordination Cleanup](./scanner-coordination-cleanup.md)
 - [Assignment-Driven Scanner Cleanup](./assignment-driven-scanner-cleanup.md)
+- [Stale Claim Reassignment](./stale-claim-reassignment.md)
 - [Capability Profile Alignment](./capability-profile-alignment.md)
 - [Profile Capacity Alignment](./profile-capacity-alignment.md)
 - [Core Checklist Evidence](./core-checklist-evidence.md)

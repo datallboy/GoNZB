@@ -27,6 +27,8 @@ remaining GoNZBNet work.
   scanner coverage coordination is enabled.
 - Existing range `CoverageAssignment` suggestions can be consumed automatically
   by the local scrape loop without advancing latest/backfill cursors.
+- Stale article range claims can create signed replacement
+  `CoverageAssignment` events when automatic coverage mode is enabled.
 - Article availability and checksum attestations project into validation-aware
   scores; checksum emission remains feature-flagged.
 - Signed validation requests can enqueue local validation tasks for manifests
@@ -56,6 +58,6 @@ work are enabled. It publishes local signed range claims/outcomes and skips
 trusted, provider-scope-compatible remote active/completed ranges without
 exposing user or provider credentials.
 
-Automatic creation of replacement assignments for stale claims remains future
-automation. Current scheduler APIs continue to expose suggestions for operators
-or future assignment writers.
+Automatic creation of replacement assignments is implemented for stale article
+range claims in automatic coverage mode. Time-window assignment execution and
+failover remain future work.
