@@ -63,9 +63,12 @@ is limited to well-known metadata, node profile, and capabilities.
    publisher maps complete indexed files/segments to a shared canonical
    manifest core, validates and generates the manifest/NZB, and stores them in
    `resolution_manifests`.
-2. Execute validator tiers against the local NNTP provider. The current
-   validator emits structural `unverified` attestations and does not perform the
-   spec's article/segment existence checks.
+2. Article-availability validation is now implemented when the local NNTP
+   manager is available: the validator checks each manifest segment through the
+   scoped body-prefix fetch path and publishes available/partial/missing
+   attestations. Structural `unverified` behavior remains the fallback when no
+   NNTP checker is configured; checksum/PAR2 tiers still require their specific
+   fetchers.
 3. Partially complete. Claimed range completion now emits and projects signed
    provider-scoped `CoverageCheckpoint` events, and the scrape run observer now
    publishes `ScannerCapacity`, `ScannerHeartbeat`, and provider-scoped

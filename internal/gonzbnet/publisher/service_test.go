@@ -3,6 +3,7 @@ package publisher
 import (
 	"context"
 	"crypto/ed25519"
+	"fmt"
 	"testing"
 	"time"
 
@@ -382,5 +383,23 @@ func testPublisherManifest(t *testing.T) manifest.ResolutionManifest {
 		ManifestID:    manifestID,
 		ReleaseID:     "rel_manifest",
 		ManifestCore:  core,
+	}
+}
+
+func TestArticleAvailabilityFromNNTP(t *testing.T) {
+	item := testPublisherManifest(t)
+	service := &Service{now: func() time.Time { return time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC) }}
+	service.articleChecker = func(_ context.Context, messageID string, _ []string) error {
+		if messageID == "<seg1@example.invalid>" {
+			return nil
+		}
+		return fmt.Errorf("missing")
+	}
+	result := service.articleAvailabilityFromNNTP(context.Background(), item)
+	if result.Status != validation.StatusAvailable || result.ArticlesTotal != 1 || result.ArticlesAvailable != 1 || result.MissingArticles != 0 {
+		t.Fatalf("unexpected NNTP availability result: %+v", result)
+	}
+	if result.Method != "nntp_fetch_body_prefix" {
+		t.Fatalf("unexpected validation method: %s", result.Method)
 	}
 }
