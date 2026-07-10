@@ -20,6 +20,16 @@ type ValidationTask struct {
 	Attempts      int
 }
 
+type ValidationTaskRequest struct {
+	ManifestID    string
+	ReleaseID     string
+	PoolID        string
+	SourceNodeID  string
+	SourceEventID string
+	Priority      int
+	DueAt         *time.Time
+}
+
 type ArticleAvailabilityProjection struct {
 	Attestation  validation.ArticleAvailabilityAttestation
 	EventID      string
@@ -38,6 +48,57 @@ type ValidatorCapacityProjection struct {
 	Capacity     validation.ValidatorCapacity
 	EventID      string
 	AuthorNodeID string
+}
+
+func (s *Store) EnqueueFederationValidationTask(ctx context.Context, request ValidationTaskRequest) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, fmt.Errorf("pgindex store is not initialized")
+	}
+	manifestID := strings.TrimSpace(request.ManifestID)
+	releaseID := strings.TrimSpace(request.ReleaseID)
+	poolID := firstNonBlank(request.PoolID, "pool.local")
+	if manifestID == "" || releaseID == "" {
+		return false, fmt.Errorf("manifest_id and release_id are required")
+	}
+	dueAt := time.Now().UTC()
+	if request.DueAt != nil {
+		dueAt = request.DueAt.UTC()
+	}
+	var queued bool
+	err := s.db.QueryRowContext(ctx, `
+		INSERT INTO federation_validation_tasks (
+			manifest_id, release_id, source_node_id, source_event_id, pool_id,
+			status, priority, due_at, updated_at
+		)
+		VALUES ($1, $2, NULLIF($3, ''), NULLIF($4, ''), $5, 'pending', $6, $7, NOW())
+		ON CONFLICT (manifest_id, pool_id) DO UPDATE SET
+			release_id = EXCLUDED.release_id,
+			source_node_id = COALESCE(EXCLUDED.source_node_id, federation_validation_tasks.source_node_id),
+			source_event_id = COALESCE(EXCLUDED.source_event_id, federation_validation_tasks.source_event_id),
+			status = CASE
+				WHEN federation_validation_tasks.status = 'completed' THEN federation_validation_tasks.status
+				ELSE 'pending'
+			END,
+			priority = GREATEST(federation_validation_tasks.priority, EXCLUDED.priority),
+			due_at = CASE
+				WHEN federation_validation_tasks.status = 'completed' THEN federation_validation_tasks.due_at
+				WHEN federation_validation_tasks.due_at <= EXCLUDED.due_at THEN federation_validation_tasks.due_at
+				ELSE EXCLUDED.due_at
+			END,
+			updated_at = NOW()
+		RETURNING federation_validation_tasks.status <> 'completed'`,
+		manifestID,
+		releaseID,
+		strings.TrimSpace(request.SourceNodeID),
+		strings.TrimSpace(request.SourceEventID),
+		poolID,
+		request.Priority,
+		dueAt,
+	).Scan(&queued)
+	if err != nil {
+		return false, fmt.Errorf("enqueue validation task: %w", err)
+	}
+	return queued, nil
 }
 
 func (s *Store) ClaimValidationTasks(ctx context.Context, nodeID string, limit int) ([]ValidationTask, error) {
