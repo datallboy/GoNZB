@@ -43,6 +43,15 @@ assemble priority work and promotes suspicious opaque singleton bursts to yEnc
 priority work. Weak near-time cohorts are scheduling evidence only; they do not
 become binary identity proof without HEAD-complete or recovered BODY evidence.
 
+Subject-complete cohort admission is bounded to 1,000 queue rows per scheduler
+pass. The configured assembly queue limit remains a capacity limit; the smaller
+transaction chunk lets the recurring scheduler drain large partitioned
+backlogs without exceeding its statement timeout. Each pass materializes the
+eligible article set once and shares it between the cohort-state upsert and
+assembly-queue insert. The scheduler leaves join selection to PostgreSQL so
+partition-spanning eligibility checks can use parallel hash or merge plans when
+they are cheaper than nested loops.
+
 ## Assemble
 
 Assemble first claims scheduler-ranked rows from

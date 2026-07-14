@@ -1293,6 +1293,15 @@ func (s *Store) listBinaryInspectionCandidatesRaw(ctx context.Context, q binaryI
 		errorRerunPredicate += `
 			OR COALESCE(bi.summary_json->>'probe_error_detail', '') ILIKE '%has no articles%'
 			OR (
+				bi.status = 'completed' AND
+				COALESCE(r.password_state, '') = 'unknown' AND
+				COALESCE(bi.summary_json->>'encrypted', '') = 'false' AND
+				CASE
+					WHEN jsonb_typeof(bi.summary_json->'archive_entries') = 'array' THEN jsonb_array_length(bi.summary_json->'archive_entries')
+					ELSE 0
+				END > 0
+			)
+			OR (
 				COALESCE(bi.summary_json->>'probe_strategy', '') = 'metadata_only' AND
 				CASE
 					WHEN jsonb_typeof(bi.summary_json->'archive_entries') = 'array' THEN jsonb_array_length(bi.summary_json->'archive_entries')

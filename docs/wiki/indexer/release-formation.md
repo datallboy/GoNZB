@@ -112,6 +112,13 @@ generation, and archive claiming must reject placeholder titles such as
 `unknown-release`, weak labels such as `VIP ONLY`, long opaque tokens, and
 `source_obfuscated` titles until enrichment or inspection derives a real title.
 
+For split archives, a leading-volume probe may return a valid archive listing
+and a partial-volume warning such as an unexpected end of archive. When the
+listing contains parsed entries and explicitly reports that those entries are
+not encrypted, archive inspection may finalize the release as
+`not_passworded`. A warning without parsed entries is not conclusive and leaves
+the password state unknown.
+
 The intended split is:
 
 - form an internal release once payload-complete and strongly identified;
