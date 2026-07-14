@@ -32,6 +32,13 @@ The local bootstrap password defaults to `gonzb-e2e-local`. Override it with
 `GONZBNET_E2E_PASSWORD`. This credential is local to each node and is never
 used for federation.
 
+For a fresh consumer node, `aggregator.sources.gonzbnet.enabled: true` in the
+bootstrap YAML is effective even before the node has saved runtime settings.
+After pool approval and event synchronization, a local API key with GoNZBNet
+search/get permissions can search received ReleaseCards through Newznab.
+Grabbing a result fetches and verifies the trusted manifest when absent,
+caches it locally, and returns a generated NZB.
+
 Use `./scripts/gonzbnet_e2e.sh logs` for combined logs. Stop while preserving
 state with `make gonzbnet-e2e-stop`; remove all test identities and databases
 with `make gonzbnet-e2e-reset`.

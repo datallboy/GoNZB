@@ -472,7 +472,12 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 			}
 			return nil
 		}
-		return nil
+		// Leading-volume probes commonly report an unexpected end while still
+		// returning a valid archive listing. Parsed entries make the negative
+		// encryption result conclusive; probes without entries remain unknown.
+		if len(probe.Entries) == 0 {
+			return nil
+		}
 	}
 
 	archiveCount := 1

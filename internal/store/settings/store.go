@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/infra/config"
 	_ "modernc.org/sqlite"
 )
@@ -155,6 +156,9 @@ func (s *Store) GetRuntimeSettings(ctx context.Context, base ...*config.Config) 
 	}
 
 	out := DefaultRuntimeSettings()
+	if len(base) > 0 && base[0] != nil {
+		out = app.FromConfig(base[0])
+	}
 	out.Revision = 0
 	return out, nil
 }

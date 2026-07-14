@@ -56,6 +56,26 @@ func TestPublishOnceSignsStoresAndSkipsUnchangedReleaseCards(t *testing.T) {
 	}
 }
 
+func TestPublishOnceUsesConfiguredReleaseReadyPolicy(t *testing.T) {
+	ctx := context.Background()
+	node, err := identity.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("load identity: %v", err)
+	}
+	store := &fakeStore{eventsByBodyHash: make(map[string]string)}
+	svc := New(node, store, "pool.local")
+	policy := pgindex.DefaultReleaseReadyPolicy()
+	policy.MinCompletionPct = 91
+	svc.SetReleaseReadyPolicy(policy)
+
+	if _, err := svc.PublishOnce(ctx, 10); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	if store.releaseReadyPolicy.MinCompletionPct != 91 {
+		t.Fatalf("expected configured release policy, got %+v", store.releaseReadyPolicy)
+	}
+}
+
 func TestPublishOnceUsesScanOutputWithoutIndexerCandidates(t *testing.T) {
 	ctx := context.Background()
 	node, err := identity.LoadOrCreate(t.TempDir())
@@ -228,13 +248,15 @@ type fakeStore struct {
 	completedTasks          map[int64]string
 	nodeID                  string
 	publicKey               ed25519.PublicKey
+	releaseReadyPolicy      pgindex.ReleaseReadyPolicy
 }
 
 func (s *fakeStore) ListGoNZBNetScanOutputCandidates(context.Context, int) ([]releasecard.LocalRelease, error) {
 	return s.scanCandidates, nil
 }
 
-func (s *fakeStore) ListGoNZBNetLocalReleaseCandidates(context.Context, int) ([]releasecard.LocalRelease, error) {
+func (s *fakeStore) ListGoNZBNetLocalReleaseCandidates(_ context.Context, _ int, policy pgindex.ReleaseReadyPolicy) ([]releasecard.LocalRelease, error) {
+	s.releaseReadyPolicy = policy
 	return s.candidates, nil
 }
 

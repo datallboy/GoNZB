@@ -11,6 +11,7 @@ import (
 	"github.com/datallboy/gonzb/internal/gonzbnet/publisher"
 	"github.com/datallboy/gonzb/internal/gonzbnet/reassigner"
 	gonzbnetsync "github.com/datallboy/gonzb/internal/gonzbnet/sync"
+	"github.com/datallboy/gonzb/internal/store/pgindex"
 )
 
 const moduleNameGoNZBNet = "gonzbnet"
@@ -61,6 +62,7 @@ func (m *gonzbnetRuntimeModule) Build(ctx context.Context) error {
 		return fmt.Errorf("persist local gonzbnet node identity: %w", err)
 	}
 	m.publisher = publisher.New(nodeIdentity, store, m.appCtx.Config.GoNZBNet.LocalPoolID)
+	m.publisher.SetReleaseReadyPolicy(gonzbnetReleaseReadyPolicy(m.appCtx))
 	if checker, ok := m.appCtx.NNTP.(interface {
 		FetchBodyPrefixForScope(context.Context, string, string, []string, int64) ([]byte, error)
 	}); ok {
@@ -253,6 +255,32 @@ func (m *gonzbnetRuntimeModule) ReadinessChecks(context.Context) []app.RuntimeCh
 		runtimeBoolCheck("gonzbnet_reassigner", m.reassign != nil, "gonzbnet stale claim reassigner is required"),
 	}
 	return checks
+}
+
+func gonzbnetReleaseReadyPolicy(appCtx *app.Context) pgindex.ReleaseReadyPolicy {
+	policy := pgindex.DefaultReleaseReadyPolicy()
+	runtime := indexerRuntimeSettings(appCtx)
+	if runtime == nil || runtime.Indexing == nil {
+		return policy
+	}
+	release := runtime.Indexing.Release
+	return pgindex.NormalizeReleaseReadyPolicy(pgindex.ReleaseReadyPolicy{
+		MinMatchConfidence:                   release.PublicMinMatchConfidence,
+		MinCompletionPct:                     release.PublicMinCompletionPct,
+		MinIdentityStatus:                    release.PublicMinIdentityStatus,
+		RequireInspection:                    release.PublicRequireInspection,
+		RequireEnrichment:                    release.PublicRequireEnrichment,
+		RequireClearTitle:                    release.PublicRequireClearTitle,
+		RequirePayloadComplete:               release.PublicRequirePayloadComplete,
+		RequireExpectedFileCountComplete:     release.PublicRequireExpectedFileCountComplete,
+		RequirePAR2:                          release.PublicRequirePAR2,
+		RequireNFO:                           release.PublicRequireNFO,
+		RequireSFV:                           release.PublicRequireSFV,
+		RetainUntilExpectedFileCountComplete: release.RetainUntilExpectedFileCountComplete,
+		RetainRequirePAR2:                    release.RetainRequirePAR2,
+		RetainRequireNFO:                     release.RetainRequireNFO,
+		RetainRequireSFV:                     release.RetainRequireSFV,
+	})
 }
 
 func (m *gonzbnetRuntimeModule) stop() {
