@@ -48,14 +48,14 @@ type FederationRolePoolAccessRecord struct {
 	UpdatedAt          time.Time `json:"updated_at"`
 }
 
-func (s *Store) ListGoNZBNetLocalReleaseCandidates(ctx context.Context, limit int) ([]releasecard.LocalRelease, error) {
+func (s *Store) ListGoNZBNetLocalReleaseCandidates(ctx context.Context, limit int, policy ReleaseReadyPolicy) ([]releasecard.LocalRelease, error) {
 	if limit <= 0 {
 		limit = 50
 	}
 	summaries, _, err := s.ListPublicIndexerReleases(ctx, PublicIndexerReleaseListParams{
 		Limit:       limit,
 		Sort:        "posted_at_desc",
-		ReadyPolicy: DefaultReleaseReadyPolicy(),
+		ReadyPolicy: policy,
 	})
 	if err != nil {
 		return nil, err
@@ -63,7 +63,7 @@ func (s *Store) ListGoNZBNetLocalReleaseCandidates(ctx context.Context, limit in
 
 	out := make([]releasecard.LocalRelease, 0, len(summaries))
 	for _, summary := range summaries {
-		item, err := s.GetGoNZBNetLocalRelease(ctx, summary.ReleaseID)
+		item, err := s.GetGoNZBNetLocalRelease(ctx, summary.ReleaseID, policy)
 		if err != nil {
 			return nil, err
 		}
@@ -75,8 +75,8 @@ func (s *Store) ListGoNZBNetLocalReleaseCandidates(ctx context.Context, limit in
 	return out, nil
 }
 
-func (s *Store) GetGoNZBNetLocalRelease(ctx context.Context, releaseID string) (releasecard.LocalRelease, error) {
-	detail, err := s.GetPublicIndexerReleaseDetailWithPolicy(ctx, releaseID, DefaultReleaseReadyPolicy())
+func (s *Store) GetGoNZBNetLocalRelease(ctx context.Context, releaseID string, policy ReleaseReadyPolicy) (releasecard.LocalRelease, error) {
+	detail, err := s.GetPublicIndexerReleaseDetailWithPolicy(ctx, releaseID, policy)
 	if err != nil {
 		return releasecard.LocalRelease{}, err
 	}
