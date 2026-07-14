@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/datallboy/gonzb/internal/app"
+	"github.com/datallboy/gonzb/internal/infra/config"
 )
 
 func TestGetRuntimeSettingsReturnsDefaultsForFreshStore(t *testing.T) {
@@ -28,6 +29,29 @@ func TestGetRuntimeSettingsReturnsDefaultsForFreshStore(t *testing.T) {
 	}
 	if runtime.Indexing == nil || runtime.Indexing.ScrapeLatest.Enabled || runtime.Indexing.Release.Enabled {
 		t.Fatalf("expected disabled indexer stage defaults, got %+v", runtime.Indexing)
+	}
+}
+
+func TestGetRuntimeSettingsUsesBootstrapConfigForFreshStore(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "settings.db"))
+	if err != nil {
+		t.Fatalf("new settings store: %v", err)
+	}
+	defer store.Close()
+
+	base := &config.Config{
+		Aggregator: config.AggregatorConfig{
+			Sources: config.AggregatorSourcesConfig{
+				GoNZBNet: config.ModuleToggle{Enabled: true},
+			},
+		},
+	}
+	runtime, err := store.GetRuntimeSettings(context.Background(), base)
+	if err != nil {
+		t.Fatalf("get runtime settings: %v", err)
+	}
+	if runtime.Aggregator == nil || !runtime.Aggregator.Sources.GoNZBNet.Enabled {
+		t.Fatalf("expected bootstrap gonzbnet source to remain enabled, got %+v", runtime.Aggregator)
 	}
 }
 

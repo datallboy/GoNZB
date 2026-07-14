@@ -24,7 +24,7 @@ type Identity interface {
 
 type Store interface {
 	ListGoNZBNetScanOutputCandidates(ctx context.Context, limit int) ([]releasecard.LocalRelease, error)
-	ListGoNZBNetLocalReleaseCandidates(ctx context.Context, limit int) ([]releasecard.LocalRelease, error)
+	ListGoNZBNetLocalReleaseCandidates(ctx context.Context, limit int, policy pgindex.ReleaseReadyPolicy) ([]releasecard.LocalRelease, error)
 	MarkGoNZBNetScanOutputPublished(ctx context.Context, scanID, eventID string) error
 	UpsertFederationNodeIdentity(ctx context.Context, nodeID string, publicKey ed25519.PublicKey) error
 	NextFederationEventSequence(ctx context.Context, authorNodeID string) (int64, *string, error)
@@ -50,6 +50,7 @@ type Service struct {
 	publishManifestAvailability bool
 	buildManifests              bool
 	articleChecker              func(context.Context, string, []string) error
+	releaseReadyPolicy          pgindex.ReleaseReadyPolicy
 }
 
 type Result struct {
@@ -86,10 +87,17 @@ func New(identity Identity, store Store, poolID string) *Service {
 		poolID = "pool.local"
 	}
 	return &Service{
-		identity: identity,
-		store:    store,
-		poolID:   poolID,
-		now:      time.Now,
+		identity:           identity,
+		store:              store,
+		poolID:             poolID,
+		now:                time.Now,
+		releaseReadyPolicy: pgindex.DefaultReleaseReadyPolicy(),
+	}
+}
+
+func (s *Service) SetReleaseReadyPolicy(policy pgindex.ReleaseReadyPolicy) {
+	if s != nil {
+		s.releaseReadyPolicy = pgindex.NormalizeReleaseReadyPolicy(policy)
 	}
 }
 
@@ -136,7 +144,7 @@ func (s *Service) PublishOnce(ctx context.Context, limit int) (Result, error) {
 	if remaining < 0 {
 		remaining = 0
 	}
-	indexerCandidates, err := s.store.ListGoNZBNetLocalReleaseCandidates(ctx, remaining)
+	indexerCandidates, err := s.store.ListGoNZBNetLocalReleaseCandidates(ctx, remaining, s.releaseReadyPolicy)
 	if err != nil {
 		return result, err
 	}
@@ -429,7 +437,7 @@ func (s *Service) PublishHealthOnce(ctx context.Context, limit int) (HealthResul
 	if err := s.store.UpsertFederationNodeIdentity(ctx, nodeID, publicKey); err != nil {
 		return result, err
 	}
-	candidates, err := s.store.ListGoNZBNetLocalReleaseCandidates(ctx, limit)
+	candidates, err := s.store.ListGoNZBNetLocalReleaseCandidates(ctx, limit, s.releaseReadyPolicy)
 	if err != nil {
 		return result, err
 	}
