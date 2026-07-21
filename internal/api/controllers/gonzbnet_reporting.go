@@ -259,6 +259,7 @@ func (ctrl *GoNZBNetAdminController) buildRoleReport(ctx context.Context) (gonzb
 				}
 				components[index].LastAttemptAt = latestReportingTime(components[index].LastAttemptAt, item.LastAttemptAt)
 				components[index].LastSuccessAt = latestReportingTime(components[index].LastSuccessAt, item.LastSuccessAt)
+				components[index].LastUsefulAt = latestReportingTime(components[index].LastUsefulAt, item.LastUsefulAt)
 				components[index].LastFailureAt = latestReportingTime(components[index].LastFailureAt, item.LastFailureAt)
 				if item.LastFailureAt != nil && components[index].LastFailureAt != nil && item.LastFailureAt.Equal(*components[index].LastFailureAt) {
 					components[index].LastError = item.LastError
@@ -300,7 +301,7 @@ func (ctrl *GoNZBNetAdminController) buildRoleReport(ctx context.Context) (gonzb
 			job.Components = append(job.Components, component)
 			job.Configured = job.Configured || component.Configured
 			job.Pools = append(job.Pools, component.Pools...)
-			job.LastUsefulAt = latestReportingTime(job.LastUsefulAt, component.LastSuccessAt)
+			job.LastUsefulAt = latestReportingTime(job.LastUsefulAt, component.LastUsefulAt)
 			job.Status = mergeReportingStatus(job.Status, component.Status, component.Configured)
 			if component.Configured && component.Reason != "" {
 				job.Warnings = append(job.Warnings, component.Label+": "+component.Reason)

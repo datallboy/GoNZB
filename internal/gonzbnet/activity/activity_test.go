@@ -49,3 +49,30 @@ func TestDrainAndRestoreRollups(t *testing.T) {
 		t.Fatalf("unexpected restored rollups: %+v", restored)
 	}
 }
+
+func TestUsefulWorkRequiresProcessedData(t *testing.T) {
+	registry := NewRegistry()
+	now := time.Date(2026, 7, 21, 12, 0, 0, 0, time.UTC)
+	registry.now = func() time.Time { return now }
+	registry.Configure([]Definition{{Key: ComponentValidator, Job: JobVerify, ExecutionMode: Scheduled, Configured: true, Eligible: true}})
+
+	registry.Record(ComponentValidator, "pool-a", Result{})
+	snapshot := registry.Snapshot()[0]
+	if snapshot.LastSuccessAt == nil {
+		t.Fatal("expected an empty successful pass to record its check time")
+	}
+	if snapshot.LastUsefulAt != nil {
+		t.Fatalf("expected an empty successful pass not to count as useful work, got %v", snapshot.LastUsefulAt)
+	}
+
+	now = now.Add(time.Minute)
+	registry.Record(ComponentValidator, "pool-a", Result{ItemsIn: 1, ItemsOut: 1})
+	snapshot = registry.Snapshot()[0]
+	if snapshot.LastUsefulAt == nil || !snapshot.LastUsefulAt.Equal(now) {
+		t.Fatalf("expected processed data to record useful work at %v, got %v", now, snapshot.LastUsefulAt)
+	}
+	rollups := registry.DrainRollups("node-a")
+	if len(rollups) != 1 || rollups[0].LastUsefulAt == nil || !rollups[0].LastUsefulAt.Equal(now) {
+		t.Fatalf("expected useful-work time in rollup, got %+v", rollups)
+	}
+}

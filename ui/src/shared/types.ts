@@ -2116,6 +2116,7 @@ export type GoNZBNetActivityComponent = {
   backlog: number
   last_attempt_at?: string
   last_success_at?: string
+  last_useful_at?: string
   last_failure_at?: string
   next_run_at?: string
   last_error?: string
