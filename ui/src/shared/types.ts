@@ -2141,6 +2141,16 @@ export type GoNZBNetRolesReport = {
   warnings: string[]
 }
 
+export type GoNZBNetPoolMemberOverview = {
+  node_id: string
+  alias: string
+  base_url: string
+  status: string
+  roles: string[]
+  capabilities: string[]
+  local: boolean
+}
+
 export type GoNZBNetOverviewReport = {
   generated_at: string
   node_id: string
@@ -2150,7 +2160,7 @@ export type GoNZBNetOverviewReport = {
   jobs_configured: number
   peers_connected: number
   peers_total: number
-  pools: Array<{ pool_id: string; display_name: string; enabled: boolean; members: number }>
+  pools: Array<{ pool_id: string; display_name: string; enabled: boolean; members: number; member_nodes?: GoNZBNetPoolMemberOverview[] }>
   pending_admissions: number
   release_evidence: GoNZBNetEvidenceSummary
   article_evidence: GoNZBNetEvidenceSummary

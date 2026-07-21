@@ -46,10 +46,21 @@ type gonzbnetRoleReport struct {
 }
 
 type gonzbnetPoolOverview struct {
-	PoolID      string `json:"pool_id"`
-	DisplayName string `json:"display_name"`
-	Enabled     bool   `json:"enabled"`
-	Members     int    `json:"members"`
+	PoolID      string                       `json:"pool_id"`
+	DisplayName string                       `json:"display_name"`
+	Enabled     bool                         `json:"enabled"`
+	Members     int                          `json:"members"`
+	MemberNodes []gonzbnetPoolMemberOverview `json:"member_nodes"`
+}
+
+type gonzbnetPoolMemberOverview struct {
+	NodeID       string   `json:"node_id"`
+	Alias        string   `json:"alias"`
+	BaseURL      string   `json:"base_url"`
+	Status       string   `json:"status"`
+	Roles        []string `json:"roles"`
+	Capabilities []string `json:"capabilities"`
+	Local        bool     `json:"local"`
 }
 
 type gonzbnetOverviewResponse struct {
@@ -93,6 +104,14 @@ func (ctrl *GoNZBNetAdminController) ReportingOverview(c *echo.Context) error {
 	if err != nil {
 		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}
+	nodes, err := store.ListFederationNodeCapabilities(c.Request().Context())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	nodeByID := make(map[string]pgindex.NodeCapabilityView, len(nodes))
+	for _, node := range nodes {
+		nodeByID[node.NodeID] = node
+	}
 	poolItems := make([]gonzbnetPoolOverview, 0, len(pools))
 	releaseEvidence := pgindex.FederationEvidenceSummary{Statuses: map[string]int64{}}
 	articleEvidence := pgindex.FederationEvidenceSummary{Statuses: map[string]int64{}}
@@ -102,7 +121,8 @@ func (ctrl *GoNZBNetAdminController) ReportingOverview(c *echo.Context) error {
 		if listErr != nil {
 			return jsonError(c, http.StatusInternalServerError, listErr.Error())
 		}
-		poolItems = append(poolItems, gonzbnetPoolOverview{PoolID: pool.PoolID, DisplayName: pool.DisplayName, Enabled: pool.Enabled, Members: len(members)})
+		memberNodes := poolMemberOverview(members, nodeByID, report.NodeID, ctrl.appCtx.Config.GoNZBNet.NodeAlias, ctrl.adminBaseURL(c))
+		poolItems = append(poolItems, gonzbnetPoolOverview{PoolID: pool.PoolID, DisplayName: pool.DisplayName, Enabled: pool.Enabled, Members: len(memberNodes), MemberNodes: memberNodes})
 		if pool.Enabled && healthStore != nil {
 			health, healthErr := healthStore.GetFederationPoolHealthReport(c.Request().Context(), pool.PoolID, report.GeneratedAt)
 			if healthErr == nil {
@@ -147,6 +167,61 @@ func (ctrl *GoNZBNetAdminController) ReportingOverview(c *echo.Context) error {
 		PendingAdmissions: pendingAdmissions, Warnings: report.Warnings, Jobs: report.Jobs,
 		ReleaseEvidence: releaseEvidence, ArticleEvidence: articleEvidence,
 	})
+}
+
+func poolMemberOverview(members []pgindex.PoolMemberRecord, nodes map[string]pgindex.NodeCapabilityView, localNodeID, localAlias, localBaseURL string) []gonzbnetPoolMemberOverview {
+	byNodeID := make(map[string]*gonzbnetPoolMemberOverview)
+	for _, member := range members {
+		if !strings.EqualFold(strings.TrimSpace(member.Status), "active") {
+			continue
+		}
+		nodeID := strings.TrimSpace(member.NodeID)
+		if nodeID == "" {
+			continue
+		}
+		item := byNodeID[nodeID]
+		if item == nil {
+			node := nodes[nodeID]
+			item = &gonzbnetPoolMemberOverview{
+				NodeID: nodeID, Alias: strings.TrimSpace(node.Alias), BaseURL: strings.TrimSpace(node.BaseURL),
+				Status: strings.TrimSpace(node.Status), Roles: []string{}, Capabilities: []string{}, Local: nodeID == strings.TrimSpace(localNodeID),
+			}
+			if item.Status == "" {
+				item.Status = "unknown"
+			}
+			if item.Local {
+				if item.Alias == "" {
+					item.Alias = strings.TrimSpace(localAlias)
+				}
+				if item.BaseURL == "" {
+					item.BaseURL = strings.TrimSpace(localBaseURL)
+				}
+			}
+			byNodeID[nodeID] = item
+		}
+		item.Roles = append(item.Roles, strings.TrimSpace(member.Role))
+		item.Capabilities = append(item.Capabilities, member.AllowedCapabilities...)
+	}
+	out := make([]gonzbnetPoolMemberOverview, 0, len(byNodeID))
+	for _, item := range byNodeID {
+		item.Roles = sortedUniqueStrings(item.Roles)
+		item.Capabilities = sortedUniqueStrings(item.Capabilities)
+		out = append(out, *item)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		left, right := strings.ToLower(out[i].Alias), strings.ToLower(out[j].Alias)
+		if left == right {
+			return out[i].NodeID < out[j].NodeID
+		}
+		if left == "" {
+			return false
+		}
+		if right == "" {
+			return true
+		}
+		return left < right
+	})
+	return out
 }
 
 func (ctrl *GoNZBNetAdminController) ReportingRoles(c *echo.Context) error {

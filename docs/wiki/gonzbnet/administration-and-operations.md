@@ -17,7 +17,9 @@ Open `/admin/gonzbnet`. Its four views separate routine understanding from
 protocol detail:
 
 - **Overview** summarizes the node, healthy enabled jobs, connected peers,
-  active pools, warnings, and pending admissions.
+  active pools, warnings, and pending admissions. Its pool-member roster counts
+  unique active nodes and groups each node's pool roles and operational
+  capabilities, using shared aliases and advertised addresses when available.
 - **Roles** explains the grouped jobs **Find and use releases**, **Contribute
   releases**, **Verify release health**, **Coordinate scanning**, and the
   **Connection layer**. Select an enabled role tab to see what it reads, what it
