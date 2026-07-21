@@ -1205,6 +1205,9 @@ export function AdminGoNZBNetPage() {
   const staleClaims = dashboard?.stale_claims ?? []
   const outcomes = dashboard?.outcomes ?? []
   const duplicates = dashboard?.duplicates ?? []
+  const selectedPoolOverview = reportingOverview?.pools.find((pool) => pool.pool_id === effectivePoolID)
+  const selectedPoolNodeCount = selectedPoolOverview?.members ?? new Set(poolMembers.filter((member) => member.status === 'active').map((member) => member.node_id)).size
+  const activePoolRoleGrants = poolMembers.filter((member) => member.status === 'active').length
   const peerSyncMetric = protocolMetrics?.durations.gonzbnet_peer_sync_duration_seconds
   const peerSyncAverage = peerSyncMetric?.count ? peerSyncMetric.sum_seconds / peerSyncMetric.count : 0
 
@@ -1367,9 +1370,9 @@ export function AdminGoNZBNetPage() {
                 {trustPools.map((item) => (
                   <tr key={item.pool_id}>
                     <td className="breakable-value">{item.display_name}<div className="muted-copy mono-cell">{item.pool_id}</div></td>
-                    <td>{item.pool_id === effectivePoolID ? formatNumber(poolMembers.length) : 'Select to view'}</td>
+                    <td>{item.pool_id === effectivePoolID ? formatNumber(selectedPoolNodeCount) : 'Select to view'}</td>
                     <td><span className="status-pill status-pill--table">{item.enabled ? 'active' : 'disabled'}</span></td>
-                    <td><button className="secondary-button secondary-button--small" type="button" onClick={() => setPoolID(item.pool_id)}>Select</button></td>
+                    <td><button className="secondary-button secondary-button--small" type="button" onClick={() => selectPool(item.pool_id)}>Select</button></td>
                   </tr>
                 ))}
               </tbody>
@@ -1881,7 +1884,9 @@ export function AdminGoNZBNetPage() {
         </table>
       </SectionTable>
 
-      <SectionTable title={`Members: ${effectivePoolID}`} count={poolMembers.length}>
+      <SectionTable title={`Membership role grants: ${effectivePoolID}`}>
+        <div className="stack">
+        <p className="muted-copy">{formatNumber(activePoolRoleGrants)} active role grant{activePoolRoleGrants === 1 ? '' : 's'} across {formatNumber(selectedPoolNodeCount)} node{selectedPoolNodeCount === 1 ? '' : 's'}. A node appears once per pool role; this is why the founding node has separate admin and witness rows.</p>
         <table className="data-table data-table--compact">
           <thead>
             <tr>
@@ -1894,22 +1899,22 @@ export function AdminGoNZBNetPage() {
             </tr>
           </thead>
           <tbody>
-            {poolMembers.map((item) => (
-              <tr key={`${item.pool_id}-${item.node_id}`}>
+            {poolMembers.map((item, index) => {
+              const firstActiveRow = poolMembers.findIndex((candidate) => candidate.node_id === item.node_id && candidate.status === 'active')
+              return <tr key={`${item.pool_id}-${item.node_id}-${item.role}`}>
                 <td className="mono-cell breakable-value" title={item.node_id}>{shortID(item.node_id)}</td>
                 <td><span className="status-pill status-pill--table">{item.role}</span></td>
                 <td><span className="status-pill status-pill--table">{item.status}</span></td>
                 <td className="breakable-value">{(item.allowed_capabilities ?? []).join(', ')}</td>
                 <td>{formatDateTime(item.joined_at)}</td>
                 <td>
-                  <button className="secondary-button secondary-button--small" type="button" onClick={() => void handleRevokeMember(item.node_id)}>
-                    Revoke
-                  </button>
+                  {item.status === 'active' && index === firstActiveRow ? <button className="secondary-button secondary-button--small" type="button" onClick={() => void handleRevokeMember(item.node_id)}>Revoke node</button> : <span className="muted-copy">{item.status === 'active' ? 'Same node' : 'Revoked'}</span>}
                 </td>
               </tr>
-            ))}
+            })}
           </tbody>
         </table>
+        </div>
       </SectionTable>
 
       <SectionTable title={`Role access: ${effectivePoolID}`} count={rolePoolAccess.length}>
