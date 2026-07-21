@@ -848,6 +848,9 @@ export function AdminSettingsPage() {
           ) : null}
 
           <SettingsSection title="Participation roles">
+            <div className="banner">
+              For one operator running the indexer and aggregator, one GoNZBNet node is recommended. Enable the roles that use those local modules; add another node only for a different operator, NNTP viewpoint, failure domain, exposure boundary, or independently scaled workload. Another container on the same host usually is not an independent node.
+            </div>
             <div className="toolbar-grid">
               <CheckboxField label="Aggregator federation source" checked={Boolean(aggregator.sources?.gonzbnet?.enabled)} onChange={(enabled) => setSettings((current) => ({ ...current, aggregator: { sources: { ...aggregator.sources, gonzbnet: { enabled } } } }))} helpText="Allows the aggregator to resolve releases and manifests from the federated cache." />
               <CheckboxField label="Consumer" checked={gonzbnet.consumer_enabled} onChange={(value) => setGoNZBNet({ consumer_enabled: value })} helpText="Consumes signed pool events and fetches manifests." />
@@ -865,43 +868,79 @@ export function AdminSettingsPage() {
 
           <SettingsSection title="Node, peers, and admission">
             <div className="toolbar-grid">
-              <TextField label="Node alias" value={gonzbnet.node_alias} onChange={(value) => setGoNZBNet({ node_alias: value })} />
+              <TextField label="Node alias" value={gonzbnet.node_alias} onChange={(value) => setGoNZBNet({ node_alias: value })} helpText="Human-readable name shown to pool administrators. It does not change the cryptographic node ID." />
               <TextField label="Advertise URL" value={gonzbnet.advertise_url} onChange={(value) => setGoNZBNet({ advertise_url: value })} helpText="Externally reachable HTTPS URL advertised to peers." />
-              <SelectField label="Visibility" value={gonzbnet.visibility} options={['private', 'unlisted', 'pool', 'public']} onChange={(value) => setGoNZBNet({ visibility: value })} />
+              <SelectField
+                label="Visibility"
+                value={gonzbnet.visibility}
+                options={[
+                  { value: 'private', label: 'Private (invitation required)' },
+                  { value: 'unlisted', label: 'Unlisted (recommended)' },
+                  { value: 'pool', label: 'Pool discoverable' },
+                  { value: 'public', label: 'Public' },
+                ]}
+                onChange={(value) => setGoNZBNet({ visibility: value })}
+                helpText="Controls admission-listing posture, not network access. Private hides pools without an invitation; the other choices currently differ only in advertised metadata because global discovery is not implemented. Use firewall/TLS controls for endpoint security."
+              />
               <TextField label="Publish pool IDs" value={gonzbnet.publish_pool_ids.join(', ')} onChange={(value) => setGoNZBNet({ publish_pool_ids: parseCSV(value) })} helpText="Comma-separated pools that receive locally published events." />
               <TextField label="Manual peer URLs" value={gonzbnet.manual_peers.join(', ')} onChange={(value) => setGoNZBNet({ manual_peers: parseCSV(value) })} helpText="Comma-separated peer base URLs. HTTPS is required except explicit local development." />
-              <CheckboxField label="Allow pool creation" checked={gonzbnet.allow_pool_creation} onChange={(value) => setGoNZBNet({ allow_pool_creation: value })} />
-              <CheckboxField label="Allow join requests" checked={gonzbnet.allow_join_requests} onChange={(value) => setGoNZBNet({ allow_join_requests: value })} />
-              <CheckboxField label="Admission relay" checked={gonzbnet.admission_relay_enabled} onChange={(value) => setGoNZBNet({ admission_relay_enabled: value })} />
+              <CheckboxField label="Allow pool creation" checked={gonzbnet.allow_pool_creation} onChange={(value) => setGoNZBNet({ allow_pool_creation: value })} helpText="Allows an authenticated local administrator to create new pool genesis state on this node." />
+              <CheckboxField label="Allow join requests" checked={gonzbnet.allow_join_requests} onChange={(value) => setGoNZBNet({ allow_join_requests: value })} helpText="Advertises pools to eligible visitors and accepts signed admission requests. Approval is still required." />
+              <CheckboxField label="Admission relay" checked={gonzbnet.admission_relay_enabled} onChange={(value) => setGoNZBNet({ admission_relay_enabled: value })} helpText="Lets this member relay signed admission fragments between a candidate and pool administrators; it cannot approve a request itself." />
               <CheckboxField label="Allow local HTTP peers" checked={gonzbnet.allow_insecure_peer_http} onChange={(value) => setGoNZBNet({ allow_insecure_peer_http: value })} helpText="Development only; non-local HTTP peers remain rejected." />
             </div>
           </SettingsSection>
 
           <SettingsSection title="Publication and shared health">
+            <div className="banner">
+              Role switches allow the work; publication switches decide which locally produced results are signed and shared with authorized pools.
+            </div>
             <div className="toolbar-grid">
-              <CheckboxField label="Publish release cards" checked={gonzbnet.publish_release_cards_enabled} onChange={(value) => setGoNZBNet({ publish_release_cards_enabled: value })} />
+              <CheckboxField label="Publish release cards" checked={gonzbnet.publish_release_cards_enabled} onChange={(value) => setGoNZBNet({ publish_release_cards_enabled: value })} helpText="Publishes compact searchable metadata for eligible local indexer releases." />
               <NumberField label="Release card batch size" min={1} value={gonzbnet.publish_release_cards_batch_size} onChange={(value) => setGoNZBNet({ publish_release_cards_batch_size: value })} />
               <NumberField label="Release card interval (minutes)" min={0.01} step="any" value={gonzbnet.publish_release_cards_interval_minutes} onChange={(value) => setGoNZBNet({ publish_release_cards_interval_minutes: value })} />
-              <CheckboxField label="Publish manifest availability" checked={gonzbnet.manifest_availability_enabled} onChange={(value) => setGoNZBNet({ manifest_availability_enabled: value })} />
-              <CheckboxField label="Publish health attestations" checked={gonzbnet.health_attestations_enabled} onChange={(value) => setGoNZBNet({ health_attestations_enabled: value })} />
+              <CheckboxField label="Publish manifest availability" checked={gonzbnet.manifest_availability_enabled} onChange={(value) => setGoNZBNet({ manifest_availability_enabled: value })} helpText="Announces that this node can resolve or serve a signed manifest; it does not publish user grabs or searches." />
+              <CheckboxField label="Publish health attestations" checked={gonzbnet.health_attestations_enabled} onChange={(value) => setGoNZBNet({ health_attestations_enabled: value })} helpText="Shares signed aggregate release/manifest health results produced by this node." />
               <NumberField label="Health batch size" min={1} value={gonzbnet.health_attestations_batch_size} onChange={(value) => setGoNZBNet({ health_attestations_batch_size: value })} />
               <NumberField label="Health interval (minutes)" min={0.01} step="any" value={gonzbnet.health_attestations_interval_minutes} onChange={(value) => setGoNZBNet({ health_attestations_interval_minutes: value })} />
             </div>
           </SettingsSection>
 
           <SettingsSection title="Scanner and coverage">
+            <div className="banner">
+              Coverage coordinates indexer scrape ranges so scanners avoid duplicating work. It does not scan by itself: scanner and coverage roles, pool grants, and assigned or explicitly allowed unassigned work are also required.
+            </div>
             <div className="toolbar-grid">
               <NumberField label="Scanner max groups" min={0} value={gonzbnet.scanner_max_groups} onChange={(value) => setGoNZBNet({ scanner_max_groups: value })} />
               <NumberField label="Scanner max articles/hour" min={0} value={gonzbnet.scanner_max_articles_per_hour} onChange={(value) => setGoNZBNet({ scanner_max_articles_per_hour: value })} />
               <NumberField label="Claim TTL (minutes)" min={0} value={gonzbnet.scanner_claim_ttl_minutes} onChange={(value) => setGoNZBNet({ scanner_claim_ttl_minutes: value })} />
               <NumberField label="Checkpoint interval (seconds)" min={0} value={gonzbnet.scanner_checkpoint_interval_seconds} onChange={(value) => setGoNZBNet({ scanner_checkpoint_interval_seconds: value })} />
-              <CheckboxField label="Respect remote claims" checked={gonzbnet.scanner_respect_remote_claims} onChange={(value) => setGoNZBNet({ scanner_respect_remote_claims: value })} />
-              <CheckboxField label="Allow unassigned work" checked={gonzbnet.scanner_allow_unassigned_work} onChange={(value) => setGoNZBNet({ scanner_allow_unassigned_work: value })} />
-              <SelectField label="Coverage mode" value={gonzbnet.coverage_mode} options={['manual', 'scheduler', 'automatic']} onChange={(value) => setGoNZBNet({ coverage_mode: value })} />
+              <CheckboxField label="Respect remote claims" checked={gonzbnet.scanner_respect_remote_claims} onChange={(value) => setGoNZBNet({ scanner_respect_remote_claims: value })} helpText="Skips ranges actively claimed by another eligible scanner, reducing duplicate NNTP work." />
+              <CheckboxField label="Allow unassigned work" checked={gonzbnet.scanner_allow_unassigned_work} onChange={(value) => setGoNZBNet({ scanner_allow_unassigned_work: value })} helpText="Allows local scraping without a pool assignment. Useful for a solo node; avoid on coordinated multi-scanner pools." />
+              <SelectField
+                label="Coverage mode"
+                value={gonzbnet.coverage_mode}
+                options={[
+                  { value: 'manual', label: 'Manual (safe default)' },
+                  { value: 'scheduler', label: 'Assigned work only' },
+                  { value: 'automatic', label: 'Assigned work + stale reassignment' },
+                ]}
+                onChange={(value) => setGoNZBNet({ coverage_mode: value })}
+                helpText="Manual does not attach assigned coverage work unless unassigned work is allowed. Scheduler consumes signed assignments but does not run the stale-claim reassigner. Automatic also reassigns stale claims; it does not create an initial coverage plan by itself."
+              />
               <NumberField label="Minimum trust for claim" min={0} max={1} step="0.01" value={gonzbnet.coverage_min_trust_for_claim} onChange={(value) => setGoNZBNet({ coverage_min_trust_for_claim: value })} />
               <NumberField label="Validation overlap %" min={0} max={100} value={gonzbnet.coverage_validation_overlap_percent} onChange={(value) => setGoNZBNet({ coverage_validation_overlap_percent: value })} />
               <CheckboxField label="Penalize stale claims" checked={gonzbnet.coverage_stale_claim_penalty} onChange={(value) => setGoNZBNet({ coverage_stale_claim_penalty: value })} />
-              <SelectField label="Provider scope" value={gonzbnet.coverage_provider_scope_mode} options={['hash_only', 'disabled']} onChange={(value) => setGoNZBNet({ coverage_provider_scope_mode: value })} />
+              <SelectField
+                label="Provider scope"
+                value={gonzbnet.coverage_provider_scope_mode}
+                options={[
+                  { value: 'hash_only', label: 'Hashed provider scope (recommended)' },
+                  { value: 'disabled', label: 'Do not disclose provider scope' },
+                ]}
+                onChange={(value) => setGoNZBNet({ coverage_provider_scope_mode: value })}
+                helpText="A scoped hash lets coordination and validation distinguish provider/backbone viewpoints without exposing credentials. Disabled provides more privacy but less evidence diversity and scheduling context."
+              />
             </div>
           </SettingsSection>
 
@@ -923,6 +962,9 @@ export function AdminSettingsPage() {
           </SettingsSection>
 
           <SettingsSection title="Synchronization and gossip">
+            <div className="banner">
+              Enable only the transports used by your topology. Pull is the simplest baseline; push reduces delay; WebSocket gossip is useful for larger or frequently changing peer sets.
+            </div>
             <div className="toolbar-grid">
               <CheckboxField label="Pull sync" checked={gonzbnet.pull_sync_enabled} onChange={(value) => setGoNZBNet({ pull_sync_enabled: value })} />
               <NumberField label="Pull interval (minutes)" min={0.01} step="any" value={gonzbnet.pull_sync_interval_minutes} onChange={(value) => setGoNZBNet({ pull_sync_interval_minutes: value })} />
@@ -934,7 +976,7 @@ export function AdminSettingsPage() {
               <NumberField label="Gossip batch size" min={1} value={gonzbnet.gossip_batch_size} onChange={(value) => setGoNZBNet({ gossip_batch_size: value })} />
               <NumberField label="Gossip TTL" min={1} value={gonzbnet.gossip_ttl} onChange={(value) => setGoNZBNet({ gossip_ttl: value })} />
               <NumberField label="Gossip fanout" min={1} value={gonzbnet.gossip_fanout} onChange={(value) => setGoNZBNet({ gossip_fanout: value })} />
-              <CheckboxField label="Peer exchange" checked={gonzbnet.peer_exchange_enabled} onChange={(value) => setGoNZBNet({ peer_exchange_enabled: value })} />
+              <CheckboxField label="Peer exchange" checked={gonzbnet.peer_exchange_enabled} onChange={(value) => setGoNZBNet({ peer_exchange_enabled: value })} helpText="Allows authenticated members of a shared pool to exchange peer endpoints. It does not grant membership or trust." />
             </div>
           </SettingsSection>
 
@@ -948,8 +990,8 @@ export function AdminSettingsPage() {
               <NumberField label="Clock tolerance (seconds)" min={1} value={gonzbnet.time_tolerance_seconds} onChange={(value) => setGoNZBNet({ time_tolerance_seconds: value })} />
               <NumberField label="Max event age (hours)" min={1} value={gonzbnet.max_event_age_hours} onChange={(value) => setGoNZBNet({ max_event_age_hours: value })} />
               <NumberField label="Nonce TTL (seconds)" min={1} value={gonzbnet.nonce_ttl_seconds} onChange={(value) => setGoNZBNet({ nonce_ttl_seconds: value })} />
-              <CheckboxField label="Share provider backbone hash" checked={gonzbnet.share_provider_backbone_hash} onChange={(value) => setGoNZBNet({ share_provider_backbone_hash: value })} />
-              <CheckboxField label="Share source indexer hash" checked={gonzbnet.share_source_indexer_hash} onChange={(value) => setGoNZBNet({ share_source_indexer_hash: value })} />
+              <CheckboxField label="Share provider backbone hash" checked={gonzbnet.share_provider_backbone_hash} onChange={(value) => setGoNZBNet({ share_provider_backbone_hash: value })} helpText="Adds a non-credential hash to evidence so pool operators can measure independent NNTP viewpoints. Disabled by default for privacy." />
+              <CheckboxField label="Share source indexer hash" checked={gonzbnet.share_source_indexer_hash} onChange={(value) => setGoNZBNet({ share_source_indexer_hash: value })} helpText="Adds a non-credential source-indexer hash for provenance grouping. Disabled by default for privacy." />
             </div>
           </SettingsSection>
           <SettingsActions onReload={() => void refresh()} />
@@ -1760,7 +1802,7 @@ function SelectField({
 }: {
   label: string
   value: string
-  options: string[]
+  options: Array<string | { value: string; label: string }>
   helpText?: string
   onChange: (value: string) => void
 }) {
@@ -1768,7 +1810,11 @@ function SelectField({
     <label className="field">
       <span>{label}</span>
       <select value={value} onChange={(event) => onChange(event.target.value)}>
-        {options.map((option) => <option key={option} value={option}>{option}</option>)}
+        {options.map((option) => {
+          const value = typeof option === 'string' ? option : option.value
+          const optionLabel = typeof option === 'string' ? option : option.label
+          return <option key={value} value={value}>{optionLabel}</option>
+        })}
       </select>
       {helpText ? <small>{helpText}</small> : null}
     </label>

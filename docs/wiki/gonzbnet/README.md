@@ -17,6 +17,11 @@ corresponding capabilities.
 - [Configuration And Deployment](./configuration-and-deployment.md) covers
   prerequisites, configuration patterns, capability combinations, identity,
   and transport settings.
+- [Runtime Settings Reference](./runtime-settings-reference.md) defines every
+  WebUI runtime setting, dropdown choice, default, and operational tradeoff.
+- [Deployment Recommendations](./deployment-topologies.md) explains when one
+  all-in-one node is best and when roles deserve separate containers, hosts, or
+  operators.
 - [Federation Protocol And Security](./federation-protocol-and-security.md)
   documents signed events, pool authorization, admission, synchronization,
   protocol endpoints, limits, and privacy boundaries.

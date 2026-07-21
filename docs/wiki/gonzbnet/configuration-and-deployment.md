@@ -50,6 +50,11 @@ and optional provider/source hash disclosure. The aggregator's GoNZBNet source
 toggle is kept in the same tab because it controls whether local users consume
 the resulting federated catalog.
 
+See the [Runtime Settings Reference](./runtime-settings-reference.md) for every
+field, default, and dropdown choice. See
+[Deployment Recommendations](./deployment-topologies.md) before splitting
+roles into additional processes or nodes.
+
 YAML examples in this document remain useful as bootstrap defaults and for
 unattended provisioning. Once a settings revision exists, make operational
 changes in one place—the WebUI or runtime settings API—to avoid mistaking a
@@ -111,8 +116,8 @@ set; it cannot publish into a pool the node has not joined.
 
 ## Validator
 
-Validator and health-checker nodes should have a configured NNTP provider with
-the `validator` role:
+Validator and health-checker nodes should have a configured NNTP provider. A
+separate NNTP server-role flag is not required:
 
 ```yaml
 gonzbnet:
@@ -219,3 +224,7 @@ modules beyond the capabilities selected by the operator:
 
 All enabled GoNZBNet shapes require PostgreSQL because federation state and
 authorization are relational and transactional.
+
+For recommended role combinations, network diagrams, and the tradeoffs between
+enabling every role on one node versus splitting them, see
+[Deployment Recommendations](./deployment-topologies.md).
