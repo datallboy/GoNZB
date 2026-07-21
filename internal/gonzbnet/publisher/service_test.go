@@ -56,26 +56,6 @@ func TestPublishOnceSignsStoresAndSkipsUnchangedReleaseCards(t *testing.T) {
 	}
 }
 
-func TestPublishOnceUsesConfiguredReleaseReadyPolicy(t *testing.T) {
-	ctx := context.Background()
-	node, err := identity.LoadOrCreate(t.TempDir())
-	if err != nil {
-		t.Fatalf("load identity: %v", err)
-	}
-	store := &fakeStore{eventsByBodyHash: make(map[string]string)}
-	svc := New(node, store, "pool.local")
-	policy := pgindex.DefaultReleaseReadyPolicy()
-	policy.MinCompletionPct = 91
-	svc.SetReleaseReadyPolicy(policy)
-
-	if _, err := svc.PublishOnce(ctx, 10); err != nil {
-		t.Fatalf("publish: %v", err)
-	}
-	if store.releaseReadyPolicy.MinCompletionPct != 91 {
-		t.Fatalf("expected configured release policy, got %+v", store.releaseReadyPolicy)
-	}
-}
-
 func TestPublishOnceUsesScanOutputWithoutIndexerCandidates(t *testing.T) {
 	ctx := context.Background()
 	node, err := identity.LoadOrCreate(t.TempDir())
@@ -115,6 +95,38 @@ func TestPublishOnceUsesScanOutputWithoutIndexerCandidates(t *testing.T) {
 	}
 }
 
+func TestPublishOnceEmitsSeparateEventsForEachPool(t *testing.T) {
+	ctx := context.Background()
+	node, err := identity.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("load identity: %v", err)
+	}
+	store := &fakeStore{
+		candidates:       []releasecard.LocalRelease{testPublisherRelease()},
+		eventsByBodyHash: make(map[string]string),
+	}
+	for _, poolID := range []string{"pool.one", "pool.two"} {
+		service := New(node, store, poolID)
+		service.now = func() time.Time { return time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC) }
+		result, err := service.PublishOnce(ctx, 10)
+		if err != nil {
+			t.Fatalf("publish %s: %v", poolID, err)
+		}
+		if result.Published != 1 {
+			t.Fatalf("expected one event for %s, got %+v", poolID, result)
+		}
+	}
+	if len(store.events) != 2 {
+		t.Fatalf("expected one signed event per pool, got %d", len(store.events))
+	}
+	if store.events[0].PoolIDs[0] != "pool.one" || store.events[1].PoolIDs[0] != "pool.two" {
+		t.Fatalf("unexpected event scopes: %v %v", store.events[0].PoolIDs, store.events[1].PoolIDs)
+	}
+	if store.projections[0].Card.ReleaseID != store.projections[1].Card.ReleaseID || store.projections[0].Card.ManifestID != store.projections[1].Card.ManifestID {
+		t.Fatal("stable release and manifest IDs changed across pools")
+	}
+}
+
 func TestPublishOnceBuildsAndCachesLocalManifestWhenEnabled(t *testing.T) {
 	ctx := context.Background()
 	node, err := identity.LoadOrCreate(t.TempDir())
@@ -140,6 +152,12 @@ func TestPublishOnceBuildsAndCachesLocalManifestWhenEnabled(t *testing.T) {
 	}
 	if _, err := manifest.Validate(stored.Manifest); err != nil {
 		t.Fatalf("stored local manifest should validate: %v", err)
+	}
+	if len(store.events) != 2 || store.events[1].EventType != manifest.Type || stored.SourceEventID != store.events[1].EventID {
+		t.Fatalf("expected stored manifest to reference its signed event: events=%d source=%q", len(store.events), stored.SourceEventID)
+	}
+	if !store.requiredSignedManifest {
+		t.Fatal("manifest builder did not request stale scan-output manifest repair candidates")
 	}
 }
 
@@ -201,6 +219,11 @@ func TestPublishValidationOnceSignsAvailabilityWithoutIndexer(t *testing.T) {
 			ManifestID: manifestBody.ManifestID,
 			ReleaseID:  manifestBody.ReleaseID,
 			PoolID:     "pool.local",
+		}, {
+			TaskID:     8,
+			ManifestID: manifestBody.ManifestID,
+			ReleaseID:  manifestBody.ReleaseID,
+			PoolID:     "pool.other",
 		}},
 		manifests: map[string]*manifest.ResolutionManifest{
 			manifestBody.ManifestID: &manifestBody,
@@ -248,19 +271,19 @@ type fakeStore struct {
 	completedTasks          map[int64]string
 	nodeID                  string
 	publicKey               ed25519.PublicKey
-	releaseReadyPolicy      pgindex.ReleaseReadyPolicy
+	requiredSignedManifest  bool
 }
 
-func (s *fakeStore) ListGoNZBNetScanOutputCandidates(context.Context, int) ([]releasecard.LocalRelease, error) {
+func (s *fakeStore) ListGoNZBNetScanOutputCandidates(_ context.Context, _ string, requireSignedManifest bool, _ int) ([]releasecard.LocalRelease, error) {
+	s.requiredSignedManifest = requireSignedManifest
 	return s.scanCandidates, nil
 }
 
-func (s *fakeStore) ListGoNZBNetLocalReleaseCandidates(_ context.Context, _ int, policy pgindex.ReleaseReadyPolicy) ([]releasecard.LocalRelease, error) {
-	s.releaseReadyPolicy = policy
+func (s *fakeStore) ListGoNZBNetLocalReleaseCandidates(context.Context, int, pgindex.ReleaseReadyPolicy) ([]releasecard.LocalRelease, error) {
 	return s.candidates, nil
 }
 
-func (s *fakeStore) MarkGoNZBNetScanOutputPublished(_ context.Context, scanID, eventID string) error {
+func (s *fakeStore) MarkGoNZBNetScanOutputPublished(_ context.Context, scanID, eventID, _ string) error {
 	if s.publishedScanOutputs == nil {
 		s.publishedScanOutputs = map[string]string{}
 	}
@@ -282,13 +305,17 @@ func (s *fakeStore) NextFederationEventSequence(context.Context, string) (int64,
 	return int64(len(s.events) + 1), &previous, nil
 }
 
-func (s *fakeStore) FindFederationEventByBodyHash(_ context.Context, _, _, bodyHash string) (string, error) {
-	return s.eventsByBodyHash[bodyHash], nil
+func (s *fakeStore) FindFederationEventByBodyHash(_ context.Context, _, _, bodyHash, poolID string) (string, error) {
+	return s.eventsByBodyHash[poolID+"\x00"+bodyHash], nil
 }
 
 func (s *fakeStore) AppendVerifiedFederationEvent(_ context.Context, event *events.SignedEvent, validation *events.ValidationResult) error {
 	s.events = append(s.events, event)
-	s.eventsByBodyHash[event.BodyHash] = event.EventID
+	poolID := ""
+	if len(event.PoolIDs) == 1 {
+		poolID = event.PoolIDs[0]
+	}
+	s.eventsByBodyHash[poolID+"\x00"+event.BodyHash] = event.EventID
 	return nil
 }
 
@@ -312,8 +339,14 @@ func (s *fakeStore) ProjectHealthAttestation(_ context.Context, projection pgind
 	return nil
 }
 
-func (s *fakeStore) ClaimValidationTasks(context.Context, string, int) ([]pgindex.ValidationTask, error) {
-	return append([]pgindex.ValidationTask(nil), s.validationTasks...), nil
+func (s *fakeStore) ClaimValidationTasks(_ context.Context, _, poolID string, _ int) ([]pgindex.ValidationTask, error) {
+	items := make([]pgindex.ValidationTask, 0, len(s.validationTasks))
+	for _, task := range s.validationTasks {
+		if task.PoolID == "" || task.PoolID == poolID {
+			items = append(items, task)
+		}
+	}
+	return items, nil
 }
 
 func (s *fakeStore) GetResolutionManifest(_ context.Context, manifestID string) (*manifest.ResolutionManifest, error) {

@@ -1,6 +1,12 @@
-# Three-Node Federation Testing
+# Four-Node Federation Testing
 
-This harness runs three independent GoNZB server processes against three
+This is a disposable test fixture, not a deployment template. Every service is
+bound to loopback, all checked-in credentials are test-only, and generated
+keys, databases, API tokens, cookies, logs, binaries, blobs, and NZBs remain
+under ignored `.e2e/` state or the disposable Docker volume. Never substitute
+production credentials or production databases in these files.
+
+This harness runs four independent GoNZB server processes against four
 separate PostgreSQL databases. Each node also has its own SQLite settings DB,
 blob cache, logs, and persistent Ed25519 key directory.
 
@@ -9,9 +15,18 @@ blob cache, logs, and persistent Ed25519 key directory.
 - Go 1.25 or the version declared by `go.mod`
 - Docker with Compose
 - `curl` and `jq`
-- free ports `18081`, `18082`, `18083`, and `55432`
+- free ports `11119`, `18081`, `18082`, `18083`, `18084`, and `55432`
 
 ## Lifecycle
+
+The definitive test starts from empty fixture state, runs every scenario, and
+removes the disposable state and database volume on success or failure:
+
+```sh
+make gonzbnet-e2e-test
+```
+
+For interactive inspection, run the lifecycle in separate steps:
 
 ```sh
 make gonzbnet-e2e-start
@@ -27,6 +42,7 @@ The nodes are available at:
 | A | `http://127.0.0.1:18081` | scanner, coverage, manifest builder |
 | B | `http://127.0.0.1:18082` | validator and health checker |
 | C | `http://127.0.0.1:18083` | consumer/cache and relay mode |
+| D | `http://127.0.0.1:18084` | standalone consumer with no configured peers |
 
 The local bootstrap password defaults to `gonzb-e2e-local`. Override it with
 `GONZBNET_E2E_PASSWORD`. This credential is local to each node and is never
@@ -43,15 +59,18 @@ Use `./scripts/gonzbnet_e2e.sh logs` for combined logs. Stop while preserving
 state with `make gonzbnet-e2e-stop`; remove all test identities and databases
 with `make gonzbnet-e2e-reset`.
 
+`reset` stops only the fixture processes, removes the named E2E Compose volume,
+and deletes `.e2e/gonzbnet`. It does not touch normal runtime `store/`
+directories or any configured production database.
+
 ## Basic Federation Checks
 
-The smoke command verifies that all three nodes are healthy, advertise
+The smoke command verifies that all four nodes are healthy, advertise
 `gonzbnet/1.0`, expose capabilities, and have distinct deterministic node IDs.
-Manual peers are configured in each node YAML, and pull/push workers run every
-minute.
+Node D has no manual peers. It learns its first peer only through admission.
 
 The federation smoke command creates a signed pool tombstone on Node A, pushes
-it to B and C, checks accepted append and projection in every PostgreSQL
+it to B, C, and D, checks accepted append and projection in every PostgreSQL
 database, and verifies duplicate delivery remains exactly once. It also checks
 that protected outbox reads require node signatures and that Node A's local
 admin session is not valid on Node B.
@@ -68,20 +87,21 @@ Open `/admin/gonzbnet` on each node for peer diagnostics, accepted/rejected
 events, deliveries, capabilities, coverage, validation tasks, manifests,
 health, reputation, and pool controls.
 
-## Trust Pool Test
+## Admission And Pool Isolation Test
 
-The `configure-pool` command creates the same protected `pool.e2e` projection
-on all three nodes, adds each node with role-appropriate capabilities, grants
-the local admin role search/get/manifest access, and triggers a pull. To test
-the UI/API manually instead:
+The `configure-pool` command creates `pool.e2e` on A, admits B and C through A,
+then has D contact B so the request is approved by A through a non-admin relay.
+D creates `pool.side` and admits C with a signed invitation. No membership row
+is inserted directly. The `admission-smoke` check verifies all four P1
+memberships, proves A/B did not receive P2 state, restarts every node to verify
+persistent identities, and verifies a P2 revocation does not affect C's P1
+membership.
 
 1. On Node A, create `pool.e2e` with `accept_mode=pool_member`, threshold `1`,
    and the default accepted event types.
-2. Read Node B and Node C IDs from their node-profile pages.
-3. Add all three node IDs as active members. Grant scanner/indexer/coverage and
-   manifest-builder capabilities to A, validator/health-checker/cache to B,
-   and consumer/cache/relay capabilities to C.
-4. Repeat or synchronize the pool projection on the other nodes.
+2. On B, paste A's address in **Join pool** and request access.
+3. On A, approve B in **Pool admissions**. Repeat for C.
+4. On D, paste B's address; approve the relayed request on A.
 5. Trigger pull/push from the peer-management panel and verify accepted events.
 6. Revoke B, trigger sync again, and verify new B events are rejected while
    prior accepted events remain append-only.
@@ -89,7 +109,48 @@ the UI/API manually instead:
 This validates node authentication and pool membership without sharing local
 users, sessions, API keys, searches, grabs, or download history.
 
+## Multi-Administrator Quorum Test
+
+The `quorum-smoke` scenario creates a separate pool, admits B as a second
+administrator, raises the membership threshold to two, and has C request
+membership. It proves A's first signed approval remains pending and B's second
+independent approval creates the final `PoolMemberApproved` event. All three
+databases must project the same final event and three distinct active nodes.
+
+```sh
+./scripts/gonzbnet_e2e.sh quorum-smoke
+```
+
 ## ReleaseCard And Manifest Test
+
+`make gonzbnet-e2e-verify` includes a deterministic `release-smoke` test. It
+inserts a scanner-owned release candidate on A and then uses normal background
+workers and HTTP APIs to prove all of the following:
+
+- A publishes a signed `ReleaseCard` and signed `ResolutionManifest`.
+- D receives and searches the release through its local federated cache.
+- D's local Newznab get requests the manifest from A without user context.
+- D verifies and caches the manifest, generates the expected NZB, and serves a
+  second identical grab without contacting A again.
+- The local Newznab API token appears in neither federation events nor node
+  logs.
+
+Run that check directly with:
+
+```sh
+./scripts/gonzbnet_e2e.sh release-smoke
+```
+
+The deterministic release fixture tests federation independently of NNTP. The
+separate `nntp-smoke` scenario starts a real TCP NNTP fixture and runs the
+production `nntp.Manager` through DATE, GROUP, XOVER, and BODY operations:
+
+```sh
+./scripts/gonzbnet_e2e.sh nntp-smoke
+```
+
+Use the following path when validating the complete indexer-to-federation flow
+against an external NNTP provider.
 
 Node A needs a local release fixture with complete segment Message-IDs. The
 most representative route is to configure a test NNTP account and newsgroup in
@@ -102,11 +163,10 @@ Node A's settings, enable the usenet-indexer module, then run:
 .e2e/gonzbnet/gonzb indexer release generate-nzb --once --config test/e2e/gonzbnet/node-a.yaml
 ```
 
-GoNZBNet has no separate CLI process or microservice. Its scanner, publisher,
+GoNZBNet has no separate service or microservice. Its scanner, publisher,
 validator, health, cache, consumer, and relay capabilities are background
-modules of `gonzb serve`, controlled by each node YAML and the local admin API.
-The `gonzb indexer` commands above only create and process the local indexer
-fixture that Node A projects into federation.
+modules of `gonzb serve`. Local `gonzb gonzbnet` operator commands inspect the
+same database or trigger a one-shot sync; they do not run another daemon.
 
 To test against an existing indexer database, use the GoNZBNet feature build
 (`v0.8.0` plus the GoNZBNet commits), stop the plain `v0.8.0` process, and test
@@ -116,7 +176,8 @@ database migrations, so do not continue running an older binary against the
 migrated database.
 
 After a public-ready release forms, wait for or trigger ReleaseCard publication
-and pull sync. Verify:
+and pull sync. The automated smoke test covers the following behavior; repeat
+it with the real release:
 
 - Node B/C search the local federated cache; no live search reaches A.
 - The result's download URL points to the node serving the local Newznab API.
@@ -134,11 +195,11 @@ The E2E publisher and validator intervals are one minute.
 
 ## Validator And Health Test
 
-Configure an NNTP provider on Node B to exercise real segment availability.
-Without one, B intentionally publishes structural `unverified` attestations.
-With one, queued manifests use the scoped NNTP body-prefix checker and publish
-`available`, `partial`, or `missing` attestations. Check the validation task,
-health, and reputation diagnostics on all nodes after sync.
+Run `nntp-smoke` for repeatable production-client coverage. Configure an
+external NNTP provider on Node B to exercise provider-specific segment
+availability. Without one, B intentionally publishes structural `unverified`
+attestations. With one, queued manifests use the scoped NNTP body-prefix checker
+and publish `available`, `partial`, or `missing` attestations.
 
 ## Coverage And Scanner Test
 
@@ -194,5 +255,5 @@ GONZB_TEST_PG_DSN='postgres://gonzb:gonzb@127.0.0.1:55432/gonzbnet_test?sslmode=
   go test ./internal/store/pgindex -run Federation -count=1
 ```
 
-The `gonzbnet_test` database is separate from the three running node databases,
+The `gonzbnet_test` database is separate from the four running node databases,
 so integration-test cleanup cannot disrupt the harness nodes.

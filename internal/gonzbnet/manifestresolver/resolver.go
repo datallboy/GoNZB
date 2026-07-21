@@ -15,6 +15,7 @@ import (
 	"github.com/datallboy/gonzb/internal/gonzbnet/canonical"
 	"github.com/datallboy/gonzb/internal/gonzbnet/events"
 	"github.com/datallboy/gonzb/internal/gonzbnet/manifest"
+	gonzbnetmetrics "github.com/datallboy/gonzb/internal/gonzbnet/metrics"
 	"github.com/datallboy/gonzb/internal/gonzbnet/requestauth"
 	"github.com/datallboy/gonzb/internal/gonzbnet/transportpolicy"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
@@ -96,6 +97,15 @@ func (r *Resolver) ResolveNZB(ctx context.Context, releaseID string) (io.ReadClo
 	} else if ok {
 		return io.NopCloser(bytes.NewReader(payload)), nil
 	}
+	started := time.Now()
+	failed := true
+	gonzbnetmetrics.Default.Add(gonzbnetmetrics.ManifestRequestsTotal, 1)
+	defer func() {
+		gonzbnetmetrics.Default.ObserveManifestResolution(time.Since(started))
+		if failed {
+			gonzbnetmetrics.Default.Add(gonzbnetmetrics.ManifestRequestFailuresTotal, 1)
+		}
+	}()
 	source, err := r.store.FindFederatedManifestSource(ctx, releaseID)
 	if err != nil {
 		return nil, err
@@ -150,6 +160,7 @@ func (r *Resolver) ResolveNZB(ctx context.Context, releaseID string) (io.ReadClo
 		return nil, err
 	}
 	_ = r.store.RecordFederatedManifestSourceSuccess(ctx, *source)
+	failed = false
 	return io.NopCloser(bytes.NewReader(nzbPayload)), nil
 }
 

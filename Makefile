@@ -8,7 +8,7 @@ PKG=./cmd/gonzb
 
 LDFLAGS=-ldflags "-X main.Version=$(VERSION) -X main.BuildTime=$(BUILD_TIME)"
 
-.PHONY: all build build-release ui-build clean test vet lint install gonzbnet-e2e-start gonzbnet-e2e-bootstrap gonzbnet-e2e-verify gonzbnet-e2e-stop gonzbnet-e2e-status gonzbnet-e2e-reset
+.PHONY: all build build-release ui-build clean test vet lint install gonzbnet-e2e-test gonzbnet-e2e-start gonzbnet-e2e-bootstrap gonzbnet-e2e-verify gonzbnet-e2e-stop gonzbnet-e2e-status gonzbnet-e2e-reset
 
 all: build
 
@@ -59,16 +59,23 @@ clean:
 	rm -f downloads/
 	rm -f *.nzb
 
+gonzbnet-e2e-test:
+	./scripts/gonzbnet_e2e.sh test
+
 gonzbnet-e2e-start:
 	./scripts/gonzbnet_e2e.sh start
 
 gonzbnet-e2e-bootstrap:
 	./scripts/gonzbnet_e2e.sh bootstrap
 	./scripts/gonzbnet_e2e.sh configure-pool
+	./scripts/gonzbnet_e2e.sh admission-smoke
 
 gonzbnet-e2e-verify:
 	./scripts/gonzbnet_e2e.sh smoke
+	./scripts/gonzbnet_e2e.sh quorum-smoke
 	./scripts/gonzbnet_e2e.sh federation-smoke
+	./scripts/gonzbnet_e2e.sh release-smoke
+	./scripts/gonzbnet_e2e.sh nntp-smoke
 
 gonzbnet-e2e-stop:
 	./scripts/gonzbnet_e2e.sh stop

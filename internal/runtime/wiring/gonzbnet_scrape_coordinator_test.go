@@ -90,6 +90,32 @@ func TestGoNZBNetScrapeCoordinatorObservesRun(t *testing.T) {
 	}
 }
 
+func TestGoNZBNetMultiPoolScrapeCoordinatorPublishesPerPool(t *testing.T) {
+	nodeIdentity, err := identity.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("identity: %v", err)
+	}
+	store := &fakeScrapeCoordinatorStore{activePoolIDs: []string{"pool.one", "pool.two"}}
+	coord, err := newGoNZBNetMultiPoolScrapeRangeCoordinator(nodeIdentity, store, "", nil, time.Minute, 0.5, "scope-hash", true, true, true)
+	if err != nil {
+		t.Fatalf("coordinator: %v", err)
+	}
+	coord.ObserveScrapeRun(context.Background(), map[string]any{"groups_total": 1}, nil)
+	if len(store.events) != 4 {
+		t.Fatalf("expected capacity and heartbeat in both pools, got %d events", len(store.events))
+	}
+	poolCounts := map[string]int{}
+	for _, event := range store.events {
+		if len(event.PoolIDs) != 1 {
+			t.Fatalf("expected one pool per event, got %+v", event.PoolIDs)
+		}
+		poolCounts[event.PoolIDs[0]]++
+	}
+	if poolCounts["pool.one"] != 2 || poolCounts["pool.two"] != 2 {
+		t.Fatalf("unexpected per-pool events: %+v", poolCounts)
+	}
+}
+
 func TestGoNZBNetScrapeCoordinatorListsAssignedRanges(t *testing.T) {
 	nodeIdentity, err := identity.LoadOrCreate(t.TempDir())
 	if err != nil {
@@ -254,6 +280,11 @@ type fakeScrapeCoordinatorStore struct {
 	sequence             int64
 	events               []*events.SignedEvent
 	projected            int
+	activePoolIDs        []string
+}
+
+func (s *fakeScrapeCoordinatorStore) ListActivePoolIDsForNodeCapabilities(context.Context, string, []string) ([]string, error) {
+	return append([]string(nil), s.activePoolIDs...), nil
 }
 
 func (s *fakeScrapeCoordinatorStore) CheckCoverageRangeBlock(_ context.Context, params pgindex.CoverageRangeBlockParams) (pgindex.CoverageRangeBlock, error) {

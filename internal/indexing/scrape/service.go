@@ -88,6 +88,7 @@ type RangeCoordinator interface {
 }
 
 type RangeRequest struct {
+	PoolID       string
 	Mode         string
 	AssignmentID string
 	Group        string
@@ -98,6 +99,7 @@ type RangeRequest struct {
 }
 
 type RangeDecision struct {
+	PoolID            string
 	ClaimID           string
 	AssignmentID      string
 	Group             string

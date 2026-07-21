@@ -22,46 +22,42 @@ func DefaultRuntimeSettings() *RuntimeSettings {
 		},
 		NNTPPool: DefaultNNTPPoolRuntimeSettings(),
 		Indexing: &IndexingRuntimeSettings{
-			Newsgroups:                   []string{},
-			BackfillUntilDateByGroup:     map[string]string{},
-			ExplicitGroups:               []IndexingScrapeGroupRuntimeSettings{},
-			WildcardRules:                []IndexingWildcardRuleRuntimeSettings{},
-			ProviderGroupInventory:       []IndexingProviderGroupInventoryRuntimeSettings{},
-			MaterializedGroups:           []IndexingMaterializedGroupRuntimeSettings{},
-			ScrapeLatest:                 defaultScrapeStage(false),
-			ScrapeBackfill:               defaultScrapeStage(false),
-			PosterMaterialize:            defaultStage(false, 2, 10000, 0),
-			CrosspostPopularityRefresh:   defaultStage(false, 2, 1000, 0),
-			ArticleCohortSchedule:        defaultStage(true, 0.25, 50000, 0),
-			Assemble:                     defaultAssembleStage(false, 2, 5000, 1),
-			RecoverYEnc:                  defaultRecoverYEncStage(false),
-			SourceWindow:                 defaultSourceWindowSettings(),
-			Retention:                    defaultRetentionSettings(),
-			RecoveryAdmission:            defaultRecoveryAdmissionSettings(),
-			ScrapeTiers:                  defaultScrapeTierSettings(),
-			DeferredBackfill:             defaultDeferredBackfillSettings(),
-			ReleaseSummaryRefresh:        defaultReleaseSummaryRefreshStage(false),
-			Release:                      defaultReleaseStage(false),
-			ReleaseGenerateNZB:           defaultStage(false, 10, 100, 0),
-			ReleaseArchiveNZB:            defaultStage(false, 10, 100, 0),
-			ReleasePurgeArchivedSources:  defaultStage(false, 10, 50, 0),
-			InspectDiscoveryReadyRefresh: defaultStage(false, 10, 10000, 0),
-			InspectPAR2ReadyRefresh:      defaultStage(false, 10, 10000, 0),
-			InspectArchiveReadyRefresh:   defaultStage(false, 10, 10000, 0),
-			InspectMediaReadyRefresh:     defaultStage(false, 10, 10000, 0),
-			MaintenanceTasks:             defaultMaintenanceTasks(),
-			Match:                        IndexingMatchRuntimeSettings{HighConfidenceThreshold: 0.85, ProbableConfidenceThreshold: 0.55, ArticleBucketSize: 5000},
-			Inspect:                      IndexingInspectRuntimeSettings{WorkDir: "/store/indexer/inspect", WorkspaceBackend: "auto", MemoryWorkDir: "/dev/shm/gonzb-inspect", MaxBytes: 2 * 1024 * 1024 * 1024, MinBinaryBytes: 0, MaxBinaryBytes: 0, RequireExpectedFileCount: false, BlockedMagicHex: []string{"52434C4F4E45"}, MaxArchiveDepth: 3, ToolTimeoutSecs: 30, FFmpegPath: "ffmpeg", FFProbePath: "ffprobe", SevenZipPath: "7z", UnrarPath: "unrar", PAR2Path: "par2"},
-			StorageGuard:                 IndexingStorageGuardRuntimeSettings{Enabled: true, MinFreeBytes: 0, MinFreePercent: 15},
-			MemoryGuard:                  IndexingMemoryGuardRuntimeSettings{Enabled: true, MinAvailableBytes: 2 * 1024 * 1024 * 1024, MinAvailablePercent: 10, MinSwapFreeBytes: 512 * 1024 * 1024},
-			InspectDiscovery:             defaultStage(false, 10, 100, 1),
-			InspectPAR2:                  defaultStage(false, 10, 100, 4),
-			InspectNFO:                   defaultStage(false, 10, 100, 0),
-			InspectArchive:               defaultStage(false, 10, 100, 1),
-			InspectPassword:              defaultStage(false, 10, 100, 0),
-			InspectMedia:                 defaultStage(false, 10, 100, 1),
-			EnrichPreDB:                  defaultPreDBStage(false),
-			EnrichTMDB:                   defaultTMDBStage(false),
+			Newsgroups:                  []string{},
+			BackfillUntilDateByGroup:    map[string]string{},
+			ExplicitGroups:              []IndexingScrapeGroupRuntimeSettings{},
+			WildcardRules:               []IndexingWildcardRuleRuntimeSettings{},
+			ProviderGroupInventory:      []IndexingProviderGroupInventoryRuntimeSettings{},
+			MaterializedGroups:          []IndexingMaterializedGroupRuntimeSettings{},
+			ScrapeLatest:                defaultScrapeStage(false),
+			ScrapeBackfill:              defaultScrapeStage(false),
+			PosterMaterialize:           defaultStage(false, 2, 10000, 0),
+			CrosspostPopularityRefresh:  defaultStage(false, 2, 1000, 0),
+			ArticleCohortSchedule:       defaultStage(true, 0.25, 50000, 0),
+			Assemble:                    defaultAssembleStage(false, 2, 5000, 1),
+			RecoverYEnc:                 defaultRecoverYEncStage(false),
+			SourceWindow:                defaultSourceWindowSettings(),
+			Retention:                   defaultRetentionSettings(),
+			RecoveryAdmission:           defaultRecoveryAdmissionSettings(),
+			ScrapeTiers:                 defaultScrapeTierSettings(),
+			DeferredBackfill:            defaultDeferredBackfillSettings(),
+			ReleaseSummaryRefresh:       defaultReleaseSummaryRefreshStage(false),
+			Release:                     defaultReleaseStage(false),
+			ReleaseGenerateNZB:          defaultStage(false, 10, 100, 0),
+			ReleaseArchiveNZB:           defaultStage(false, 10, 100, 0),
+			ReleasePurgeArchivedSources: defaultStage(false, 10, 50, 0),
+			MaintenanceTasks:            defaultMaintenanceTasks(),
+			Match:                       IndexingMatchRuntimeSettings{HighConfidenceThreshold: 0.85, ProbableConfidenceThreshold: 0.55, ArticleBucketSize: 5000},
+			Inspect:                     IndexingInspectRuntimeSettings{WorkDir: "/store/indexer/inspect", WorkspaceBackend: "auto", MemoryWorkDir: "/dev/shm/gonzb-inspect", MaxBytes: 2 * 1024 * 1024 * 1024, MinBinaryBytes: 0, MaxBinaryBytes: 0, RequireExpectedFileCount: false, BlockedMagicHex: []string{"52434C4F4E45"}, MaxArchiveDepth: 3, ToolTimeoutSecs: 30, FFmpegPath: "ffmpeg", FFProbePath: "ffprobe", SevenZipPath: "7z", UnrarPath: "unrar", PAR2Path: "par2"},
+			StorageGuard:                IndexingStorageGuardRuntimeSettings{Enabled: true, MinFreeBytes: 0, MinFreePercent: 15},
+			MemoryGuard:                 IndexingMemoryGuardRuntimeSettings{Enabled: true, MinAvailableBytes: 2 * 1024 * 1024 * 1024, MinAvailablePercent: 10, MinSwapFreeBytes: 512 * 1024 * 1024},
+			InspectDiscovery:            defaultStage(false, 10, 100, 1),
+			InspectPAR2:                 defaultStage(false, 10, 100, 4),
+			InspectNFO:                  defaultStage(false, 10, 100, 0),
+			InspectArchive:              defaultStage(false, 10, 100, 1),
+			InspectPassword:             defaultStage(false, 10, 100, 0),
+			InspectMedia:                defaultStage(false, 10, 100, 1),
+			EnrichPreDB:                 defaultPreDBStage(false),
+			EnrichTMDB:                  defaultTMDBStage(false),
 		},
 		ArrIntegrations: []ArrIntegrationRuntimeSettings{},
 	}
@@ -345,10 +341,6 @@ func IndexingRuntimeFromConfig(cfg config.IndexingConfig) IndexingRuntimeSetting
 	out.ReleaseGenerateNZB = indexStageRuntimeFromConfig(cfg.ReleaseGenerateNZB, false, 10, 100)
 	out.ReleaseArchiveNZB = indexStageRuntimeFromConfig(cfg.ReleaseArchiveNZB, false, 10, 100)
 	out.ReleasePurgeArchivedSources = indexStageRuntimeFromConfig(cfg.ReleasePurgeArchivedSources, false, 10, 50)
-	out.InspectDiscoveryReadyRefresh = indexStageRuntimeFromConfig(cfg.InspectDiscoveryReadyRefresh, false, 10, 10000)
-	out.InspectPAR2ReadyRefresh = indexStageRuntimeFromConfig(cfg.InspectPAR2ReadyRefresh, false, 10, 10000)
-	out.InspectArchiveReadyRefresh = indexStageRuntimeFromConfig(cfg.InspectArchiveReadyRefresh, false, 10, 10000)
-	out.InspectMediaReadyRefresh = indexStageRuntimeFromConfig(cfg.InspectMediaReadyRefresh, false, 10, 10000)
 	out.MaintenanceTasks = defaultMaintenanceTasks()
 	out.Match = IndexingMatchRuntimeSettings{
 		HighConfidenceThreshold:     float64Value(cfg.Match.HighConfidenceThreshold, 0.85),
@@ -522,10 +514,6 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 		effective.Indexing.ReleaseGenerateNZB = toStageConfigNoConcurrency(indexing.ReleaseGenerateNZB)
 		effective.Indexing.ReleaseArchiveNZB = toStageConfigNoConcurrency(indexing.ReleaseArchiveNZB)
 		effective.Indexing.ReleasePurgeArchivedSources = toStageConfigNoConcurrency(indexing.ReleasePurgeArchivedSources)
-		effective.Indexing.InspectDiscoveryReadyRefresh = toStageConfigNoConcurrency(indexing.InspectDiscoveryReadyRefresh)
-		effective.Indexing.InspectPAR2ReadyRefresh = toStageConfigNoConcurrency(indexing.InspectPAR2ReadyRefresh)
-		effective.Indexing.InspectArchiveReadyRefresh = toStageConfigNoConcurrency(indexing.InspectArchiveReadyRefresh)
-		effective.Indexing.InspectMediaReadyRefresh = toStageConfigNoConcurrency(indexing.InspectMediaReadyRefresh)
 		effective.Indexing.Match = config.IndexingMatchConfig{
 			HighConfidenceThreshold:     float64Ptr(indexing.Match.HighConfidenceThreshold),
 			ProbableConfidenceThreshold: float64Ptr(indexing.Match.ProbableConfidenceThreshold),
@@ -798,10 +786,6 @@ func indexingConfigured(in *IndexingRuntimeSettings) bool {
 		in.ReleaseGenerateNZB.Enabled ||
 		in.ReleaseArchiveNZB.Enabled ||
 		in.ReleasePurgeArchivedSources.Enabled ||
-		in.InspectDiscoveryReadyRefresh.Enabled ||
-		in.InspectPAR2ReadyRefresh.Enabled ||
-		in.InspectArchiveReadyRefresh.Enabled ||
-		in.InspectMediaReadyRefresh.Enabled ||
 		in.InspectDiscovery.Enabled ||
 		in.InspectPAR2.Enabled ||
 		in.InspectNFO.Enabled ||
@@ -918,46 +902,42 @@ func cloneIndexing(in *IndexingRuntimeSettings) *IndexingRuntimeSettings {
 		return nil
 	}
 	out := &IndexingRuntimeSettings{
-		Newsgroups:                   append([]string(nil), in.Newsgroups...),
-		BackfillUntilDateByGroup:     cloneStringMap(in.BackfillUntilDateByGroup),
-		ExplicitGroups:               cloneExplicitGroups(in.ExplicitGroups),
-		WildcardRules:                cloneWildcardRules(in.WildcardRules),
-		ProviderGroupInventory:       cloneProviderGroupInventory(in.ProviderGroupInventory),
-		MaterializedGroups:           cloneMaterializedGroups(in.MaterializedGroups),
-		ScrapeLatest:                 in.ScrapeLatest,
-		ScrapeBackfill:               in.ScrapeBackfill,
-		PosterMaterialize:            mergeStageRuntimeSettings(defaultStage(false, 2, 10000, 0), in.PosterMaterialize),
-		CrosspostPopularityRefresh:   mergeStageRuntimeSettings(defaultStage(false, 2, 1000, 0), in.CrosspostPopularityRefresh),
-		ArticleCohortSchedule:        mergeStageRuntimeSettings(defaultStage(false, 0.25, 50000, 0), in.ArticleCohortSchedule),
-		Assemble:                     mergeStageRuntimeSettings(defaultAssembleStage(false, 2, 5000, 1), in.Assemble),
-		RecoverYEnc:                  mergeStageRuntimeSettings(defaultRecoverYEncStage(false), in.RecoverYEnc),
-		SourceWindow:                 normalizeSourceWindowRuntimeSettings(in.SourceWindow),
-		Retention:                    mergeRetentionRuntimeSettings(defaultRetentionSettings(), in.Retention),
-		RecoveryAdmission:            mergeRecoveryAdmissionRuntimeSettings(defaultRecoveryAdmissionSettings(), in.RecoveryAdmission),
-		ScrapeTiers:                  mergeScrapeTierRuntimeSettings(defaultScrapeTierSettings(), in.ScrapeTiers),
-		DeferredBackfill:             mergeDeferredBackfillRuntimeSettings(defaultDeferredBackfillSettings(), in.DeferredBackfill),
-		ReleaseSummaryRefresh:        mergeStageRuntimeSettings(defaultReleaseSummaryRefreshStage(false), in.ReleaseSummaryRefresh),
-		Release:                      in.Release,
-		ReleaseGenerateNZB:           mergeStageRuntimeSettings(defaultStage(false, 10, 100, 0), in.ReleaseGenerateNZB),
-		ReleaseArchiveNZB:            mergeStageRuntimeSettings(defaultStage(false, 10, 100, 0), in.ReleaseArchiveNZB),
-		ReleasePurgeArchivedSources:  mergeStageRuntimeSettings(defaultStage(false, 10, 50, 0), in.ReleasePurgeArchivedSources),
-		InspectDiscoveryReadyRefresh: mergeStageRuntimeSettings(defaultStage(false, 10, 10000, 0), in.InspectDiscoveryReadyRefresh),
-		InspectPAR2ReadyRefresh:      mergeStageRuntimeSettings(defaultStage(false, 10, 10000, 0), in.InspectPAR2ReadyRefresh),
-		InspectArchiveReadyRefresh:   mergeStageRuntimeSettings(defaultStage(false, 10, 10000, 0), in.InspectArchiveReadyRefresh),
-		InspectMediaReadyRefresh:     mergeStageRuntimeSettings(defaultStage(false, 10, 10000, 0), in.InspectMediaReadyRefresh),
-		MaintenanceTasks:             mergeMaintenanceTaskRuntimeSettings(defaultMaintenanceTasks(), in.MaintenanceTasks),
-		Match:                        in.Match,
-		Inspect:                      cloneInspectRuntimeSettings(in.Inspect),
-		StorageGuard:                 normalizeStorageGuardRuntimeSettings(in.StorageGuard),
-		MemoryGuard:                  normalizeMemoryGuardRuntimeSettings(in.MemoryGuard),
-		InspectDiscovery:             in.InspectDiscovery,
-		InspectPAR2:                  in.InspectPAR2,
-		InspectNFO:                   in.InspectNFO,
-		InspectArchive:               in.InspectArchive,
-		InspectPassword:              in.InspectPassword,
-		InspectMedia:                 in.InspectMedia,
-		EnrichPreDB:                  in.EnrichPreDB,
-		EnrichTMDB:                   in.EnrichTMDB,
+		Newsgroups:                  append([]string(nil), in.Newsgroups...),
+		BackfillUntilDateByGroup:    cloneStringMap(in.BackfillUntilDateByGroup),
+		ExplicitGroups:              cloneExplicitGroups(in.ExplicitGroups),
+		WildcardRules:               cloneWildcardRules(in.WildcardRules),
+		ProviderGroupInventory:      cloneProviderGroupInventory(in.ProviderGroupInventory),
+		MaterializedGroups:          cloneMaterializedGroups(in.MaterializedGroups),
+		ScrapeLatest:                in.ScrapeLatest,
+		ScrapeBackfill:              in.ScrapeBackfill,
+		PosterMaterialize:           mergeStageRuntimeSettings(defaultStage(false, 2, 10000, 0), in.PosterMaterialize),
+		CrosspostPopularityRefresh:  mergeStageRuntimeSettings(defaultStage(false, 2, 1000, 0), in.CrosspostPopularityRefresh),
+		ArticleCohortSchedule:       mergeStageRuntimeSettings(defaultStage(false, 0.25, 50000, 0), in.ArticleCohortSchedule),
+		Assemble:                    mergeStageRuntimeSettings(defaultAssembleStage(false, 2, 5000, 1), in.Assemble),
+		RecoverYEnc:                 mergeStageRuntimeSettings(defaultRecoverYEncStage(false), in.RecoverYEnc),
+		SourceWindow:                normalizeSourceWindowRuntimeSettings(in.SourceWindow),
+		Retention:                   mergeRetentionRuntimeSettings(defaultRetentionSettings(), in.Retention),
+		RecoveryAdmission:           mergeRecoveryAdmissionRuntimeSettings(defaultRecoveryAdmissionSettings(), in.RecoveryAdmission),
+		ScrapeTiers:                 mergeScrapeTierRuntimeSettings(defaultScrapeTierSettings(), in.ScrapeTiers),
+		DeferredBackfill:            mergeDeferredBackfillRuntimeSettings(defaultDeferredBackfillSettings(), in.DeferredBackfill),
+		ReleaseSummaryRefresh:       mergeStageRuntimeSettings(defaultReleaseSummaryRefreshStage(false), in.ReleaseSummaryRefresh),
+		Release:                     in.Release,
+		ReleaseGenerateNZB:          mergeStageRuntimeSettings(defaultStage(false, 10, 100, 0), in.ReleaseGenerateNZB),
+		ReleaseArchiveNZB:           mergeStageRuntimeSettings(defaultStage(false, 10, 100, 0), in.ReleaseArchiveNZB),
+		ReleasePurgeArchivedSources: mergeStageRuntimeSettings(defaultStage(false, 10, 50, 0), in.ReleasePurgeArchivedSources),
+		MaintenanceTasks:            mergeMaintenanceTaskRuntimeSettings(defaultMaintenanceTasks(), in.MaintenanceTasks),
+		Match:                       in.Match,
+		Inspect:                     cloneInspectRuntimeSettings(in.Inspect),
+		StorageGuard:                normalizeStorageGuardRuntimeSettings(in.StorageGuard),
+		MemoryGuard:                 normalizeMemoryGuardRuntimeSettings(in.MemoryGuard),
+		InspectDiscovery:            in.InspectDiscovery,
+		InspectPAR2:                 in.InspectPAR2,
+		InspectNFO:                  in.InspectNFO,
+		InspectArchive:              in.InspectArchive,
+		InspectPassword:             in.InspectPassword,
+		InspectMedia:                in.InspectMedia,
+		EnrichPreDB:                 in.EnrichPreDB,
+		EnrichTMDB:                  in.EnrichTMDB,
 	}
 	normalizeIndexingScrapeConfig(out)
 	return out

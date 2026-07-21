@@ -665,20 +665,15 @@ func (s *runtimeIndexerService) stageBacklogCount(ctx context.Context, stageName
 	if !ok {
 		return 0, false, nil
 	}
-	inspectStageName := ""
 	switch stageName {
-	case string(supervisor.StageInspectDiscoveryReadyRefresh):
-		inspectStageName = string(supervisor.StageInspectDiscovery)
-	case string(supervisor.StageInspectPAR2ReadyRefresh):
-		inspectStageName = string(supervisor.StageInspectPAR2)
-	case string(supervisor.StageInspectArchiveReadyRefresh):
-		inspectStageName = string(supervisor.StageInspectArchive)
-	case string(supervisor.StageInspectMediaReadyRefresh):
-		inspectStageName = string(supervisor.StageInspectMedia)
+	case string(supervisor.StageInspectDiscovery),
+		string(supervisor.StageInspectPAR2),
+		string(supervisor.StageInspectArchive),
+		string(supervisor.StageInspectMedia):
 	default:
 		return 0, false, nil
 	}
-	count, err := counter.CountInspectionReadyQueue(ctx, inspectStageName)
+	count, err := counter.CountInspectionReadyQueue(ctx, stageName)
 	if err != nil {
 		return 0, false, err
 	}
@@ -1495,14 +1490,6 @@ func stageSettingsForName(runtime *app.RuntimeSettings, stageName string) (app.I
 		return runtime.Indexing.ReleaseArchiveNZB, true
 	case string(supervisor.StageReleasePurgeArchivedSources):
 		return runtime.Indexing.ReleasePurgeArchivedSources, true
-	case string(supervisor.StageInspectDiscoveryReadyRefresh):
-		return runtime.Indexing.InspectDiscoveryReadyRefresh, true
-	case string(supervisor.StageInspectPAR2ReadyRefresh):
-		return runtime.Indexing.InspectPAR2ReadyRefresh, true
-	case string(supervisor.StageInspectArchiveReadyRefresh):
-		return runtime.Indexing.InspectArchiveReadyRefresh, true
-	case string(supervisor.StageInspectMediaReadyRefresh):
-		return runtime.Indexing.InspectMediaReadyRefresh, true
 	case string(supervisor.StageInspectDiscovery):
 		return runtime.Indexing.InspectDiscovery, true
 	case string(supervisor.StageInspectPAR2):
@@ -1553,10 +1540,6 @@ var allIndexerStages = []string{
 	string(supervisor.StageRelease),
 	string(supervisor.StageReleaseGenerateNZB),
 	string(supervisor.StageReleaseArchiveNZB),
-	string(supervisor.StageInspectDiscoveryReadyRefresh),
-	string(supervisor.StageInspectPAR2ReadyRefresh),
-	string(supervisor.StageInspectArchiveReadyRefresh),
-	string(supervisor.StageInspectMediaReadyRefresh),
 	string(supervisor.StageInspectDiscovery),
 	string(supervisor.StageInspectPAR2),
 	string(supervisor.StageInspectNFO),
@@ -1742,14 +1725,6 @@ func applyIndexerStageConfigPatch(indexing *app.IndexingRuntimeSettings, stageNa
 		applyStagePatch(&indexing.ReleaseArchiveNZB, patch)
 	case string(supervisor.StageReleasePurgeArchivedSources):
 		applyStagePatch(&indexing.ReleasePurgeArchivedSources, patch)
-	case string(supervisor.StageInspectDiscoveryReadyRefresh):
-		applyStagePatch(&indexing.InspectDiscoveryReadyRefresh, patch)
-	case string(supervisor.StageInspectPAR2ReadyRefresh):
-		applyStagePatch(&indexing.InspectPAR2ReadyRefresh, patch)
-	case string(supervisor.StageInspectArchiveReadyRefresh):
-		applyStagePatch(&indexing.InspectArchiveReadyRefresh, patch)
-	case string(supervisor.StageInspectMediaReadyRefresh):
-		applyStagePatch(&indexing.InspectMediaReadyRefresh, patch)
 	case string(supervisor.StageInspectDiscovery):
 		applyStagePatch(&indexing.InspectDiscovery, patch)
 	case string(supervisor.StageInspectPAR2):

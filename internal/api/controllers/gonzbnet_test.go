@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -8,9 +9,51 @@ import (
 	"testing"
 
 	"github.com/datallboy/gonzb/internal/app"
+	"github.com/datallboy/gonzb/internal/gonzbnet/admission"
+	"github.com/datallboy/gonzb/internal/gonzbnet/pools"
 	"github.com/datallboy/gonzb/internal/infra/config"
+	"github.com/datallboy/gonzb/internal/store/pgindex"
 	"github.com/labstack/echo/v5"
 )
+
+type invitationAdminStore struct {
+	active bool
+}
+
+func (s invitationAdminStore) IsActivePoolAdmin(context.Context, string, string) (bool, error) {
+	return s.active, nil
+}
+
+func TestPoolInvitationAuthorizesOnlyMatchingActiveAdmin(t *testing.T) {
+	pool := pgindex.TrustPoolRecord{PoolID: "pool.private", GenesisEventID: "evt_genesis"}
+	invite := &admission.Invitation{
+		PoolID: "pool.private", GenesisEventID: "evt_genesis",
+		RelayURL: "https://relay.example/gonzbnet/v1", CreatedByNode: "node_admin",
+	}
+	if !poolInvitationAuthorizes(t.Context(), invitationAdminStore{active: true}, invite, pool, "https://relay.example/gonzbnet/v1/") {
+		t.Fatal("expected matching invitation from active admin to authorize private descriptor")
+	}
+	invite.GenesisEventID = "evt_other"
+	if poolInvitationAuthorizes(t.Context(), invitationAdminStore{active: true}, invite, pool, "https://relay.example/gonzbnet/v1") {
+		t.Fatal("expected mismatched pool fingerprint to fail")
+	}
+	invite.GenesisEventID = pool.GenesisEventID
+	if poolInvitationAuthorizes(t.Context(), invitationAdminStore{active: false}, invite, pool, "https://relay.example/gonzbnet/v1") {
+		t.Fatal("expected inactive invitation signer to fail")
+	}
+}
+
+func TestDistinctPoolMemberCountCountsActiveNodesOnce(t *testing.T) {
+	members := []pgindex.PoolMemberRecord{
+		{NodeID: "node_a", Role: pools.RoleAdmin, Status: pools.StatusActive},
+		{NodeID: "node_a", Role: pools.RoleWitness, Status: pools.StatusActive},
+		{NodeID: "node_b", Role: pools.RoleMember, Status: pools.StatusActive},
+		{NodeID: "node_c", Role: pools.RoleMember, Status: pools.StatusRevoked},
+	}
+	if got := distinctPoolMemberCount(members); got != 2 {
+		t.Fatalf("expected two distinct active nodes, got %d", got)
+	}
+}
 
 func TestGoNZBNetHandshakeInvalidJSONUsesStableErrorCode(t *testing.T) {
 	e := echo.New()

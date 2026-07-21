@@ -1,4 +1,14 @@
+# TEST FIXTURE ONLY. Loopback endpoints, disposable credentials, and .e2e state.
 port: "18082"
+bind_address: "127.0.0.1"
+servers:
+  - id: "e2e-fixture"
+    host: "127.0.0.1"
+    port: 11119
+    tls: false
+    max_connections: 2
+    priority: 1
+    roles: ["indexer", "validator"]
 modules:
   downloader: { enabled: false }
   aggregator: { enabled: true }

@@ -16,18 +16,6 @@ type IndexerMaintenanceResult struct {
 	RepairedBinaryObservations int64
 	YEncWorkItemsUpserted      int64
 	YEncWorkItemsRetired       int64
-	InspectDiscoveryReadyRows  int64
-	InspectDiscoveryRetired    int64
-	InspectDiscoveryRequeued   int64
-	InspectPAR2ReadyRows       int64
-	InspectPAR2Retired         int64
-	InspectPAR2Requeued        int64
-	InspectArchiveReadyRows    int64
-	InspectArchiveRetired      int64
-	InspectArchiveRequeued     int64
-	InspectMediaReadyRows      int64
-	InspectMediaRetired        int64
-	InspectMediaRequeued       int64
 	BackfilledCatalogFiles     int64
 	PurgedStageRuns            int64
 	PurgedScrapeRuns           int64

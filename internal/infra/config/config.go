@@ -24,7 +24,8 @@ type Config struct {
 	GoNZBNet   GoNZBNetConfig   `mapstructure:"gonzbnet" yaml:"gonzbnet"`
 	Modules    ModulesConfig    `mapstructure:"modules" yaml:"modules"`
 
-	Port string `mapstructure:"port" yaml:"port"`
+	Port        string `mapstructure:"port" yaml:"port"`
+	BindAddress string `mapstructure:"bind_address" yaml:"bind_address"`
 }
 
 type ServerConfig struct {
@@ -103,7 +104,12 @@ type GoNZBNetConfig struct {
 	PrivateNetwork                 bool     `mapstructure:"private_network" yaml:"private_network"`
 	NetworkID                      string   `mapstructure:"network_id" yaml:"network_id"`
 	LocalPoolID                    string   `mapstructure:"local_pool_id" yaml:"local_pool_id"`
+	PublishPoolIDs                 []string `mapstructure:"publish_pool_ids" yaml:"publish_pool_ids"`
 	ManualPeers                    []string `mapstructure:"manual_peers" yaml:"manual_peers"`
+	Visibility                     string   `mapstructure:"visibility" yaml:"visibility"`
+	AllowPoolCreation              bool     `mapstructure:"allow_pool_creation" yaml:"allow_pool_creation"`
+	AllowJoinRequests              bool     `mapstructure:"allow_join_requests" yaml:"allow_join_requests"`
+	AdmissionRelayEnabled          bool     `mapstructure:"admission_relay_enabled" yaml:"admission_relay_enabled"`
 	ConsumerEnabled                bool     `mapstructure:"consumer_enabled" yaml:"consumer_enabled"`
 	ScannerEnabled                 bool     `mapstructure:"scanner_enabled" yaml:"scanner_enabled"`
 	IndexProjectionEnabled         bool     `mapstructure:"index_projection_enabled" yaml:"index_projection_enabled"`
@@ -171,35 +177,31 @@ type GoNZBNetConfig struct {
 }
 
 type IndexingConfig struct {
-	Newsgroups                   []string                   `mapstructure:"newsgroups" yaml:"newsgroups"`
-	BackfillUntilDateByGroup     map[string]string          `mapstructure:"backfill_until_date_by_group" yaml:"backfill_until_date_by_group"`
-	ScrapeLatest                 IndexingStageConfig        `mapstructure:"scrape_latest" yaml:"scrape_latest"`
-	ScrapeBackfill               IndexingStageConfig        `mapstructure:"scrape_backfill" yaml:"scrape_backfill"`
-	PosterMaterialize            IndexingStageConfig        `mapstructure:"poster_materialize" yaml:"poster_materialize"`
-	CrosspostPopularityRefresh   IndexingStageConfig        `mapstructure:"crosspost_popularity_refresh" yaml:"crosspost_popularity_refresh"`
-	Assemble                     IndexingStageConfig        `mapstructure:"assemble" yaml:"assemble"`
-	RecoverYEnc                  IndexingStageConfig        `mapstructure:"recover_yenc" yaml:"recover_yenc"`
-	ReleaseSummaryRefresh        IndexingStageConfig        `mapstructure:"release_summary_refresh" yaml:"release_summary_refresh"`
-	Release                      IndexingReleaseConfig      `mapstructure:"release" yaml:"release"`
-	ReleaseGenerateNZB           IndexingStageConfig        `mapstructure:"release_generate_nzb" yaml:"release_generate_nzb"`
-	ReleaseArchiveNZB            IndexingStageConfig        `mapstructure:"release_archive_nzb" yaml:"release_archive_nzb"`
-	ReleasePurgeArchivedSources  IndexingStageConfig        `mapstructure:"release_purge_archived_sources" yaml:"release_purge_archived_sources"`
-	InspectDiscoveryReadyRefresh IndexingStageConfig        `mapstructure:"inspect_discovery_ready_refresh" yaml:"inspect_discovery_ready_refresh"`
-	InspectPAR2ReadyRefresh      IndexingStageConfig        `mapstructure:"inspect_par2_ready_refresh" yaml:"inspect_par2_ready_refresh"`
-	InspectArchiveReadyRefresh   IndexingStageConfig        `mapstructure:"inspect_archive_ready_refresh" yaml:"inspect_archive_ready_refresh"`
-	InspectMediaReadyRefresh     IndexingStageConfig        `mapstructure:"inspect_media_ready_refresh" yaml:"inspect_media_ready_refresh"`
-	Match                        IndexingMatchConfig        `mapstructure:"match" yaml:"match"`
-	Inspect                      IndexingInspectConfig      `mapstructure:"inspect" yaml:"inspect"`
-	StorageGuard                 IndexingStorageGuardConfig `mapstructure:"storage_guard" yaml:"storage_guard"`
-	MemoryGuard                  IndexingMemoryGuardConfig  `mapstructure:"memory_guard" yaml:"memory_guard"`
-	InspectDiscovery             IndexingStageConfig        `mapstructure:"inspect_discovery" yaml:"inspect_discovery"`
-	InspectPAR2                  IndexingStageConfig        `mapstructure:"inspect_par2" yaml:"inspect_par2"`
-	InspectNFO                   IndexingStageConfig        `mapstructure:"inspect_nfo" yaml:"inspect_nfo"`
-	InspectArchive               IndexingStageConfig        `mapstructure:"inspect_archive" yaml:"inspect_archive"`
-	InspectPassword              IndexingStageConfig        `mapstructure:"inspect_password" yaml:"inspect_password"`
-	InspectMedia                 IndexingStageConfig        `mapstructure:"inspect_media" yaml:"inspect_media"`
-	EnrichPreDB                  IndexingPreDBConfig        `mapstructure:"enrich_predb" yaml:"enrich_predb"`
-	EnrichTMDB                   IndexingTMDBConfig         `mapstructure:"enrich_tmdb" yaml:"enrich_tmdb"`
+	Newsgroups                  []string                   `mapstructure:"newsgroups" yaml:"newsgroups"`
+	BackfillUntilDateByGroup    map[string]string          `mapstructure:"backfill_until_date_by_group" yaml:"backfill_until_date_by_group"`
+	ScrapeLatest                IndexingStageConfig        `mapstructure:"scrape_latest" yaml:"scrape_latest"`
+	ScrapeBackfill              IndexingStageConfig        `mapstructure:"scrape_backfill" yaml:"scrape_backfill"`
+	PosterMaterialize           IndexingStageConfig        `mapstructure:"poster_materialize" yaml:"poster_materialize"`
+	CrosspostPopularityRefresh  IndexingStageConfig        `mapstructure:"crosspost_popularity_refresh" yaml:"crosspost_popularity_refresh"`
+	Assemble                    IndexingStageConfig        `mapstructure:"assemble" yaml:"assemble"`
+	RecoverYEnc                 IndexingStageConfig        `mapstructure:"recover_yenc" yaml:"recover_yenc"`
+	ReleaseSummaryRefresh       IndexingStageConfig        `mapstructure:"release_summary_refresh" yaml:"release_summary_refresh"`
+	Release                     IndexingReleaseConfig      `mapstructure:"release" yaml:"release"`
+	ReleaseGenerateNZB          IndexingStageConfig        `mapstructure:"release_generate_nzb" yaml:"release_generate_nzb"`
+	ReleaseArchiveNZB           IndexingStageConfig        `mapstructure:"release_archive_nzb" yaml:"release_archive_nzb"`
+	ReleasePurgeArchivedSources IndexingStageConfig        `mapstructure:"release_purge_archived_sources" yaml:"release_purge_archived_sources"`
+	Match                       IndexingMatchConfig        `mapstructure:"match" yaml:"match"`
+	Inspect                     IndexingInspectConfig      `mapstructure:"inspect" yaml:"inspect"`
+	StorageGuard                IndexingStorageGuardConfig `mapstructure:"storage_guard" yaml:"storage_guard"`
+	MemoryGuard                 IndexingMemoryGuardConfig  `mapstructure:"memory_guard" yaml:"memory_guard"`
+	InspectDiscovery            IndexingStageConfig        `mapstructure:"inspect_discovery" yaml:"inspect_discovery"`
+	InspectPAR2                 IndexingStageConfig        `mapstructure:"inspect_par2" yaml:"inspect_par2"`
+	InspectNFO                  IndexingStageConfig        `mapstructure:"inspect_nfo" yaml:"inspect_nfo"`
+	InspectArchive              IndexingStageConfig        `mapstructure:"inspect_archive" yaml:"inspect_archive"`
+	InspectPassword             IndexingStageConfig        `mapstructure:"inspect_password" yaml:"inspect_password"`
+	InspectMedia                IndexingStageConfig        `mapstructure:"inspect_media" yaml:"inspect_media"`
+	EnrichPreDB                 IndexingPreDBConfig        `mapstructure:"enrich_predb" yaml:"enrich_predb"`
+	EnrichTMDB                  IndexingTMDBConfig         `mapstructure:"enrich_tmdb" yaml:"enrich_tmdb"`
 }
 
 type IndexingStageConfig struct {
@@ -436,22 +438,6 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("indexing.release_purge_archived_sources.interval_minutes", 10.0)
 	v.SetDefault("indexing.release_purge_archived_sources.batch_size", 50)
 	v.SetDefault("indexing.release_purge_archived_sources.backoff_seconds", 0)
-	v.SetDefault("indexing.inspect_discovery_ready_refresh.enabled", false)
-	v.SetDefault("indexing.inspect_discovery_ready_refresh.interval_minutes", 10.0)
-	v.SetDefault("indexing.inspect_discovery_ready_refresh.batch_size", 10000)
-	v.SetDefault("indexing.inspect_discovery_ready_refresh.backoff_seconds", 0)
-	v.SetDefault("indexing.inspect_par2_ready_refresh.enabled", false)
-	v.SetDefault("indexing.inspect_par2_ready_refresh.interval_minutes", 10.0)
-	v.SetDefault("indexing.inspect_par2_ready_refresh.batch_size", 10000)
-	v.SetDefault("indexing.inspect_par2_ready_refresh.backoff_seconds", 0)
-	v.SetDefault("indexing.inspect_archive_ready_refresh.enabled", false)
-	v.SetDefault("indexing.inspect_archive_ready_refresh.interval_minutes", 10.0)
-	v.SetDefault("indexing.inspect_archive_ready_refresh.batch_size", 10000)
-	v.SetDefault("indexing.inspect_archive_ready_refresh.backoff_seconds", 0)
-	v.SetDefault("indexing.inspect_media_ready_refresh.enabled", false)
-	v.SetDefault("indexing.inspect_media_ready_refresh.interval_minutes", 10.0)
-	v.SetDefault("indexing.inspect_media_ready_refresh.batch_size", 10000)
-	v.SetDefault("indexing.inspect_media_ready_refresh.backoff_seconds", 0)
 	v.SetDefault("indexing.match.high_confidence_threshold", 0.85)
 	v.SetDefault("indexing.match.probable_confidence_threshold", 0.55)
 	v.SetDefault("indexing.match.article_bucket_size", int64(5000))
@@ -549,7 +535,12 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("gonzbnet.private_network", true)
 	v.SetDefault("gonzbnet.network_id", "default")
 	v.SetDefault("gonzbnet.local_pool_id", "pool.local")
+	v.SetDefault("gonzbnet.publish_pool_ids", []string{})
 	v.SetDefault("gonzbnet.manual_peers", []string{})
+	v.SetDefault("gonzbnet.visibility", "unlisted")
+	v.SetDefault("gonzbnet.allow_pool_creation", true)
+	v.SetDefault("gonzbnet.allow_join_requests", true)
+	v.SetDefault("gonzbnet.admission_relay_enabled", true)
 	v.SetDefault("gonzbnet.consumer_enabled", true)
 	v.SetDefault("gonzbnet.scanner_enabled", false)
 	v.SetDefault("gonzbnet.index_projection_enabled", true)
@@ -653,6 +644,10 @@ func bindGoNZBNetEnvAliases(v *viper.Viper) error {
 		"modules.gonzbnet.enabled": {"GONZBNET_ENABLED"},
 
 		"gonzbnet.consumer_enabled":                       {"GONZBNET_CONSUMER_ENABLED"},
+		"gonzbnet.visibility":                             {"GONZBNET_VISIBILITY"},
+		"gonzbnet.allow_pool_creation":                    {"GONZBNET_ALLOW_POOL_CREATION"},
+		"gonzbnet.allow_join_requests":                    {"GONZBNET_ALLOW_JOIN_REQUESTS"},
+		"gonzbnet.admission_relay_enabled":                {"GONZBNET_ADMISSION_RELAY_ENABLED"},
 		"gonzbnet.scanner_enabled":                        {"GONZBNET_SCANNER_ENABLED"},
 		"gonzbnet.index_projection_enabled":               {"GONZBNET_INDEX_PROJECTION_ENABLED", "GONZBNET_SCANNER_PROJECT_TO_LOCAL_INDEX"},
 		"gonzbnet.manifest_builder_enabled":               {"GONZBNET_MANIFEST_BUILDER_ENABLED"},
@@ -741,18 +736,6 @@ func (c *Config) validate() error {
 		return err
 	}
 	if err := validateIndexingStageConfig("indexing.recover_yenc", c.Indexing.RecoverYEnc); err != nil {
-		return err
-	}
-	if err := validateIndexingStageConfig("indexing.inspect_discovery_ready_refresh", c.Indexing.InspectDiscoveryReadyRefresh); err != nil {
-		return err
-	}
-	if err := validateIndexingStageConfig("indexing.inspect_par2_ready_refresh", c.Indexing.InspectPAR2ReadyRefresh); err != nil {
-		return err
-	}
-	if err := validateIndexingStageConfig("indexing.inspect_archive_ready_refresh", c.Indexing.InspectArchiveReadyRefresh); err != nil {
-		return err
-	}
-	if err := validateIndexingStageConfig("indexing.inspect_media_ready_refresh", c.Indexing.InspectMediaReadyRefresh); err != nil {
 		return err
 	}
 	if err := validateIndexingStageConfig("indexing.release", IndexingStageConfig{
@@ -965,6 +948,11 @@ func (c *Config) validate() error {
 }
 
 func validateGoNZBNetConfig(cfg GoNZBNetConfig) error {
+	switch strings.TrimSpace(cfg.Visibility) {
+	case "", "private", "unlisted", "pool", "public":
+	default:
+		return errors.New("gonzbnet.visibility must be one of: private, unlisted, pool, public")
+	}
 	if cfg.ScannerMaxGroups < 0 {
 		return errors.New("gonzbnet.scanner_max_groups must be greater than or equal to 0")
 	}

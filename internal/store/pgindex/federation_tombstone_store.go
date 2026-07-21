@@ -60,11 +60,11 @@ func (s *Store) ProjectTombstone(ctx context.Context, projection TombstoneProjec
 	evidenceJSON, _ := json.Marshal(item.EvidenceEventIDs)
 	poolID := strings.TrimSpace(item.PoolID)
 
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, commit, rollback, err := s.beginFederationProjection(ctx)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer rollback()
 
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO tombstone_votes (
@@ -101,7 +101,7 @@ func (s *Store) ProjectTombstone(ctx context.Context, projection TombstoneProjec
 			return err
 		}
 	}
-	return tx.Commit()
+	return commit()
 }
 
 func (s *Store) ListTombstones(ctx context.Context, activeOnly bool) ([]TombstoneRecord, error) {
@@ -112,7 +112,7 @@ func (s *Store) ListTombstones(ctx context.Context, activeOnly bool) ([]Tombston
 	if activeOnly {
 		clauses = append(clauses, "active = TRUE")
 	}
-	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`
+	rows, err := s.federationExecutor(ctx).QueryContext(ctx, fmt.Sprintf(`
 		SELECT id, target_type, target_id, COALESCE(pool_id, ''), reason,
 		       severity, source_event_id, active, approval_count,
 		       approvals_required, effective_at, expires_at, created_at, updated_at

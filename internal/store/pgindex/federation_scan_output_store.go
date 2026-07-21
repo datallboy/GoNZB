@@ -33,7 +33,7 @@ func (s *Store) UpsertGoNZBNetScanOutput(ctx context.Context, release releasecar
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, `
+	_, err = s.federationExecutor(ctx).ExecContext(ctx, `
 		INSERT INTO gonzbnet_scan_outputs (
 			scan_id, body_json, status, updated_at
 		)
@@ -54,19 +54,36 @@ func (s *Store) UpsertGoNZBNetScanOutput(ctx context.Context, release releasecar
 	return nil
 }
 
-func (s *Store) ListGoNZBNetScanOutputCandidates(ctx context.Context, limit int) ([]releasecard.LocalRelease, error) {
+func (s *Store) ListGoNZBNetScanOutputCandidates(ctx context.Context, poolID string, requireSignedManifest bool, limit int) ([]releasecard.LocalRelease, error) {
 	if s == nil || s.db == nil {
 		return nil, fmt.Errorf("pgindex store is not initialized")
 	}
 	if limit <= 0 {
 		limit = 50
 	}
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT body_json
-		FROM gonzbnet_scan_outputs
-		WHERE status = 'pending'
-		ORDER BY updated_at, scan_id
-		LIMIT $1`, limit)
+	rows, err := s.federationExecutor(ctx).QueryContext(ctx, `
+		SELECT o.body_json
+		FROM gonzbnet_scan_outputs o
+		WHERE NOT EXISTS (
+			SELECT 1 FROM gonzbnet_scan_output_publications p
+			JOIN federation_events card ON card.event_id = p.event_id
+			WHERE p.scan_id = o.scan_id
+			  AND p.pool_id = $1
+			  AND (
+			    NOT $2
+			    OR NULLIF(card.body_json->>'manifest_id', '') IS NULL
+			    OR EXISTS (
+			      SELECT 1
+			      FROM resolution_manifests cached
+			      JOIN federation_events manifest ON manifest.event_id = cached.source_event_id
+			      WHERE cached.manifest_id = card.body_json->>'manifest_id'
+			        AND manifest.event_type = 'ResolutionManifest'
+			        AND manifest.pool_ids = jsonb_build_array(p.pool_id)
+			    )
+			  )
+		)
+		ORDER BY o.updated_at, o.scan_id
+		LIMIT $3`, strings.TrimSpace(poolID), requireSignedManifest, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list gonzbnet scan output candidates: %w", err)
 	}
@@ -87,11 +104,24 @@ func (s *Store) ListGoNZBNetScanOutputCandidates(ctx context.Context, limit int)
 	return out, rows.Err()
 }
 
-func (s *Store) MarkGoNZBNetScanOutputPublished(ctx context.Context, scanID, eventID string) error {
+func (s *Store) MarkGoNZBNetScanOutputPublished(ctx context.Context, scanID, eventID, poolID string) error {
 	if s == nil || s.db == nil {
 		return fmt.Errorf("pgindex store is not initialized")
 	}
-	_, err := s.db.ExecContext(ctx, `
+	tx, commit, rollback, err := s.beginFederationProjection(ctx)
+	if err != nil {
+		return err
+	}
+	defer rollback()
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO gonzbnet_scan_output_publications (scan_id, pool_id, event_id, published_at)
+		VALUES ($1, $2, $3, NOW())
+		ON CONFLICT (scan_id, pool_id) DO UPDATE SET
+			event_id = EXCLUDED.event_id, published_at = EXCLUDED.published_at`,
+		strings.TrimSpace(scanID), strings.TrimSpace(poolID), strings.TrimSpace(eventID)); err != nil {
+		return fmt.Errorf("record gonzbnet scan output publication: %w", err)
+	}
+	_, err = tx.ExecContext(ctx, `
 		UPDATE gonzbnet_scan_outputs
 		SET status = 'published',
 		    published_event_id = NULLIF($2, ''),
@@ -104,7 +134,7 @@ func (s *Store) MarkGoNZBNetScanOutputPublished(ctx context.Context, scanID, eve
 	if err != nil {
 		return fmt.Errorf("mark gonzbnet scan output published: %w", err)
 	}
-	return nil
+	return commit()
 }
 
 func (s *Store) ProjectManifestAvailability(ctx context.Context, projection ManifestAvailabilityProjection) error {
@@ -139,11 +169,11 @@ func (s *Store) ProjectManifestAvailability(ctx context.Context, projection Mani
 		return err
 	}
 	confidence := manifestAvailabilityConfidence(item.Available)
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, commit, rollback, err := s.beginFederationProjection(ctx)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer rollback()
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO manifest_availability_attestations (
 			attestation_id, release_id, manifest_id, author_node_id, pool_id,
@@ -206,7 +236,7 @@ func (s *Store) ProjectManifestAvailability(ctx context.Context, projection Mani
 	); err != nil {
 		return fmt.Errorf("update manifest availability score: %w", err)
 	}
-	return tx.Commit()
+	return commit()
 }
 
 func manifestAvailabilityStatus(available bool) string {

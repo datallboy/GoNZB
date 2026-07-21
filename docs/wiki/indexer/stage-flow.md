@@ -108,3 +108,8 @@ ready candidates and writes release catalog/lineage state.
 Inspect stages consume `binary_inspection_ready_queue` and write inspection
 history/evidence tables. Inspection results can improve archive, media, text,
 and PAR2 visibility without using upstream source tables as progress state.
+
+Ready-queue population is an internal part of inspection candidate selection,
+not a separately scheduled supervisor stage. Queued inspection stages perform
+bounded, advisory-locked top-ups when they need claimable work; operators only
+configure and schedule the inspection consumers themselves.

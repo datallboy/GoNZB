@@ -71,10 +71,6 @@ type usenetIndexerConfig struct {
 	ReleaseGenerateNZBStage                         indexerStageConfig
 	ReleaseArchiveNZBStage                          indexerStageConfig
 	ReleasePurgeArchivedSourcesStage                indexerStageConfig
-	InspectDiscoveryReadyRefresh                    indexerStageConfig
-	InspectPAR2ReadyRefresh                         indexerStageConfig
-	InspectArchiveReadyRefresh                      indexerStageConfig
-	InspectMediaReadyRefresh                        indexerStageConfig
 	ReleaseReadyPolicy                              pgindex.ReleaseReadyPolicy
 	RetentionPolicy                                 pgindex.RawStageRetentionPolicy
 	PartitionCreateDaysBefore                       int
@@ -339,8 +335,6 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		appCtx.PGIndexStore,
 		ingestmaterialize.Options{BatchSize: runtimeCfg.CrosspostPopularityRefresh.BatchSize},
 	)
-	readyQueueRefresher, _ := appCtx.PGIndexStore.(inspectionReadyQueueRefresher)
-
 	supervisorSvc := supervisor.New(appCtx.Logger, []supervisor.Stage{
 		{
 			Name:        supervisor.StageScrapeLatest,
@@ -475,10 +469,6 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 				return marshalStageMetrics(releaseArchiveSvc.RunOnceWithMetrics(ctx))
 			}),
 		},
-		inspectReadyRefreshStage(runtimeCfg.InspectDiscoveryReadyRefresh, supervisor.StageInspectDiscoveryReadyRefresh, "inspect_discovery", readyQueueRefresher),
-		inspectReadyRefreshStage(runtimeCfg.InspectPAR2ReadyRefresh, supervisor.StageInspectPAR2ReadyRefresh, "inspect_par2", readyQueueRefresher),
-		inspectReadyRefreshStage(runtimeCfg.InspectArchiveReadyRefresh, supervisor.StageInspectArchiveReadyRefresh, "inspect_archive", readyQueueRefresher),
-		inspectReadyRefreshStage(runtimeCfg.InspectMediaReadyRefresh, supervisor.StageInspectMediaReadyRefresh, "inspect_media", readyQueueRefresher),
 		{
 			Name:        supervisor.StageInspectDiscovery,
 			Interval:    runtimeCfg.InspectDiscovery.Interval,
@@ -752,39 +742,6 @@ func marshalStageMetrics(metrics map[string]any, err error) (json.RawMessage, er
 	return payload, err
 }
 
-type inspectionReadyQueueRefresher interface {
-	RefreshInspectionReadyQueue(ctx context.Context, stageName string, limit int) (*pgindex.BinaryInspectionReadyQueueRefreshResult, error)
-}
-
-func inspectReadyRefreshStage(cfg indexerStageConfig, name supervisor.StageName, inspectStageName string, repo inspectionReadyQueueRefresher) supervisor.Stage {
-	return supervisor.Stage{
-		Name:        name,
-		Interval:    cfg.Interval,
-		Enabled:     cfg.Enabled,
-		BatchSize:   cfg.BatchSize,
-		Concurrency: 1,
-		Backoff:     cfg.Backoff,
-		Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
-			if repo == nil {
-				return marshalStageMetrics(map[string]any{}, fmt.Errorf("inspection ready queue repository is not configured"))
-			}
-			refreshed, err := repo.RefreshInspectionReadyQueue(ctx, inspectStageName, cfg.BatchSize)
-			metrics := map[string]any{
-				"inspect_stage":  inspectStageName,
-				"ready_upserted": int64(0),
-				"retired":        int64(0),
-				"requeued":       int64(0),
-			}
-			if refreshed != nil {
-				metrics["ready_upserted"] = refreshed.ReadyUpserted
-				metrics["retired"] = refreshed.Retired
-				metrics["requeued"] = refreshed.Requeued
-			}
-			return marshalStageMetrics(metrics, err)
-		}),
-	}
-}
-
 func maintenanceTaskStage(runtimeCfg usenetIndexerConfig, taskKey string, name supervisor.StageName, run func(context.Context, app.IndexingMaintenanceTaskRuntimeSettings) (map[string]any, error)) supervisor.Stage {
 	cfg := runtimeCfg.MaintenanceTasks[taskKey]
 	if cfg.IntervalHours <= 0 {
@@ -931,10 +888,6 @@ func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) 
 		ReleaseGenerateNZBStage:          newIndexerStageConfig(indexingCfg.ReleaseGenerateNZB),
 		ReleaseArchiveNZBStage:           newIndexerStageConfig(indexingCfg.ReleaseArchiveNZB),
 		ReleasePurgeArchivedSourcesStage: newIndexerStageConfig(indexingCfg.ReleasePurgeArchivedSources),
-		InspectDiscoveryReadyRefresh:     newIndexerStageConfig(indexingCfg.InspectDiscoveryReadyRefresh),
-		InspectPAR2ReadyRefresh:          newIndexerStageConfig(indexingCfg.InspectPAR2ReadyRefresh),
-		InspectArchiveReadyRefresh:       newIndexerStageConfig(indexingCfg.InspectArchiveReadyRefresh),
-		InspectMediaReadyRefresh:         newIndexerStageConfig(indexingCfg.InspectMediaReadyRefresh),
 		ReleaseReadyPolicy: pgindex.NormalizeReleaseReadyPolicy(pgindex.ReleaseReadyPolicy{
 			MinMatchConfidence:                   indexingCfg.Release.PublicMinMatchConfidence,
 			MinCompletionPct:                     indexingCfg.Release.PublicMinCompletionPct,

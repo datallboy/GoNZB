@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/datallboy/gonzb/internal/gonzbnet/canonical"
 	"github.com/datallboy/gonzb/internal/gonzbnet/events"
 	"github.com/datallboy/gonzb/internal/gonzbnet/health"
 	"github.com/datallboy/gonzb/internal/gonzbnet/manifest"
@@ -23,18 +24,18 @@ type Identity interface {
 }
 
 type Store interface {
-	ListGoNZBNetScanOutputCandidates(ctx context.Context, limit int) ([]releasecard.LocalRelease, error)
+	ListGoNZBNetScanOutputCandidates(ctx context.Context, poolID string, requireSignedManifest bool, limit int) ([]releasecard.LocalRelease, error)
 	ListGoNZBNetLocalReleaseCandidates(ctx context.Context, limit int, policy pgindex.ReleaseReadyPolicy) ([]releasecard.LocalRelease, error)
-	MarkGoNZBNetScanOutputPublished(ctx context.Context, scanID, eventID string) error
+	MarkGoNZBNetScanOutputPublished(ctx context.Context, scanID, eventID, poolID string) error
 	UpsertFederationNodeIdentity(ctx context.Context, nodeID string, publicKey ed25519.PublicKey) error
 	NextFederationEventSequence(ctx context.Context, authorNodeID string) (int64, *string, error)
-	FindFederationEventByBodyHash(ctx context.Context, authorNodeID, eventType, bodyHash string) (string, error)
+	FindFederationEventByBodyHash(ctx context.Context, authorNodeID, eventType, bodyHash, poolID string) (string, error)
 	AppendVerifiedFederationEvent(ctx context.Context, event *events.SignedEvent, validation *events.ValidationResult) error
 	UpsertFederatedReleaseCardProjection(ctx context.Context, projection releasecard.Projection) error
 	StoreResolutionManifest(ctx context.Context, record pgindex.ResolutionManifestRecord) error
 	ProjectManifestAvailability(ctx context.Context, projection pgindex.ManifestAvailabilityProjection) error
 	ProjectHealthAttestation(ctx context.Context, projection pgindex.HealthAttestationProjection) error
-	ClaimValidationTasks(ctx context.Context, nodeID string, limit int) ([]pgindex.ValidationTask, error)
+	ClaimValidationTasks(ctx context.Context, nodeID, poolID string, limit int) ([]pgindex.ValidationTask, error)
 	GetResolutionManifest(ctx context.Context, manifestID string) (*manifest.ResolutionManifest, error)
 	ProjectValidatorCapacity(ctx context.Context, projection pgindex.ValidatorCapacityProjection) error
 	ProjectArticleAvailabilityAttestation(ctx context.Context, projection pgindex.ArticleAvailabilityProjection) error
@@ -136,7 +137,7 @@ func (s *Service) PublishOnce(ctx context.Context, limit int) (Result, error) {
 		return result, err
 	}
 
-	scanCandidates, err := s.store.ListGoNZBNetScanOutputCandidates(ctx, limit)
+	scanCandidates, err := s.store.ListGoNZBNetScanOutputCandidates(ctx, s.poolID, s.buildManifests, limit)
 	if err != nil {
 		return result, err
 	}
@@ -161,7 +162,7 @@ func (s *Service) PublishOnce(ctx context.Context, limit int) (Result, error) {
 			return result, fmt.Errorf("hash release card %s: %w", card.ReleaseID, err)
 		}
 
-		existingEventID, err := s.store.FindFederationEventByBodyHash(ctx, nodeID, pools.EventTypeReleaseCard, bodyHash)
+		existingEventID, err := s.store.FindFederationEventByBodyHash(ctx, nodeID, pools.EventTypeReleaseCard, bodyHash, s.poolID)
 		if err != nil {
 			return result, err
 		}
@@ -176,11 +177,11 @@ func (s *Service) PublishOnce(ctx context.Context, limit int) (Result, error) {
 				return result, err
 			}
 			if candidate.SourceKind == "local_scan_output" {
-				_ = s.store.MarkGoNZBNetScanOutputPublished(ctx, candidate.LocalReleaseID, existingEventID)
+				_ = s.store.MarkGoNZBNetScanOutputPublished(ctx, candidate.LocalReleaseID, existingEventID, s.poolID)
 			}
 			result.Projected++
 			if s.buildManifests && strings.TrimSpace(card.ManifestID) != "" {
-				if err := s.buildAndStoreManifest(ctx, candidate, card, existingEventID, nodeID); err != nil {
+				if err := s.buildAndStoreManifest(ctx, candidate, card, nodeID); err != nil {
 					return result, err
 				}
 			}
@@ -220,7 +221,7 @@ func (s *Service) PublishOnce(ctx context.Context, limit int) (Result, error) {
 			return result, err
 		}
 		if candidate.SourceKind == "local_scan_output" {
-			if err := s.store.MarkGoNZBNetScanOutputPublished(ctx, candidate.LocalReleaseID, event.EventID); err != nil {
+			if err := s.store.MarkGoNZBNetScanOutputPublished(ctx, candidate.LocalReleaseID, event.EventID, s.poolID); err != nil {
 				return result, err
 			}
 			if s.publishManifestAvailability && strings.TrimSpace(card.ManifestID) != "" {
@@ -230,7 +231,7 @@ func (s *Service) PublishOnce(ctx context.Context, limit int) (Result, error) {
 			}
 		}
 		if s.buildManifests && strings.TrimSpace(card.ManifestID) != "" {
-			if err := s.buildAndStoreManifest(ctx, candidate, card, event.EventID, nodeID); err != nil {
+			if err := s.buildAndStoreManifest(ctx, candidate, card, nodeID); err != nil {
 				return result, err
 			}
 		}
@@ -240,7 +241,7 @@ func (s *Service) PublishOnce(ctx context.Context, limit int) (Result, error) {
 	return result, nil
 }
 
-func (s *Service) buildAndStoreManifest(ctx context.Context, candidate releasecard.LocalRelease, card releasecard.ReleaseCard, eventID, nodeID string) error {
+func (s *Service) buildAndStoreManifest(ctx context.Context, candidate releasecard.LocalRelease, card releasecard.ReleaseCard, nodeID string) error {
 	item, canonicalCore, generatedNZB, err := BuildLocalManifest(candidate)
 	if err != nil {
 		return fmt.Errorf("build local manifest for %s: %w", card.ReleaseID, err)
@@ -249,10 +250,41 @@ func (s *Service) buildAndStoreManifest(ctx context.Context, candidate releaseca
 		return fmt.Errorf("manifest ID mismatch for release %s: card=%s built=%s", card.ReleaseID, card.ManifestID, item.ManifestID)
 	}
 	item.ReleaseID = card.ReleaseID
+	bodyHash, _, err := canonical.BodyHash(item)
+	if err != nil {
+		return fmt.Errorf("hash local manifest for %s: %w", card.ReleaseID, err)
+	}
+	manifestEventID, err := s.store.FindFederationEventByBodyHash(ctx, nodeID, manifest.Type, bodyHash, s.poolID)
+	if err != nil {
+		return err
+	}
+	if manifestEventID == "" {
+		sequence, previousEventID, err := s.store.NextFederationEventSequence(ctx, nodeID)
+		if err != nil {
+			return err
+		}
+		event, validation, err := events.Create(ctx, s.identity, events.CreateOptions{
+			EventType:       manifest.Type,
+			Sequence:        sequence,
+			PreviousEventID: previousEventID,
+			CreatedAt:       s.now().UTC(),
+			PoolIDs:         []string{s.poolID},
+			Visibility:      "pool",
+			BodySchema:      manifest.BodySchema,
+			Body:            item,
+		})
+		if err != nil {
+			return fmt.Errorf("sign local manifest for %s: %w", card.ReleaseID, err)
+		}
+		if err := s.store.AppendVerifiedFederationEvent(ctx, event, validation); err != nil {
+			return err
+		}
+		manifestEventID = event.EventID
+	}
 	return s.store.StoreResolutionManifest(ctx, pgindex.ResolutionManifestRecord{
 		Manifest:              item,
 		SourceNodeID:          nodeID,
-		SourceEventID:         eventID,
+		SourceEventID:         manifestEventID,
 		PoolID:                s.poolID,
 		CanonicalManifestJSON: canonicalCore,
 		GeneratedNZB:          generatedNZB,
@@ -313,7 +345,7 @@ func (s *Service) PublishValidationOnce(ctx context.Context, limit int, opts Val
 	if capacityPublished {
 		result.CapacityPublished = 1
 	}
-	tasks, err := s.store.ClaimValidationTasks(ctx, nodeID, limit)
+	tasks, err := s.store.ClaimValidationTasks(ctx, nodeID, s.poolID, limit)
 	if err != nil {
 		return result, err
 	}
@@ -452,7 +484,7 @@ func (s *Service) PublishHealthOnce(ctx context.Context, limit int) (HealthResul
 		if err != nil {
 			return result, fmt.Errorf("hash health attestation %s: %w", attestation.ReleaseID, err)
 		}
-		existingEventID, err := s.store.FindFederationEventByBodyHash(ctx, nodeID, pools.EventTypeHealthAttestation, bodyHash)
+		existingEventID, err := s.store.FindFederationEventByBodyHash(ctx, nodeID, pools.EventTypeHealthAttestation, bodyHash, s.poolID)
 		if err != nil {
 			return result, err
 		}
@@ -583,7 +615,7 @@ func (s *Service) publishValidatorCapacity(ctx context.Context, nodeID string, o
 	if err != nil {
 		return false, err
 	}
-	existingEventID, err := s.store.FindFederationEventByBodyHash(ctx, nodeID, pools.EventTypeValidatorCapacity, bodyHash)
+	existingEventID, err := s.store.FindFederationEventByBodyHash(ctx, nodeID, pools.EventTypeValidatorCapacity, bodyHash, s.poolID)
 	if err != nil {
 		return false, err
 	}
@@ -631,7 +663,7 @@ func (s *Service) publishArticleAvailability(ctx context.Context, nodeID string,
 	if err != nil {
 		return "", false, err
 	}
-	existingEventID, err := s.store.FindFederationEventByBodyHash(ctx, nodeID, pools.EventTypeArticleAvailabilityAttestation, bodyHash)
+	existingEventID, err := s.store.FindFederationEventByBodyHash(ctx, nodeID, pools.EventTypeArticleAvailabilityAttestation, bodyHash, poolID)
 	if err != nil {
 		return "", false, err
 	}
@@ -681,7 +713,7 @@ func (s *Service) publishManifestAvailabilityOnce(ctx context.Context, nodeID st
 	if err != nil {
 		return err
 	}
-	existingEventID, err := s.store.FindFederationEventByBodyHash(ctx, nodeID, pools.EventTypeManifestAvailability, bodyHash)
+	existingEventID, err := s.store.FindFederationEventByBodyHash(ctx, nodeID, pools.EventTypeManifestAvailability, bodyHash, s.poolID)
 	if err != nil {
 		return err
 	}
@@ -725,7 +757,7 @@ func (s *Service) publishChecksumAttestation(ctx context.Context, nodeID string,
 	if err != nil {
 		return "", false, err
 	}
-	existingEventID, err := s.store.FindFederationEventByBodyHash(ctx, nodeID, pools.EventTypeChecksumAttestation, bodyHash)
+	existingEventID, err := s.store.FindFederationEventByBodyHash(ctx, nodeID, pools.EventTypeChecksumAttestation, bodyHash, poolID)
 	if err != nil {
 		return "", false, err
 	}

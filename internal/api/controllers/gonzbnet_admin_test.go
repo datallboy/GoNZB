@@ -767,8 +767,12 @@ func (s *fakeGoNZBNetAdminStore) NextFederationEventSequence(context.Context, st
 	return s.nextSequence, s.previousEventID, nil
 }
 
-func (s *fakeGoNZBNetAdminStore) FindFederationEventByBodyHash(context.Context, string, string, string) (string, error) {
+func (s *fakeGoNZBNetAdminStore) FindFederationEventByBodyHash(context.Context, string, string, string, string) (string, error) {
 	return "", nil
+}
+
+func (s *fakeGoNZBNetAdminStore) FederationEventExists(context.Context, string) (bool, error) {
+	return false, nil
 }
 
 func (s *fakeGoNZBNetAdminStore) IsActivePoolAdmin(_ context.Context, poolID, nodeID string) (bool, error) {

@@ -76,7 +76,7 @@ func (s *Store) UpsertFederationNode(ctx context.Context, node FederationNodeRec
 			alias = EXCLUDED.alias,
 			software = EXCLUDED.software,
 			software_version = EXCLUDED.software_version,
-			base_url = EXCLUDED.base_url,
+			base_url = COALESCE(NULLIF(EXCLUDED.base_url, ''), federation_nodes.base_url),
 			capabilities = EXCLUDED.capabilities,
 			profile_json = EXCLUDED.profile_json,
 			status = CASE
@@ -194,13 +194,14 @@ func (s *Store) NextFederationEventSequence(ctx context.Context, authorNodeID st
 	return sequence + 1, &eventID, nil
 }
 
-func (s *Store) FindFederationEventByBodyHash(ctx context.Context, authorNodeID, eventType, bodyHash string) (string, error) {
+func (s *Store) FindFederationEventByBodyHash(ctx context.Context, authorNodeID, eventType, bodyHash, poolID string) (string, error) {
 	if s == nil || s.db == nil {
 		return "", fmt.Errorf("pgindex store is not initialized")
 	}
 	authorNodeID = strings.TrimSpace(authorNodeID)
 	eventType = strings.TrimSpace(eventType)
 	bodyHash = strings.TrimSpace(bodyHash)
+	poolID = strings.TrimSpace(poolID)
 	if authorNodeID == "" || eventType == "" || bodyHash == "" {
 		return "", nil
 	}
@@ -212,9 +213,10 @@ func (s *Store) FindFederationEventByBodyHash(ctx context.Context, authorNodeID,
 		WHERE author_node_id = $1
 		  AND event_type = $2
 		  AND body_hash = $3
+		  AND (($4 = '' AND jsonb_array_length(pool_ids) = 0) OR ($4 <> '' AND pool_ids ? $4))
 		  AND validation_status = 'accepted'
 		ORDER BY sequence DESC
-		LIMIT 1`, authorNodeID, eventType, bodyHash).Scan(&eventID)
+		LIMIT 1`, authorNodeID, eventType, bodyHash, poolID).Scan(&eventID)
 	if err == sql.ErrNoRows {
 		return "", nil
 	}
@@ -293,13 +295,23 @@ func (s *Store) StoreFederationNonce(ctx context.Context, nodeID, nonce string, 
 }
 
 func (s *Store) AppendVerifiedFederationEvent(ctx context.Context, event *events.SignedEvent, validation *events.ValidationResult) error {
-	return s.AppendFederationEvent(ctx, FederationEventRecord{
+	return s.appendFederationEvent(ctx, FederationEventRecord{
 		Event:      event,
 		Validation: validation,
-	})
+	}, nil)
 }
 
 func (s *Store) AppendFederationEvent(ctx context.Context, record FederationEventRecord) error {
+	return s.appendFederationEvent(ctx, record, nil)
+}
+
+// AppendVerifiedFederationEventWithProjection commits an accepted event and
+// its required projection as one PostgreSQL transaction.
+func (s *Store) AppendVerifiedFederationEventWithProjection(ctx context.Context, event *events.SignedEvent, validation *events.ValidationResult, project func(context.Context) error) error {
+	return s.appendFederationEvent(ctx, FederationEventRecord{Event: event, Validation: validation}, project)
+}
+
+func (s *Store) appendFederationEvent(ctx context.Context, record FederationEventRecord, project func(context.Context) error) error {
 	if s == nil || s.db == nil {
 		return fmt.Errorf("pgindex store is not initialized")
 	}
@@ -356,6 +368,33 @@ func (s *Store) AppendFederationEvent(ctx context.Context, record FederationEven
 		return fmt.Errorf("begin federation event append: %w", err)
 	}
 	defer tx.Rollback()
+
+	// Relayed events can arrive before the author has been discovered directly.
+	// Register the identity carried by the verified envelope so projections with
+	// node foreign keys can be applied in the same receive cycle.
+	result, err := tx.ExecContext(ctx, `
+		INSERT INTO federation_nodes (
+			node_id, public_key, status, last_seen_at, last_verified_at, updated_at
+		)
+		VALUES ($1, $2, 'known', NOW(), NOW(), NOW())
+		ON CONFLICT (node_id) DO UPDATE SET
+			last_seen_at = NOW(),
+			last_verified_at = NOW(),
+			updated_at = NOW()
+		WHERE federation_nodes.public_key = EXCLUDED.public_key`,
+		event.AuthorNodeID,
+		publicKey,
+	)
+	if err != nil {
+		return fmt.Errorf("register federation event author: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read federation event author registration: %w", err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("federation node identity conflict for %s", event.AuthorNodeID)
+	}
 
 	var chainState federationChainState
 	var chainDecision federationChainDecision
@@ -449,6 +488,11 @@ func (s *Store) AppendFederationEvent(ctx context.Context, record FederationEven
 				  AND resolved_at IS NULL`, event.AuthorNodeID, chainState.Successor.EventID); err != nil {
 				return fmt.Errorf("resolve successor federation event chain gap: %w", err)
 			}
+		}
+	}
+	if status == "accepted" && project != nil {
+		if err := project(withFederationTransaction(ctx, tx)); err != nil {
+			return fmt.Errorf("project federation event: %w", err)
 		}
 	}
 	if err := tx.Commit(); err != nil {

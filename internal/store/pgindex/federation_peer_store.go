@@ -245,6 +245,10 @@ func (s *Store) ListUndeliveredFederationEvents(ctx context.Context, peerID int6
 		        AND member.status = 'active'
 		        AND e.pool_ids ? member.pool_id
 		    )
+		    OR (
+		      e.event_type = 'PoolMemberRevoked'
+		      AND e.body_json->>'subject_node_id' = $2
+		    )
 		  )
 		  AND (
 		    d.event_id IS NULL
@@ -359,7 +363,11 @@ func (s *Store) ListFederationOutboxEvents(ctx context.Context, params Federatio
 			    AND member.status = 'active'
 			    AND pool_ids ? member.pool_id
 			)
-		)`, arg))
+			OR (
+			  event_type = 'PoolMemberRevoked'
+			  AND body_json->>'subject_node_id' = $%d
+			)
+		)`, arg, arg))
 		args = append(args, nodeID)
 		arg++
 	}

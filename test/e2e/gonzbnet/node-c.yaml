@@ -1,4 +1,6 @@
+# TEST FIXTURE ONLY. Loopback endpoints, disposable credentials, and .e2e state.
 port: "18083"
+bind_address: "127.0.0.1"
 modules:
   downloader: { enabled: false }
   aggregator: { enabled: true }

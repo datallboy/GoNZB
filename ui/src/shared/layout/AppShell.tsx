@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Link, NavLink, Outlet } from 'react-router-dom'
+import { Link, NavLink, Outlet, useLocation } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
 import { browseCategories } from '../../modules/indexer/browse'
 import { getCapabilities } from '../api/settings'
@@ -14,21 +14,6 @@ function canOpenAdminPortal(permissions: string[]) {
     permission.startsWith('admin.settings.') ||
     permission.startsWith('auth.')
   )
-}
-
-function canOpenGoNZBNetAdmin(hasPermission: (permission: string) => boolean) {
-  return [
-    'gonzbnet.admin.read',
-    'gonzbnet.admin.write',
-    'gonzbnet.admin.peers',
-    'gonzbnet.admin.pools',
-    'gonzbnet.admin.moderation',
-    'gonzbnet.admin.keys',
-    'gonzbnet.admin.coverage',
-    'gonzbnet.admin.scanner',
-    'gonzbnet.admin.validator',
-    'gonzbnet.admin.scheduler',
-  ].some((permission) => hasPermission(permission))
 }
 
 function AccountMenu({ viewerLink }: { viewerLink?: boolean }) {
@@ -66,7 +51,7 @@ function AccountMenu({ viewerLink }: { viewerLink?: boolean }) {
             </Link>
           ) : null}
           {showAdminPortal ? (
-            <Link className="secondary-button" to="/admin/indexer/dashboard" onClick={() => setOpen(false)}>
+            <Link className="secondary-button" to="/admin" onClick={() => setOpen(false)}>
               Admin Portal
             </Link>
           ) : null}
@@ -108,7 +93,9 @@ export function PublicAppShell() {
 
 export function AdminAppShell() {
   const { hasPermission } = useAuth()
+  const location = useLocation()
   const [capabilities, setCapabilities] = useState<ControlPlaneCapabilities | null>(null)
+  const [navOpen, setNavOpen] = useState(false)
 
   useEffect(() => {
     void getCapabilities()
@@ -116,39 +103,71 @@ export function AdminAppShell() {
       .catch(() => setCapabilities(null))
   }, [])
 
-  const moduleVisible = (name: string) => Boolean(capabilities?.modules?.[name]?.visible)
+  const moduleVisible = (name: string) => capabilities ? Boolean(capabilities.modules?.[name]?.visible) : true
+  const context = adminContext(location.pathname)
 
   return (
     <div className="shell-frame">
-      <aside className="shell-sidebar">
-        <Link className="brand-mark" to="/admin">
+      <aside className={navOpen ? 'shell-sidebar is-open' : 'shell-sidebar'}>
+        <Link className="brand-mark" to="/admin" onClick={() => setNavOpen(false)}>
           <span>GoNZB</span>
-          <strong>Control Plane</strong>
+          <strong>Administration</strong>
         </Link>
-        <nav className="shell-nav">
-          <NavLink to="/admin">Overview</NavLink>
+        <button
+          className="shell-nav-toggle"
+          type="button"
+          aria-expanded={navOpen}
+          aria-controls="admin-navigation"
+          onClick={() => setNavOpen((current) => !current)}
+        >
+          Menu
+        </button>
+        <nav
+          id="admin-navigation"
+          className={navOpen ? 'shell-nav is-open' : 'shell-nav'}
+          aria-label="Administration"
+          onClick={(event) => {
+            if ((event.target as HTMLElement).closest('a')) setNavOpen(false)
+          }}
+        >
+          <div className="shell-nav__section">
+            <span className="shell-nav__heading">General</span>
+            <NavLink end to="/admin">Overview</NavLink>
+            {hasPermission('admin.settings.write') || hasPermission('admin.settings.read') ? (
+              <NavLink to="/admin/settings">Runtime Settings</NavLink>
+            ) : null}
+          </div>
+          {moduleVisible('gonzbnet') && hasPermission('gonzbnet.admin.read') ? (
+            <div className="shell-nav__section">
+              <span className="shell-nav__heading">Federation</span>
+              <NavLink to="/admin/gonzbnet">GoNZBNet</NavLink>
+            </div>
+          ) : null}
           {moduleVisible('usenet_indexer') && hasPermission('indexer.runtime.read') ? (
-            <>
-              <NavLink to="/admin/indexer/dashboard">Dashboard</NavLink>
+            <div className="shell-nav__section">
+              <span className="shell-nav__heading">Indexer</span>
+              <NavLink to="/admin/indexer/dashboard">Overview</NavLink>
+              <span className="shell-nav__subheading">Catalog</span>
+              <NavLink to="/admin/indexer/releases">Releases</NavLink>
+              <NavLink to="/admin/indexer/binaries">Binaries</NavLink>
+              <span className="shell-nav__subheading">Pipeline</span>
               <NavLink to="/admin/indexer/scrape">Scrape</NavLink>
               <NavLink to="/admin/indexer/work">Work</NavLink>
               <NavLink to="/admin/indexer/cohorts">Cohorts</NavLink>
               <NavLink to="/admin/indexer/stages">Stages</NavLink>
-              <NavLink to="/admin/indexer/maintenance">Maintenance</NavLink>
               <NavLink to="/admin/indexer/runs">Runs</NavLink>
+              <span className="shell-nav__subheading">Operations</span>
               <NavLink to="/admin/indexer/attention">Attention</NavLink>
-              <NavLink to="/admin/indexer/releases">Releases</NavLink>
-              <NavLink to="/admin/indexer/binaries">Binaries</NavLink>
-            </>
+              <NavLink to="/admin/indexer/maintenance">Maintenance</NavLink>
+            </div>
           ) : null}
-          {moduleVisible('gonzbnet') && canOpenGoNZBNetAdmin(hasPermission) ? (
-            <NavLink to="/admin/gonzbnet">GoNZBNet</NavLink>
+          {hasPermission('auth.users.read') || hasPermission('auth.roles.read') ? (
+            <div className="shell-nav__section">
+              <span className="shell-nav__heading">Access</span>
+              {hasPermission('auth.users.read') ? <NavLink to="/admin/security/users">Users</NavLink> : null}
+              {hasPermission('auth.roles.read') ? <NavLink to="/admin/security/roles">Roles</NavLink> : null}
+            </div>
           ) : null}
-          {hasPermission('admin.settings.write') || hasPermission('admin.settings.read') ? (
-            <NavLink to="/admin/settings">Runtime Settings</NavLink>
-          ) : null}
-          {hasPermission('auth.users.read') ? <NavLink to="/admin/security/users">Users</NavLink> : null}
-          {hasPermission('auth.roles.read') ? <NavLink to="/admin/security/roles">Roles</NavLink> : null}
         </nav>
         <div className="sidebar-footer">
           <Link className="secondary-button" to="/indexer/releases">
@@ -159,8 +178,8 @@ export function AdminAppShell() {
       <div className="admin-main">
         <header className="admin-topbar">
           <div>
-            <p className="eyebrow">Admin Portal</p>
-            <h1 className="admin-topbar__title">Unified runtime settings, operations, and security controls.</h1>
+            <p className="eyebrow">{context.eyebrow}</p>
+            <h1 className="admin-topbar__title">{context.title}</h1>
           </div>
           <AccountMenu viewerLink />
         </header>
@@ -170,4 +189,20 @@ export function AdminAppShell() {
       </div>
     </div>
   )
+}
+
+function adminContext(pathname: string) {
+  if (pathname.startsWith('/admin/indexer')) {
+    return { eyebrow: 'Module administration', title: 'Indexer' }
+  }
+  if (pathname.startsWith('/admin/gonzbnet')) {
+    return { eyebrow: 'Module administration', title: 'GoNZBNet' }
+  }
+  if (pathname.startsWith('/admin/security')) {
+    return { eyebrow: 'Administration', title: 'Access control' }
+  }
+  if (pathname.startsWith('/admin/settings')) {
+    return { eyebrow: 'Administration', title: 'Runtime settings' }
+  }
+  return { eyebrow: 'Administration', title: 'System overview' }
 }

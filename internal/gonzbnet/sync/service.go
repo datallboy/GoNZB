@@ -22,6 +22,7 @@ import (
 	"github.com/datallboy/gonzb/internal/gonzbnet/health"
 	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
 	"github.com/datallboy/gonzb/internal/gonzbnet/manifestavailability"
+	gonzbnetmetrics "github.com/datallboy/gonzb/internal/gonzbnet/metrics"
 	"github.com/datallboy/gonzb/internal/gonzbnet/moderation"
 	"github.com/datallboy/gonzb/internal/gonzbnet/pools"
 	"github.com/datallboy/gonzb/internal/gonzbnet/profile"
@@ -61,6 +62,7 @@ type Store interface {
 	ValidateFederationPoolControlEvent(ctx context.Context, event *events.SignedEvent) error
 	ProjectFederationPoolEvent(ctx context.Context, event *events.SignedEvent) error
 	CanAcceptFederationEventForPools(ctx context.Context, authorNodeID string, poolIDs []string, eventType string) (pgindex.PoolAuthorizationResult, error)
+	IsActivePoolMember(ctx context.Context, poolID, nodeID string) (bool, error)
 }
 
 type pendingProjectionRecorder interface {
@@ -72,6 +74,10 @@ type pendingProjectionStore interface {
 	pendingProjectionRecorder
 	ListPendingFederationProjections(context.Context, int) ([]pgindex.PendingFederationProjection, error)
 	GetFederationEvent(context.Context, string) (*events.SignedEvent, error)
+}
+
+type transactionalProjectionStore interface {
+	AppendVerifiedFederationEventWithProjection(context.Context, *events.SignedEvent, *events.ValidationResult, func(context.Context) error) error
 }
 
 type Logger interface {
@@ -138,6 +144,8 @@ func (s *Service) RetryPendingProjections(ctx context.Context, limit int) (int, 
 
 func (s *Service) replayProjection(ctx context.Context, event *events.SignedEvent) error {
 	switch event.EventType {
+	case pools.EventTypePoolGenesis, pools.EventTypePoolJoinRequest, pools.EventTypePoolMemberApproved, pools.EventTypePoolMemberRevoked, pools.EventTypePoolCheckpoint:
+		return s.store.ProjectFederationPoolEvent(ctx, event)
 	case pools.EventTypeReleaseCard:
 		var card releasecard.ReleaseCard
 		if err := json.Unmarshal(event.Body, &card); err != nil {
@@ -153,6 +161,23 @@ func (s *Service) replayProjection(ctx context.Context, event *events.SignedEven
 	default:
 		return s.projectValidationEvent(ctx, event, event.Body)
 	}
+}
+
+func (s *Service) appendAndProject(ctx context.Context, event *events.SignedEvent, validationResult *events.ValidationResult) error {
+	project := func(projectCtx context.Context) error {
+		return s.replayProjection(projectCtx, event)
+	}
+	if store, ok := s.store.(transactionalProjectionStore); ok {
+		return store.AppendVerifiedFederationEventWithProjection(ctx, event, validationResult, project)
+	}
+	if err := s.store.AppendVerifiedFederationEvent(ctx, event, validationResult); err != nil {
+		return err
+	}
+	return project(ctx)
+}
+
+func receivedEventHasProjection(eventType string) bool {
+	return pools.EventIsPoolControl(eventType) || eventType == pools.EventTypeReleaseCard || isSyncCoverageEvent(eventType) || isValidationProjectionEvent(eventType)
 }
 
 type Result struct {
@@ -259,14 +284,20 @@ func (s *Service) SyncOnce(ctx context.Context) (Result, error) {
 	}
 	result.Peers = len(peers)
 	for _, peer := range peers {
+		started := time.Now()
 		peerResult, err := s.syncPeer(ctx, peer)
+		gonzbnetmetrics.Default.ObservePeerSync(time.Since(started))
 		if err != nil {
+			gonzbnetmetrics.Default.Add(gonzbnetmetrics.PeerFailuresTotal, 1)
 			_ = s.store.MarkFederationPeerSyncFailure(ctx, peer.ID, err.Error())
 			if s.logger != nil {
 				s.logger.Warn("gonzbnet peer sync failed peer=%s: %v", peer.PeerURL, err)
 			}
 			continue
 		}
+		gonzbnetmetrics.Default.Add(gonzbnetmetrics.EventsReceivedTotal, uint64(peerResult.Accepted+peerResult.Rejected+peerResult.Duplicate))
+		gonzbnetmetrics.Default.Add(gonzbnetmetrics.EventsAcceptedTotal, uint64(peerResult.Accepted))
+		gonzbnetmetrics.Default.Add(gonzbnetmetrics.EventsRejectedTotal, uint64(peerResult.Rejected))
 		result.Accepted += peerResult.Accepted
 		result.Duplicate += peerResult.Duplicate
 		result.Rejected += peerResult.Rejected
@@ -286,8 +317,11 @@ func (s *Service) PushOnce(ctx context.Context, limit int) (Result, error) {
 	}
 	result.Peers = len(peers)
 	for _, peer := range peers {
+		started := time.Now()
 		peerResult, err := s.pushPeer(ctx, peer, limit)
+		gonzbnetmetrics.Default.ObservePeerSync(time.Since(started))
 		if err != nil {
+			gonzbnetmetrics.Default.Add(gonzbnetmetrics.PeerFailuresTotal, 1)
 			_ = s.store.MarkFederationPeerSyncFailure(ctx, peer.ID, err.Error())
 			if s.logger != nil {
 				s.logger.Warn("gonzbnet peer push failed peer=%s: %v", peer.PeerURL, err)
@@ -464,6 +498,20 @@ func (s *Service) syncPeer(ctx context.Context, peer pgindex.FederationPeerRecor
 				continue
 			}
 			if pools.EventIsPoolControl(event.EventType) {
+				poolID := ""
+				if len(event.PoolIDs) == 1 {
+					poolID = event.PoolIDs[0]
+				}
+				activeRelay, err := s.store.IsActivePoolMember(ctx, poolID, nodeProfile.NodeID)
+				if err != nil {
+					return result, err
+				}
+				if !activeRelay {
+					reason := "pool control events require an active member relay"
+					_ = s.store.AppendRejectedFederationEvent(ctx, event.EventID, event.AuthorNodeID, event.EventType, raw, reason)
+					result.Rejected++
+					continue
+				}
 				if err := s.store.ValidateFederationPoolControlEvent(ctx, &event); err != nil {
 					_ = s.store.AppendRejectedFederationEvent(ctx, event.EventID, event.AuthorNodeID, event.EventType, raw, err.Error())
 					result.Rejected++
@@ -480,7 +528,7 @@ func (s *Service) syncPeer(ctx context.Context, peer pgindex.FederationPeerRecor
 					continue
 				}
 			}
-			if err := s.store.AppendVerifiedFederationEvent(ctx, &event, validation); err != nil {
+			if err := s.appendAndProject(ctx, &event, validation); err != nil {
 				if errors.Is(err, pgindex.ErrFederationSequenceConflict) || errors.Is(err, pgindex.ErrFederationForkDetected) {
 					reason := "fork_detected"
 					if errors.Is(err, pgindex.ErrFederationSequenceConflict) {
@@ -490,49 +538,19 @@ func (s *Service) syncPeer(ctx context.Context, peer pgindex.FederationPeerRecor
 					result.Rejected++
 					continue
 				}
+				s.recordProjectionFailure(ctx, &event, "inbound", err)
 				return result, err
 			}
 			result.Accepted++
 			lastEventID = event.EventID
-			if pools.EventIsPoolControl(event.EventType) {
-				if err := s.store.ProjectFederationPoolEvent(ctx, &event); err != nil {
-					return result, err
-				}
+			if event.EventType == pools.EventTypeReleaseCard {
+				gonzbnetmetrics.Default.Add(gonzbnetmetrics.ReleaseCardsProjectedTotal, 1)
 			}
-			if event.EventType == "ReleaseCard" {
-				var card releasecard.ReleaseCard
-				if err := json.Unmarshal(event.Body, &card); err != nil {
-					_ = s.store.AppendRejectedFederationEvent(ctx, event.EventID, event.AuthorNodeID, event.EventType, raw, "invalid release card body")
-					result.Rejected++
-					continue
-				}
-				poolID := ""
-				if len(event.PoolIDs) > 0 {
-					poolID = event.PoolIDs[0]
-				}
-				if err := s.store.UpsertFederatedReleaseCardProjection(ctx, releasecard.Projection{
-					Card:         card,
-					EventID:      event.EventID,
-					SourceNodeID: event.AuthorNodeID,
-					PoolID:       poolID,
-				}); err != nil {
-					s.recordProjectionFailure(ctx, &event, "release_card", err)
-					return result, err
-				}
-				s.resolveProjection(ctx, &event)
-				result.Projected++
-			}
-			if err := s.projectValidationEvent(ctx, &event, raw); err != nil {
-				s.recordProjectionFailure(ctx, &event, "validation", err)
-				return result, err
+			if event.EventType == pools.EventTypeHealthAttestation {
+				gonzbnetmetrics.Default.Add(gonzbnetmetrics.HealthAttestationsTotal, 1)
 			}
 			s.resolveProjection(ctx, &event)
-			if isSyncCoverageEvent(event.EventType) {
-				if err := s.store.ProjectCoverageEvent(ctx, &event); err != nil {
-					s.recordProjectionFailure(ctx, &event, "coverage", err)
-					return result, err
-				}
-				s.resolveProjection(ctx, &event)
+			if receivedEventHasProjection(event.EventType) {
 				result.Projected++
 			}
 		}
@@ -1119,6 +1137,21 @@ func isSyncCoverageEvent(eventType string) bool {
 		}
 	}
 	return false
+}
+
+func isValidationProjectionEvent(eventType string) bool {
+	switch eventType {
+	case pools.EventTypeHealthAttestation,
+		pools.EventTypeTombstone,
+		pools.EventTypeValidatorCapacity,
+		pools.EventTypeArticleAvailabilityAttestation,
+		pools.EventTypeChecksumAttestation,
+		pools.EventTypeManifestAvailability,
+		pools.EventTypeTrustAttestation:
+		return true
+	default:
+		return false
+	}
 }
 
 func wellKnownURL(peerURL string) (string, error) {

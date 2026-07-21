@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { getCapabilities, getSettings, updateSettings } from '../../shared/api/settings'
 import type {
   AdminStageConfigPatch,
@@ -24,10 +24,6 @@ type StageKey =
   | 'release_archive_nzb'
   | 'release'
   | 'inspect_discovery'
-  | 'inspect_discovery_ready_refresh'
-  | 'inspect_par2_ready_refresh'
-  | 'inspect_archive_ready_refresh'
-  | 'inspect_media_ready_refresh'
   | 'inspect_par2'
   | 'inspect_nfo'
   | 'inspect_archive'
@@ -66,10 +62,6 @@ const stageDefinitions: StageDefinition[] = [
   { key: 'release', label: 'Release', supportsConcurrency: false, description: 'Clusters ready summary candidates into persisted releases.', batchHelpText: 'Ready candidate families inspected per run.' },
   { key: 'release_generate_nzb', label: 'Generate NZB', supportsConcurrency: false, description: 'Pre-generates NZBs in the background for releases that already meet the public-ready policy.', batchHelpText: 'Eligible releases processed per run.' },
   { key: 'release_archive_nzb', label: 'Archive NZB', supportsConcurrency: false, description: 'Copies release NZBs into the archive store before source purge begins.', batchHelpText: 'Generated NZBs archived per run.' },
-  { key: 'inspect_discovery_ready_refresh', label: 'Inspect discovery queue', supportsConcurrency: false, description: 'Populates and retires discovery ready-queue rows before discovery workers claim them.', batchHelpText: 'Ready candidates scanned per refresh pass.' },
-  { key: 'inspect_par2_ready_refresh', label: 'Inspect PAR2 queue', supportsConcurrency: false, description: 'Populates PAR2 inspection ready-queue rows before PAR2 workers claim them.', batchHelpText: 'Ready candidates scanned per refresh pass.' },
-  { key: 'inspect_archive_ready_refresh', label: 'Inspect archive queue', supportsConcurrency: false, description: 'Populates archive inspection ready-queue rows before archive workers claim them.', batchHelpText: 'Ready candidates scanned per refresh pass.' },
-  { key: 'inspect_media_ready_refresh', label: 'Inspect media queue', supportsConcurrency: false, description: 'Populates media inspection ready-queue rows before media workers claim them.', batchHelpText: 'Ready candidates scanned per refresh pass.' },
   { key: 'inspect_discovery', label: 'Inspect discovery', supportsConcurrency: true, description: 'Pre-release opaque-binary discovery pass that identifies archive/PAR2/NFO/media-like binaries.', batchHelpText: 'Binary candidates sampled per run.', concurrencyHelpText: 'NNTP prefix-sampling workers. Raise cautiously because each worker fetches article prefixes.' },
   { key: 'inspect_par2', label: 'Inspect PAR2', supportsConcurrency: true, description: 'PAR2 inspection and recovery metadata extraction.', batchHelpText: 'PAR2 binaries claimed per run.', concurrencyHelpText: 'Inspection workers. Uses NNTP when materializing binaries.' },
   { key: 'inspect_nfo', label: 'Inspect NFO', supportsConcurrency: false, description: 'NFO text extraction and evidence capture.', batchHelpText: 'NFO binaries claimed per run.' },
@@ -84,7 +76,6 @@ const stageGroups: Array<{ title: string; keys: StageKey[] }> = [
   { title: 'Scrape commands', keys: ['scrape_latest', 'scrape_backfill', 'poster_materialize', 'crosspost_popularity_refresh'] },
   { title: 'Assemble and recovery commands', keys: ['assemble', 'recover_yenc'] },
   { title: 'Release commands', keys: ['release_summary_refresh', 'release', 'release_generate_nzb', 'release_archive_nzb'] },
-  { title: 'Inspection queue refresh', keys: ['inspect_discovery_ready_refresh', 'inspect_par2_ready_refresh', 'inspect_archive_ready_refresh', 'inspect_media_ready_refresh'] },
   { title: 'Inspection commands', keys: ['inspect_discovery', 'inspect_par2', 'inspect_nfo', 'inspect_archive', 'inspect_password', 'inspect_media'] },
   { title: 'Enrichment commands', keys: ['enrich_predb', 'enrich_tmdb'] },
 ]
@@ -95,6 +86,10 @@ const settingsTabs: Array<{ key: SettingsTab; label: string }> = [
   { key: 'aggregator', label: 'Aggregator' },
   { key: 'indexer', label: 'Indexer' },
 ]
+
+function settingsTabFromQuery(value: string | null): SettingsTab {
+  return settingsTabs.some((tab) => tab.key === value) ? value as SettingsTab : 'nntp'
+}
 
 const nntpProviderRoles = [
   { key: 'scrape', label: 'Scrape' },
@@ -109,7 +104,7 @@ function defaultSettings(): RuntimeSettings {
     downloader_servers: [],
     indexer_servers: [],
     indexers: [],
-    aggregator: { sources: { local_blob: { enabled: false }, usenet_indexer: { enabled: false } } },
+    aggregator: { sources: { local_blob: { enabled: false }, usenet_indexer: { enabled: false }, gonzbnet: { enabled: false } } },
     download: {
       out_dir: './downloads',
       completed_dir: './downloads/completed',
@@ -169,10 +164,6 @@ function defaultSettings(): RuntimeSettings {
       },
       release_generate_nzb: stageDefaults(100),
       release_archive_nzb: stageDefaults(100),
-      inspect_discovery_ready_refresh: stageDefaults(10000),
-      inspect_par2_ready_refresh: stageDefaults(10000),
-      inspect_archive_ready_refresh: stageDefaults(10000),
-      inspect_media_ready_refresh: stageDefaults(10000),
       match: {
         high_confidence_threshold: 0.85,
         probable_confidence_threshold: 0.55,
@@ -261,6 +252,7 @@ function normalizeSettings(input?: RuntimeSettings): RuntimeSettings {
         ...input?.aggregator?.sources,
         local_blob: { enabled: Boolean(input?.aggregator?.sources?.local_blob?.enabled) },
         usenet_indexer: { enabled: Boolean(input?.aggregator?.sources?.usenet_indexer?.enabled) },
+        gonzbnet: { enabled: Boolean(input?.aggregator?.sources?.gonzbnet?.enabled) },
       },
     },
     download: {
@@ -300,10 +292,6 @@ function normalizeSettings(input?: RuntimeSettings): RuntimeSettings {
       release: { ...defaults.indexing!.release, ...indexing.release },
       release_generate_nzb: { ...defaults.indexing!.release_generate_nzb, ...indexing.release_generate_nzb },
       release_archive_nzb: { ...defaults.indexing!.release_archive_nzb, ...indexing.release_archive_nzb },
-      inspect_discovery_ready_refresh: { ...defaults.indexing!.inspect_discovery_ready_refresh, ...indexing.inspect_discovery_ready_refresh },
-      inspect_par2_ready_refresh: { ...defaults.indexing!.inspect_par2_ready_refresh, ...indexing.inspect_par2_ready_refresh },
-      inspect_archive_ready_refresh: { ...defaults.indexing!.inspect_archive_ready_refresh, ...indexing.inspect_archive_ready_refresh },
-      inspect_media_ready_refresh: { ...defaults.indexing!.inspect_media_ready_refresh, ...indexing.inspect_media_ready_refresh },
       match: { ...defaults.indexing!.match, ...indexing.match },
       inspect: { ...defaults.indexing!.inspect, ...indexing.inspect },
       storage_guard: { ...defaults.indexing!.storage_guard, ...indexing.storage_guard },
@@ -510,9 +498,9 @@ function buildTabPatch(tab: SettingsTab, settings: RuntimeSettings) {
 }
 
 export function AdminSettingsPage() {
+  const [searchParams, setSearchParams] = useSearchParams()
   const [settings, setSettings] = useState<RuntimeSettings>(defaultSettings())
   const [capabilities, setCapabilities] = useState<ControlPlaneCapabilities | null>(null)
-  const [activeTab, setActiveTab] = useState<SettingsTab>('nntp')
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -554,6 +542,7 @@ export function AdminSettingsPage() {
   }
 
   const normalized = normalizeSettings(settings)
+  const activeTab = settingsTabFromQuery(searchParams.get('tab'))
   const indexing = normalized.indexing!
   const aggregator = normalized.aggregator!
   const download = normalized.download!
@@ -594,7 +583,7 @@ export function AdminSettingsPage() {
               className={tab.key === activeTab ? 'settings-tab is-active' : 'settings-tab'}
               aria-selected={tab.key === activeTab}
               onClick={() => {
-                setActiveTab(tab.key)
+                setSearchParams({ tab: tab.key }, { replace: true })
                 setMessage(null)
                 setError(null)
               }}
@@ -723,6 +712,11 @@ export function AdminSettingsPage() {
                 label="Local indexer"
                 checked={Boolean(aggregator.sources?.usenet_indexer?.enabled)}
                 onChange={(enabled) => setSettings((current) => ({ ...current, aggregator: { sources: { ...aggregator.sources, usenet_indexer: { enabled } } } }))}
+              />
+              <CheckboxField
+                label="GoNZBNet federated cache"
+                checked={Boolean(aggregator.sources?.gonzbnet?.enabled)}
+                onChange={(enabled) => setSettings((current) => ({ ...current, aggregator: { sources: { ...aggregator.sources, gonzbnet: { enabled } } } }))}
               />
             </div>
           </SettingsSection>
