@@ -146,6 +146,76 @@ func TestDefaultRuntimeSettingsAreOperationallyDisabled(t *testing.T) {
 	}
 }
 
+func TestGoNZBNetRuntimeSettingsRoundTripPreservesBootstrapBoundaries(t *testing.T) {
+	base := &config.Config{GoNZBNet: config.GoNZBNetConfig{
+		Mode:                        "federation",
+		KeysDir:                     "/keys/bootstrap",
+		HTTPBasePath:                "/federation/v1",
+		NetworkID:                   "network-a",
+		LocalPoolID:                 "pool-a",
+		NodeAlias:                   "before",
+		ManualPeers:                 []string{"https://peer-a.example"},
+		ConsumerEnabled:             true,
+		ScannerEnabled:              true,
+		ValidationTiers:             []string{"metadata"},
+		ManifestCacheMaxBytes:       1024,
+		ManifestCacheTTLDays:        7,
+		PullSyncIntervalMin:         5,
+		PushSyncIntervalMin:         5,
+		PushSyncBatchSize:           25,
+		GossipIntervalMin:           1,
+		GossipBatchSize:             25,
+		GossipTTL:                   3,
+		GossipFanout:                2,
+		MaxEventBytes:               4096,
+		MaxManifestBytes:            8192,
+		ManifestFetchTimeoutSeconds: 15,
+		MaxBatchEvents:              50,
+		RateLimitEventsPerMinute:    60,
+		TimeToleranceSeconds:        120,
+		MaxEventAgeHours:            24,
+		NonceTTLSeconds:             300,
+	}}
+
+	runtime := FromConfig(base)
+	if runtime.GoNZBNet == nil || runtime.GoNZBNet.NodeAlias != "before" || !runtime.GoNZBNet.ScannerEnabled {
+		t.Fatalf("expected GoNZBNet bootstrap values in runtime settings, got %+v", runtime.GoNZBNet)
+	}
+	runtime.GoNZBNet.NodeAlias = "after"
+	runtime.GoNZBNet.ScannerEnabled = false
+	runtime.GoNZBNet.ManualPeers = []string{"https://peer-b.example"}
+	runtime.GoNZBNet.ValidationTiers = []string{"metadata", "article_stat"}
+
+	effective := ApplyToConfig(base, runtime)
+	if effective.GoNZBNet.NodeAlias != "after" || effective.GoNZBNet.ScannerEnabled {
+		t.Fatalf("expected runtime GoNZBNet values to apply, got %+v", effective.GoNZBNet)
+	}
+	if len(effective.GoNZBNet.ManualPeers) != 1 || effective.GoNZBNet.ManualPeers[0] != "https://peer-b.example" {
+		t.Fatalf("expected runtime manual peers to apply, got %+v", effective.GoNZBNet.ManualPeers)
+	}
+	if effective.GoNZBNet.KeysDir != "/keys/bootstrap" || effective.GoNZBNet.HTTPBasePath != "/federation/v1" || effective.GoNZBNet.NetworkID != "network-a" || effective.GoNZBNet.LocalPoolID != "pool-a" {
+		t.Fatalf("expected bootstrap-only fields to remain unchanged, got %+v", effective.GoNZBNet)
+	}
+}
+
+func TestWithRuntimeDefaultsFromConfigBackfillsGoNZBNetFromBootstrap(t *testing.T) {
+	runtime := DefaultRuntimeSettings()
+	runtime.GoNZBNet = nil
+	base := &config.Config{GoNZBNet: config.GoNZBNetConfig{
+		NodeAlias:      "bootstrap-node",
+		ScannerEnabled: true,
+		PublishPoolIDs: []string{"pool-a"},
+	}}
+
+	got := WithRuntimeDefaultsFromConfig(runtime, base)
+	if got.GoNZBNet == nil || got.GoNZBNet.NodeAlias != "bootstrap-node" || !got.GoNZBNet.ScannerEnabled {
+		t.Fatalf("expected bootstrap GoNZBNet settings to backfill older snapshot, got %+v", got.GoNZBNet)
+	}
+	if len(got.GoNZBNet.PublishPoolIDs) != 1 || got.GoNZBNet.PublishPoolIDs[0] != "pool-a" {
+		t.Fatalf("expected bootstrap publish pools, got %+v", got.GoNZBNet.PublishPoolIDs)
+	}
+}
+
 func TestWithRuntimeDefaultsBackfillsAssembleStageDefaults(t *testing.T) {
 	runtime := WithRuntimeDefaults(&RuntimeSettings{
 		Indexing: &IndexingRuntimeSettings{

@@ -85,6 +85,31 @@ func TestValidateRuntimeSettingsReportsGoNZBNetModuleGate(t *testing.T) {
 	}
 }
 
+func TestValidateRuntimeSettingsRejectsInsecureGoNZBNetManualPeer(t *testing.T) {
+	runtime := app.DefaultRuntimeSettings()
+	runtime.GoNZBNet.ManualPeers = []string{"http://127.0.0.1:8081"}
+
+	err := ValidateRuntimeSettings(&config.Config{}, runtime)
+	if err == nil || !strings.Contains(err.Error(), "gonzbnet.manual_peers[0]") {
+		t.Fatalf("expected insecure peer validation error, got %v", err)
+	}
+
+	runtime.GoNZBNet.AllowInsecurePeerHTTP = true
+	if err := ValidateRuntimeSettings(&config.Config{}, runtime); err != nil {
+		t.Fatalf("expected explicitly allowed HTTP peer to validate, got %v", err)
+	}
+}
+
+func TestValidateRuntimeSettingsRejectsInvalidGoNZBNetSchedule(t *testing.T) {
+	runtime := app.DefaultRuntimeSettings()
+	runtime.GoNZBNet.HealthAttestationsBatchSize = 0
+
+	err := ValidateRuntimeSettings(&config.Config{}, runtime)
+	if err == nil || !strings.Contains(err.Error(), "gonzbnet.health_attestations_batch_size") {
+		t.Fatalf("expected GoNZBNet schedule validation error, got %v", err)
+	}
+}
+
 func TestBuildCapabilitiesReportsIndexerNeedsScrapeGroup(t *testing.T) {
 	runtime := app.DefaultRuntimeSettings()
 	runtime.IndexerServers = []app.ServerRuntimeSettings{{ID: "primary", Host: "news.example.com", Port: 563}}

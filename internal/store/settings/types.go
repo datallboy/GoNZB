@@ -14,6 +14,7 @@ type RuntimeSettingsPatch = app.RuntimeSettingsPatch
 type ServerRuntimeSettings = app.ServerRuntimeSettings
 type IndexerRuntimeSettings = app.IndexerRuntimeSettings
 type AggregatorRuntimeSettings = app.AggregatorRuntimeSettings
+type GoNZBNetRuntimeSettings = app.GoNZBNetRuntimeSettings
 type DownloadRuntimeSettings = app.DownloadRuntimeSettings
 type IndexingRuntimeSettings = app.IndexingRuntimeSettings
 type ArrIntegrationRuntimeSettings = app.ArrIntegrationRuntimeSettings

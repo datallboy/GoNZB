@@ -71,6 +71,7 @@ func hasAnySettingsPatchField(patch *settingsPatch) bool {
 		patch.NNTPPool != nil ||
 		patch.Indexers != nil ||
 		patch.Aggregator != nil ||
+		patch.GoNZBNet != nil ||
 		patch.Download != nil ||
 		patch.Indexing != nil ||
 		patch.ArrIntegrations != nil)

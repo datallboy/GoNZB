@@ -17,6 +17,13 @@ func TestHasAnySettingsPatchFieldAcceptsNNTPPoolOnlyPatch(t *testing.T) {
 	}
 }
 
+func TestHasAnySettingsPatchFieldAcceptsGoNZBNetOnlyPatch(t *testing.T) {
+	patch := &settingsPatch{GoNZBNet: &app.GoNZBNetRuntimeSettings{NodeAlias: "node-a"}}
+	if !hasAnySettingsPatchField(patch) {
+		t.Fatalf("expected gonzbnet-only patch to be treated as non-empty")
+	}
+}
+
 func TestHasAnySettingsPatchFieldAcceptsScopedServerPatch(t *testing.T) {
 	downloaderServers := []app.ServerRuntimeSettings{}
 	indexerServers := []app.ServerRuntimeSettings{}

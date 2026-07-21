@@ -17,6 +17,7 @@ import (
 const (
 	usenetIndexerModuleName = "usenet_indexer"
 	aggregatorModuleName    = "aggregator"
+	goNZBNetModuleName      = "gonzbnet"
 )
 const expectedSchemaVersion = 1
 
@@ -144,7 +145,7 @@ func (s *Store) GetRuntimeSettings(ctx context.Context, base ...*config.Config) 
 		if revErr == nil {
 			runtime.Revision = revisionID
 		}
-		return WithRuntimeDefaults(runtime), nil
+		return app.WithRuntimeDefaultsFromConfig(runtime, firstBaseConfig(base)), nil
 	}
 
 	legacyRevision, err := s.readLatestRevisionSnapshot(ctx)
@@ -152,7 +153,7 @@ func (s *Store) GetRuntimeSettings(ctx context.Context, base ...*config.Config) 
 		return nil, fmt.Errorf("read latest settings revision: %w", err)
 	}
 	if err == nil && legacyRevision != nil {
-		return WithRuntimeDefaults(legacyRevision), nil
+		return app.WithRuntimeDefaultsFromConfig(legacyRevision, firstBaseConfig(base)), nil
 	}
 
 	out := DefaultRuntimeSettings()
@@ -161,6 +162,13 @@ func (s *Store) GetRuntimeSettings(ctx context.Context, base ...*config.Config) 
 	}
 	out.Revision = 0
 	return out, nil
+}
+
+func firstBaseConfig(values []*config.Config) *config.Config {
+	if len(values) == 0 {
+		return nil
+	}
+	return values[0]
 }
 
 // patch and persist the latest runtime settings state as a new atomic revision.
@@ -193,6 +201,9 @@ func (s *Store) UpdateSettings(ctx context.Context, next *RuntimeSettings) error
 	}
 	if err := s.writeAggregatorOptions(ctx, tx, next.Aggregator); err != nil {
 		return fmt.Errorf("write aggregator module options: %w", err)
+	}
+	if err := s.writeGoNZBNetOptions(ctx, tx, next.GoNZBNet); err != nil {
+		return fmt.Errorf("write gonzbnet module options: %w", err)
 	}
 	if err := s.writeDownload(ctx, tx, next.Download); err != nil {
 		return fmt.Errorf("write settings_download: %w", err)
@@ -473,6 +484,27 @@ func (s *Store) readStructuredSettings(ctx context.Context) (*RuntimeSettings, b
 		out.Aggregator = &aggregator
 	}
 
+	var goNZBNetOptionsJSON string
+	err = s.db.QueryRowContext(ctx, `
+		SELECT options_json
+		FROM settings_module_options
+		WHERE module_name = ?`, goNZBNetModuleName).Scan(&goNZBNetOptionsJSON)
+	if err != nil && err != sql.ErrNoRows {
+		return nil, false, err
+	}
+	if err == nil {
+		hasState = true
+
+		var goNZBNet GoNZBNetRuntimeSettings
+		if goNZBNetOptionsJSON == "" {
+			goNZBNetOptionsJSON = "{}"
+		}
+		if unmarshalErr := json.Unmarshal([]byte(goNZBNetOptionsJSON), &goNZBNet); unmarshalErr != nil {
+			return nil, false, fmt.Errorf("unmarshal gonzbnet module options: %w", unmarshalErr)
+		}
+		out.GoNZBNet = &goNZBNet
+	}
+
 	return out, hasState, nil
 }
 
@@ -613,6 +645,26 @@ func (s *Store) writeUsenetIndexerOptions(ctx context.Context, tx *sql.Tx, index
 		usenetIndexerModuleName,
 		string(optionsJSON),
 	)
+	return err
+}
+
+func (s *Store) writeGoNZBNetOptions(ctx context.Context, tx *sql.Tx, goNZBNet *GoNZBNetRuntimeSettings) error {
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM settings_module_options
+		WHERE module_name = ?`, goNZBNetModuleName); err != nil {
+		return err
+	}
+	if goNZBNet == nil {
+		return nil
+	}
+
+	payload, err := json.Marshal(goNZBNet)
+	if err != nil {
+		return fmt.Errorf("marshal gonzbnet module options: %w", err)
+	}
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO settings_module_options (module_name, options_json, updated_at)
+		VALUES (?, ?, CURRENT_TIMESTAMP)`, goNZBNetModuleName, string(payload))
 	return err
 }
 

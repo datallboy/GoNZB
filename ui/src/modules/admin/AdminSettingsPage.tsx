@@ -6,6 +6,7 @@ import type {
   AdminStageConfigPatch,
   ArrIntegrationRuntimeSettings,
   ControlPlaneCapabilities,
+  GoNZBNetRuntimeSettings,
   IndexerRuntimeSettings,
   IndexingRuntimeSettings,
   RuntimeSettings,
@@ -32,7 +33,7 @@ type StageKey =
   | 'enrich_predb'
   | 'enrich_tmdb'
 
-type SettingsTab = 'nntp' | 'downloader' | 'aggregator' | 'indexer'
+type SettingsTab = 'nntp' | 'downloader' | 'aggregator' | 'gonzbnet' | 'indexer'
 
 type StageDefinition = {
   key: StageKey
@@ -84,6 +85,7 @@ const settingsTabs: Array<{ key: SettingsTab; label: string }> = [
   { key: 'nntp', label: 'NNTP' },
   { key: 'downloader', label: 'Downloader' },
   { key: 'aggregator', label: 'Aggregator' },
+  { key: 'gonzbnet', label: 'GoNZBNet' },
   { key: 'indexer', label: 'Indexer' },
 ]
 
@@ -98,6 +100,81 @@ const nntpProviderRoles = [
   { key: 'download', label: 'Download' },
 ]
 
+function defaultGoNZBNetSettings(): GoNZBNetRuntimeSettings {
+  return {
+    node_alias: '',
+    advertise_url: '',
+    allow_insecure_peer_http: false,
+    publish_pool_ids: [],
+    manual_peers: [],
+    visibility: 'unlisted',
+    allow_pool_creation: true,
+    allow_join_requests: true,
+    admission_relay_enabled: true,
+    consumer_enabled: true,
+    scanner_enabled: false,
+    index_projection_enabled: true,
+    manifest_builder_enabled: false,
+    manifest_cache_enabled: true,
+    validator_enabled: false,
+    health_checker_enabled: false,
+    coverage_enabled: false,
+    scheduler_enabled: false,
+    publish_release_cards_enabled: false,
+    publish_release_cards_batch_size: 50,
+    publish_release_cards_interval_minutes: 10,
+    manifest_availability_enabled: false,
+    health_attestations_enabled: false,
+    health_attestations_batch_size: 50,
+    health_attestations_interval_minutes: 30,
+    scanner_max_groups: 25,
+    scanner_max_articles_per_hour: 250000,
+    scanner_claim_ttl_minutes: 30,
+    scanner_checkpoint_interval_seconds: 300,
+    scanner_respect_remote_claims: true,
+    scanner_allow_unassigned_work: false,
+    coverage_mode: 'manual',
+    coverage_min_trust_for_claim: 0.65,
+    coverage_validation_overlap_percent: 10,
+    coverage_stale_claim_penalty: true,
+    coverage_provider_scope_mode: 'hash_only',
+    validation_batch_size: 25,
+    validation_interval_minutes: 15,
+    validation_tiers: ['metadata', 'article_stat', 'segment_stat'],
+    validation_max_manifests_per_hour: 500,
+    validation_sample_percent: 10,
+    validation_allow_sample_payload_fetch: false,
+    validation_allow_par2_validation: false,
+    validation_publish_provider_scope_hash: true,
+    checksum_validation_enabled: false,
+    manifest_cache_max_bytes: 10 * 1024 * 1024 * 1024,
+    manifest_cache_ttl_days: 90,
+    manifest_cache_serve_to_trusted_pools: true,
+    pull_sync_enabled: false,
+    pull_sync_interval_minutes: 10,
+    push_sync_enabled: false,
+    push_sync_interval_minutes: 10,
+    push_sync_batch_size: 100,
+    websocket_gossip_enabled: false,
+    gossip_interval_minutes: 1,
+    gossip_batch_size: 100,
+    gossip_ttl: 4,
+    gossip_fanout: 4,
+    peer_exchange_enabled: false,
+    relay_enabled: false,
+    max_event_bytes: 262144,
+    max_manifest_bytes: 10485760,
+    manifest_fetch_timeout_seconds: 20,
+    max_batch_events: 100,
+    rate_limit_events_per_minute: 120,
+    time_tolerance_seconds: 120,
+    max_event_age_hours: 720,
+    nonce_ttl_seconds: 600,
+    share_provider_backbone_hash: false,
+    share_source_indexer_hash: false,
+  }
+}
+
 function defaultSettings(): RuntimeSettings {
   return {
     servers: [],
@@ -105,6 +182,7 @@ function defaultSettings(): RuntimeSettings {
     indexer_servers: [],
     indexers: [],
     aggregator: { sources: { local_blob: { enabled: false }, usenet_indexer: { enabled: false }, gonzbnet: { enabled: false } } },
+    gonzbnet: defaultGoNZBNetSettings(),
     download: {
       out_dir: './downloads',
       completed_dir: './downloads/completed',
@@ -254,6 +332,13 @@ function normalizeSettings(input?: RuntimeSettings): RuntimeSettings {
         usenet_indexer: { enabled: Boolean(input?.aggregator?.sources?.usenet_indexer?.enabled) },
         gonzbnet: { enabled: Boolean(input?.aggregator?.sources?.gonzbnet?.enabled) },
       },
+    },
+    gonzbnet: {
+      ...defaults.gonzbnet!,
+      ...input?.gonzbnet,
+      publish_pool_ids: input?.gonzbnet?.publish_pool_ids ?? [],
+      manual_peers: input?.gonzbnet?.manual_peers ?? [],
+      validation_tiers: input?.gonzbnet?.validation_tiers ?? defaults.gonzbnet!.validation_tiers,
     },
     download: {
       ...defaults.download!,
@@ -490,6 +575,11 @@ function buildTabPatch(tab: SettingsTab, settings: RuntimeSettings) {
         indexers: settings.indexers ?? [],
         aggregator: settings.aggregator,
       }
+    case 'gonzbnet':
+      return {
+        gonzbnet: settings.gonzbnet,
+        aggregator: settings.aggregator,
+      }
     case 'indexer':
       return {
         indexing: settings.indexing ? sanitizeIndexingForSave(settings.indexing) : settings.indexing,
@@ -545,6 +635,7 @@ export function AdminSettingsPage() {
   const activeTab = settingsTabFromQuery(searchParams.get('tab'))
   const indexing = normalized.indexing!
   const aggregator = normalized.aggregator!
+  const gonzbnet = normalized.gonzbnet!
   const download = normalized.download!
   const nntpPool = normalized.nntp_pool!
   const servers = normalized.servers ?? []
@@ -557,6 +648,10 @@ export function AdminSettingsPage() {
 
   function setIndexing(next: IndexingRuntimeSettings) {
     setSettings((current) => ({ ...current, indexing: next }))
+  }
+
+  function setGoNZBNet(patch: Partial<GoNZBNetRuntimeSettings>) {
+    setSettings((current) => ({ ...current, gonzbnet: { ...gonzbnet, ...patch } }))
   }
 
   function updateStage(key: StageKey, patch: AdminStageConfigPatch) {
@@ -713,11 +808,6 @@ export function AdminSettingsPage() {
                 checked={Boolean(aggregator.sources?.usenet_indexer?.enabled)}
                 onChange={(enabled) => setSettings((current) => ({ ...current, aggregator: { sources: { ...aggregator.sources, usenet_indexer: { enabled } } } }))}
               />
-              <CheckboxField
-                label="GoNZBNet federated cache"
-                checked={Boolean(aggregator.sources?.gonzbnet?.enabled)}
-                onChange={(enabled) => setSettings((current) => ({ ...current, aggregator: { sources: { ...aggregator.sources, gonzbnet: { enabled } } } }))}
-              />
             </div>
           </SettingsSection>
 
@@ -742,6 +832,125 @@ export function AdminSettingsPage() {
                 </div>
               </div>
             ))}
+          </SettingsSection>
+          <SettingsActions onReload={() => void refresh()} />
+        </ModuleGroup>
+        ) : null}
+
+        {activeTab === 'gonzbnet' ? (
+        <ModuleGroup title="GoNZBNet settings">
+          <div className="banner">
+            These settings reload the federation runtime. Module enablement, database connection, listener/base path, protocol and network identity, private-key storage, local pool identity, and relay credentials remain bootstrap settings in <code>config.yaml</code>.{' '}
+            <Link to="/admin/gonzbnet">Open GoNZBNet administration</Link>
+          </div>
+          {!capabilities?.modules.gonzbnet?.enabled ? (
+            <div className="banner">The GoNZBNet module is disabled in bootstrap configuration. You can preconfigure runtime behavior here, but it will not run until the module is enabled.</div>
+          ) : null}
+
+          <SettingsSection title="Participation roles">
+            <div className="toolbar-grid">
+              <CheckboxField label="Aggregator federation source" checked={Boolean(aggregator.sources?.gonzbnet?.enabled)} onChange={(enabled) => setSettings((current) => ({ ...current, aggregator: { sources: { ...aggregator.sources, gonzbnet: { enabled } } } }))} helpText="Allows the aggregator to resolve releases and manifests from the federated cache." />
+              <CheckboxField label="Consumer" checked={gonzbnet.consumer_enabled} onChange={(value) => setGoNZBNet({ consumer_enabled: value })} helpText="Consumes signed pool events and fetches manifests." />
+              <CheckboxField label="Scanner" checked={gonzbnet.scanner_enabled} onChange={(value) => setGoNZBNet({ scanner_enabled: value })} helpText="Performs assigned NNTP coverage work." />
+              <CheckboxField label="Index projection" checked={gonzbnet.index_projection_enabled} onChange={(value) => setGoNZBNet({ index_projection_enabled: value })} helpText="Projects accepted release cards into the local searchable index." />
+              <CheckboxField label="Manifest builder" checked={gonzbnet.manifest_builder_enabled} onChange={(value) => setGoNZBNet({ manifest_builder_enabled: value })} helpText="Builds shareable manifests from eligible local releases." />
+              <CheckboxField label="Manifest cache" checked={gonzbnet.manifest_cache_enabled} onChange={(value) => setGoNZBNet({ manifest_cache_enabled: value })} helpText="Caches and serves trusted manifests." />
+              <CheckboxField label="Validator" checked={gonzbnet.validator_enabled} onChange={(value) => setGoNZBNet({ validator_enabled: value })} helpText="Validates manifests and article availability." />
+              <CheckboxField label="Health checker" checked={gonzbnet.health_checker_enabled} onChange={(value) => setGoNZBNet({ health_checker_enabled: value })} helpText="Checks federated release and manifest health." />
+              <CheckboxField label="Coverage coordinator" checked={gonzbnet.coverage_enabled} onChange={(value) => setGoNZBNet({ coverage_enabled: value })} helpText="Shares coverage assignments, claims, and outcomes." />
+              <CheckboxField label="Coverage scheduler" checked={gonzbnet.scheduler_enabled} onChange={(value) => setGoNZBNet({ scheduler_enabled: value })} helpText="Proposes or assigns coverage work using pool state." />
+              <CheckboxField label="Relay" checked={gonzbnet.relay_enabled} onChange={(value) => setGoNZBNet({ relay_enabled: value })} helpText="Relays eligible events for configured pools." />
+            </div>
+          </SettingsSection>
+
+          <SettingsSection title="Node, peers, and admission">
+            <div className="toolbar-grid">
+              <TextField label="Node alias" value={gonzbnet.node_alias} onChange={(value) => setGoNZBNet({ node_alias: value })} />
+              <TextField label="Advertise URL" value={gonzbnet.advertise_url} onChange={(value) => setGoNZBNet({ advertise_url: value })} helpText="Externally reachable HTTPS URL advertised to peers." />
+              <SelectField label="Visibility" value={gonzbnet.visibility} options={['private', 'unlisted', 'pool', 'public']} onChange={(value) => setGoNZBNet({ visibility: value })} />
+              <TextField label="Publish pool IDs" value={gonzbnet.publish_pool_ids.join(', ')} onChange={(value) => setGoNZBNet({ publish_pool_ids: parseCSV(value) })} helpText="Comma-separated pools that receive locally published events." />
+              <TextField label="Manual peer URLs" value={gonzbnet.manual_peers.join(', ')} onChange={(value) => setGoNZBNet({ manual_peers: parseCSV(value) })} helpText="Comma-separated peer base URLs. HTTPS is required except explicit local development." />
+              <CheckboxField label="Allow pool creation" checked={gonzbnet.allow_pool_creation} onChange={(value) => setGoNZBNet({ allow_pool_creation: value })} />
+              <CheckboxField label="Allow join requests" checked={gonzbnet.allow_join_requests} onChange={(value) => setGoNZBNet({ allow_join_requests: value })} />
+              <CheckboxField label="Admission relay" checked={gonzbnet.admission_relay_enabled} onChange={(value) => setGoNZBNet({ admission_relay_enabled: value })} />
+              <CheckboxField label="Allow local HTTP peers" checked={gonzbnet.allow_insecure_peer_http} onChange={(value) => setGoNZBNet({ allow_insecure_peer_http: value })} helpText="Development only; non-local HTTP peers remain rejected." />
+            </div>
+          </SettingsSection>
+
+          <SettingsSection title="Publication and shared health">
+            <div className="toolbar-grid">
+              <CheckboxField label="Publish release cards" checked={gonzbnet.publish_release_cards_enabled} onChange={(value) => setGoNZBNet({ publish_release_cards_enabled: value })} />
+              <NumberField label="Release card batch size" min={1} value={gonzbnet.publish_release_cards_batch_size} onChange={(value) => setGoNZBNet({ publish_release_cards_batch_size: value })} />
+              <NumberField label="Release card interval (minutes)" min={0.01} step="any" value={gonzbnet.publish_release_cards_interval_minutes} onChange={(value) => setGoNZBNet({ publish_release_cards_interval_minutes: value })} />
+              <CheckboxField label="Publish manifest availability" checked={gonzbnet.manifest_availability_enabled} onChange={(value) => setGoNZBNet({ manifest_availability_enabled: value })} />
+              <CheckboxField label="Publish health attestations" checked={gonzbnet.health_attestations_enabled} onChange={(value) => setGoNZBNet({ health_attestations_enabled: value })} />
+              <NumberField label="Health batch size" min={1} value={gonzbnet.health_attestations_batch_size} onChange={(value) => setGoNZBNet({ health_attestations_batch_size: value })} />
+              <NumberField label="Health interval (minutes)" min={0.01} step="any" value={gonzbnet.health_attestations_interval_minutes} onChange={(value) => setGoNZBNet({ health_attestations_interval_minutes: value })} />
+            </div>
+          </SettingsSection>
+
+          <SettingsSection title="Scanner and coverage">
+            <div className="toolbar-grid">
+              <NumberField label="Scanner max groups" min={0} value={gonzbnet.scanner_max_groups} onChange={(value) => setGoNZBNet({ scanner_max_groups: value })} />
+              <NumberField label="Scanner max articles/hour" min={0} value={gonzbnet.scanner_max_articles_per_hour} onChange={(value) => setGoNZBNet({ scanner_max_articles_per_hour: value })} />
+              <NumberField label="Claim TTL (minutes)" min={0} value={gonzbnet.scanner_claim_ttl_minutes} onChange={(value) => setGoNZBNet({ scanner_claim_ttl_minutes: value })} />
+              <NumberField label="Checkpoint interval (seconds)" min={0} value={gonzbnet.scanner_checkpoint_interval_seconds} onChange={(value) => setGoNZBNet({ scanner_checkpoint_interval_seconds: value })} />
+              <CheckboxField label="Respect remote claims" checked={gonzbnet.scanner_respect_remote_claims} onChange={(value) => setGoNZBNet({ scanner_respect_remote_claims: value })} />
+              <CheckboxField label="Allow unassigned work" checked={gonzbnet.scanner_allow_unassigned_work} onChange={(value) => setGoNZBNet({ scanner_allow_unassigned_work: value })} />
+              <SelectField label="Coverage mode" value={gonzbnet.coverage_mode} options={['manual', 'scheduler', 'automatic']} onChange={(value) => setGoNZBNet({ coverage_mode: value })} />
+              <NumberField label="Minimum trust for claim" min={0} max={1} step="0.01" value={gonzbnet.coverage_min_trust_for_claim} onChange={(value) => setGoNZBNet({ coverage_min_trust_for_claim: value })} />
+              <NumberField label="Validation overlap %" min={0} max={100} value={gonzbnet.coverage_validation_overlap_percent} onChange={(value) => setGoNZBNet({ coverage_validation_overlap_percent: value })} />
+              <CheckboxField label="Penalize stale claims" checked={gonzbnet.coverage_stale_claim_penalty} onChange={(value) => setGoNZBNet({ coverage_stale_claim_penalty: value })} />
+              <SelectField label="Provider scope" value={gonzbnet.coverage_provider_scope_mode} options={['hash_only', 'disabled']} onChange={(value) => setGoNZBNet({ coverage_provider_scope_mode: value })} />
+            </div>
+          </SettingsSection>
+
+          <SettingsSection title="Validation and manifest cache">
+            <div className="toolbar-grid">
+              <NumberField label="Validation batch size" min={1} value={gonzbnet.validation_batch_size} onChange={(value) => setGoNZBNet({ validation_batch_size: value })} />
+              <NumberField label="Validation interval (minutes)" min={0.01} step="any" value={gonzbnet.validation_interval_minutes} onChange={(value) => setGoNZBNet({ validation_interval_minutes: value })} />
+              <TextField label="Validation tiers" value={gonzbnet.validation_tiers.join(', ')} onChange={(value) => setGoNZBNet({ validation_tiers: parseCSV(value) })} helpText="Supported: metadata, article_stat, segment_stat, checksum." />
+              <NumberField label="Max manifests/hour" min={0} value={gonzbnet.validation_max_manifests_per_hour} onChange={(value) => setGoNZBNet({ validation_max_manifests_per_hour: value })} />
+              <NumberField label="Sample percent" min={0} max={100} value={gonzbnet.validation_sample_percent} onChange={(value) => setGoNZBNet({ validation_sample_percent: value })} />
+              <CheckboxField label="Allow sample payload fetch" checked={gonzbnet.validation_allow_sample_payload_fetch} onChange={(value) => setGoNZBNet({ validation_allow_sample_payload_fetch: value })} />
+              <CheckboxField label="Allow PAR2 validation" checked={gonzbnet.validation_allow_par2_validation} onChange={(value) => setGoNZBNet({ validation_allow_par2_validation: value })} />
+              <CheckboxField label="Publish provider scope hash" checked={gonzbnet.validation_publish_provider_scope_hash} onChange={(value) => setGoNZBNet({ validation_publish_provider_scope_hash: value })} />
+              <CheckboxField label="Checksum validation" checked={gonzbnet.checksum_validation_enabled} onChange={(value) => setGoNZBNet({ checksum_validation_enabled: value })} />
+              <NumberField label="Manifest cache bytes" min={0} value={gonzbnet.manifest_cache_max_bytes} onChange={(value) => setGoNZBNet({ manifest_cache_max_bytes: value })} />
+              <NumberField label="Manifest cache TTL (days)" min={0} value={gonzbnet.manifest_cache_ttl_days} onChange={(value) => setGoNZBNet({ manifest_cache_ttl_days: value })} />
+              <CheckboxField label="Serve cache to trusted pools" checked={gonzbnet.manifest_cache_serve_to_trusted_pools} onChange={(value) => setGoNZBNet({ manifest_cache_serve_to_trusted_pools: value })} />
+            </div>
+          </SettingsSection>
+
+          <SettingsSection title="Synchronization and gossip">
+            <div className="toolbar-grid">
+              <CheckboxField label="Pull sync" checked={gonzbnet.pull_sync_enabled} onChange={(value) => setGoNZBNet({ pull_sync_enabled: value })} />
+              <NumberField label="Pull interval (minutes)" min={0.01} step="any" value={gonzbnet.pull_sync_interval_minutes} onChange={(value) => setGoNZBNet({ pull_sync_interval_minutes: value })} />
+              <CheckboxField label="Push sync" checked={gonzbnet.push_sync_enabled} onChange={(value) => setGoNZBNet({ push_sync_enabled: value })} />
+              <NumberField label="Push interval (minutes)" min={0.01} step="any" value={gonzbnet.push_sync_interval_minutes} onChange={(value) => setGoNZBNet({ push_sync_interval_minutes: value })} />
+              <NumberField label="Push batch size" min={1} value={gonzbnet.push_sync_batch_size} onChange={(value) => setGoNZBNet({ push_sync_batch_size: value })} />
+              <CheckboxField label="WebSocket gossip" checked={gonzbnet.websocket_gossip_enabled} onChange={(value) => setGoNZBNet({ websocket_gossip_enabled: value })} />
+              <NumberField label="Gossip interval (minutes)" min={0.01} step="any" value={gonzbnet.gossip_interval_minutes} onChange={(value) => setGoNZBNet({ gossip_interval_minutes: value })} />
+              <NumberField label="Gossip batch size" min={1} value={gonzbnet.gossip_batch_size} onChange={(value) => setGoNZBNet({ gossip_batch_size: value })} />
+              <NumberField label="Gossip TTL" min={1} value={gonzbnet.gossip_ttl} onChange={(value) => setGoNZBNet({ gossip_ttl: value })} />
+              <NumberField label="Gossip fanout" min={1} value={gonzbnet.gossip_fanout} onChange={(value) => setGoNZBNet({ gossip_fanout: value })} />
+              <CheckboxField label="Peer exchange" checked={gonzbnet.peer_exchange_enabled} onChange={(value) => setGoNZBNet({ peer_exchange_enabled: value })} />
+            </div>
+          </SettingsSection>
+
+          <SettingsSection title="Transport limits and privacy">
+            <div className="toolbar-grid">
+              <NumberField label="Max event bytes" min={1} value={gonzbnet.max_event_bytes} onChange={(value) => setGoNZBNet({ max_event_bytes: value })} />
+              <NumberField label="Max manifest bytes" min={1} value={gonzbnet.max_manifest_bytes} onChange={(value) => setGoNZBNet({ max_manifest_bytes: value })} />
+              <NumberField label="Manifest fetch timeout (seconds)" min={1} value={gonzbnet.manifest_fetch_timeout_seconds} onChange={(value) => setGoNZBNet({ manifest_fetch_timeout_seconds: value })} />
+              <NumberField label="Max batch events" min={1} value={gonzbnet.max_batch_events} onChange={(value) => setGoNZBNet({ max_batch_events: value })} />
+              <NumberField label="Rate limit events/minute" min={1} value={gonzbnet.rate_limit_events_per_minute} onChange={(value) => setGoNZBNet({ rate_limit_events_per_minute: value })} />
+              <NumberField label="Clock tolerance (seconds)" min={1} value={gonzbnet.time_tolerance_seconds} onChange={(value) => setGoNZBNet({ time_tolerance_seconds: value })} />
+              <NumberField label="Max event age (hours)" min={1} value={gonzbnet.max_event_age_hours} onChange={(value) => setGoNZBNet({ max_event_age_hours: value })} />
+              <NumberField label="Nonce TTL (seconds)" min={1} value={gonzbnet.nonce_ttl_seconds} onChange={(value) => setGoNZBNet({ nonce_ttl_seconds: value })} />
+              <CheckboxField label="Share provider backbone hash" checked={gonzbnet.share_provider_backbone_hash} onChange={(value) => setGoNZBNet({ share_provider_backbone_hash: value })} />
+              <CheckboxField label="Share source indexer hash" checked={gonzbnet.share_source_indexer_hash} onChange={(value) => setGoNZBNet({ share_source_indexer_hash: value })} />
+            </div>
           </SettingsSection>
           <SettingsActions onReload={() => void refresh()} />
         </ModuleGroup>
@@ -1537,6 +1746,30 @@ function NumberField({
     <label className="field">
       <span>{label}</span>
       <input type="number" step={step} min={min} max={max} required={required} value={value} onChange={(event) => onChange(fieldNumber(event.target.value))} />
+      {helpText ? <small>{helpText}</small> : null}
+    </label>
+  )
+}
+
+function SelectField({
+  label,
+  value,
+  options,
+  helpText,
+  onChange,
+}: {
+  label: string
+  value: string
+  options: string[]
+  helpText?: string
+  onChange: (value: string) => void
+}) {
+  return (
+    <label className="field">
+      <span>{label}</span>
+      <select value={value} onChange={(event) => onChange(event.target.value)}>
+        {options.map((option) => <option key={option} value={option}>{option}</option>)}
+      </select>
       {helpText ? <small>{helpText}</small> : null}
     </label>
   )

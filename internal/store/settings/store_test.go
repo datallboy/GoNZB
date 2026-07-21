@@ -151,3 +151,55 @@ func TestUpdateSettingsPreservesZeroNewestPctAcrossReload(t *testing.T) {
 		t.Fatalf("expected newest pct 0, got %d", got)
 	}
 }
+
+func TestUpdateSettingsPreservesGoNZBNetOptionsAcrossReload(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "settings.db"))
+	if err != nil {
+		t.Fatalf("new settings store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	runtime := DefaultRuntimeSettings()
+	runtime.GoNZBNet.NodeAlias = "runtime-node"
+	runtime.GoNZBNet.ScannerEnabled = true
+	runtime.GoNZBNet.ManualPeers = []string{"https://peer.example"}
+	if err := store.UpdateSettings(ctx, runtime); err != nil {
+		t.Fatalf("persist runtime settings: %v", err)
+	}
+
+	reloaded, err := store.GetRuntimeSettings(ctx)
+	if err != nil {
+		t.Fatalf("reload runtime settings: %v", err)
+	}
+	if reloaded.GoNZBNet == nil || reloaded.GoNZBNet.NodeAlias != "runtime-node" || !reloaded.GoNZBNet.ScannerEnabled {
+		t.Fatalf("expected GoNZBNet options to round-trip, got %+v", reloaded.GoNZBNet)
+	}
+	if len(reloaded.GoNZBNet.ManualPeers) != 1 || reloaded.GoNZBNet.ManualPeers[0] != "https://peer.example" {
+		t.Fatalf("expected GoNZBNet manual peer to round-trip, got %+v", reloaded.GoNZBNet.ManualPeers)
+	}
+}
+
+func TestOlderStructuredSettingsUseBootstrapGoNZBNetOptions(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "settings.db"))
+	if err != nil {
+		t.Fatalf("new settings store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	runtime := DefaultRuntimeSettings()
+	runtime.GoNZBNet = nil
+	if err := store.UpdateSettings(ctx, runtime); err != nil {
+		t.Fatalf("persist older-shaped runtime settings: %v", err)
+	}
+	base := &config.Config{GoNZBNet: config.GoNZBNetConfig{NodeAlias: "bootstrap-node", ScannerEnabled: true}}
+
+	reloaded, err := store.GetRuntimeSettings(ctx, base)
+	if err != nil {
+		t.Fatalf("reload runtime settings: %v", err)
+	}
+	if reloaded.GoNZBNet == nil || reloaded.GoNZBNet.NodeAlias != "bootstrap-node" || !reloaded.GoNZBNet.ScannerEnabled {
+		t.Fatalf("expected missing GoNZBNet options to inherit bootstrap config, got %+v", reloaded.GoNZBNet)
+	}
+}
