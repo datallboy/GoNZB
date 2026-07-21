@@ -17,9 +17,7 @@ Open `/admin/gonzbnet`. Its four views separate routine understanding from
 protocol detail:
 
 - **Overview** summarizes the node, healthy enabled jobs, connected peers,
-  active pools, warnings, and pending admissions. Its pool-member roster counts
-  unique active nodes and groups each node's pool roles and operational
-  capabilities, using shared aliases and advertised addresses when available.
+  active pools, warnings, and pending admissions.
 - **Roles** explains the grouped jobs **Find and use releases**, **Contribute
   releases**, **Verify release health**, **Coordinate scanning**, and the
   **Connection layer**. Select an enabled role tab to see what it reads, what it
@@ -27,9 +25,12 @@ protocol detail:
   For example, validators show their pending/completed manifest tasks and signed
   article or release-health evidence. A successful empty poll is reported as a
   check, not as useful work. Off jobs are kept in one collapsed section.
-- **Pools** shows release-health evidence, article-availability evidence,
-  freshness, reporting members, and their signed contributions. Pool creation,
-  joining, admission, and membership controls are kept with this view.
+- **Pools** shows each selected pool's unique active nodes, grouped pool roles,
+  operational capabilities, release-health evidence, article-availability
+  evidence, freshness, and signed contributions. Detailed administration labels
+  the underlying membership rows as role grants because one node can hold more
+  than one. Pool creation, joining, admission, and membership controls are kept
+  with this view.
 - **Activity** graphs successful work, processed items, and failures from
   bounded five-minute/hourly history. Raw protocol diagnostics, manual actions,
   governance, and key operations remain available under **Advanced tools**.

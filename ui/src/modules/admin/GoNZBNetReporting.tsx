@@ -273,7 +273,6 @@ function OverviewView({ report }: { report: GoNZBNetOverviewReport | null }) {
         <div className="stat-card"><span>Release health</span><strong>{formatNumber(report.release_evidence.fresh)} fresh</strong><small>of {formatNumber(report.release_evidence.total)} shared reports</small></div>
         <div className="stat-card"><span>Article availability</span><strong>{formatNumber(report.article_evidence.fresh)} fresh</strong><small>from {formatNumber(report.article_evidence.reporters)} reporters</small></div>
       </div>
-      {report.pools.length ? <PoolMemberRoster pools={report.pools} /> : null}
       <div className="gonzbnet-job-grid">
         {report.jobs.filter((job) => job.configured).map((job) => <RoleSummary job={job} key={job.key} />)}
       </div>
@@ -328,11 +327,12 @@ function EvidenceCard({ title, report }: { title: string; report: GoNZBNetPoolHe
   )
 }
 
-function PoolsView({ report, availability }: { report: GoNZBNetPoolHealthReport | null; availability: GoNZBNetArticleAvailabilityDiagnostic[] }) {
+function PoolsView({ report, pool, availability }: { report: GoNZBNetPoolHealthReport | null; pool?: GoNZBNetOverviewReport['pools'][number]; availability: GoNZBNetArticleAvailabilityDiagnostic[] }) {
   if (!report) return <div className="page-card muted-copy">Select or create a pool to see shared health and contribution reporting.</div>
   return (
     <div className="stack">
       <div className="page-card"><p className="eyebrow">Selected pool</p><h2 className="section-title">{report.pool_id}</h2><p className="muted-copy">Fresh evidence is under 2 hours old; evidence becomes stale after 24 hours.</p></div>
+      {pool ? <PoolMemberRoster pools={[pool]} /> : null}
       <div className="two-column-grid">
         <EvidenceCard title="Release health shared by the pool" report={report.release_health} />
         <EvidenceCard title="Article availability shared by the pool" report={report.article_availability} />
@@ -404,6 +404,6 @@ function ActivityView({ report, window, onWindowChange }: { report: GoNZBNetActi
 export function GoNZBNetReporting(props: Props) {
   if (props.view === 'overview') return <OverviewView report={props.overview} />
   if (props.view === 'roles') return <RolesView report={props.roles} evidence={props.evidence} />
-  if (props.view === 'pools') return <PoolsView report={props.poolHealth} availability={props.articleAvailability} />
+  if (props.view === 'pools') return <PoolsView report={props.poolHealth} pool={props.overview?.pools.find((pool) => pool.pool_id === props.poolHealth?.pool_id)} availability={props.articleAvailability} />
   return <ActivityView report={props.activity} window={props.activityWindow} onWindowChange={props.onActivityWindowChange} />
 }
