@@ -216,11 +216,11 @@ func (s *Store) UpsertFederatedReleaseCardProjection(ctx context.Context, projec
 	}
 	bestScore := health.RankingScore(1.0, manifestConfidenceScore, availabilityScore, 0.33, freshnessScore(postedAt))
 
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, commit, rollback, err := s.beginFederationProjection(ctx)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer rollback()
 
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO federated_release_cards (
@@ -348,7 +348,7 @@ func (s *Store) UpsertFederatedReleaseCardProjection(ctx context.Context, projec
 		}
 	}
 
-	return tx.Commit()
+	return commit()
 }
 
 func (s *Store) ListFederationSearchPoolsForPrincipal(ctx context.Context, userID string, roleIDs []string) ([]string, error) {
@@ -359,7 +359,7 @@ func (s *Store) ListFederationSearchPoolsForPrincipal(ctx context.Context, userI
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.federationExecutor(ctx).QueryContext(ctx, `
 		SELECT DISTINCT pool_id
 		FROM (
 			SELECT pool_id
@@ -415,7 +415,7 @@ func (s *Store) CanGetFederatedReleaseForPrincipal(ctx context.Context, releaseI
 		return false, err
 	}
 	var allowed bool
-	err = s.db.QueryRowContext(ctx, `
+	err = s.federationExecutor(ctx).QueryRowContext(ctx, `
 		SELECT EXISTS (
 		  SELECT 1
 		  FROM federated_release_sources source
@@ -454,7 +454,7 @@ func (s *Store) ListFederationRolePoolAccess(ctx context.Context, poolID string)
 	if s == nil || s.db == nil {
 		return nil, fmt.Errorf("pgindex store is not initialized")
 	}
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.federationExecutor(ctx).QueryContext(ctx, `
 		SELECT role_id, pool_id, can_search, can_get, can_resolve_manifest, created_at, updated_at
 		FROM role_federation_pool_access
 		WHERE pool_id = $1
@@ -483,7 +483,7 @@ func (s *Store) UpsertFederationRolePoolAccess(ctx context.Context, record Feder
 	if roleID == "" || poolID == "" {
 		return fmt.Errorf("role_id and pool_id are required")
 	}
-	if _, err := s.db.ExecContext(ctx, `
+	if _, err := s.federationExecutor(ctx).ExecContext(ctx, `
 		INSERT INTO role_federation_pool_access (
 			role_id, pool_id, can_search, can_get, can_resolve_manifest, updated_at
 		)
@@ -508,7 +508,7 @@ func (s *Store) DeleteFederationRolePoolAccess(ctx context.Context, poolID, role
 	if s == nil || s.db == nil {
 		return false, fmt.Errorf("pgindex store is not initialized")
 	}
-	result, err := s.db.ExecContext(ctx, `
+	result, err := s.federationExecutor(ctx).ExecContext(ctx, `
 		DELETE FROM role_federation_pool_access
 		WHERE pool_id = $1
 		  AND role_id = $2`, strings.TrimSpace(poolID), strings.TrimSpace(roleID))
@@ -663,7 +663,7 @@ func (s *Store) SearchFederatedReleaseCards(ctx context.Context, params Federate
 		ORDER BY best_score DESC, posted_at DESC NULLS LAST, release_id ASC
 		LIMIT $%d`, strings.Join(clauses, "\n  AND "), arg)
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.federationExecutor(ctx).QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("search federated release cards: %w", err)
 	}

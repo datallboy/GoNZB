@@ -62,8 +62,11 @@ func Validate(event *events.SignedEvent, now time.Time, futureTolerance time.Dur
 	if strings.TrimSpace(metadata.Type) != event.EventType {
 		return fmt.Errorf("body type does not match event_type")
 	}
-	if metadata.PoolID != "" && !contains(event.PoolIDs, metadata.PoolID) {
-		return fmt.Errorf("body pool_id is not present in event pool_ids")
+	if len(event.PoolIDs) != 1 || strings.TrimSpace(event.PoolIDs[0]) == "" {
+		return fmt.Errorf("protocol v1 events must target exactly one pool")
+	}
+	if strings.TrimSpace(metadata.PoolID) != "" && strings.TrimSpace(metadata.PoolID) != strings.TrimSpace(event.PoolIDs[0]) {
+		return fmt.Errorf("body pool_id does not match event pool_id")
 	}
 
 	switch event.EventType {

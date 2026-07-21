@@ -37,6 +37,9 @@ var (
 	indexerCrosspostBackfillMaxBatches int
 	indexerPosterMaterializeBatchSize  int
 	indexerCrosspostRefreshBatchSize   int
+	gonzbnetSyncLimit                  int
+	gonzbnetNNTPGroup                  string
+	gonzbnetNNTPMessageID              string
 )
 
 var rootCmd = &cobra.Command{
@@ -71,6 +74,53 @@ var serveCmd = &cobra.Command{
 			DisableIndexerSupervisor:           serveWithoutIndexerSupervisor,
 			DisableReleasePurgeArchivedSources: disableReleasePurgeArchivedSources,
 		})
+	},
+}
+
+var gonzbnetCmd = &cobra.Command{
+	Use:   "gonzbnet",
+	Short: "GoNZBNet federation operations",
+}
+
+var gonzbnetStatusCmd = &cobra.Command{
+	Use:   "status",
+	Short: "Show the local node identity and enabled federation capabilities",
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteGoNZBNetStatus()
+	},
+}
+
+var gonzbnetPoolsCmd = &cobra.Command{
+	Use:   "pools",
+	Short: "List trust pools and local membership",
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteGoNZBNetPools()
+	},
+}
+
+var gonzbnetPeersCmd = &cobra.Command{
+	Use:   "peers",
+	Short: "List enabled federation peers and sync state",
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteGoNZBNetPeers()
+	},
+}
+
+var gonzbnetSyncCmd = &cobra.Command{
+	Use:       "sync <pull|push>",
+	Short:     "Run one local federation synchronization pass",
+	Args:      cobra.ExactArgs(1),
+	ValidArgs: []string{"pull", "push"},
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteGoNZBNetSync(args[0], gonzbnetSyncLimit)
+	},
+}
+
+var gonzbnetNNTPCheckCmd = &cobra.Command{
+	Use:   "nntp-check",
+	Short: "Check scanner and validator NNTP access through configured providers",
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteGoNZBNetNNTPCheck(gonzbnetNNTPGroup, gonzbnetNNTPMessageID)
 	},
 }
 
@@ -410,6 +460,15 @@ func init() {
 	indexerMaintenanceBackfillCrosspostGroupsCmd.Flags().IntVar(&indexerCrosspostBackfillMaxBatches, "max-batches", 1, "Maximum number of backfill batches to process in one run")
 	indexerMaintenanceMaterializePostersCmd.Flags().IntVar(&indexerPosterMaterializeBatchSize, "batch-size", 10000, "Maximum queued poster rows to materialize")
 	indexerMaintenanceRefreshCrosspostPopularityCmd.Flags().IntVar(&indexerCrosspostRefreshBatchSize, "batch-size", 1000, "Maximum queued observed cross-post groups to refresh")
+	gonzbnetSyncCmd.Flags().IntVar(&gonzbnetSyncLimit, "limit", 100, "Maximum events to push per peer")
+	gonzbnetNNTPCheckCmd.Flags().StringVar(&gonzbnetNNTPGroup, "group", "alt.binaries.test", "Newsgroup to inspect")
+	gonzbnetNNTPCheckCmd.Flags().StringVar(&gonzbnetNNTPMessageID, "message-id", "<gonzbnet-e2e-1@example.invalid>", "Article message ID to fetch")
+
+	gonzbnetCmd.AddCommand(gonzbnetStatusCmd)
+	gonzbnetCmd.AddCommand(gonzbnetPoolsCmd)
+	gonzbnetCmd.AddCommand(gonzbnetPeersCmd)
+	gonzbnetCmd.AddCommand(gonzbnetSyncCmd)
+	gonzbnetCmd.AddCommand(gonzbnetNNTPCheckCmd)
 
 	indexerCmd.AddCommand(indexerScrapeCmd)
 	indexerScrapeCmd.AddCommand(indexerScrapeLatestCmd)
@@ -454,6 +513,7 @@ func main() {
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(serveCmd)
 	rootCmd.AddCommand(indexerCmd)
+	rootCmd.AddCommand(gonzbnetCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)

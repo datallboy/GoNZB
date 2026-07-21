@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 	"crypto/ed25519"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,12 +13,14 @@ import (
 	"time"
 
 	"github.com/datallboy/gonzb/internal/app"
+	"github.com/datallboy/gonzb/internal/gonzbnet/admission"
 	"github.com/datallboy/gonzb/internal/gonzbnet/canonical"
 	"github.com/datallboy/gonzb/internal/gonzbnet/capability"
 	"github.com/datallboy/gonzb/internal/gonzbnet/coverage"
 	"github.com/datallboy/gonzb/internal/gonzbnet/events"
 	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
 	"github.com/datallboy/gonzb/internal/gonzbnet/manifestresolver"
+	gonzbnetmetrics "github.com/datallboy/gonzb/internal/gonzbnet/metrics"
 	"github.com/datallboy/gonzb/internal/gonzbnet/moderation"
 	"github.com/datallboy/gonzb/internal/gonzbnet/pools"
 	"github.com/datallboy/gonzb/internal/gonzbnet/profile"
@@ -46,7 +49,8 @@ type gonzbnetAdminStore interface {
 	GetTrustPoolPolicy(ctx context.Context, poolID string) (pools.PoolPolicy, error)
 	UpsertFederationNodeIdentity(ctx context.Context, nodeID string, publicKey ed25519.PublicKey) error
 	NextFederationEventSequence(ctx context.Context, authorNodeID string) (int64, *string, error)
-	FindFederationEventByBodyHash(ctx context.Context, authorNodeID, eventType, bodyHash string) (string, error)
+	FindFederationEventByBodyHash(ctx context.Context, authorNodeID, eventType, bodyHash, poolID string) (string, error)
+	FederationEventExists(ctx context.Context, eventID string) (bool, error)
 	IsActivePoolAdmin(ctx context.Context, poolID, nodeID string) (bool, error)
 	ValidateFederationPoolControlEvent(ctx context.Context, event *events.SignedEvent) error
 	AppendVerifiedFederationEvent(ctx context.Context, event *events.SignedEvent, validation *events.ValidationResult) error
@@ -93,6 +97,50 @@ type trustPoolRequest struct {
 	MinNodeTrustScore          float64  `json:"min_node_trust_score"`
 	AcceptedEventTypes         []string `json:"accepted_event_types"`
 	Enabled                    *bool    `json:"enabled"`
+	Visibility                 string   `json:"visibility"`
+	JoinMode                   string   `json:"join_mode"`
+	AdmissionEnabled           *bool    `json:"admission_enabled"`
+}
+
+func (ctrl *GoNZBNetAdminController) Metrics(c *echo.Context) error {
+	if store, ok := ctrl.store(); ok {
+		if items, listErr := store.ListTombstones(c.Request().Context(), true); listErr == nil {
+			gonzbnetmetrics.Default.SetActiveTombstones(int64(len(items)))
+		}
+	}
+	return c.JSON(http.StatusOK, gonzbnetmetrics.Default.Snapshot())
+}
+
+func (ctrl *GoNZBNetAdminController) PrometheusMetrics(c *echo.Context) error {
+	if store, ok := ctrl.store(); ok {
+		if items, listErr := store.ListTombstones(c.Request().Context(), true); listErr == nil {
+			gonzbnetmetrics.Default.SetActiveTombstones(int64(len(items)))
+		}
+	}
+	c.Response().Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	return c.String(http.StatusOK, gonzbnetmetrics.Default.Prometheus())
+}
+
+type admissionDiscoverRequest struct {
+	Locator        string `json:"locator"`
+	ExpectedNodeID string `json:"expected_node_id"`
+}
+
+type admissionJoinRequest struct {
+	Locator               string   `json:"locator"`
+	PoolID                string   `json:"pool_id"`
+	ExpectedNodeID        string   `json:"expected_node_id"`
+	Role                  string   `json:"role"`
+	RequestedCapabilities []string `json:"requested_capabilities"`
+	Message               string   `json:"message"`
+}
+
+type admissionInviteRequest struct {
+	ExpiresInHours int `json:"expires_in_hours"`
+}
+
+type admissionRejectRequest struct {
+	Reason string `json:"reason"`
 }
 
 type poolMemberRequest struct {
@@ -557,6 +605,9 @@ func (ctrl *GoNZBNetAdminController) ListPools(c *echo.Context) error {
 }
 
 func (ctrl *GoNZBNetAdminController) UpsertPool(c *echo.Context) error {
+	if ctrl == nil || ctrl.appCtx == nil || ctrl.appCtx.Config == nil || !ctrl.appCtx.Config.GoNZBNet.AllowPoolCreation {
+		return jsonError(c, http.StatusForbidden, "pool creation is disabled")
+	}
 	store, ok := ctrl.store()
 	if !ok {
 		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
@@ -604,7 +655,10 @@ func (ctrl *GoNZBNetAdminController) UpsertPool(c *echo.Context) error {
 	}
 	policy = pools.NormalizePolicy(policy, req.MembershipThreshold)
 	policyJSON, _ := json.Marshal(policy)
-	if err := store.UpsertTrustPool(c.Request().Context(), pgindex.TrustPoolRecord{
+	visibility := firstNonBlank(req.Visibility, "unlisted")
+	joinMode := firstNonBlank(req.JoinMode, "approval")
+	admissionEnabled := boolDefault(req.AdmissionEnabled, true)
+	poolRecord := pgindex.TrustPoolRecord{
 		PoolID:                     req.PoolID,
 		DisplayName:                req.DisplayName,
 		Description:                req.Description,
@@ -616,10 +670,470 @@ func (ctrl *GoNZBNetAdminController) UpsertPool(c *echo.Context) error {
 		MinNodeTrustScore:          policy.MinNodeTrustScore,
 		AcceptedEventTypes:         policy.AcceptedEventTypes,
 		Enabled:                    enabled,
-	}); err != nil {
+		Visibility:                 visibility,
+		JoinMode:                   joinMode,
+		AdmissionEnabled:           admissionEnabled,
+	}
+	if extended, ok := store.(interface {
+		GetTrustPool(context.Context, string) (pgindex.TrustPoolRecord, error)
+	}); ok {
+		existing, err := extended.GetTrustPool(c.Request().Context(), req.PoolID)
+		if err == nil && existing.GenesisEventID != "" {
+			poolRecord.GenesisEventID = existing.GenesisEventID
+			if err := store.UpsertTrustPool(c.Request().Context(), poolRecord); err != nil {
+				return jsonError(c, http.StatusInternalServerError, err.Error())
+			}
+			return c.JSON(http.StatusOK, map[string]string{"status": "ok", "genesis_event_id": existing.GenesisEventID})
+		}
+		if err != nil && err != sql.ErrNoRows {
+			return jsonError(c, http.StatusInternalServerError, err.Error())
+		}
+	}
+	nodeIdentity, err := ctrl.localIdentity()
+	if err != nil {
 		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}
-	return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
+	nodeID, err := nodeIdentity.NodeID(c.Request().Context())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	publicKey, err := nodeIdentity.PublicKey(c.Request().Context())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if err := store.UpsertFederationNodeIdentity(c.Request().Context(), nodeID, publicKey); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	sequence, previousEventID, err := store.NextFederationEventSequence(c.Request().Context(), nodeID)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	now := time.Now().UTC()
+	body := pools.Genesis{
+		SchemaVersion: "1.0", Type: pools.EventTypePoolGenesis, PoolID: req.PoolID,
+		DisplayName: req.DisplayName, Description: req.Description,
+		CreatedAt: now.Format(time.RFC3339), Admins: []string{nodeID}, Witnesses: []string{nodeID},
+		Policy: policy, Visibility: visibility, JoinMode: joinMode, AdmissionEnabled: admissionEnabled,
+	}
+	event, validation, err := events.Create(c.Request().Context(), nodeIdentity, events.CreateOptions{
+		EventType: pools.EventTypePoolGenesis, Sequence: sequence, PreviousEventID: previousEventID,
+		CreatedAt: now, PoolIDs: []string{req.PoolID}, Visibility: "pool",
+		BodySchema: pools.BodySchema(pools.EventTypePoolGenesis), Body: body,
+	})
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if err := store.ValidateFederationPoolControlEvent(c.Request().Context(), event); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	if err := store.AppendVerifiedFederationEvent(c.Request().Context(), event, validation); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if err := store.ProjectFederationPoolEvent(c.Request().Context(), event); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	_ = store.UpsertFederationRolePoolAccess(c.Request().Context(), pgindex.FederationRolePoolAccessRecord{RoleID: "admin", PoolID: req.PoolID, CanSearch: true, CanGet: true, CanResolveManifest: true})
+	return c.JSON(http.StatusCreated, map[string]string{"status": "ok", "genesis_event_id": event.EventID})
+}
+
+func (ctrl *GoNZBNetAdminController) DiscoverAdmissionNode(c *echo.Context) error {
+	var req admissionDiscoverRequest
+	if err := decodeJSONBody(c, &req); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	nodeIdentity, err := ctrl.localIdentity()
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	client := admission.NewClient(nodeIdentity, ctrl.appCtx.Config.GoNZBNet.AllowInsecurePeerHTTP)
+	remote, err := client.Discover(c.Request().Context(), req.Locator, req.ExpectedNodeID)
+	if err != nil {
+		return jsonError(c, http.StatusBadGateway, err.Error())
+	}
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	publicKey, _ := canonical.DecodeBase64URL(remote.Profile.PublicKey)
+	if err := store.UpsertFederationNodeIdentity(c.Request().Context(), remote.Profile.NodeID, ed25519.PublicKey(publicKey)); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if _, err := store.UpsertFederationPeerURL(c.Request().Context(), remote.WellKnown.BaseURL); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, remote)
+}
+
+func (ctrl *GoNZBNetAdminController) JoinAdmissionPool(c *echo.Context) error {
+	var req admissionJoinRequest
+	if err := decodeJSONBody(c, &req); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	locator := strings.TrimSpace(req.Locator)
+	var invitation *admission.Invitation
+	if strings.HasPrefix(locator, "gonzbnet://") {
+		value, err := admission.ParseInvitation(locator)
+		if err != nil {
+			return jsonError(c, http.StatusBadRequest, err.Error())
+		}
+		invitation = &value
+		locator = value.RelayURL
+		if req.PoolID == "" {
+			req.PoolID = value.PoolID
+		}
+	}
+	nodeIdentity, err := ctrl.localIdentity()
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	client := admission.NewClient(nodeIdentity, ctrl.appCtx.Config.GoNZBNet.AllowInsecurePeerHTTP)
+	discoveryLocator := locator
+	if invitation != nil {
+		discoveryLocator = strings.TrimSpace(req.Locator)
+	}
+	remote, err := client.Discover(c.Request().Context(), discoveryLocator, req.ExpectedNodeID)
+	if err != nil {
+		return jsonError(c, http.StatusBadGateway, err.Error())
+	}
+	publicKeyBytes, _ := canonical.DecodeBase64URL(remote.Profile.PublicKey)
+	if invitation != nil {
+		if err := invitation.Verify(time.Now().UTC()); err != nil {
+			return jsonError(c, http.StatusBadRequest, err.Error())
+		}
+	}
+	var descriptor *admission.PoolDescriptor
+	for i := range remote.Pools {
+		if remote.Pools[i].PoolID == strings.TrimSpace(req.PoolID) {
+			descriptor = &remote.Pools[i]
+			break
+		}
+	}
+	if descriptor == nil {
+		return jsonError(c, http.StatusBadRequest, "selected pool is not accepting join requests")
+	}
+	if invitation != nil && invitation.GenesisEventID != descriptor.GenesisEventID {
+		return jsonError(c, http.StatusBadRequest, "invitation pool fingerprint does not match remote pool")
+	}
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	if err := store.UpsertFederationNodeIdentity(c.Request().Context(), remote.Profile.NodeID, ed25519.PublicKey(publicKeyBytes)); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if _, err := store.UpsertFederationPeerURL(c.Request().Context(), remote.WellKnown.BaseURL); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	genesis := descriptor.GenesisEvent
+	genesisPublicKey, _ := canonical.DecodeBase64URL(genesis.AuthorPublicKey)
+	if err := store.UpsertFederationNodeIdentity(c.Request().Context(), genesis.AuthorNodeID, ed25519.PublicKey(genesisPublicKey)); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	exists, err := store.FederationEventExists(c.Request().Context(), genesis.EventID)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if !exists {
+		genesisValidation, err := events.VerifyWithin(genesis, time.Now().UTC(), time.Duration(ctrl.appCtx.Config.GoNZBNet.TimeToleranceSeconds)*time.Second, 0)
+		if err != nil || genesisValidation == nil || !genesisValidation.OK {
+			return jsonError(c, http.StatusBadGateway, "pool genesis failed verification")
+		}
+		if err := store.ValidateFederationPoolControlEvent(c.Request().Context(), genesis); err != nil {
+			return jsonError(c, http.StatusBadGateway, err.Error())
+		}
+		if err := store.AppendVerifiedFederationEvent(c.Request().Context(), genesis, genesisValidation); err != nil {
+			return jsonError(c, http.StatusInternalServerError, err.Error())
+		}
+	}
+	if err := store.ProjectFederationPoolEvent(c.Request().Context(), genesis); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	nodeID, _ := nodeIdentity.NodeID(c.Request().Context())
+	localPublicKey, _ := nodeIdentity.PublicKey(c.Request().Context())
+	_ = store.UpsertFederationNodeIdentity(c.Request().Context(), nodeID, localPublicKey)
+	sequence, previousEventID, err := store.NextFederationEventSequence(c.Request().Context(), nodeID)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	capabilities := capability.Normalize(req.RequestedCapabilities)
+	if len(capabilities) == 0 {
+		capabilities = ctrl.recommendedLocalCapabilities()
+	}
+	if retryStore, ok := store.(interface {
+		ListFederationAdmissions(context.Context, string, string, int) ([]pgindex.FederationAdmissionRecord, error)
+		GetFederationEvent(context.Context, string) (*events.SignedEvent, error)
+	}); ok {
+		pending, err := retryStore.ListFederationAdmissions(c.Request().Context(), descriptor.PoolID, "pending", 100)
+		if err != nil {
+			return jsonError(c, http.StatusInternalServerError, err.Error())
+		}
+		for _, item := range pending {
+			if item.CandidateNodeID != nodeID || strings.TrimRight(item.RelayURL, "/") != strings.TrimRight(remote.WellKnown.BaseURL, "/") {
+				continue
+			}
+			existing, err := retryStore.GetFederationEvent(c.Request().Context(), item.ProposalEventID)
+			if err != nil || existing == nil {
+				continue
+			}
+			if err := client.SubmitJoin(c.Request().Context(), remote.WellKnown.BaseURL, descriptor.PoolID, existing); err != nil {
+				return jsonError(c, http.StatusBadGateway, err.Error())
+			}
+			return c.JSON(http.StatusAccepted, map[string]any{"status": "pending", "proposal_event_id": existing.EventID, "pool_id": descriptor.PoolID, "relay_url": remote.WellKnown.BaseURL})
+		}
+	}
+	now := time.Now().UTC()
+	body := pools.JoinRequest{
+		SchemaVersion: "1.0", Type: pools.EventTypePoolJoinRequest,
+		PoolID: descriptor.PoolID, CandidateNodeID: nodeID,
+		RequestedRoles:        []string{firstNonBlank(req.Role, pools.RoleMember)},
+		RequestedCapabilities: capabilities, Message: strings.TrimSpace(req.Message),
+		GenesisEventID: descriptor.GenesisEventID, CandidateURL: ctrl.adminProfileConfig(c).AdvertiseURL,
+		RelayNodeID: remote.Profile.NodeID, RelayURL: remote.WellKnown.BaseURL,
+		CreatedAt: now.Format(time.RFC3339),
+	}
+	event, validation, err := events.Create(c.Request().Context(), nodeIdentity, events.CreateOptions{
+		EventType: pools.EventTypePoolJoinRequest, Sequence: sequence, PreviousEventID: previousEventID,
+		CreatedAt: now, PoolIDs: []string{descriptor.PoolID}, Visibility: "pool",
+		BodySchema: pools.BodySchema(pools.EventTypePoolJoinRequest), Body: body,
+	})
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if err := store.AppendVerifiedFederationEvent(c.Request().Context(), event, validation); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if err := store.ProjectFederationPoolEvent(c.Request().Context(), event); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if err := client.SubmitJoin(c.Request().Context(), remote.WellKnown.BaseURL, descriptor.PoolID, event); err != nil {
+		return jsonError(c, http.StatusBadGateway, err.Error())
+	}
+	return c.JSON(http.StatusAccepted, map[string]any{"status": "pending", "proposal_event_id": event.EventID, "pool_id": descriptor.PoolID, "relay_url": remote.WellKnown.BaseURL})
+}
+
+func (ctrl *GoNZBNetAdminController) ListAdmissions(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	extended, ok := store.(interface {
+		ListFederationAdmissions(context.Context, string, string, int) ([]pgindex.FederationAdmissionRecord, error)
+	})
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admission store is unavailable")
+	}
+	items, err := extended.ListFederationAdmissions(c.Request().Context(), queryParamTrimmed(c, "pool_id"), queryParamTrimmed(c, "status"), parseIntDefault(queryParamTrimmed(c, "limit"), 100))
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
+func (ctrl *GoNZBNetAdminController) RefreshAdmission(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	extended, ok := store.(gonzbnetStore)
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admission store is unavailable")
+	}
+	record, err := extended.GetFederationAdmission(c.Request().Context(), pathParamTrimmed(c, "proposal_event_id"))
+	if err != nil {
+		return jsonError(c, http.StatusNotFound, "admission request not found")
+	}
+	nodeIdentity, err := ctrl.localIdentity()
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	client := admission.NewClient(nodeIdentity, ctrl.appCtx.Config.GoNZBNet.AllowInsecurePeerHTTP)
+	status, err := client.FetchStatus(c.Request().Context(), record.RelayURL, record.PoolID, record.ProposalEventID)
+	if err != nil {
+		return jsonError(c, http.StatusBadGateway, err.Error())
+	}
+	admissionEvents := make([]*events.SignedEvent, 0, len(status.TrustEvents)+2)
+	admissionEvents = append(admissionEvents, status.GenesisEvent)
+	admissionEvents = append(admissionEvents, status.TrustEvents...)
+	admissionEvents = append(admissionEvents, status.ApprovalEvent)
+	seenEvents := map[string]struct{}{}
+	for _, event := range admissionEvents {
+		if event == nil {
+			continue
+		}
+		if _, seen := seenEvents[event.EventID]; seen {
+			continue
+		}
+		seenEvents[event.EventID] = struct{}{}
+		validation, err := events.VerifyWithin(event, time.Now().UTC(), time.Duration(ctrl.appCtx.Config.GoNZBNet.TimeToleranceSeconds)*time.Second, 0)
+		if err != nil || validation == nil || !validation.OK {
+			return jsonError(c, http.StatusBadGateway, "remote admission event failed verification")
+		}
+		publicKey, _ := canonical.DecodeBase64URL(event.AuthorPublicKey)
+		if err := store.UpsertFederationNodeIdentity(c.Request().Context(), event.AuthorNodeID, ed25519.PublicKey(publicKey)); err != nil {
+			return jsonError(c, http.StatusInternalServerError, err.Error())
+		}
+		if err := store.ValidateFederationPoolControlEvent(c.Request().Context(), event); err != nil {
+			return jsonError(c, http.StatusBadGateway, err.Error())
+		}
+		if err := store.AppendVerifiedFederationEvent(c.Request().Context(), event, validation); err != nil {
+			return jsonError(c, http.StatusInternalServerError, err.Error())
+		}
+		if err := store.ProjectFederationPoolEvent(c.Request().Context(), event); err != nil {
+			return jsonError(c, http.StatusInternalServerError, err.Error())
+		}
+	}
+	if status.Status == "approved" {
+		localNodeID, _ := nodeIdentity.NodeID(c.Request().Context())
+		for _, endpoint := range status.MemberEndpoints {
+			if strings.TrimSpace(endpoint.NodeID) == "" || endpoint.NodeID == localNodeID || strings.TrimSpace(endpoint.BaseURL) == "" {
+				continue
+			}
+			if err := transportpolicy.ValidateHTTPURL(endpoint.BaseURL, ctrl.appCtx.Config.GoNZBNet.AllowInsecurePeerHTTP); err != nil {
+				return jsonError(c, http.StatusBadGateway, "pool member endpoint failed transport policy")
+			}
+			if _, err := store.UpsertFederationPeerURL(c.Request().Context(), endpoint.BaseURL); err != nil {
+				return jsonError(c, http.StatusInternalServerError, err.Error())
+			}
+		}
+	}
+	return c.JSON(http.StatusOK, status)
+}
+
+func (ctrl *GoNZBNetAdminController) CreatePoolInvitation(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	extended, ok := store.(interface {
+		GetTrustPool(context.Context, string) (pgindex.TrustPoolRecord, error)
+	})
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet pool store is unavailable")
+	}
+	pool, err := extended.GetTrustPool(c.Request().Context(), pathParamTrimmed(c, "pool_id"))
+	if err != nil || pool.GenesisEventID == "" {
+		return jsonError(c, http.StatusNotFound, "pool genesis is unavailable")
+	}
+	nodeIdentity, err := ctrl.localIdentity()
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	nodeID, _ := nodeIdentity.NodeID(c.Request().Context())
+	active, err := store.IsActivePoolAdmin(c.Request().Context(), pool.PoolID, nodeID)
+	if err != nil || !active {
+		return jsonError(c, http.StatusForbidden, "local node is not a pool admin")
+	}
+	var req admissionInviteRequest
+	if err := decodeJSONBody(c, &req); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	var expires *time.Time
+	if req.ExpiresInHours > 0 {
+		value := time.Now().UTC().Add(time.Duration(req.ExpiresInHours) * time.Hour)
+		expires = &value
+	}
+	invite, err := admission.NewInvitation(c.Request().Context(), nodeIdentity, pool.PoolID, pool.GenesisEventID, ctrl.adminProfileConfig(c).AdvertiseURL, expires)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	link, err := invite.Encode()
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusCreated, map[string]any{"invitation": invite, "link": link})
+}
+
+func (ctrl *GoNZBNetAdminController) ApproveAdmission(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	extended, ok := store.(gonzbnetStore)
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admission store is unavailable")
+	}
+	record, err := extended.GetFederationAdmission(c.Request().Context(), pathParamTrimmed(c, "proposal_event_id"))
+	if err != nil {
+		return jsonError(c, http.StatusNotFound, "admission request not found")
+	}
+	nodeIdentity, err := ctrl.localIdentity()
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	nodeID, _ := nodeIdentity.NodeID(c.Request().Context())
+	active, err := store.IsActivePoolAdmin(c.Request().Context(), record.PoolID, nodeID)
+	if err != nil || !active {
+		return jsonError(c, http.StatusForbidden, "local node is not an active pool admin")
+	}
+	body := pools.MemberApproved{PoolID: record.PoolID, SubjectNodeID: record.CandidateNodeID, Role: record.RequestedRole, ProposalEventID: record.ProposalEventID, AllowedCapabilities: record.RequestedCapabilities}
+	fragment, err := admission.NewApprovalFragment(c.Request().Context(), nodeIdentity, body, time.Now().UTC())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	localBase := strings.TrimRight(ctrl.adminProfileConfig(c).AdvertiseURL, "/")
+	if record.RelayNodeID == nodeID || strings.TrimRight(record.RelayURL, "/") == localBase {
+		if err := extended.StoreFederationApprovalFragment(c.Request().Context(), fragment); err != nil {
+			return jsonError(c, http.StatusInternalServerError, err.Error())
+		}
+		status, err := finalizePoolAdmission(c.Request().Context(), nodeIdentity, extended, record.ProposalEventID)
+		if err != nil {
+			return jsonError(c, http.StatusBadRequest, err.Error())
+		}
+		return c.JSON(http.StatusOK, status)
+	}
+	client := admission.NewClient(nodeIdentity, ctrl.appCtx.Config.GoNZBNet.AllowInsecurePeerHTTP)
+	status, err := client.SubmitApproval(c.Request().Context(), record.RelayURL, fragment)
+	if err != nil {
+		return jsonError(c, http.StatusBadGateway, err.Error())
+	}
+	return c.JSON(http.StatusOK, status)
+}
+
+func (ctrl *GoNZBNetAdminController) RejectAdmission(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	extended, ok := store.(gonzbnetStore)
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admission store is unavailable")
+	}
+	record, err := extended.GetFederationAdmission(c.Request().Context(), pathParamTrimmed(c, "proposal_event_id"))
+	if err != nil {
+		return jsonError(c, http.StatusNotFound, "admission request not found")
+	}
+	nodeIdentity, err := ctrl.localIdentity()
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	nodeID, _ := nodeIdentity.NodeID(c.Request().Context())
+	active, err := store.IsActivePoolAdmin(c.Request().Context(), record.PoolID, nodeID)
+	if err != nil || !active {
+		return jsonError(c, http.StatusForbidden, "local node is not an active pool admin")
+	}
+	var req admissionRejectRequest
+	if err := decodeJSONBody(c, &req); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	reason := firstNonBlank(req.Reason, "rejected by pool administrator")
+	localBase := strings.TrimRight(ctrl.adminProfileConfig(c).AdvertiseURL, "/")
+	if record.RelayNodeID == nodeID || strings.TrimRight(record.RelayURL, "/") == localBase {
+		if err := extended.FinalizeFederationAdmission(c.Request().Context(), record.ProposalEventID, "", "rejected", reason); err != nil {
+			return jsonError(c, http.StatusInternalServerError, err.Error())
+		}
+		return c.JSON(http.StatusOK, map[string]any{"status": "rejected", "proposal_event_id": record.ProposalEventID, "reason": reason})
+	}
+	fragment, err := admission.NewRejectionFragment(c.Request().Context(), nodeIdentity, record.PoolID, record.ProposalEventID, record.CandidateNodeID, reason, time.Now().UTC())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	client := admission.NewClient(nodeIdentity, ctrl.appCtx.Config.GoNZBNet.AllowInsecurePeerHTTP)
+	status, err := client.SubmitRejection(c.Request().Context(), record.RelayURL, fragment)
+	if err != nil {
+		return jsonError(c, http.StatusBadGateway, err.Error())
+	}
+	_ = extended.FinalizeFederationAdmission(c.Request().Context(), record.ProposalEventID, "", "rejected", reason)
+	return c.JSON(http.StatusOK, status)
 }
 
 func (ctrl *GoNZBNetAdminController) ListPoolMembers(c *echo.Context) error {
@@ -1091,7 +1605,7 @@ func (ctrl *GoNZBNetAdminController) CreateTombstone(c *echo.Context) error {
 	if err != nil {
 		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}
-	if existingEventID, err := store.FindFederationEventByBodyHash(c.Request().Context(), nodeID, moderation.Type, bodyHash); err != nil {
+	if existingEventID, err := store.FindFederationEventByBodyHash(c.Request().Context(), nodeID, moderation.Type, bodyHash, body.PoolID); err != nil {
 		return jsonError(c, http.StatusInternalServerError, err.Error())
 	} else if existingEventID != "" {
 		if err := store.ProjectTombstone(c.Request().Context(), pgindex.TombstoneProjection{
@@ -1925,6 +2439,9 @@ func (ctrl *GoNZBNetAdminController) adminProfileConfig(c *echo.Context) profile
 		HealthChecker:                 cfg.HealthCheckerEnabled,
 		Coverage:                      cfg.CoverageEnabled,
 		Scheduler:                     cfg.SchedulerEnabled,
+		Visibility:                    cfg.Visibility,
+		AcceptsJoinRequests:           cfg.AllowJoinRequests,
+		AdmissionRelay:                cfg.AdmissionRelayEnabled,
 		ScannerMaxGroups:              cfg.ScannerMaxGroups,
 		ScannerMaxArticlesPerHour:     cfg.ScannerMaxArticlesPerHour,
 		ValidationMaxManifestsPerHour: cfg.ValidationMaxManifestsPerHour,
@@ -1937,6 +2454,48 @@ func (ctrl *GoNZBNetAdminController) adminProfileConfig(c *echo.Context) profile
 		MaxManifestBytes:              cfg.MaxManifestBytes,
 		MaxBatchEvents:                cfg.MaxBatchEvents,
 	}
+}
+
+func (ctrl *GoNZBNetAdminController) recommendedLocalCapabilities() []string {
+	if ctrl == nil || ctrl.appCtx == nil || ctrl.appCtx.Config == nil {
+		return []string{capability.Consumer}
+	}
+	cfg := ctrl.appCtx.Config.GoNZBNet
+	values := []string{}
+	if cfg.ConsumerEnabled {
+		values = append(values, capability.Consumer)
+	}
+	if cfg.ScannerEnabled {
+		values = append(values, capability.Scanner)
+	}
+	if ctrl.appCtx.Config.Modules.UsenetIndexer.Enabled || cfg.IndexProjectionEnabled {
+		values = append(values, capability.Indexer)
+	}
+	if cfg.ManifestBuilderEnabled {
+		values = append(values, capability.ManifestBuilder)
+	}
+	if cfg.ManifestCacheEnabled {
+		values = append(values, capability.ManifestCache)
+	}
+	if cfg.ValidatorEnabled {
+		values = append(values, capability.Validator)
+	}
+	if cfg.HealthCheckerEnabled {
+		values = append(values, capability.HealthChecker)
+	}
+	if cfg.CoverageEnabled {
+		values = append(values, capability.Coverage)
+	}
+	if cfg.SchedulerEnabled {
+		values = append(values, capability.Scheduler, capability.CoverageCoordinator)
+	}
+	if cfg.RelayEnabled {
+		values = append(values, capability.Relay)
+	}
+	if len(values) == 0 {
+		values = append(values, capability.Consumer)
+	}
+	return capability.Normalize(values)
 }
 
 func (ctrl *GoNZBNetAdminController) adminBaseURL(c *echo.Context) string {

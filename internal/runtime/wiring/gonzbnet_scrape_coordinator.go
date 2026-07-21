@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/datallboy/gonzb/internal/app"
+	"github.com/datallboy/gonzb/internal/gonzbnet/capability"
 	"github.com/datallboy/gonzb/internal/gonzbnet/coverage"
 	"github.com/datallboy/gonzb/internal/gonzbnet/events"
 	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
@@ -26,6 +27,22 @@ type gonzbnetScrapeCoordinatorStore interface {
 	NextFederationEventSequence(ctx context.Context, authorNodeID string) (int64, *string, error)
 	AppendVerifiedFederationEvent(ctx context.Context, event *events.SignedEvent, validation *events.ValidationResult) error
 	ProjectCoverageEvent(ctx context.Context, event *events.SignedEvent) error
+	ListActivePoolIDsForNodeCapabilities(ctx context.Context, nodeID string, required []string) ([]string, error)
+}
+
+type gonzbnetMultiPoolScrapeRangeCoordinator struct {
+	identity            *identity.Identity
+	store               gonzbnetScrapeCoordinatorStore
+	preferredPoolID     string
+	enabledPoolIDs      map[string]struct{}
+	claimTTL            time.Duration
+	minBlockingTrust    float64
+	providerScopeHash   string
+	allowAssigned       bool
+	allowUnassigned     bool
+	respectRemoteClaims bool
+	mu                  sync.Mutex
+	coordinators        map[string]*gonzbnetScrapeRangeCoordinator
 }
 
 type gonzbnetScrapeRangeCoordinator struct {
@@ -108,10 +125,11 @@ func goNZBNetScrapeRangeCoordinatorFor(appCtx *app.Context) (scrape.RangeCoordin
 	if err != nil {
 		return nil, err
 	}
-	return newGoNZBNetScrapeRangeCoordinator(
+	return newGoNZBNetMultiPoolScrapeRangeCoordinator(
 		nodeIdentity,
 		store,
 		cfg.LocalPoolID,
+		cfg.PublishPoolIDs,
 		time.Duration(cfg.ScannerClaimTTLMinutes)*time.Minute,
 		cfg.CoverageMinTrustForClaim,
 		providerBackboneHashForIndexer(appCtx),
@@ -119,6 +137,153 @@ func goNZBNetScrapeRangeCoordinatorFor(appCtx *app.Context) (scrape.RangeCoordin
 		cfg.ScannerAllowUnassignedWork,
 		cfg.ScannerRespectRemoteClaims,
 	)
+}
+
+func newGoNZBNetMultiPoolScrapeRangeCoordinator(nodeIdentity *identity.Identity, store gonzbnetScrapeCoordinatorStore, preferredPoolID string, enabledPoolIDs []string, claimTTL time.Duration, minBlockingTrust float64, providerScopeHash string, allowAssigned, allowUnassigned, respectRemoteClaims bool) (*gonzbnetMultiPoolScrapeRangeCoordinator, error) {
+	if nodeIdentity == nil || store == nil {
+		return nil, fmt.Errorf("gonzbnet scrape coordinator dependencies are required")
+	}
+	enabled := make(map[string]struct{}, len(enabledPoolIDs))
+	for _, poolID := range enabledPoolIDs {
+		if poolID = strings.TrimSpace(poolID); poolID != "" {
+			enabled[poolID] = struct{}{}
+		}
+	}
+	return &gonzbnetMultiPoolScrapeRangeCoordinator{
+		identity: nodeIdentity, store: store,
+		preferredPoolID: strings.TrimSpace(preferredPoolID), enabledPoolIDs: enabled,
+		claimTTL: claimTTL, minBlockingTrust: minBlockingTrust,
+		providerScopeHash: strings.TrimSpace(providerScopeHash),
+		allowAssigned:     allowAssigned, allowUnassigned: allowUnassigned,
+		respectRemoteClaims: respectRemoteClaims,
+		coordinators:        map[string]*gonzbnetScrapeRangeCoordinator{},
+	}, nil
+}
+
+func (c *gonzbnetMultiPoolScrapeRangeCoordinator) activeCoordinators(ctx context.Context) ([]*gonzbnetScrapeRangeCoordinator, error) {
+	nodeID, err := c.identity.NodeID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	publicKey, err := c.identity.PublicKey(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.store.UpsertFederationNodeIdentity(ctx, nodeID, publicKey); err != nil {
+		return nil, err
+	}
+	poolIDs, err := c.store.ListActivePoolIDsForNodeCapabilities(ctx, nodeID, []string{capability.Scanner, capability.Coverage})
+	if err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	items := make([]*gonzbnetScrapeRangeCoordinator, 0, len(poolIDs))
+	for _, poolID := range poolIDs {
+		poolID = strings.TrimSpace(poolID)
+		if poolID == "" {
+			continue
+		}
+		if len(c.enabledPoolIDs) > 0 {
+			if _, ok := c.enabledPoolIDs[poolID]; !ok {
+				continue
+			}
+		}
+		coordinator := c.coordinators[poolID]
+		if coordinator == nil {
+			coordinator, err = newGoNZBNetScrapeRangeCoordinator(c.identity, c.store, poolID, c.claimTTL, c.minBlockingTrust, c.providerScopeHash, c.allowAssigned, c.allowUnassigned, c.respectRemoteClaims)
+			if err != nil {
+				return nil, err
+			}
+			c.coordinators[poolID] = coordinator
+		}
+		items = append(items, coordinator)
+	}
+	return items, nil
+}
+
+func (c *gonzbnetMultiPoolScrapeRangeCoordinator) coordinatorFor(ctx context.Context, poolID string) (*gonzbnetScrapeRangeCoordinator, error) {
+	items, err := c.activeCoordinators(ctx)
+	if err != nil {
+		return nil, err
+	}
+	poolID = strings.TrimSpace(poolID)
+	explicitPool := poolID != ""
+	if poolID == "" {
+		poolID = c.preferredPoolID
+	}
+	for _, item := range items {
+		if item.poolID == poolID {
+			return item, nil
+		}
+	}
+	if len(items) > 0 && !explicitPool {
+		return items[0], nil
+	}
+	return nil, nil
+}
+
+func (c *gonzbnetMultiPoolScrapeRangeCoordinator) AssignedScrapeRanges(ctx context.Context, mode string, limit int) ([]scrape.RangeRequest, error) {
+	items, err := c.activeCoordinators(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]scrape.RangeRequest, 0, limit)
+	for _, coordinator := range items {
+		remaining := limit - len(out)
+		if remaining <= 0 {
+			break
+		}
+		ranges, err := coordinator.AssignedScrapeRanges(ctx, mode, remaining)
+		if err != nil {
+			return nil, err
+		}
+		for i := range ranges {
+			ranges[i].PoolID = coordinator.poolID
+		}
+		out = append(out, ranges...)
+	}
+	return out, nil
+}
+
+func (c *gonzbnetMultiPoolScrapeRangeCoordinator) BeginScrapeRange(ctx context.Context, request scrape.RangeRequest) (scrape.RangeDecision, error) {
+	coordinator, err := c.coordinatorFor(ctx, request.PoolID)
+	if err != nil || coordinator == nil {
+		return scrape.RangeDecision{}, err
+	}
+	decision, err := coordinator.BeginScrapeRange(ctx, request)
+	decision.PoolID = coordinator.poolID
+	return decision, err
+}
+
+func (c *gonzbnetMultiPoolScrapeRangeCoordinator) CompleteScrapeRange(ctx context.Context, decision scrape.RangeDecision, result scrape.RangeResult) error {
+	c.mu.Lock()
+	coordinator := c.coordinators[strings.TrimSpace(decision.PoolID)]
+	c.mu.Unlock()
+	if coordinator == nil {
+		return fmt.Errorf("coverage coordinator for pool %q is unavailable", decision.PoolID)
+	}
+	return coordinator.CompleteScrapeRange(ctx, decision, result)
+}
+
+func (c *gonzbnetMultiPoolScrapeRangeCoordinator) FailScrapeRange(ctx context.Context, decision scrape.RangeDecision, cause error) error {
+	c.mu.Lock()
+	coordinator := c.coordinators[strings.TrimSpace(decision.PoolID)]
+	c.mu.Unlock()
+	if coordinator == nil {
+		return fmt.Errorf("coverage coordinator for pool %q is unavailable", decision.PoolID)
+	}
+	return coordinator.FailScrapeRange(ctx, decision, cause)
+}
+
+func (c *gonzbnetMultiPoolScrapeRangeCoordinator) ObserveScrapeRun(ctx context.Context, metrics map[string]any, runErr error) {
+	items, err := c.activeCoordinators(ctx)
+	if err != nil {
+		return
+	}
+	for _, coordinator := range items {
+		coordinator.ObserveScrapeRun(ctx, metrics, runErr)
+	}
 }
 
 func newGoNZBNetScrapeRangeCoordinator(nodeIdentity *identity.Identity, store gonzbnetScrapeCoordinatorStore, poolID string, claimTTL time.Duration, minBlockingTrust float64, providerScopeHash string, allowAssigned, allowUnassigned, respectRemoteClaims bool) (*gonzbnetScrapeRangeCoordinator, error) {
@@ -466,3 +631,4 @@ func (c *gonzbnetScrapeRangeCoordinator) signAppendProject(ctx context.Context, 
 }
 
 var _ scrape.RangeCoordinator = (*gonzbnetScrapeRangeCoordinator)(nil)
+var _ scrape.RangeCoordinator = (*gonzbnetMultiPoolScrapeRangeCoordinator)(nil)

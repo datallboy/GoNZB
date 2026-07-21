@@ -146,7 +146,7 @@ func (s *Store) ProjectCoverageEvent(ctx context.Context, event *events.SignedEv
 		groupsJSON, _ := json.Marshal(body.PreferredGroupPatterns)
 		excludedGroupsJSON, _ := json.Marshal(body.ExcludedGroupPatterns)
 		publishedAt, _ := time.Parse(time.RFC3339, body.CreatedAt)
-		_, err := s.db.ExecContext(ctx, `
+		_, err := s.federationExecutor(ctx).ExecContext(ctx, `
 		INSERT INTO scanner_capacities (
 				node_id, published_at, groups_json, max_ranges_per_hour,
 				max_bytes_per_hour, body_json, source_event_id, pool_id, max_groups,
@@ -193,7 +193,7 @@ func (s *Store) ProjectCoverageEvent(ctx context.Context, event *events.SignedEv
 		groupsJSON, _ := json.Marshal([]string{})
 		activeClaimsJSON, _ := json.Marshal(body.ActiveClaims)
 		publishedAt, _ := time.Parse(time.RFC3339, body.CreatedAt)
-		_, err := s.db.ExecContext(ctx, `
+		_, err := s.federationExecutor(ctx).ExecContext(ctx, `
 			INSERT INTO scanner_heartbeats (
 				node_id, pool_id, published_at, groups_json, active_claims_json,
 				status, body_json, source_event_id, queue_depth,
@@ -224,7 +224,7 @@ func (s *Store) ProjectCoverageEvent(ctx context.Context, event *events.SignedEv
 		}
 		bodyJSON, _ := json.Marshal(body)
 		observedAt, _ := time.Parse(time.RFC3339, body.ObservedAt)
-		_, err := s.db.ExecContext(ctx, `
+		_, err := s.federationExecutor(ctx).ExecContext(ctx, `
 			INSERT INTO coverage_group_observations (
 				observation_id, pool_id, group_name, observed_at, low_watermark,
 				high_watermark, retention_days, confidence, author_node_id,
@@ -383,7 +383,7 @@ func (s *Store) CheckCoverageRangeBlock(ctx context.Context, params CoverageRang
 		minTrust = 0.25
 	}
 	if params.RespectRemoteClaims {
-		row := s.db.QueryRowContext(ctx, `
+		row := s.federationExecutor(ctx).QueryRowContext(ctx, `
 			SELECT c.claim_id, c.node_id
 			FROM coverage_claims c
 			JOIN federation_nodes n ON n.node_id = c.node_id
@@ -420,7 +420,7 @@ func (s *Store) CheckCoverageRangeBlock(ctx context.Context, params CoverageRang
 		}
 	}
 	if params.SkipCompleted {
-		row := s.db.QueryRowContext(ctx, `
+		row := s.federationExecutor(ctx).QueryRowContext(ctx, `
 			SELECT o.outcome_id, o.node_id
 			FROM coverage_range_outcomes o
 			LEFT JOIN federation_nodes n ON n.node_id = o.node_id
@@ -478,7 +478,7 @@ func (s *Store) SuggestCoverageWork(ctx context.Context, params CoverageWorkSugg
 		minTrust = 0.25
 	}
 	skipCompleted := mode != "validator"
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.federationExecutor(ctx).QueryContext(ctx, `
 		SELECT a.assignment_id, a.pool_id, a.group_name, a.assigned_node_id,
 		       COALESCE(a.range_start, 0), COALESCE(a.range_end, 0),
 		       a.window_start, a.window_end, a.priority, a.due_at, a.status,
@@ -591,7 +591,7 @@ func (s *Store) ListStaleCoverageRangeClaims(ctx context.Context, poolID string,
 	if limit <= 0 || limit > 100 {
 		limit = 25
 	}
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.federationExecutor(ctx).QueryContext(ctx, `
 		SELECT c.claim_id, COALESCE(c.assignment_id, ''), c.pool_id,
 		       c.group_name, c.node_id, COALESCE(c.range_start, 0),
 		       COALESCE(c.range_end, 0), c.claimed_at, c.expires_at, c.status
@@ -634,7 +634,7 @@ func (s *Store) ListStaleCoverageTimeWindowClaims(ctx context.Context, poolID st
 	if limit <= 0 || limit > 100 {
 		limit = 25
 	}
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.federationExecutor(ctx).QueryContext(ctx, `
 		SELECT c.claim_id, COALESCE(c.assignment_id, ''), c.pool_id,
 		       c.group_name, c.node_id, c.window_start, c.window_end,
 		       c.claimed_at, c.expires_at, c.status
@@ -681,7 +681,7 @@ func (s *Store) ListCoverageScannerNodes(ctx context.Context, poolID string, min
 	if minTrustScore < 0 {
 		minTrustScore = 0
 	}
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.federationExecutor(ctx).QueryContext(ctx, `
 		SELECT pm.node_id,
 		       COALESCE(NULLIF(sc.max_ranges_per_hour, 0), 1) AS weight,
 		       COALESCE(sc.max_ranges_per_hour, 0) AS max_ranges_per_hour,
@@ -723,7 +723,7 @@ func (s *Store) CoverageAssignmentExists(ctx context.Context, assignmentID strin
 		return false, fmt.Errorf("pgindex store is not initialized")
 	}
 	var ok bool
-	if err := s.db.QueryRowContext(ctx, `
+	if err := s.federationExecutor(ctx).QueryRowContext(ctx, `
 		SELECT EXISTS (
 			SELECT 1
 			FROM coverage_assignments
@@ -743,11 +743,11 @@ func (s *Store) projectCoveragePlan(ctx context.Context, body coverage.CoverageP
 		firstGroup = body.Assignments[0].Group
 		firstPriority = body.Assignments[0].Priority
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, commit, rollback, err := s.beginFederationProjection(ctx)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer rollback()
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO coverage_plans (
 			plan_id, pool_id, group_name, range_start, range_end, window_start,
@@ -770,7 +770,7 @@ func (s *Store) projectCoveragePlan(ctx context.Context, body coverage.CoverageP
 			return err
 		}
 	}
-	return tx.Commit()
+	return commit()
 }
 
 func projectNestedCoverageAssignment(ctx context.Context, tx *sql.Tx, plan coverage.CoveragePlan, assignment coverage.CoveragePlanAssignment, event *events.SignedEvent, createdAt time.Time) error {
@@ -832,7 +832,7 @@ func (s *Store) projectCoverageAssignment(ctx context.Context, body coverage.Cov
 	windowStart := parseNullableTime(body.WindowStart)
 	windowEnd := parseNullableTime(body.WindowEnd)
 	dueAt := parseNullableTime(body.ExpiresAt)
-	_, err := s.db.ExecContext(ctx, `
+	_, err := s.federationExecutor(ctx).ExecContext(ctx, `
 		INSERT INTO coverage_assignments (
 			assignment_id, plan_id, pool_id, group_name, assigned_node_id,
 			range_start, range_end, window_start, window_end, priority, due_at,
@@ -865,7 +865,7 @@ func (s *Store) projectRangeClaim(ctx context.Context, body coverage.RangeClaim,
 	bodyJSON, _ := json.Marshal(body)
 	claimedAt, _ := time.Parse(time.RFC3339, body.ClaimedAt)
 	expiresAt, _ := time.Parse(time.RFC3339, body.ExpiresAt)
-	_, err := s.db.ExecContext(ctx, `
+	_, err := s.federationExecutor(ctx).ExecContext(ctx, `
 		INSERT INTO coverage_claims (
 			claim_id, claim_type, assignment_id, pool_id, group_name, node_id,
 			range_start, range_end, claimed_at, expires_at, status, author_node_id,
@@ -895,7 +895,7 @@ func (s *Store) projectTimeWindowClaim(ctx context.Context, body coverage.TimeWi
 	expiresAt, _ := time.Parse(time.RFC3339, body.ExpiresAt)
 	windowStart, _ := time.Parse(time.RFC3339, body.WindowStart)
 	windowEnd, _ := time.Parse(time.RFC3339, body.WindowEnd)
-	_, err := s.db.ExecContext(ctx, `
+	_, err := s.federationExecutor(ctx).ExecContext(ctx, `
 		INSERT INTO coverage_claims (
 			claim_id, claim_type, assignment_id, pool_id, group_name, node_id,
 			window_start, window_end, claimed_at, expires_at, status, author_node_id,
@@ -919,7 +919,7 @@ func (s *Store) projectTimeWindowClaim(ctx context.Context, body coverage.TimeWi
 func (s *Store) projectCoverageCheckpoint(ctx context.Context, body coverage.CoverageCheckpoint, event *events.SignedEvent) error {
 	bodyJSON, _ := json.Marshal(body)
 	createdAt, _ := time.Parse(time.RFC3339, body.CheckedAt)
-	_, err := s.db.ExecContext(ctx, `
+	_, err := s.federationExecutor(ctx).ExecContext(ctx, `
 		INSERT INTO coverage_checkpoints (
 			checkpoint_id, pool_id, group_name, low_watermark, high_watermark,
 			author_node_id, body_json, source_event_id, node_id, provider_scope_hash,
@@ -987,11 +987,11 @@ type coverageOutcomeDetails struct {
 }
 
 func (s *Store) projectCoverageOutcome(ctx context.Context, outcomeType, outcomeID, claimID, assignmentID, poolID, group, nodeID string, rangeStart, rangeEnd int64, releaseCount int, reason string, occurredAt time.Time, bodyJSON string, event *events.SignedEvent, details coverageOutcomeDetails) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, commit, rollback, err := s.beginFederationProjection(ctx)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer rollback()
 	if strings.TrimSpace(assignmentID) == "" && strings.TrimSpace(claimID) != "" {
 		_ = tx.QueryRowContext(ctx, `
 			SELECT COALESCE(assignment_id, '')
@@ -1051,11 +1051,11 @@ func (s *Store) projectCoverageOutcome(ctx context.Context, outcomeType, outcome
 			return err
 		}
 	}
-	return tx.Commit()
+	return commit()
 }
 
 func (s *Store) listCoverageAssignments(ctx context.Context, poolID string) ([]CoverageAssignmentRecord, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.federationExecutor(ctx).QueryContext(ctx, `
 		SELECT assignment_id, pool_id, group_name, assigned_node_id,
 		       COALESCE(range_start, 0), COALESCE(range_end, 0),
 		       window_start, window_end, priority, due_at, status, created_at
@@ -1087,7 +1087,7 @@ func (s *Store) listCoverageClaims(ctx context.Context, poolID string, stale boo
 	if stale {
 		comparator = "<="
 	}
-	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`
+	rows, err := s.federationExecutor(ctx).QueryContext(ctx, fmt.Sprintf(`
 		SELECT c.claim_id, c.claim_type, COALESCE(c.assignment_id, ''), c.pool_id,
 		       c.group_name, c.node_id, COALESCE(c.range_start, 0),
 		       COALESCE(c.range_end, 0), c.window_start, c.window_end,
@@ -1121,7 +1121,7 @@ func (s *Store) listCoverageClaims(ctx context.Context, poolID string, stale boo
 }
 
 func (s *Store) listCoverageOutcomes(ctx context.Context, poolID string) ([]CoverageOutcomeRecord, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.federationExecutor(ctx).QueryContext(ctx, `
 		SELECT outcome_id, outcome_type, COALESCE(claim_id, ''),
 		       COALESCE(assignment_id, ''), pool_id, group_name, node_id,
 		       range_start, range_end, release_count, COALESCE(reason, ''),
@@ -1146,7 +1146,7 @@ func (s *Store) listCoverageOutcomes(ctx context.Context, poolID string) ([]Cove
 }
 
 func (s *Store) listCoverageGaps(ctx context.Context, poolID string) ([]CoverageAssignmentRecord, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.federationExecutor(ctx).QueryContext(ctx, `
 		SELECT a.assignment_id, a.pool_id, a.group_name, a.assigned_node_id,
 		       COALESCE(a.range_start, 0), COALESCE(a.range_end, 0),
 		       a.window_start, a.window_end, a.priority, a.due_at, a.status,
@@ -1187,7 +1187,7 @@ func (s *Store) listCoverageGaps(ctx context.Context, poolID string) ([]Coverage
 }
 
 func (s *Store) listCoverageDuplicates(ctx context.Context, poolID string) ([]CoverageDuplicateRecord, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.federationExecutor(ctx).QueryContext(ctx, `
 		SELECT pool_id, group_name, COALESCE(range_start, 0), COALESCE(range_end, 0),
 		       COUNT(*) AS claim_count, jsonb_agg(node_id ORDER BY node_id) AS node_ids
 		FROM coverage_claims
@@ -1219,7 +1219,7 @@ func (s *Store) listCoverageDuplicates(ctx context.Context, poolID string) ([]Co
 
 func (s *Store) coverageScore(ctx context.Context, poolID string) (float64, error) {
 	var total, completed int
-	if err := s.db.QueryRowContext(ctx, `
+	if err := s.federationExecutor(ctx).QueryRowContext(ctx, `
 		SELECT
 			COUNT(*)::int AS total,
 			COUNT(*) FILTER (

@@ -73,6 +73,18 @@ func TestValidateRuntimeSettingsAllowsLocalIndexerAggregatorSourceWhenModuleEnab
 	}
 }
 
+func TestValidateRuntimeSettingsReportsGoNZBNetModuleGate(t *testing.T) {
+	runtime := app.DefaultRuntimeSettings()
+	runtime.Aggregator.Sources.GoNZBNet.Enabled = true
+
+	err := ValidateRuntimeSettings(&config.Config{
+		Modules: config.ModulesConfig{Aggregator: config.ModuleToggle{Enabled: true}},
+	}, runtime)
+	if err == nil || !strings.Contains(err.Error(), "aggregator.sources.gonzbnet.enabled requires modules.gonzbnet.enabled in config.yaml") {
+		t.Fatalf("expected GoNZBNet module gate detail, got %v", err)
+	}
+}
+
 func TestBuildCapabilitiesReportsIndexerNeedsScrapeGroup(t *testing.T) {
 	runtime := app.DefaultRuntimeSettings()
 	runtime.IndexerServers = []app.ServerRuntimeSettings{{ID: "primary", Host: "news.example.com", Port: 563}}
@@ -87,6 +99,35 @@ func TestBuildCapabilitiesReportsIndexerNeedsScrapeGroup(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(indexer.Requirements, " "), "scrape group") {
 		t.Fatalf("expected scrape-group detail, got %+v", indexer.Requirements)
+	}
+}
+
+func TestBuildCapabilitiesIncludesGoNZBNetModule(t *testing.T) {
+	runtime := app.DefaultRuntimeSettings()
+	caps := BuildCapabilities(&config.Config{
+		Modules: config.ModulesConfig{GoNZBNet: config.ModuleToggle{Enabled: true}},
+		Store:   config.StoreConfig{PGDSN: "postgres://gonzb:test@localhost/gonzb"},
+	}, runtime)
+
+	gonzbnet := caps.Modules["gonzbnet"]
+	if !gonzbnet.Visible || !gonzbnet.Enabled || !gonzbnet.Configured || !gonzbnet.Ready {
+		t.Fatalf("expected ready GoNZBNet capability, got %+v", gonzbnet)
+	}
+}
+
+func TestBuildCapabilitiesCountsGoNZBNetAsAggregatorSource(t *testing.T) {
+	runtime := app.DefaultRuntimeSettings()
+	runtime.Aggregator.Sources.GoNZBNet.Enabled = true
+	caps := BuildCapabilities(&config.Config{
+		Modules: config.ModulesConfig{
+			Aggregator: config.ModuleToggle{Enabled: true},
+			GoNZBNet:   config.ModuleToggle{Enabled: true},
+		},
+		Store: config.StoreConfig{PGDSN: "postgres://gonzb:test@localhost/gonzb"},
+	}, runtime)
+
+	if aggregator := caps.Modules["aggregator"]; !aggregator.Configured || !aggregator.Ready {
+		t.Fatalf("expected GoNZBNet-backed aggregator to be ready, got %+v", aggregator)
 	}
 }
 

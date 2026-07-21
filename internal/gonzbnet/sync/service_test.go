@@ -743,6 +743,10 @@ func (s *fakeSyncStore) CanAcceptFederationEventForPools(_ context.Context, _ st
 	return pgindex.PoolAuthorizationResult{Allowed: true}, nil
 }
 
+func (s *fakeSyncStore) IsActivePoolMember(context.Context, string, string) (bool, error) {
+	return true, nil
+}
+
 type fakeRequestAuthStore struct {
 	keys   map[string]ed25519.PublicKey
 	nonces map[string]bool

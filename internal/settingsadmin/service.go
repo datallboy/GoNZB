@@ -162,6 +162,10 @@ func ValidateRuntimeSettings(base *config.Config, runtime *app.RuntimeSettings) 
 		runtime.Aggregator.Sources.UsenetIndexer.Enabled && !base.Modules.UsenetIndexer.Enabled {
 		issues = append(issues, "aggregator.sources.usenet_indexer.enabled requires modules.usenet_indexer.enabled in config.yaml")
 	}
+	if base != nil && base.Modules.Aggregator.Enabled && runtime.Aggregator != nil &&
+		runtime.Aggregator.Sources.GoNZBNet.Enabled && !base.Modules.GoNZBNet.Enabled {
+		issues = append(issues, "aggregator.sources.gonzbnet.enabled requires modules.gonzbnet.enabled in config.yaml")
+	}
 
 	issues = append(issues, validateServers("servers", runtime.Servers)...)
 	issues = append(issues, validateIndexers(runtime.Indexers)...)
@@ -570,6 +574,7 @@ func BuildCapabilities(base *config.Config, runtime *app.RuntimeSettings) *app.C
 		"downloader":     moduleCapability(base.Modules.Downloader.Enabled, downloaderConfigured(runtime), nil),
 		"aggregator":     moduleCapability(base.Modules.Aggregator.Enabled, aggregatorConfigured(runtime), aggregatorRequirements(base, runtime)),
 		"usenet_indexer": moduleCapability(base.Modules.UsenetIndexer.Enabled, indexerConfigured(runtime), indexerRequirements(runtime)),
+		"gonzbnet":       moduleCapability(base.Modules.GoNZBNet.Enabled, gonzbnetConfigured(base), gonzbnetRequirements(base)),
 		"web_ui":         moduleCapability(base.Modules.WebUI.Enabled, base.Modules.WebUI.Enabled, nil),
 		"api":            moduleCapability(base.Modules.API.Enabled, base.Modules.API.Enabled, nil),
 	}
@@ -617,20 +622,35 @@ func aggregatorConfigured(runtime *app.RuntimeSettings) bool {
 	}
 	hasExternal := len(runtime.Indexers) > 0
 	hasLocal := runtime.Aggregator != nil &&
-		(runtime.Aggregator.Sources.LocalBlob.Enabled || runtime.Aggregator.Sources.UsenetIndexer.Enabled)
+		(runtime.Aggregator.Sources.LocalBlob.Enabled || runtime.Aggregator.Sources.UsenetIndexer.Enabled || runtime.Aggregator.Sources.GoNZBNet.Enabled)
 	return hasExternal || hasLocal
 }
 
 func aggregatorRequirements(base *config.Config, runtime *app.RuntimeSettings) []string {
 	reqs := make([]string, 0, 2)
 	if !aggregatorConfigured(runtime) {
-		reqs = append(reqs, "enable local blob, local indexer, or an external Newznab source")
+		reqs = append(reqs, "enable local blob, local indexer, GoNZBNet, or an external Newznab source")
 	}
 	if runtime != nil && runtime.Aggregator != nil && runtime.Aggregator.Sources.UsenetIndexer.Enabled &&
 		(base == nil || !base.Modules.UsenetIndexer.Enabled) {
 		reqs = append(reqs, "enable usenet_indexer module in config.yaml")
 	}
+	if runtime != nil && runtime.Aggregator != nil && runtime.Aggregator.Sources.GoNZBNet.Enabled &&
+		(base == nil || !base.Modules.GoNZBNet.Enabled) {
+		reqs = append(reqs, "enable gonzbnet module in config.yaml")
+	}
 	return reqs
+}
+
+func gonzbnetConfigured(base *config.Config) bool {
+	return base != nil && strings.TrimSpace(base.Store.PGDSN) != ""
+}
+
+func gonzbnetRequirements(base *config.Config) []string {
+	if gonzbnetConfigured(base) {
+		return nil
+	}
+	return []string{"configure store.pg_dsn in config.yaml"}
 }
 
 func indexerConfigured(runtime *app.RuntimeSettings) bool {

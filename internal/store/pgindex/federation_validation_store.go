@@ -65,7 +65,7 @@ func (s *Store) EnqueueFederationValidationTask(ctx context.Context, request Val
 		dueAt = request.DueAt.UTC()
 	}
 	var queued bool
-	err := s.db.QueryRowContext(ctx, `
+	err := s.federationExecutor(ctx).QueryRowContext(ctx, `
 		INSERT INTO federation_validation_tasks (
 			manifest_id, release_id, source_node_id, source_event_id, pool_id,
 			status, priority, due_at, updated_at
@@ -101,18 +101,19 @@ func (s *Store) EnqueueFederationValidationTask(ctx context.Context, request Val
 	return queued, nil
 }
 
-func (s *Store) ClaimValidationTasks(ctx context.Context, nodeID string, limit int) ([]ValidationTask, error) {
+func (s *Store) ClaimValidationTasks(ctx context.Context, nodeID, poolID string, limit int) ([]ValidationTask, error) {
 	if s == nil || s.db == nil {
 		return nil, fmt.Errorf("pgindex store is not initialized")
 	}
 	if limit <= 0 {
 		limit = 25
 	}
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.federationExecutor(ctx).QueryContext(ctx, `
 		WITH picked AS (
 			SELECT task_id
 			FROM federation_validation_tasks
 			WHERE status IN ('pending', 'failed')
+			  AND pool_id = $3
 			  AND due_at <= NOW()
 			  AND attempts < 3
 			ORDER BY priority DESC, due_at, task_id
@@ -132,6 +133,7 @@ func (s *Store) ClaimValidationTasks(ctx context.Context, nodeID string, limit i
 		          t.pool_id, t.attempts`,
 		strings.TrimSpace(nodeID),
 		limit,
+		firstNonBlank(poolID, "pool.local"),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("claim validation tasks: %w", err)
@@ -160,7 +162,7 @@ func (s *Store) CompleteValidationTask(ctx context.Context, taskID int64, status
 	if status == "completed" {
 		completedAt = time.Now().UTC()
 	}
-	_, err := s.db.ExecContext(ctx, `
+	_, err := s.federationExecutor(ctx).ExecContext(ctx, `
 		UPDATE federation_validation_tasks
 		SET status = $2,
 		    last_error = NULLIF($3, ''),
@@ -184,7 +186,7 @@ func (s *Store) ProjectValidatorCapacity(ctx context.Context, projection Validat
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, `
+	_, err = s.federationExecutor(ctx).ExecContext(ctx, `
 		INSERT INTO federation_node_capabilities (
 			node_id, capabilities, module_status, validator_capacity, updated_at
 		)
@@ -232,11 +234,11 @@ func (s *Store) ProjectArticleAvailabilityAttestation(ctx context.Context, proje
 	}
 	score := validation.ArticleAvailabilityScore(item)
 
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, commit, rollback, err := s.beginFederationProjection(ctx)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer rollback()
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO article_availability_attestations (
 			attestation_id, release_id, manifest_id, author_node_id, pool_id,
@@ -287,7 +289,7 @@ func (s *Store) ProjectArticleAvailabilityAttestation(ctx context.Context, proje
 	if err := recomputeValidationScores(ctx, tx, item.ReleaseID, item.ManifestID, poolID); err != nil {
 		return err
 	}
-	return tx.Commit()
+	return commit()
 }
 
 func (s *Store) ProjectChecksumAttestation(ctx context.Context, projection ChecksumAttestationProjection) error {
@@ -317,11 +319,11 @@ func (s *Store) ProjectChecksumAttestation(ctx context.Context, projection Check
 	}
 	score := validation.ChecksumScore(item)
 
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, commit, rollback, err := s.beginFederationProjection(ctx)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer rollback()
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO checksum_attestations (
 			attestation_id, release_id, manifest_id, author_node_id, pool_id,
@@ -368,7 +370,7 @@ func (s *Store) ProjectChecksumAttestation(ctx context.Context, projection Check
 	if err := recomputeValidationScores(ctx, tx, item.ReleaseID, item.ManifestID, poolID); err != nil {
 		return err
 	}
-	return tx.Commit()
+	return commit()
 }
 
 func recomputeValidationScores(ctx context.Context, exec healthScoreExecutor, releaseID, manifestID, poolID string) error {

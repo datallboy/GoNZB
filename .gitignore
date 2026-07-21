@@ -26,6 +26,11 @@ testdata
 .tmp/
 .e2e/
 
+# Runtime stores contain generated databases, blobs, NZBs, and node keys.
+/store/
+/store-*/
+/data/gonzbnet/keys/
+
 # Web dist
 internal/webui/dist
 

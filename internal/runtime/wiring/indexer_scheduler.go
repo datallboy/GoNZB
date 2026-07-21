@@ -58,10 +58,6 @@ func RunIndexerInspectScheduler(ctx context.Context, appCtx *app.Context) error 
 	return runIndexerStages(
 		ctx,
 		appCtx,
-		supervisor.StageInspectDiscoveryReadyRefresh,
-		supervisor.StageInspectPAR2ReadyRefresh,
-		supervisor.StageInspectArchiveReadyRefresh,
-		supervisor.StageInspectMediaReadyRefresh,
 		supervisor.StageInspectDiscovery,
 		supervisor.StageInspectPAR2,
 		supervisor.StageInspectNFO,

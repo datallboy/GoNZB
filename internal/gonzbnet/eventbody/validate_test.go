@@ -62,6 +62,33 @@ func TestValidateRejectsBodySchemaMismatch(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsMultiplePools(t *testing.T) {
+	node := testIdentity(t)
+	card, err := releasecard.MapLocalRelease(testRelease())
+	if err != nil {
+		t.Fatalf("map release: %v", err)
+	}
+	event := testEvent(t, node, pools.EventTypeReleaseCard, releasecard.BodySchema, card)
+	event.PoolIDs = []string{"pool.one", "pool.two"}
+	if err := Validate(event, testNow(), 2*time.Minute); err == nil || !strings.Contains(err.Error(), "exactly one pool") {
+		t.Fatalf("expected multiple-pool rejection, got %v", err)
+	}
+}
+
+func TestValidateRejectsBodyPoolMismatch(t *testing.T) {
+	node := testIdentity(t)
+	body := pools.JoinRequest{
+		SchemaVersion:   "1.0",
+		Type:            pools.EventTypePoolJoinRequest,
+		PoolID:          "pool.other",
+		CandidateNodeID: "node_other",
+	}
+	event := testEvent(t, node, pools.EventTypePoolJoinRequest, pools.BodySchema(pools.EventTypePoolJoinRequest), body)
+	if err := Validate(event, testNow(), 2*time.Minute); err == nil || !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("expected body pool mismatch rejection, got %v", err)
+	}
+}
+
 func testEvent(t *testing.T, node *identity.Identity, eventType, bodySchema string, body any) *events.SignedEvent {
 	t.Helper()
 	event, result, err := events.Create(context.Background(), node, events.CreateOptions{

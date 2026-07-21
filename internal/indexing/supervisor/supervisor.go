@@ -33,10 +33,6 @@ const (
 	StageReleaseGenerateNZB            StageName = "release_generate_nzb"
 	StageReleaseArchiveNZB             StageName = "release_archive_nzb"
 	StageReleasePurgeArchivedSources   StageName = "release_purge_archived_sources"
-	StageInspectDiscoveryReadyRefresh  StageName = "inspect_discovery_ready_refresh"
-	StageInspectPAR2ReadyRefresh       StageName = "inspect_par2_ready_refresh"
-	StageInspectArchiveReadyRefresh    StageName = "inspect_archive_ready_refresh"
-	StageInspectMediaReadyRefresh      StageName = "inspect_media_ready_refresh"
 	StageInspectDiscovery              StageName = "inspect_discovery"
 	StageInspectPAR2                   StageName = "inspect_par2"
 	StageInspectNFO                    StageName = "inspect_nfo"
@@ -195,10 +191,6 @@ func pipelineStageNames() []StageName {
 		StageRelease,
 		StageReleaseGenerateNZB,
 		StageReleaseArchiveNZB,
-		StageInspectDiscoveryReadyRefresh,
-		StageInspectPAR2ReadyRefresh,
-		StageInspectArchiveReadyRefresh,
-		StageInspectMediaReadyRefresh,
 		StageInspectDiscovery,
 		StageInspectPAR2,
 		StageInspectNFO,

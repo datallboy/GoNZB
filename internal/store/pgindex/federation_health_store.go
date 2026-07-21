@@ -68,11 +68,11 @@ func (s *Store) ProjectHealthAttestation(ctx context.Context, projection HealthA
 	availabilityScore := health.AvailabilityScore(item)
 	delta, reason := health.TrustDelta(item)
 
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, commit, rollback, err := s.beginFederationProjection(ctx)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer rollback()
 
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO health_attestations (
@@ -161,7 +161,7 @@ func (s *Store) ProjectHealthAttestation(ctx context.Context, projection HealthA
 	if err := recomputeFederatedReleaseHealthScores(ctx, tx, item.ReleaseID, poolID); err != nil {
 		return err
 	}
-	return tx.Commit()
+	return commit()
 }
 
 func (s *Store) ProjectTrustAttestation(ctx context.Context, projection TrustAttestationProjection) error {
@@ -184,11 +184,11 @@ func (s *Store) ProjectTrustAttestation(ctx context.Context, projection TrustAtt
 	delta := trust.NormalizedDelta(item.ScoreDelta)
 	reason := "trust_attestation:" + strings.TrimSpace(item.Reason)
 
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, commit, rollback, err := s.beginFederationProjection(ctx)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer rollback()
 
 	res, err := tx.ExecContext(ctx, `
 		UPDATE federation_nodes
@@ -219,7 +219,7 @@ func (s *Store) ProjectTrustAttestation(ctx context.Context, projection TrustAtt
 	); err != nil {
 		return fmt.Errorf("insert trust attestation reputation event: %w", err)
 	}
-	return tx.Commit()
+	return commit()
 }
 
 func (s *Store) RecomputeFederatedScores(ctx context.Context, poolID string) (FederatedScoreRecomputeResult, error) {

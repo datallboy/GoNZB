@@ -30,6 +30,9 @@ import type {
   AdminStageConfigPatch,
   AdminStagesResponse,
   GoNZBNetActionResponse,
+  GoNZBNetAdmission,
+  GoNZBNetAdmissionJoinResponse,
+  GoNZBNetAdmissionRemote,
   GoNZBNetAssignmentRequest,
   GoNZBNetClaimRequest,
   GoNZBNetCoverageDashboard,
@@ -46,6 +49,7 @@ import type {
   GoNZBNetKeyRotateResponse,
   GoNZBNetListResponse,
   GoNZBNetManifestSourceDiagnostic,
+  GoNZBNetMetrics,
   GoNZBNetManifestResolveRequest,
   GoNZBNetManifestResolveResponse,
   GoNZBNetNodeCapability,
@@ -475,6 +479,10 @@ export function getGoNZBNetConfigValidation() {
   )
 }
 
+export function getGoNZBNetMetrics() {
+  return apiRequest<GoNZBNetMetrics>("/api/v1/admin/gonzbnet/metrics")
+}
+
 export function getGoNZBNetCoverageDashboard(poolID?: string) {
   return apiRequest<GoNZBNetCoverageDashboard>(
     `/api/v1/admin/gonzbnet/coverage${goNZBNetQuery({ pool_id: poolID })}`,
@@ -627,6 +635,52 @@ export function upsertGoNZBNetTrustPool(body: GoNZBNetTrustPoolRequest) {
     method: "POST",
     body,
   })
+}
+
+export function createGoNZBNetPoolInvitation(poolID: string) {
+  return apiRequest<{ link: string }>(
+    `/api/v1/admin/gonzbnet/pools/${encodeURIComponent(poolID)}/invitations`,
+    { method: "POST", body: { expires_in_hours: 24 } },
+  )
+}
+
+export function discoverGoNZBNetNode(locator: string, expectedNodeID?: string) {
+  return apiRequest<GoNZBNetAdmissionRemote>("/api/v1/admin/gonzbnet/admission/discover", {
+    method: "POST",
+    body: { locator, expected_node_id: expectedNodeID },
+  })
+}
+
+export function joinGoNZBNetPool(locator: string, poolID: string) {
+  return apiRequest<GoNZBNetAdmissionJoinResponse>("/api/v1/admin/gonzbnet/admission/join", {
+    method: "POST",
+    body: { locator, pool_id: poolID },
+  })
+}
+
+export function getGoNZBNetAdmissions() {
+  return apiRequest<GoNZBNetListResponse<GoNZBNetAdmission>>("/api/v1/admin/gonzbnet/admissions")
+}
+
+export function approveGoNZBNetAdmission(proposalEventID: string) {
+  return apiRequest<{ status: string; approvals: number; approvals_required: number }>(
+    `/api/v1/admin/gonzbnet/admissions/${encodeURIComponent(proposalEventID)}/approve`,
+    { method: "POST", body: {} },
+  )
+}
+
+export function rejectGoNZBNetAdmission(proposalEventID: string, reason?: string) {
+  return apiRequest<{ status: string }>(
+    `/api/v1/admin/gonzbnet/admissions/${encodeURIComponent(proposalEventID)}/reject`,
+    { method: "POST", body: { reason } },
+  )
+}
+
+export function refreshGoNZBNetAdmission(proposalEventID: string) {
+  return apiRequest<{ status: string }>(
+    `/api/v1/admin/gonzbnet/admissions/${encodeURIComponent(proposalEventID)}/refresh`,
+    { method: "POST", body: {} },
+  )
 }
 
 export function getGoNZBNetPoolMembers(poolID: string) {

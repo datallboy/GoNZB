@@ -96,10 +96,6 @@ func (s *Service) RunPipelineOnce(ctx context.Context) error {
 		supervisor.StageRelease,
 		supervisor.StageReleaseGenerateNZB,
 		supervisor.StageReleaseArchiveNZB,
-		supervisor.StageInspectDiscoveryReadyRefresh,
-		supervisor.StageInspectPAR2ReadyRefresh,
-		supervisor.StageInspectArchiveReadyRefresh,
-		supervisor.StageInspectMediaReadyRefresh,
 	)
 }
 
@@ -151,10 +147,6 @@ func (s *Service) RecoverYEncOnce(ctx context.Context) error {
 func (s *Service) InspectOnce(ctx context.Context) error {
 	return s.runStagesOnce(
 		ctx,
-		supervisor.StageInspectDiscoveryReadyRefresh,
-		supervisor.StageInspectPAR2ReadyRefresh,
-		supervisor.StageInspectArchiveReadyRefresh,
-		supervisor.StageInspectMediaReadyRefresh,
 		supervisor.StageInspectDiscovery,
 		supervisor.StageInspectPAR2,
 		supervisor.StageInspectNFO,

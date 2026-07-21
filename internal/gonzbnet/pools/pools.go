@@ -69,15 +69,18 @@ type Policy struct {
 }
 
 type Genesis struct {
-	SchemaVersion string   `json:"schema_version"`
-	Type          string   `json:"type"`
-	PoolID        string   `json:"pool_id"`
-	DisplayName   string   `json:"display_name"`
-	Description   string   `json:"description,omitempty"`
-	CreatedAt     string   `json:"created_at"`
-	Admins        []string `json:"admins"`
-	Witnesses     []string `json:"witnesses"`
-	Policy        Policy   `json:"policy"`
+	SchemaVersion    string   `json:"schema_version"`
+	Type             string   `json:"type"`
+	PoolID           string   `json:"pool_id"`
+	DisplayName      string   `json:"display_name"`
+	Description      string   `json:"description,omitempty"`
+	CreatedAt        string   `json:"created_at"`
+	Admins           []string `json:"admins"`
+	Witnesses        []string `json:"witnesses"`
+	Policy           Policy   `json:"policy"`
+	Visibility       string   `json:"visibility,omitempty"`
+	JoinMode         string   `json:"join_mode,omitempty"`
+	AdmissionEnabled bool     `json:"admission_enabled,omitempty"`
 }
 
 type JoinRequest struct {
@@ -87,7 +90,12 @@ type JoinRequest struct {
 	CandidateNodeID         string   `json:"candidate_node_id"`
 	CandidateProfileEventID string   `json:"candidate_profile_event_id,omitempty"`
 	RequestedRoles          []string `json:"requested_roles"`
+	RequestedCapabilities   []string `json:"requested_capabilities,omitempty"`
 	Message                 string   `json:"message,omitempty"`
+	GenesisEventID          string   `json:"genesis_event_id,omitempty"`
+	CandidateURL            string   `json:"candidate_url,omitempty"`
+	RelayNodeID             string   `json:"relay_node_id,omitempty"`
+	RelayURL                string   `json:"relay_url,omitempty"`
 	CreatedAt               string   `json:"created_at"`
 }
 

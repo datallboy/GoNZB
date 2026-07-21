@@ -76,6 +76,7 @@ type Capabilities struct {
 	HealthChecker       bool `json:"health_checker"`
 	Coverage            bool `json:"coverage"`
 	Scheduler           bool `json:"scheduler"`
+	AdmissionRelay      bool `json:"admission_relay"`
 }
 
 type ModuleStatus struct {
@@ -119,9 +120,11 @@ type Limits struct {
 }
 
 type Policy struct {
-	PrivateNetwork                  bool `json:"private_network"`
-	LiveQuerySupported              bool `json:"live_query_supported"`
-	ManifestFetchRequiresMembership bool `json:"manifest_fetch_requires_pool_membership"`
+	PrivateNetwork                  bool   `json:"private_network"`
+	LiveQuerySupported              bool   `json:"live_query_supported"`
+	ManifestFetchRequiresMembership bool   `json:"manifest_fetch_requires_pool_membership"`
+	Visibility                      string `json:"visibility"`
+	AcceptsJoinRequests             bool   `json:"accepts_join_requests"`
 }
 
 type Caps struct {
@@ -155,6 +158,9 @@ type Config struct {
 	HealthChecker                 bool
 	Coverage                      bool
 	Scheduler                     bool
+	Visibility                    string
+	AcceptsJoinRequests           bool
+	AdmissionRelay                bool
 	ScannerMaxGroups              int
 	ScannerMaxArticlesPerHour     int64
 	ValidationMaxManifestsPerHour int
@@ -276,6 +282,7 @@ func NodeProfileFor(ctx context.Context, identity Identity, cfg Config, now time
 			HealthChecker:       cfg.HealthChecker,
 			Coverage:            cfg.Coverage,
 			Scheduler:           cfg.Scheduler,
+			AdmissionRelay:      cfg.AdmissionRelay,
 		},
 		ModuleStatus: ModuleStatus{
 			Scanner:         enabledStatus(cfg.Scanner),
@@ -305,6 +312,8 @@ func NodeProfileFor(ctx context.Context, identity Identity, cfg Config, now time
 			PrivateNetwork:                  cfg.PrivateNetwork,
 			LiveQuerySupported:              false,
 			ManifestFetchRequiresMembership: true,
+			Visibility:                      firstNonBlank(cfg.Visibility, "unlisted"),
+			AcceptsJoinRequests:             cfg.AcceptsJoinRequests,
 		},
 		CreatedAt: ts,
 		UpdatedAt: ts,
@@ -316,6 +325,15 @@ func enabledStatus(enabled bool) string {
 		return "enabled"
 	}
 	return "disabled"
+}
+
+func firstNonBlank(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func ProviderBackboneHash(parts []string) string {

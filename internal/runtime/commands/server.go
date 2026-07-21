@@ -2,9 +2,11 @@ package commands
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -75,7 +77,7 @@ func (r *Runner) ExecuteServerWithOptions(opts ServerOptions) {
 	api.RegisterRoutes(e, appCtx)
 
 	srv := &http.Server{
-		Addr:              ":" + appCtx.Config.Port,
+		Addr:              httpListenAddress(appCtx.Config.BindAddress, appCtx.Config.Port),
 		Handler:           e,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
@@ -120,4 +122,12 @@ func (r *Runner) ExecuteServerWithOptions(opts ServerOptions) {
 	appCtx.Logger.Info("finalizing application resources")
 	appCtx.Close()
 	appCtx.Logger.Info("server shutdown complete")
+}
+
+func httpListenAddress(bindAddress, port string) string {
+	bindAddress = strings.TrimSpace(bindAddress)
+	if bindAddress == "" {
+		return ":" + port
+	}
+	return net.JoinHostPort(bindAddress, port)
 }

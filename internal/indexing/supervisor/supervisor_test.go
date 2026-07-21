@@ -89,10 +89,6 @@ func TestRunIncludesMaterializerStagesByDefault(t *testing.T) {
 		{Name: StageReleaseGenerateNZB},
 		{Name: StageReleaseArchiveNZB},
 		{Name: StageReleasePurgeArchivedSources},
-		{Name: StageInspectDiscoveryReadyRefresh},
-		{Name: StageInspectPAR2ReadyRefresh},
-		{Name: StageInspectArchiveReadyRefresh},
-		{Name: StageInspectMediaReadyRefresh},
 		{Name: StageInspectDiscovery},
 		{Name: StageInspectPAR2},
 		{Name: StageInspectNFO},
@@ -151,7 +147,7 @@ func TestRunIncludesMaterializerStagesByDefault(t *testing.T) {
 	}
 }
 
-func TestRunPipelineIncludesReadyRefreshAndMaintenanceExcludesPipeline(t *testing.T) {
+func TestRunPipelineIncludesInspectionAndMaintenanceExcludesPipeline(t *testing.T) {
 	runs := make(chan StageName, 4)
 	record := func(name StageName) RunnerFunc {
 		return func(context.Context) error {
@@ -172,11 +168,7 @@ func TestRunPipelineIncludesReadyRefreshAndMaintenanceExcludesPipeline(t *testin
 		{Name: StageRelease},
 		{Name: StageReleaseGenerateNZB},
 		{Name: StageReleaseArchiveNZB},
-		{Name: StageInspectDiscoveryReadyRefresh, Interval: time.Hour, Enabled: true, Runner: record(StageInspectDiscoveryReadyRefresh)},
-		{Name: StageInspectPAR2ReadyRefresh},
-		{Name: StageInspectArchiveReadyRefresh},
-		{Name: StageInspectMediaReadyRefresh},
-		{Name: StageInspectDiscovery},
+		{Name: StageInspectDiscovery, Interval: time.Hour, Enabled: true, Runner: record(StageInspectDiscovery)},
 		{Name: StageInspectPAR2},
 		{Name: StageInspectNFO},
 		{Name: StageInspectArchive},
@@ -213,8 +205,8 @@ func TestRunPipelineIncludesReadyRefreshAndMaintenanceExcludesPipeline(t *testin
 
 	select {
 	case name := <-runs:
-		if name != StageInspectDiscoveryReadyRefresh {
-			t.Fatalf("expected pipeline ready-refresh stage, got %s", name)
+		if name != StageInspectDiscovery {
+			t.Fatalf("expected pipeline inspection stage, got %s", name)
 		}
 	case <-time.After(250 * time.Millisecond):
 		t.Fatal("timed out waiting for pipeline stage")

@@ -27,6 +27,9 @@ type TrustPoolRecord struct {
 	MinNodeTrustScore          float64         `json:"min_node_trust_score"`
 	AcceptedEventTypes         []string        `json:"accepted_event_types"`
 	Enabled                    bool            `json:"enabled"`
+	Visibility                 string          `json:"visibility"`
+	JoinMode                   string          `json:"join_mode"`
+	AdmissionEnabled           bool            `json:"admission_enabled"`
 	CreatedAt                  time.Time       `json:"created_at"`
 	UpdatedAt                  time.Time       `json:"updated_at"`
 }
@@ -174,6 +177,9 @@ func (s *Store) ProjectFederationPoolEvent(ctx context.Context, event *events.Si
 			MinNodeTrustScore:          policy.MinNodeTrustScore,
 			AcceptedEventTypes:         acceptedTypes,
 			Enabled:                    true,
+			Visibility:                 firstNonBlank(body.Visibility, "unlisted"),
+			JoinMode:                   firstNonBlank(body.JoinMode, "approval"),
+			AdmissionEnabled:           body.AdmissionEnabled || body.JoinMode == "",
 		}); err != nil {
 			return err
 		}
@@ -197,6 +203,29 @@ func (s *Store) ProjectFederationPoolEvent(ctx context.Context, event *events.Si
 			})
 		}
 		return nil
+	case pools.EventTypePoolJoinRequest:
+		var body pools.JoinRequest
+		if err := json.Unmarshal(event.Body, &body); err != nil {
+			return err
+		}
+		if _, err := s.federationExecutor(ctx).ExecContext(ctx, `
+			UPDATE federation_nodes
+			SET base_url = COALESCE(NULLIF($2, ''), base_url),
+			    status = CASE
+			        WHEN status IN ('local', 'blocked', 'forked', 'connected') THEN status
+			        ELSE 'admission_pending'
+			    END,
+			    updated_at = NOW()
+			WHERE node_id = $1`, body.CandidateNodeID, strings.TrimSpace(body.CandidateURL)); err != nil {
+			return fmt.Errorf("update pool admission candidate: %w", err)
+		}
+		return s.UpsertFederationAdmission(ctx, FederationAdmissionRecord{
+			ProposalEventID: event.EventID, PoolID: body.PoolID,
+			GenesisEventID: body.GenesisEventID, CandidateNodeID: body.CandidateNodeID,
+			CandidateURL: body.CandidateURL, RelayNodeID: body.RelayNodeID,
+			RelayURL: body.RelayURL, RequestedRole: firstString(body.RequestedRoles, pools.RoleMember),
+			RequestedCapabilities: body.RequestedCapabilities, Status: "pending",
+		})
 	case pools.EventTypePoolMemberApproved:
 		var body pools.MemberApproved
 		if err := json.Unmarshal(event.Body, &body); err != nil {
@@ -206,7 +235,7 @@ func (s *Store) ProjectFederationPoolEvent(ctx context.Context, event *events.Si
 		if role == "" {
 			role = pools.RoleMember
 		}
-		return s.UpsertPoolMember(ctx, PoolMemberRecord{
+		if err := s.UpsertPoolMember(ctx, PoolMemberRecord{
 			PoolID:              body.PoolID,
 			NodeID:              body.SubjectNodeID,
 			Role:                role,
@@ -214,7 +243,10 @@ func (s *Store) ProjectFederationPoolEvent(ctx context.Context, event *events.Si
 			ApprovedEventID:     event.EventID,
 			AllowedCapabilities: body.AllowedCapabilities,
 			LimitsJSON:          body.Limits,
-		})
+		}); err != nil {
+			return err
+		}
+		return s.FinalizeFederationAdmission(ctx, body.ProposalEventID, event.EventID, "approved", "")
 	case pools.EventTypePoolMemberRevoked:
 		var body pools.MemberRevoked
 		if err := json.Unmarshal(event.Body, &body); err != nil {
@@ -237,10 +269,13 @@ func (s *Store) CanAcceptFederationEventForPools(ctx context.Context, authorNode
 	if len(normalizedPools) == 0 {
 		return PoolAuthorizationResult{Allowed: false, Reason: "missing_pool"}, nil
 	}
+	if len(normalizedPools) != 1 {
+		return PoolAuthorizationResult{Allowed: false, Reason: "multiple_pools_not_supported"}, nil
+	}
 	for _, poolID := range normalizedPools {
 		policy, err := s.GetTrustPoolPolicy(ctx, poolID)
 		if err == sql.ErrNoRows {
-			continue
+			return PoolAuthorizationResult{Allowed: false, Reason: "unknown_pool"}, nil
 		}
 		if err != nil {
 			return PoolAuthorizationResult{}, err
@@ -283,17 +318,33 @@ func (s *Store) UpsertTrustPool(ctx context.Context, pool TrustPoolRecord) error
 		return fmt.Errorf("pgindex store is not initialized")
 	}
 	acceptedTypesJSON, _ := json.Marshal(normalizeStrings(pool.AcceptedEventTypes))
-	_, err := s.db.ExecContext(ctx, `
+	poolID := strings.TrimSpace(pool.PoolID)
+	genesisEventID := strings.TrimSpace(pool.GenesisEventID)
+	if poolID == "" {
+		return fmt.Errorf("pool_id is required")
+	}
+	if genesisEventID != "" {
+		var existing string
+		err := s.federationExecutor(ctx).QueryRowContext(ctx, `SELECT COALESCE(genesis_event_id, '') FROM trust_pools WHERE pool_id = $1`, poolID).Scan(&existing)
+		if err != nil && err != sql.ErrNoRows {
+			return fmt.Errorf("read trust pool genesis binding: %w", err)
+		}
+		if existing != "" && existing != genesisEventID {
+			return fmt.Errorf("pool_id %q is already bound to genesis event %s", poolID, existing)
+		}
+	}
+	_, err := s.federationExecutor(ctx).ExecContext(ctx, `
 		INSERT INTO trust_pools (
 			pool_id, display_name, description, genesis_event_id, policy_json,
 			membership_threshold, moderation_threshold, checkpoint_witness_threshold,
-			accept_mode, min_node_trust_score, accepted_event_types, enabled, updated_at
+			accept_mode, min_node_trust_score, accepted_event_types, enabled,
+			visibility, join_mode, admission_enabled, updated_at
 		)
-		VALUES ($1, $2, $3, NULLIF($4, ''), $5::jsonb, $6, $7, $8, $9, $10, $11::jsonb, $12, NOW())
+		VALUES ($1, $2, $3, NULLIF($4, ''), $5::jsonb, $6, $7, $8, $9, $10, $11::jsonb, $12, $13, $14, $15, NOW())
 		ON CONFLICT (pool_id) DO UPDATE SET
 			display_name = EXCLUDED.display_name,
 			description = EXCLUDED.description,
-			genesis_event_id = COALESCE(EXCLUDED.genesis_event_id, trust_pools.genesis_event_id),
+			genesis_event_id = COALESCE(trust_pools.genesis_event_id, EXCLUDED.genesis_event_id),
 			policy_json = EXCLUDED.policy_json,
 			membership_threshold = EXCLUDED.membership_threshold,
 			moderation_threshold = EXCLUDED.moderation_threshold,
@@ -302,11 +353,14 @@ func (s *Store) UpsertTrustPool(ctx context.Context, pool TrustPoolRecord) error
 			min_node_trust_score = EXCLUDED.min_node_trust_score,
 			accepted_event_types = EXCLUDED.accepted_event_types,
 			enabled = EXCLUDED.enabled,
+			visibility = EXCLUDED.visibility,
+			join_mode = EXCLUDED.join_mode,
+			admission_enabled = EXCLUDED.admission_enabled,
 			updated_at = NOW()`,
-		pool.PoolID,
+		poolID,
 		pool.DisplayName,
 		pool.Description,
-		pool.GenesisEventID,
+		genesisEventID,
 		string(defaultJSON(pool.PolicyJSON, `{}`)),
 		positivePoolInt(pool.MembershipThreshold, 1),
 		positivePoolInt(pool.ModerationThreshold, 1),
@@ -315,6 +369,9 @@ func (s *Store) UpsertTrustPool(ctx context.Context, pool TrustPoolRecord) error
 		pool.MinNodeTrustScore,
 		string(acceptedTypesJSON),
 		pool.Enabled,
+		firstNonBlank(pool.Visibility, "unlisted"),
+		firstNonBlank(pool.JoinMode, "approval"),
+		pool.AdmissionEnabled,
 	)
 	if err != nil {
 		return fmt.Errorf("upsert trust pool: %w", err)
@@ -326,11 +383,12 @@ func (s *Store) ListTrustPools(ctx context.Context) ([]TrustPoolRecord, error) {
 	if s == nil || s.db == nil {
 		return nil, fmt.Errorf("pgindex store is not initialized")
 	}
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.federationExecutor(ctx).QueryContext(ctx, `
 		SELECT pool_id, display_name, COALESCE(description, ''), COALESCE(genesis_event_id, ''),
 		       policy_json, membership_threshold, moderation_threshold,
 		       checkpoint_witness_threshold, accept_mode, min_node_trust_score,
-		       accepted_event_types, enabled, created_at, updated_at
+		       accepted_event_types, enabled, visibility, join_mode,
+		       admission_enabled, created_at, updated_at
 		FROM trust_pools
 		ORDER BY pool_id`)
 	if err != nil {
@@ -354,6 +412,9 @@ func (s *Store) ListTrustPools(ctx context.Context) ([]TrustPoolRecord, error) {
 			&item.MinNodeTrustScore,
 			&acceptedTypesJSON,
 			&item.Enabled,
+			&item.Visibility,
+			&item.JoinMode,
+			&item.AdmissionEnabled,
 			&item.CreatedAt,
 			&item.UpdatedAt,
 		); err != nil {
@@ -369,7 +430,7 @@ func (s *Store) ListPoolMembers(ctx context.Context, poolID string) ([]PoolMembe
 	if s == nil || s.db == nil {
 		return nil, fmt.Errorf("pgindex store is not initialized")
 	}
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.federationExecutor(ctx).QueryContext(ctx, `
 		SELECT pool_id, node_id, role, status, COALESCE(approved_event_id, ''),
 		       COALESCE(revoked_event_id, ''), allowed_capabilities, limits_json,
 		       joined_at, revoked_at
@@ -426,7 +487,7 @@ func (s *Store) ListPoolControlEvents(ctx context.Context, poolID string, limit 
 		limit = 100
 	}
 	poolFilter, _ := json.Marshal([]string{poolID})
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.federationExecutor(ctx).QueryContext(ctx, `
 		SELECT event_id, event_type, author_node_id, pool_ids, body_json, created_at, received_at
 		FROM federation_events
 		WHERE validation_status = 'accepted'
@@ -464,7 +525,7 @@ func (s *Store) UpsertPoolMember(ctx context.Context, member PoolMemberRecord) e
 	}
 	allowedCapabilities, _ := json.Marshal(defaultAllowedCapabilities(member.Role, member.AllowedCapabilities))
 	limitsJSON := defaultJSON(member.LimitsJSON, `{}`)
-	_, err := s.db.ExecContext(ctx, `
+	_, err := s.federationExecutor(ctx).ExecContext(ctx, `
 		INSERT INTO pool_members (
 			pool_id, node_id, role, status, approved_event_id, allowed_capabilities,
 			limits_json, joined_at, updated_at
@@ -502,7 +563,7 @@ func (s *Store) RevokePoolMember(ctx context.Context, poolID, nodeID, eventID st
 		now := time.Now().UTC()
 		effectiveAt = &now
 	}
-	_, err := s.db.ExecContext(ctx, `
+	_, err := s.federationExecutor(ctx).ExecContext(ctx, `
 		UPDATE pool_members
 		SET status = 'revoked',
 		    revoked_event_id = NULLIF($3, ''),
@@ -527,7 +588,7 @@ func (s *Store) GetTrustPoolPolicy(ctx context.Context, poolID string) (pools.Po
 		return policy, fmt.Errorf("pgindex store is not initialized")
 	}
 	var acceptedTypesJSON []byte
-	err := s.db.QueryRowContext(ctx, `
+	err := s.federationExecutor(ctx).QueryRowContext(ctx, `
 		SELECT pool_id, membership_threshold, moderation_threshold,
 		       checkpoint_witness_threshold, accept_mode, min_node_trust_score,
 		       accepted_event_types
@@ -553,7 +614,7 @@ func (s *Store) ActivePoolAdminPublicKeys(ctx context.Context, poolID string) (m
 	if s == nil || s.db == nil {
 		return nil, fmt.Errorf("pgindex store is not initialized")
 	}
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.federationExecutor(ctx).QueryContext(ctx, `
 		SELECT n.node_id, n.public_key
 		FROM pool_members m
 		JOIN federation_nodes n ON n.node_id = m.node_id
@@ -582,7 +643,7 @@ func (s *Store) ActivePoolWitnessPublicKeys(ctx context.Context, poolID string) 
 	if s == nil || s.db == nil {
 		return nil, fmt.Errorf("pgindex store is not initialized")
 	}
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.federationExecutor(ctx).QueryContext(ctx, `
 		SELECT n.node_id, n.public_key
 		FROM pool_members m
 		JOIN federation_nodes n ON n.node_id = m.node_id
@@ -619,7 +680,7 @@ func (s *Store) ListPoolCheckpointLeaves(ctx context.Context, poolID string, lim
 		return nil, fmt.Errorf("checkpoint event_count is out of range")
 	}
 	poolFilter, _ := json.Marshal([]string{poolID})
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.federationExecutor(ctx).QueryContext(ctx, `
 		SELECT event_id, author_node_id, sequence, body_hash, created_at
 		FROM federation_events
 		WHERE validation_status = 'accepted'
@@ -648,7 +709,7 @@ func (s *Store) UpdateTrustPoolCheckpoint(ctx context.Context, poolID, eventID, 
 	if s == nil || s.db == nil {
 		return fmt.Errorf("pgindex store is not initialized")
 	}
-	res, err := s.db.ExecContext(ctx, `
+	res, err := s.federationExecutor(ctx).ExecContext(ctx, `
 		UPDATE trust_pools
 		SET latest_checkpoint_event_id = $2,
 		    latest_merkle_root = $3,
@@ -676,7 +737,7 @@ func (s *Store) GetPoolCheckpointEvent(ctx context.Context, poolID string) (*eve
 		return nil, fmt.Errorf("pool_id is required")
 	}
 	var eventID string
-	err := s.db.QueryRowContext(ctx, `
+	err := s.federationExecutor(ctx).QueryRowContext(ctx, `
 		SELECT COALESCE(latest_checkpoint_event_id, '')
 		FROM trust_pools
 		WHERE pool_id = $1
@@ -698,7 +759,7 @@ func (s *Store) IsActivePoolAdmin(ctx context.Context, poolID, nodeID string) (b
 		return false, fmt.Errorf("pgindex store is not initialized")
 	}
 	var ok bool
-	if err := s.db.QueryRowContext(ctx, `
+	if err := s.federationExecutor(ctx).QueryRowContext(ctx, `
 		SELECT EXISTS (
 			SELECT 1
 			FROM pool_members
@@ -714,7 +775,7 @@ func (s *Store) IsActivePoolAdmin(ctx context.Context, poolID, nodeID string) (b
 
 func (s *Store) IsActivePoolMember(ctx context.Context, poolID, nodeID string) (bool, error) {
 	var ok bool
-	if err := s.db.QueryRowContext(ctx, `
+	if err := s.federationExecutor(ctx).QueryRowContext(ctx, `
 		SELECT EXISTS (
 			SELECT 1
 			FROM pool_members
@@ -727,12 +788,21 @@ func (s *Store) IsActivePoolMember(ctx context.Context, poolID, nodeID string) (
 	return ok, nil
 }
 
+func (s *Store) IsFederationPoolMember(ctx context.Context, nodeID string) (bool, error) {
+	var exists bool
+	err := s.federationExecutor(ctx).QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM pool_members WHERE node_id = $1
+		)`, strings.TrimSpace(nodeID)).Scan(&exists)
+	return exists, err
+}
+
 func (s *Store) IsActiveFederationPoolMember(ctx context.Context, nodeID string) (bool, error) {
 	if s == nil || s.db == nil {
 		return false, fmt.Errorf("pgindex store is not initialized")
 	}
 	var active bool
-	err := s.db.QueryRowContext(ctx, `
+	err := s.federationExecutor(ctx).QueryRowContext(ctx, `
 		SELECT EXISTS (
 		  SELECT 1
 		  FROM pool_members
@@ -746,7 +816,7 @@ func (s *Store) IsActiveFederationPoolMember(ctx context.Context, nodeID string)
 }
 
 func (s *Store) PoolMemberHasCapability(ctx context.Context, poolID, nodeID string, required []string) (bool, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.federationExecutor(ctx).QueryContext(ctx, `
 		SELECT role, allowed_capabilities
 		FROM pool_members
 		WHERE pool_id = $1
@@ -773,7 +843,7 @@ func (s *Store) PoolMemberHasCapability(ctx context.Context, poolID, nodeID stri
 
 func (s *Store) FederationNodeTrustScore(ctx context.Context, nodeID string) (float64, error) {
 	var score float64
-	err := s.db.QueryRowContext(ctx, `
+	err := s.federationExecutor(ctx).QueryRowContext(ctx, `
 		SELECT local_trust_score
 		FROM federation_nodes
 		WHERE node_id = $1`, strings.TrimSpace(nodeID)).Scan(&score)
@@ -838,4 +908,13 @@ func containsString(values []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+func firstString(values []string, fallback string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return fallback
 }

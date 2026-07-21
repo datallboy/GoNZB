@@ -32,13 +32,6 @@ func TestFederationEventChainGapResolutionAndForkDetection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("node id: %v", err)
 	}
-	publicKey, err := node.PublicKey(ctx)
-	if err != nil {
-		t.Fatalf("public key: %v", err)
-	}
-	if err := store.UpsertFederationNode(ctx, FederationNodeRecord{NodeID: nodeID, PublicKey: publicKey, Status: "known"}); err != nil {
-		t.Fatalf("store node: %v", err)
-	}
 	t.Cleanup(func() {
 		_, _ = store.DB().ExecContext(context.Background(), `DELETE FROM federation_event_chain_issues WHERE author_node_id = $1`, nodeID)
 		_, _ = store.DB().ExecContext(context.Background(), `DELETE FROM federation_events WHERE author_node_id = $1`, nodeID)
@@ -50,6 +43,10 @@ func TestFederationEventChainGapResolutionAndForkDetection(t *testing.T) {
 	secondValidation, _ := events.Verify(second)
 	if err := store.AppendVerifiedFederationEvent(ctx, second, secondValidation); err != nil {
 		t.Fatalf("append gapped second event: %v", err)
+	}
+	var registered bool
+	if err := store.DB().QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM federation_nodes WHERE node_id = $1)`, nodeID).Scan(&registered); err != nil || !registered {
+		t.Fatalf("accepted relayed event did not register its author: registered=%v err=%v", registered, err)
 	}
 	if got := openChainIssueCount(t, store, nodeID, "sequence_gap"); got != 1 {
 		t.Fatalf("expected one open sequence gap, got %d", got)

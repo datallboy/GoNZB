@@ -1213,10 +1213,6 @@ export type IndexingRuntimeSettings = {
   release_generate_nzb: AdminStageConfigPatch
   release_archive_nzb: AdminStageConfigPatch
   release_purge_archived_sources?: AdminStageConfigPatch
-  inspect_discovery_ready_refresh: AdminStageConfigPatch
-  inspect_par2_ready_refresh: AdminStageConfigPatch
-  inspect_archive_ready_refresh: AdminStageConfigPatch
-  inspect_media_ready_refresh: AdminStageConfigPatch
   maintenance_tasks?: Record<
     string,
     AdminMaintenanceTaskPatch & { last_dry_run_at?: string }
@@ -1326,6 +1322,7 @@ export type AggregatorRuntimeSettings = {
   sources?: {
     local_blob?: RuntimeToggle
     usenet_indexer?: RuntimeToggle
+    gonzbnet?: RuntimeToggle
   }
 }
 
@@ -1683,6 +1680,9 @@ export type GoNZBNetTrustPool = {
   min_node_trust_score: number
   accepted_event_types: string[]
   enabled: boolean
+  visibility: string
+  join_mode: string
+  admission_enabled: boolean
   created_at: string
   updated_at: string
 }
@@ -1728,6 +1728,50 @@ export type GoNZBNetTrustPoolRequest = {
   min_node_trust_score?: number
   accepted_event_types?: string[]
   enabled?: boolean
+  visibility?: string
+  join_mode?: string
+  admission_enabled?: boolean
+}
+
+export type GoNZBNetAdmissionPool = {
+  pool_id: string
+  display_name: string
+  description?: string
+  genesis_event_id: string
+  membership_threshold: number
+  visibility: string
+  join_mode: string
+  member_count: number
+}
+
+export type GoNZBNetAdmissionRemote = {
+  well_known: { node_id: string; base_url: string }
+  profile: { node_id: string; public_key: string; alias?: string }
+  pools: GoNZBNetAdmissionPool[]
+}
+
+export type GoNZBNetAdmission = {
+  proposal_event_id: string
+  pool_id: string
+  genesis_event_id: string
+  candidate_node_id: string
+  candidate_url: string
+  relay_node_id: string
+  relay_url: string
+  requested_role: string
+  requested_capabilities: string[]
+  status: string
+  final_event_id: string
+  rejection_reason: string
+  created_at: string
+  updated_at: string
+}
+
+export type GoNZBNetAdmissionJoinResponse = {
+  status: string
+  proposal_event_id: string
+  pool_id: string
+  relay_url: string
 }
 
 export type GoNZBNetPoolMemberRequest = {
@@ -1965,6 +2009,12 @@ export type GoNZBNetConfigIssue = {
   severity: string
   field: string
   message: string
+}
+
+export type GoNZBNetMetrics = {
+  counters: Record<string, number>
+  durations: Record<string, { count: number; sum_seconds: number }>
+  gauges: Record<string, number>
 }
 
 export type GoNZBNetManifestResolveRequest = {

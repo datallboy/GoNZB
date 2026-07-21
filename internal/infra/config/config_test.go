@@ -247,6 +247,15 @@ func TestGoNZBNetAddendumConfigValidation(t *testing.T) {
 	}
 }
 
+func TestGoNZBNetVisibilityValidation(t *testing.T) {
+	cfg := minimalAggregatorConfig()
+	cfg.GoNZBNet.Visibility = "internet-wide"
+
+	if err := cfg.ValidateEffective(); err == nil {
+		t.Fatal("expected visibility validation error")
+	}
+}
+
 func minimalAggregatorConfig() *Config {
 	return &Config{
 		Modules: ModulesConfig{

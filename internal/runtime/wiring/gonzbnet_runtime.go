@@ -2,27 +2,50 @@ package wiring
 
 import (
 	"context"
+	"crypto/ed25519"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/datallboy/gonzb/internal/app"
+	"github.com/datallboy/gonzb/internal/gonzbnet/admission"
+	"github.com/datallboy/gonzb/internal/gonzbnet/canonical"
+	"github.com/datallboy/gonzb/internal/gonzbnet/capability"
+	"github.com/datallboy/gonzb/internal/gonzbnet/eventbody"
+	"github.com/datallboy/gonzb/internal/gonzbnet/events"
 	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
+	"github.com/datallboy/gonzb/internal/gonzbnet/pools"
 	"github.com/datallboy/gonzb/internal/gonzbnet/publisher"
 	"github.com/datallboy/gonzb/internal/gonzbnet/reassigner"
 	gonzbnetsync "github.com/datallboy/gonzb/internal/gonzbnet/sync"
+	"github.com/datallboy/gonzb/internal/gonzbnet/transportpolicy"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
 )
 
 const moduleNameGoNZBNet = "gonzbnet"
 
 type gonzbnetRuntimeModule struct {
-	appCtx    *app.Context
-	publisher *publisher.Service
-	pullSync  *gonzbnetsync.Service
-	reassign  *reassigner.Service
-	cancel    context.CancelFunc
-	running   bool
+	appCtx         *app.Context
+	identity       *identity.Identity
+	publisherStore publisher.Store
+	poolStore      interface {
+		ListActivePoolIDsForNode(context.Context, string) ([]string, error)
+		ListActivePoolIDsForNodeCapabilities(context.Context, string, []string) ([]string, error)
+	}
+	reassignStore  reassigner.Store
+	admissionStore interface {
+		ListFederationAdmissions(context.Context, string, string, int) ([]pgindex.FederationAdmissionRecord, error)
+		FinalizeFederationAdmission(context.Context, string, string, string, string) error
+		FederationEventExists(context.Context, string) (bool, error)
+		UpsertFederationNodeIdentity(context.Context, string, ed25519.PublicKey) error
+		ValidateFederationPoolControlEvent(context.Context, *events.SignedEvent) error
+		AppendVerifiedFederationEvent(context.Context, *events.SignedEvent, *events.ValidationResult) error
+		ProjectFederationPoolEvent(context.Context, *events.SignedEvent) error
+		UpsertFederationPeerURL(context.Context, string) (int64, error)
+	}
+	pullSync *gonzbnetsync.Service
+	cancel   context.CancelFunc
+	running  bool
 }
 
 func (m *gonzbnetRuntimeModule) Name() string { return moduleNameGoNZBNet }
@@ -33,9 +56,12 @@ func (m *gonzbnetRuntimeModule) Enabled() bool {
 
 func (m *gonzbnetRuntimeModule) Build(ctx context.Context) error {
 	m.stop()
-	m.publisher = nil
+	m.identity = nil
+	m.publisherStore = nil
+	m.poolStore = nil
+	m.reassignStore = nil
+	m.admissionStore = nil
 	m.pullSync = nil
-	m.reassign = nil
 	if !m.Enabled() {
 		return nil
 	}
@@ -61,16 +87,16 @@ func (m *gonzbnetRuntimeModule) Build(ctx context.Context) error {
 	if err := store.UpsertFederationNodeIdentity(ctx, nodeID, publicKey); err != nil {
 		return fmt.Errorf("persist local gonzbnet node identity: %w", err)
 	}
-	m.publisher = publisher.New(nodeIdentity, store, m.appCtx.Config.GoNZBNet.LocalPoolID)
-	m.publisher.SetReleaseReadyPolicy(gonzbnetReleaseReadyPolicy(m.appCtx))
-	if checker, ok := m.appCtx.NNTP.(interface {
-		FetchBodyPrefixForScope(context.Context, string, string, []string, int64) ([]byte, error)
-	}); ok {
-		m.publisher.SetArticleChecker(func(ctx context.Context, messageID string, groups []string) error {
-			_, err := checker.FetchBodyPrefixForScope(ctx, "gonzbnet_validator", messageID, groups, 1)
-			return err
-		})
+	poolStore, ok := m.appCtx.PGIndexStore.(interface {
+		ListActivePoolIDsForNode(context.Context, string) ([]string, error)
+		ListActivePoolIDsForNodeCapabilities(context.Context, string, []string) ([]string, error)
+	})
+	if !ok {
+		return fmt.Errorf("pgindex store does not support gonzbnet pool membership selection")
 	}
+	m.identity = nodeIdentity
+	m.publisherStore = store
+	m.poolStore = poolStore
 	if policyStore, ok := m.appCtx.PGIndexStore.(interface {
 		SetGoNZBNetManifestCachePolicy(int64, int)
 	}); ok {
@@ -79,8 +105,6 @@ func (m *gonzbnetRuntimeModule) Build(ctx context.Context) error {
 			m.appCtx.Config.GoNZBNet.ManifestCacheTTLDays,
 		)
 	}
-	m.publisher.SetManifestAvailabilityPublishing(m.appCtx.Config.GoNZBNet.ManifestAvailabilityEnabled)
-	m.publisher.SetManifestBuilding(m.appCtx.Config.GoNZBNet.ManifestBuilderEnabled)
 	syncStore, ok := m.appCtx.PGIndexStore.(gonzbnetsync.Store)
 	if !ok {
 		return fmt.Errorf("pgindex store does not support gonzbnet pull sync")
@@ -97,10 +121,21 @@ func (m *gonzbnetRuntimeModule) Build(ctx context.Context) error {
 	if !ok {
 		return fmt.Errorf("pgindex store does not support gonzbnet stale claim reassignment")
 	}
-	m.reassign, err = reassigner.New(nodeIdentity, reassignStore, m.appCtx.Config.GoNZBNet.LocalPoolID, m.appCtx.Config.GoNZBNet.CoverageMinTrustForClaim)
-	if err != nil {
-		return err
+	m.reassignStore = reassignStore
+	admissionStore, ok := m.appCtx.PGIndexStore.(interface {
+		ListFederationAdmissions(context.Context, string, string, int) ([]pgindex.FederationAdmissionRecord, error)
+		FinalizeFederationAdmission(context.Context, string, string, string, string) error
+		FederationEventExists(context.Context, string) (bool, error)
+		UpsertFederationNodeIdentity(context.Context, string, ed25519.PublicKey) error
+		ValidateFederationPoolControlEvent(context.Context, *events.SignedEvent) error
+		AppendVerifiedFederationEvent(context.Context, *events.SignedEvent, *events.ValidationResult) error
+		ProjectFederationPoolEvent(context.Context, *events.SignedEvent) error
+		UpsertFederationPeerURL(context.Context, string) (int64, error)
+	})
+	if !ok {
+		return fmt.Errorf("pgindex store does not support gonzbnet admission polling")
 	}
+	m.admissionStore = admissionStore
 	return nil
 }
 
@@ -108,21 +143,22 @@ func (m *gonzbnetRuntimeModule) Start(ctx context.Context) error {
 	if !m.Enabled() {
 		return nil
 	}
-	publishEnabled := m.publisher != nil &&
+	publishEnabled := m.publisherStore != nil &&
 		m.appCtx.Config.GoNZBNet.PublishReleaseCardsEnabled &&
 		m.appCtx.Config.GoNZBNet.ScannerEnabled
-	healthEnabled := m.publisher != nil &&
+	healthEnabled := m.publisherStore != nil &&
 		m.appCtx.Config.GoNZBNet.HealthAttestationsEnabled &&
 		m.appCtx.Config.GoNZBNet.HealthCheckerEnabled
-	validationEnabled := m.publisher != nil && m.appCtx.Config.GoNZBNet.ValidatorEnabled
+	validationEnabled := m.publisherStore != nil && m.appCtx.Config.GoNZBNet.ValidatorEnabled
 	pullEnabled := m.pullSync != nil && m.appCtx.Config.GoNZBNet.PullSyncEnabled
 	pushEnabled := m.pullSync != nil && m.appCtx.Config.GoNZBNet.PushSyncEnabled
 	gossipEnabled := m.pullSync != nil && m.appCtx.Config.GoNZBNet.WebSocketGossipEnabled
-	reassignEnabled := m.reassign != nil &&
+	reassignEnabled := m.reassignStore != nil &&
 		m.appCtx.Config.GoNZBNet.CoverageEnabled &&
 		m.appCtx.Config.GoNZBNet.SchedulerEnabled &&
 		strings.EqualFold(m.appCtx.Config.GoNZBNet.CoverageMode, "automatic")
-	if !publishEnabled && !healthEnabled && !validationEnabled && !pullEnabled && !pushEnabled && !gossipEnabled && !reassignEnabled {
+	admissionEnabled := m.admissionStore != nil
+	if !publishEnabled && !healthEnabled && !validationEnabled && !pullEnabled && !pushEnabled && !gossipEnabled && !reassignEnabled && !admissionEnabled {
 		return nil
 	}
 	if m.running {
@@ -131,13 +167,19 @@ func (m *gonzbnetRuntimeModule) Start(ctx context.Context) error {
 	childCtx, cancel := context.WithCancel(ctx)
 	m.cancel = cancel
 	m.running = true
+	if admissionEnabled {
+		go m.runAdmissionPolling(childCtx, 30*time.Second)
+	}
 
 	if publishEnabled {
 		interval := time.Duration(m.appCtx.Config.GoNZBNet.PublishReleaseCardsIntervalMin * float64(time.Minute))
 		batchSize := m.appCtx.Config.GoNZBNet.PublishReleaseCardsBatchSize
 		m.appCtx.Logger.Info("starting gonzbnet release-card publisher interval=%s batch_size=%d", interval, batchSize)
 		go func() {
-			if err := m.publisher.Run(childCtx, interval, batchSize); err != nil && childCtx.Err() == nil {
+			if err := m.runAcrossPools(childCtx, interval, capability.RequiredForEvent(pools.EventTypeReleaseCard), func(ctx context.Context, service *publisher.Service) error {
+				_, err := service.PublishOnce(ctx, batchSize)
+				return err
+			}); err != nil && childCtx.Err() == nil {
 				m.appCtx.Logger.Error("gonzbnet release-card publisher failed: %v", err)
 			}
 		}()
@@ -147,7 +189,10 @@ func (m *gonzbnetRuntimeModule) Start(ctx context.Context) error {
 		batchSize := m.appCtx.Config.GoNZBNet.HealthAttestationsBatchSize
 		m.appCtx.Logger.Info("starting gonzbnet health attestation publisher interval=%s batch_size=%d", interval, batchSize)
 		go func() {
-			if err := m.publisher.RunHealth(childCtx, interval, batchSize); err != nil && childCtx.Err() == nil {
+			if err := m.runAcrossPools(childCtx, interval, capability.RequiredForEvent(pools.EventTypeHealthAttestation), func(ctx context.Context, service *publisher.Service) error {
+				_, err := service.PublishHealthOnce(ctx, batchSize)
+				return err
+			}); err != nil && childCtx.Err() == nil {
 				m.appCtx.Logger.Error("gonzbnet health attestation publisher failed: %v", err)
 			}
 		}()
@@ -161,7 +206,10 @@ func (m *gonzbnetRuntimeModule) Start(ctx context.Context) error {
 		}
 		m.appCtx.Logger.Info("starting gonzbnet validator interval=%s batch_size=%d checksum_validation=%v", interval, batchSize, opts.ChecksumEnabled)
 		go func() {
-			if err := m.publisher.RunValidation(childCtx, interval, batchSize, opts); err != nil && childCtx.Err() == nil {
+			if err := m.runAcrossPools(childCtx, interval, []string{capability.Validator}, func(ctx context.Context, service *publisher.Service) error {
+				_, err := service.PublishValidationOnce(ctx, batchSize, opts)
+				return err
+			}); err != nil && childCtx.Err() == nil {
 				m.appCtx.Logger.Error("gonzbnet validator failed: %v", err)
 			}
 		}()
@@ -219,7 +267,7 @@ func (m *gonzbnetRuntimeModule) Start(ctx context.Context) error {
 		}
 		m.appCtx.Logger.Info("starting gonzbnet stale claim reassigner interval=%s limit=%d", interval, limit)
 		go func() {
-			if err := m.reassign.Run(childCtx, interval, limit); err != nil && childCtx.Err() == nil {
+			if err := m.runReassignAcrossPools(childCtx, interval, limit); err != nil && childCtx.Err() == nil {
 				m.appCtx.Logger.Error("gonzbnet stale claim reassigner failed: %v", err)
 			}
 		}()
@@ -250,11 +298,61 @@ func (m *gonzbnetRuntimeModule) ReadinessChecks(context.Context) []app.RuntimeCh
 	}
 	checks := []app.RuntimeCheck{
 		runtimeBoolCheck("gonzbnet_pgindex_store", m.appCtx.PGIndexStore != nil, "pgindex store is required"),
-		runtimeBoolCheck("gonzbnet_publisher", m.publisher != nil, "gonzbnet publisher is required"),
+		runtimeBoolCheck("gonzbnet_publisher", m.publisherStore != nil, "gonzbnet publisher is required"),
 		runtimeBoolCheck("gonzbnet_pull_sync", m.pullSync != nil, "gonzbnet pull sync is required"),
-		runtimeBoolCheck("gonzbnet_reassigner", m.reassign != nil, "gonzbnet stale claim reassigner is required"),
+		runtimeBoolCheck("gonzbnet_reassigner", m.reassignStore != nil, "gonzbnet stale claim reassigner is required"),
 	}
 	return checks
+}
+
+func (m *gonzbnetRuntimeModule) activePoolIDs(ctx context.Context, requiredCapabilities []string) ([]string, error) {
+	if m.identity == nil || m.poolStore == nil {
+		return nil, nil
+	}
+	nodeID, err := m.identity.NodeID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	active, err := m.poolStore.ListActivePoolIDsForNodeCapabilities(ctx, nodeID, requiredCapabilities)
+	if err != nil {
+		return nil, err
+	}
+	requested := map[string]struct{}{}
+	for _, poolID := range m.appCtx.Config.GoNZBNet.PublishPoolIDs {
+		if poolID = strings.TrimSpace(poolID); poolID != "" {
+			requested[poolID] = struct{}{}
+		}
+	}
+	result := make([]string, 0, len(active))
+	for _, poolID := range active {
+		poolID = strings.TrimSpace(poolID)
+		if poolID == "" {
+			continue
+		}
+		if len(requested) > 0 {
+			if _, ok := requested[poolID]; !ok {
+				continue
+			}
+		}
+		result = append(result, poolID)
+	}
+	return result, nil
+}
+
+func (m *gonzbnetRuntimeModule) publisherForPool(poolID string) *publisher.Service {
+	service := publisher.New(m.identity, m.publisherStore, poolID)
+	service.SetReleaseReadyPolicy(gonzbnetReleaseReadyPolicy(m.appCtx))
+	service.SetManifestAvailabilityPublishing(m.appCtx.Config.GoNZBNet.ManifestAvailabilityEnabled)
+	service.SetManifestBuilding(m.appCtx.Config.GoNZBNet.ManifestBuilderEnabled)
+	if checker, ok := m.appCtx.NNTP.(interface {
+		FetchBodyPrefixForScope(context.Context, string, string, []string, int64) ([]byte, error)
+	}); ok {
+		service.SetArticleChecker(func(ctx context.Context, messageID string, groups []string) error {
+			_, err := checker.FetchBodyPrefixForScope(ctx, "gonzbnet_validator", messageID, groups, 1)
+			return err
+		})
+	}
+	return service
 }
 
 func gonzbnetReleaseReadyPolicy(appCtx *app.Context) pgindex.ReleaseReadyPolicy {
@@ -281,6 +379,158 @@ func gonzbnetReleaseReadyPolicy(appCtx *app.Context) pgindex.ReleaseReadyPolicy 
 		RetainRequireNFO:                     release.RetainRequireNFO,
 		RetainRequireSFV:                     release.RetainRequireSFV,
 	})
+}
+
+func (m *gonzbnetRuntimeModule) runAcrossPools(ctx context.Context, interval time.Duration, requiredCapabilities []string, run func(context.Context, *publisher.Service) error) error {
+	for {
+		poolIDs, err := m.activePoolIDs(ctx, requiredCapabilities)
+		if err != nil {
+			return err
+		}
+		for _, poolID := range poolIDs {
+			if err := run(ctx, m.publisherForPool(poolID)); err != nil {
+				return fmt.Errorf("pool %s: %w", poolID, err)
+			}
+		}
+		if interval <= 0 {
+			return nil
+		}
+		timer := time.NewTimer(interval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func (m *gonzbnetRuntimeModule) runReassignAcrossPools(ctx context.Context, interval time.Duration, limit int) error {
+	for {
+		poolIDs, err := m.activePoolIDs(ctx, []string{capability.CoverageCoordinator})
+		if err != nil {
+			return err
+		}
+		for _, poolID := range poolIDs {
+			service, err := reassigner.New(m.identity, m.reassignStore, poolID, m.appCtx.Config.GoNZBNet.CoverageMinTrustForClaim)
+			if err != nil {
+				return err
+			}
+			if _, err := service.RunOnce(ctx, limit); err != nil {
+				return fmt.Errorf("pool %s: %w", poolID, err)
+			}
+		}
+		if interval <= 0 {
+			return nil
+		}
+		timer := time.NewTimer(interval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func (m *gonzbnetRuntimeModule) runAdmissionPolling(ctx context.Context, interval time.Duration) {
+	for {
+		if err := m.refreshPendingAdmissions(ctx); err != nil && ctx.Err() == nil {
+			m.appCtx.Logger.Warn("gonzbnet admission refresh failed: %v", err)
+		}
+		timer := time.NewTimer(interval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+	}
+}
+
+func (m *gonzbnetRuntimeModule) refreshPendingAdmissions(ctx context.Context) error {
+	nodeID, err := m.identity.NodeID(ctx)
+	if err != nil {
+		return err
+	}
+	items, err := m.admissionStore.ListFederationAdmissions(ctx, "", "pending", 100)
+	if err != nil {
+		return err
+	}
+	client := admission.NewClient(m.identity, m.appCtx.Config.GoNZBNet.AllowInsecurePeerHTTP)
+	for _, item := range items {
+		if item.CandidateNodeID != nodeID || strings.TrimSpace(item.RelayURL) == "" {
+			continue
+		}
+		status, err := client.FetchStatus(ctx, item.RelayURL, item.PoolID, item.ProposalEventID)
+		if err != nil {
+			m.appCtx.Logger.Warn("gonzbnet admission status unavailable pool=%s relay=%s: %v", item.PoolID, item.RelayURL, err)
+			continue
+		}
+		if status.Status == "rejected" {
+			if err := m.admissionStore.FinalizeFederationAdmission(ctx, item.ProposalEventID, "", "rejected", status.RejectionReason); err != nil {
+				return err
+			}
+			continue
+		}
+		admissionEvents := make([]*events.SignedEvent, 0, len(status.TrustEvents)+2)
+		admissionEvents = append(admissionEvents, status.GenesisEvent)
+		admissionEvents = append(admissionEvents, status.TrustEvents...)
+		admissionEvents = append(admissionEvents, status.ApprovalEvent)
+		seenEvents := map[string]struct{}{}
+		for _, event := range admissionEvents {
+			if event == nil {
+				continue
+			}
+			if _, seen := seenEvents[event.EventID]; seen {
+				continue
+			}
+			seenEvents[event.EventID] = struct{}{}
+			validation, err := events.VerifyWithin(event, time.Now().UTC(), time.Duration(m.appCtx.Config.GoNZBNet.TimeToleranceSeconds)*time.Second, 0)
+			if err != nil || validation == nil || !validation.OK {
+				return fmt.Errorf("admission event %s failed verification", event.EventID)
+			}
+			if err := eventbody.Validate(event, time.Now().UTC(), time.Duration(m.appCtx.Config.GoNZBNet.TimeToleranceSeconds)*time.Second); err != nil {
+				return err
+			}
+			publicKey, err := canonical.DecodeBase64URL(event.AuthorPublicKey)
+			if err != nil || len(publicKey) != ed25519.PublicKeySize {
+				return fmt.Errorf("admission event %s has invalid author key", event.EventID)
+			}
+			if err := m.admissionStore.UpsertFederationNodeIdentity(ctx, event.AuthorNodeID, ed25519.PublicKey(publicKey)); err != nil {
+				return err
+			}
+			if err := m.admissionStore.ValidateFederationPoolControlEvent(ctx, event); err != nil {
+				return err
+			}
+			exists, err := m.admissionStore.FederationEventExists(ctx, event.EventID)
+			if err != nil {
+				return err
+			}
+			if !exists {
+				if err := m.admissionStore.AppendVerifiedFederationEvent(ctx, event, validation); err != nil {
+					return err
+				}
+			}
+			if err := m.admissionStore.ProjectFederationPoolEvent(ctx, event); err != nil {
+				return err
+			}
+		}
+		if status.Status == "approved" {
+			for _, endpoint := range status.MemberEndpoints {
+				if strings.TrimSpace(endpoint.NodeID) == "" || endpoint.NodeID == nodeID || strings.TrimSpace(endpoint.BaseURL) == "" {
+					continue
+				}
+				if err := transportpolicy.ValidateHTTPURL(endpoint.BaseURL, m.appCtx.Config.GoNZBNet.AllowInsecurePeerHTTP); err != nil {
+					return fmt.Errorf("pool member endpoint failed transport policy: %w", err)
+				}
+				if _, err := m.admissionStore.UpsertFederationPeerURL(ctx, endpoint.BaseURL); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func (m *gonzbnetRuntimeModule) stop() {
