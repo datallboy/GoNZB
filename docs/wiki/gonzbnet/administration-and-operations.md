@@ -26,8 +26,8 @@ protocol detail:
   article or release-health evidence. A successful empty poll is reported as a
   check, not as useful work. Off jobs are kept in one collapsed section.
 - **Pools** shows each selected pool's unique active nodes, grouped pool roles,
-  operational capabilities, release-health evidence, article-availability
-  evidence, freshness, and signed contributions. Detailed administration labels
+  operational capabilities, pool-wide release-health and article-availability
+  summaries, freshness, and signed contributions. Detailed administration labels
   the underlying membership rows as role grants because one node can hold more
   than one. Pool creation, joining, admission, and membership controls are kept
   with this view.

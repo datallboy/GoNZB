@@ -204,7 +204,31 @@ function RoleEvidencePanel({ job, nodeID, evidence }: { job: GoNZBNetRoleJob; no
     const types = new Set(['ValidatorCapacity', 'ArticleAvailabilityAttestation', 'ChecksumAttestation', 'HealthAttestation'])
     const signed = poolEvents.filter((event) => types.has(event.event_type))
     const tasks = evidence.validationTasks.filter((item) => item.pool_id === evidence.poolID)
-    return <section className="gonzbnet-evidence stack"><h4>Validation inputs and results</h4><div className="stat-grid"><Metric label="Pending tasks" value={tasks.filter((item) => item.status === 'pending').length} detail={`${tasks.filter((item) => item.status === 'completed').length} completed in loaded rows`} /><Metric label="Article results" value={evidence.articleAvailability.length} detail="signed reachability attestations" /><Metric label="Health results" value={evidence.health.length} detail="signed release-health attestations" /></div>{evidence.articleAvailability.length || evidence.health.length ? <div className="table-scroll"><table className="data-table data-table--compact"><thead><tr><th>Evidence</th><th>Release</th><th>Status</th><th>Articles</th><th>Method</th><th>Checked</th></tr></thead><tbody>{evidence.articleAvailability.slice(0, 6).map((item) => <tr key={item.attestation_id}><td>Article availability</td><td className="mono-cell">{shortID(item.release_id)}</td><td><Status value={item.status} /></td><td>{formatNumber(item.articles_available)} / {formatNumber(item.articles_total)}</td><td>{item.method}</td><td>{formatDateTime(item.checked_at)}</td></tr>)}{evidence.health.slice(0, 6).map((item) => <tr key={item.attestation_id}><td>Release health</td><td className="mono-cell">{shortID(item.release_id)}</td><td><Status value={item.status} /></td><td>{formatNumber(item.articles_available)} / {formatNumber(item.articles_total)}</td><td>{item.method}</td><td>{formatDateTime(item.checked_at)}</td></tr>)}</tbody></table></div> : <EmptyEvidence>The validator is polling successfully, but it has produced no validation or health evidence yet. It needs pending manifest tasks sourced from pool releases.</EmptyEvidence>}<h4>Validation queue</h4>{tasks.length ? <div className="table-scroll"><table className="data-table data-table--compact"><thead><tr><th>Release</th><th>Manifest</th><th>Pool</th><th>Status</th><th>Attempts</th><th>Updated</th></tr></thead><tbody>{tasks.slice(0, 10).map((item) => <tr key={item.task_id}><td className="mono-cell">{shortID(item.release_id)}</td><td className="mono-cell">{shortID(item.manifest_id)}</td><td>{item.pool_id}</td><td><Status value={item.status} /></td><td>{formatNumber(item.attempts)}</td><td>{formatDateTime(item.completed_at ?? item.claimed_at ?? item.updated_at)}</td></tr>)}</tbody></table></div> : <EmptyEvidence>No validation tasks have been created from received manifests.</EmptyEvidence>}<h4>Recent signed validator output</h4><RecentSignedEvents events={signed} nodeID={nodeID} /></section>
+    return (
+      <section className="gonzbnet-evidence stack">
+        <h4>Validation inputs and results</h4>
+        <div className="stat-grid">
+          <Metric label="Pending tasks" value={tasks.filter((item) => item.status === 'pending').length} detail={`${tasks.filter((item) => item.status === 'completed').length} completed in loaded rows`} />
+          <Metric label="Article results" value={evidence.articleAvailability.length} detail="signed reachability attestations" />
+          <Metric label="Health results" value={evidence.health.length} detail="signed release-health attestations" />
+        </div>
+        <h4>Recent article availability and health evidence</h4>
+        {evidence.articleAvailability.length || evidence.health.length ? (
+          <div className="table-scroll"><table className="data-table data-table--compact"><thead><tr><th>Evidence</th><th>Release</th><th>Status</th><th>Articles</th><th>Method</th><th>Checked</th></tr></thead><tbody>
+            {evidence.articleAvailability.slice(0, 6).map((item) => <tr key={item.attestation_id}><td>Article availability</td><td className="mono-cell">{shortID(item.release_id)}</td><td><Status value={item.status} /></td><td>{formatNumber(item.articles_available)} / {formatNumber(item.articles_total)}</td><td>{item.method}</td><td>{formatDateTime(item.checked_at)}</td></tr>)}
+            {evidence.health.slice(0, 6).map((item) => <tr key={item.attestation_id}><td>Release health</td><td className="mono-cell">{shortID(item.release_id)}</td><td><Status value={item.status} /></td><td>{formatNumber(item.articles_available)} / {formatNumber(item.articles_total)}</td><td>{item.method}</td><td>{formatDateTime(item.checked_at)}</td></tr>)}
+          </tbody></table></div>
+        ) : <EmptyEvidence>The validator is polling successfully, but it has produced no validation or health evidence yet. It needs pending manifest tasks sourced from pool releases.</EmptyEvidence>}
+        <h4>Validation queue</h4>
+        {tasks.length ? (
+          <div className="table-scroll"><table className="data-table data-table--compact"><thead><tr><th>Release</th><th>Manifest</th><th>Pool</th><th>Status</th><th>Attempts</th><th>Updated</th></tr></thead><tbody>
+            {tasks.slice(0, 10).map((item) => <tr key={item.task_id}><td className="mono-cell">{shortID(item.release_id)}</td><td className="mono-cell">{shortID(item.manifest_id)}</td><td>{item.pool_id}</td><td><Status value={item.status} /></td><td>{formatNumber(item.attempts)}</td><td>{formatDateTime(item.completed_at ?? item.claimed_at ?? item.updated_at)}</td></tr>)}
+          </tbody></table></div>
+        ) : <EmptyEvidence>No validation tasks have been created from received manifests.</EmptyEvidence>}
+        <h4>Recent signed validator output</h4>
+        <RecentSignedEvents events={signed} nodeID={nodeID} />
+      </section>
+    )
   }
   if (job.key === 'coordinate') {
     return <section className="gonzbnet-evidence stack"><h4>Coverage work coordinated by this node</h4><div className="stat-grid"><Metric label="Assignments" value={evidence.assignments.length} /><Metric label="Active claims" value={evidence.claims.filter((item) => item.status === 'active').length} /><Metric label="Outcomes" value={evidence.outcomes.length} detail={`${evidence.outcomes.reduce((sum, item) => sum + (item.release_count ?? 0), 0)} releases reported`} /></div>{evidence.outcomes.length ? <div className="table-scroll"><table className="data-table data-table--compact"><thead><tr><th>Group</th><th>Range</th><th>Outcome</th><th>Releases</th><th>At</th></tr></thead><tbody>{evidence.outcomes.slice(0, 8).map((item) => <tr key={item.outcome_id}><td>{item.group}</td><td>{item.range_start}–{item.range_end}</td><td><Status value={item.outcome_type} /></td><td>{formatNumber(item.release_count ?? 0)}</td><td>{formatDateTime(item.occurred_at)}</td></tr>)}</tbody></table></div> : <EmptyEvidence>No coverage completion or failure results exist in the selected pool.</EmptyEvidence>}</section>
@@ -327,7 +351,7 @@ function EvidenceCard({ title, report }: { title: string; report: GoNZBNetPoolHe
   )
 }
 
-function PoolsView({ report, pool, availability }: { report: GoNZBNetPoolHealthReport | null; pool?: GoNZBNetOverviewReport['pools'][number]; availability: GoNZBNetArticleAvailabilityDiagnostic[] }) {
+function PoolsView({ report, pool }: { report: GoNZBNetPoolHealthReport | null; pool?: GoNZBNetOverviewReport['pools'][number] }) {
   if (!report) return <div className="page-card muted-copy">Select or create a pool to see shared health and contribution reporting.</div>
   return (
     <div className="stack">
@@ -341,12 +365,6 @@ function PoolsView({ report, pool, availability }: { report: GoNZBNetPoolHealthR
         <h2 className="section-title">Member contributions</h2>
         <div className="table-scroll"><table className="data-table data-table--compact"><thead><tr><th>Node</th><th>Releases</th><th>Manifests</th><th>Health</th><th>Availability</th><th>Coverage</th><th>Last contribution</th></tr></thead><tbody>
           {report.contributors.map((item) => <tr key={item.node_id}><td>{item.alias || item.node_id}</td><td>{formatNumber(item.release_cards)}</td><td>{formatNumber(item.manifests)}</td><td>{formatNumber(item.health_attestations)}</td><td>{formatNumber(item.article_availability)}</td><td>{formatNumber(item.coverage_events)}</td><td>{formatDateTime(item.last_contribution_at)}</td></tr>)}
-        </tbody></table></div>
-      </section>
-      <section className="page-card table-card stack">
-        <h2 className="section-title">Recent article availability evidence</h2>
-        <div className="table-scroll"><table className="data-table data-table--compact"><thead><tr><th>Release</th><th>Reporter</th><th>Status</th><th>Available</th><th>Checked</th></tr></thead><tbody>
-          {availability.map((item) => <tr key={item.attestation_id}><td className="mono-cell">{item.release_id}</td><td className="mono-cell">{item.author_node_id}</td><td><Status value={item.status} /></td><td>{formatNumber(item.articles_available)} / {formatNumber(item.articles_total)}</td><td>{formatDateTime(item.checked_at)}</td></tr>)}
         </tbody></table></div>
       </section>
     </div>
@@ -404,6 +422,6 @@ function ActivityView({ report, window, onWindowChange }: { report: GoNZBNetActi
 export function GoNZBNetReporting(props: Props) {
   if (props.view === 'overview') return <OverviewView report={props.overview} />
   if (props.view === 'roles') return <RolesView report={props.roles} evidence={props.evidence} />
-  if (props.view === 'pools') return <PoolsView report={props.poolHealth} pool={props.overview?.pools.find((pool) => pool.pool_id === props.poolHealth?.pool_id)} availability={props.articleAvailability} />
+  if (props.view === 'pools') return <PoolsView report={props.poolHealth} pool={props.overview?.pools.find((pool) => pool.pool_id === props.poolHealth?.pool_id)} />
   return <ActivityView report={props.activity} window={props.activityWindow} onWindowChange={props.onActivityWindowChange} />
 }
