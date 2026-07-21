@@ -7,6 +7,12 @@ cross the federation boundary.
 
 ## Admin WebUI
 
+Use **Settings > GoNZBNet** to configure operational participation: local
+roles, aggregator consumption, peers/admission, publication and shared health,
+coverage, validation, caching, synchronization, protocol limits, and privacy.
+The page identifies the bootstrap-only fields that still require YAML and a
+process restart.
+
 Open `/admin/gonzbnet`. `Overview` contains routine operations:
 
 - node identity, advertised profile, readiness, and capability state;

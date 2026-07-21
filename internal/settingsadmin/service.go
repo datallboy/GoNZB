@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/datallboy/gonzb/internal/app"
+	"github.com/datallboy/gonzb/internal/gonzbnet/transportpolicy"
 	"github.com/datallboy/gonzb/internal/infra/config"
 )
 
@@ -172,6 +173,7 @@ func ValidateRuntimeSettings(base *config.Config, runtime *app.RuntimeSettings) 
 	issues = append(issues, validateDownload(runtime.Download)...)
 	issues = append(issues, validateNNTPPool(runtime.NNTPPool)...)
 	issues = append(issues, validateIndexing(runtime.Indexing)...)
+	issues = append(issues, validateGoNZBNet(runtime.GoNZBNet)...)
 
 	indexingEnabled := anyIndexerStageEnabled(runtime.Indexing)
 	if indexingEnabled {
@@ -183,6 +185,57 @@ func ValidateRuntimeSettings(base *config.Config, runtime *app.RuntimeSettings) 
 		return fmt.Errorf("runtime settings validation failed: %s", strings.Join(issues, "; "))
 	}
 	return nil
+}
+
+func validateGoNZBNet(in *app.GoNZBNetRuntimeSettings) []string {
+	if in == nil {
+		return nil
+	}
+	issues := make([]string, 0)
+	positiveInt := func(field string, value int) {
+		if value <= 0 {
+			issues = append(issues, fmt.Sprintf("gonzbnet.%s must be greater than 0", field))
+		}
+	}
+	positiveFloat := func(field string, value float64) {
+		if value <= 0 {
+			issues = append(issues, fmt.Sprintf("gonzbnet.%s must be greater than 0", field))
+		}
+	}
+
+	positiveInt("publish_release_cards_batch_size", in.PublishReleaseCardsBatchSize)
+	positiveFloat("publish_release_cards_interval_minutes", in.PublishReleaseCardsIntervalMin)
+	positiveInt("health_attestations_batch_size", in.HealthAttestationsBatchSize)
+	positiveFloat("health_attestations_interval_minutes", in.HealthAttestationsIntervalMin)
+	positiveInt("validation_batch_size", in.ValidationBatchSize)
+	positiveFloat("validation_interval_minutes", in.ValidationIntervalMin)
+	positiveFloat("pull_sync_interval_minutes", in.PullSyncIntervalMin)
+	positiveFloat("push_sync_interval_minutes", in.PushSyncIntervalMin)
+	positiveInt("push_sync_batch_size", in.PushSyncBatchSize)
+	positiveFloat("gossip_interval_minutes", in.GossipIntervalMin)
+	positiveInt("gossip_batch_size", in.GossipBatchSize)
+	positiveInt("gossip_ttl", in.GossipTTL)
+	positiveInt("gossip_fanout", in.GossipFanout)
+	positiveInt("max_event_bytes", in.MaxEventBytes)
+	positiveInt("max_manifest_bytes", in.MaxManifestBytes)
+	positiveInt("manifest_fetch_timeout_seconds", in.ManifestFetchTimeoutSeconds)
+	positiveInt("max_batch_events", in.MaxBatchEvents)
+	positiveInt("rate_limit_events_per_minute", in.RateLimitEventsPerMinute)
+	positiveInt("time_tolerance_seconds", in.TimeToleranceSeconds)
+	positiveInt("max_event_age_hours", in.MaxEventAgeHours)
+	positiveInt("nonce_ttl_seconds", in.NonceTTLSeconds)
+	if in.ScannerMaxGroups < 0 || in.ScannerMaxArticlesPerHour < 0 || in.ScannerClaimTTLMinutes < 0 || in.ScannerCheckpointIntervalSecs < 0 {
+		issues = append(issues, "gonzbnet scanner limits must be greater than or equal to 0")
+	}
+	if in.ManifestCacheMaxBytes < 0 || in.ManifestCacheTTLDays < 0 {
+		issues = append(issues, "gonzbnet manifest cache limits must be greater than or equal to 0")
+	}
+	for index, peerURL := range in.ManualPeers {
+		if err := transportpolicy.ValidateHTTPURL(peerURL, in.AllowInsecurePeerHTTP); err != nil {
+			issues = append(issues, fmt.Sprintf("gonzbnet.manual_peers[%d]: %s", index, err))
+		}
+	}
+	return issues
 }
 
 func validateNNTPPool(pool *app.NNTPPoolRuntimeSettings) []string {

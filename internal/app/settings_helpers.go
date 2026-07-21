@@ -15,6 +15,7 @@ func DefaultRuntimeSettings() *RuntimeSettings {
 		IndexerServers:    []ServerRuntimeSettings{},
 		Indexers:          []IndexerRuntimeSettings{},
 		Aggregator:        &AggregatorRuntimeSettings{},
+		GoNZBNet:          defaultGoNZBNetRuntimeSettings(),
 		Download: &DownloadRuntimeSettings{
 			OutDir:            "./downloads",
 			CompletedDir:      "./downloads/completed",
@@ -87,6 +88,9 @@ func WithRuntimeDefaults(in *RuntimeSettings) *RuntimeSettings {
 	if out.Aggregator == nil {
 		out.Aggregator = defaults.Aggregator
 	}
+	if out.GoNZBNet == nil {
+		out.GoNZBNet = defaults.GoNZBNet
+	}
 	if out.Download == nil {
 		out.Download = defaults.Download
 	}
@@ -95,6 +99,17 @@ func WithRuntimeDefaults(in *RuntimeSettings) *RuntimeSettings {
 		out.Indexing = defaults.Indexing
 	} else {
 		out.Indexing = cloneIndexing(out.Indexing)
+	}
+	return out
+}
+
+// WithRuntimeDefaultsFromConfig preserves bootstrap GoNZBNet behavior when an
+// older persisted runtime snapshot predates the GoNZBNet settings section.
+func WithRuntimeDefaultsFromConfig(in *RuntimeSettings, cfg *config.Config) *RuntimeSettings {
+	hadGoNZBNet := in != nil && in.GoNZBNet != nil
+	out := WithRuntimeDefaults(in)
+	if !hadGoNZBNet && cfg != nil {
+		out.GoNZBNet = goNZBNetRuntimeFromConfig(cfg.GoNZBNet)
 	}
 	return out
 }
@@ -234,6 +249,7 @@ func FromConfig(cfg *config.Config) *RuntimeSettings {
 		IndexerServers:    make([]ServerRuntimeSettings, 0, len(cfg.Servers)),
 		Indexers:          make([]IndexerRuntimeSettings, 0, len(cfg.Indexers)),
 		Aggregator:        aggregatorRuntimeFromConfig(cfg.Aggregator),
+		GoNZBNet:          goNZBNetRuntimeFromConfig(cfg.GoNZBNet),
 		ArrIntegrations:   []ArrIntegrationRuntimeSettings{},
 		Download: &DownloadRuntimeSettings{
 			OutDir:            cfg.Download.OutDir,
@@ -423,6 +439,207 @@ func aggregatorRuntimeFromConfig(cfg config.AggregatorConfig) *AggregatorRuntime
 	}
 }
 
+func defaultGoNZBNetRuntimeSettings() *GoNZBNetRuntimeSettings {
+	return &GoNZBNetRuntimeSettings{
+		Visibility:                     "unlisted",
+		AllowPoolCreation:              true,
+		AllowJoinRequests:              true,
+		AdmissionRelayEnabled:          true,
+		ConsumerEnabled:                true,
+		IndexProjectionEnabled:         true,
+		ManifestCacheEnabled:           true,
+		PublishReleaseCardsBatchSize:   50,
+		PublishReleaseCardsIntervalMin: 10,
+		HealthAttestationsBatchSize:    50,
+		HealthAttestationsIntervalMin:  30,
+		ScannerMaxGroups:               25,
+		ScannerMaxArticlesPerHour:      250000,
+		ScannerClaimTTLMinutes:         30,
+		ScannerCheckpointIntervalSecs:  300,
+		ScannerRespectRemoteClaims:     true,
+		CoverageMode:                   "manual",
+		CoverageMinTrustForClaim:       0.65,
+		CoverageValidationOverlapPct:   10,
+		CoverageStaleClaimPenalty:      true,
+		CoverageProviderScopeMode:      "hash_only",
+		ValidationBatchSize:            25,
+		ValidationIntervalMin:          15,
+		ValidationTiers:                []string{"metadata", "article_stat", "segment_stat"},
+		ValidationMaxManifestsPerHour:  500,
+		ValidationSamplePercent:        10,
+		ValidationPublishProviderScope: true,
+		ManifestCacheMaxBytes:          10 * 1024 * 1024 * 1024,
+		ManifestCacheTTLDays:           90,
+		ManifestCacheServeTrustedPools: true,
+		PullSyncIntervalMin:            10,
+		PushSyncIntervalMin:            10,
+		PushSyncBatchSize:              100,
+		GossipIntervalMin:              1,
+		GossipBatchSize:                100,
+		GossipTTL:                      4,
+		GossipFanout:                   4,
+		MaxEventBytes:                  262144,
+		MaxManifestBytes:               10485760,
+		ManifestFetchTimeoutSeconds:    20,
+		MaxBatchEvents:                 100,
+		RateLimitEventsPerMinute:       120,
+		TimeToleranceSeconds:           120,
+		MaxEventAgeHours:               720,
+		NonceTTLSeconds:                600,
+	}
+}
+
+func goNZBNetRuntimeFromConfig(cfg config.GoNZBNetConfig) *GoNZBNetRuntimeSettings {
+	return &GoNZBNetRuntimeSettings{
+		NodeAlias:                      cfg.NodeAlias,
+		AdvertiseURL:                   cfg.AdvertiseURL,
+		AllowInsecurePeerHTTP:          cfg.AllowInsecurePeerHTTP,
+		PublishPoolIDs:                 append([]string(nil), cfg.PublishPoolIDs...),
+		ManualPeers:                    append([]string(nil), cfg.ManualPeers...),
+		Visibility:                     cfg.Visibility,
+		AllowPoolCreation:              cfg.AllowPoolCreation,
+		AllowJoinRequests:              cfg.AllowJoinRequests,
+		AdmissionRelayEnabled:          cfg.AdmissionRelayEnabled,
+		ConsumerEnabled:                cfg.ConsumerEnabled,
+		ScannerEnabled:                 cfg.ScannerEnabled,
+		IndexProjectionEnabled:         cfg.IndexProjectionEnabled,
+		ManifestBuilderEnabled:         cfg.ManifestBuilderEnabled,
+		ManifestCacheEnabled:           cfg.ManifestCacheEnabled,
+		ValidatorEnabled:               cfg.ValidatorEnabled,
+		HealthCheckerEnabled:           cfg.HealthCheckerEnabled,
+		CoverageEnabled:                cfg.CoverageEnabled,
+		SchedulerEnabled:               cfg.SchedulerEnabled,
+		PublishReleaseCardsEnabled:     cfg.PublishReleaseCardsEnabled,
+		PublishReleaseCardsBatchSize:   cfg.PublishReleaseCardsBatchSize,
+		PublishReleaseCardsIntervalMin: cfg.PublishReleaseCardsIntervalMin,
+		ManifestAvailabilityEnabled:    cfg.ManifestAvailabilityEnabled,
+		HealthAttestationsEnabled:      cfg.HealthAttestationsEnabled,
+		HealthAttestationsBatchSize:    cfg.HealthAttestationsBatchSize,
+		HealthAttestationsIntervalMin:  cfg.HealthAttestationsIntervalMin,
+		ScannerMaxGroups:               cfg.ScannerMaxGroups,
+		ScannerMaxArticlesPerHour:      cfg.ScannerMaxArticlesPerHour,
+		ScannerClaimTTLMinutes:         cfg.ScannerClaimTTLMinutes,
+		ScannerCheckpointIntervalSecs:  cfg.ScannerCheckpointIntervalSecs,
+		ScannerRespectRemoteClaims:     cfg.ScannerRespectRemoteClaims,
+		ScannerAllowUnassignedWork:     cfg.ScannerAllowUnassignedWork,
+		CoverageMode:                   cfg.CoverageMode,
+		CoverageMinTrustForClaim:       cfg.CoverageMinTrustForClaim,
+		CoverageValidationOverlapPct:   cfg.CoverageValidationOverlapPct,
+		CoverageStaleClaimPenalty:      cfg.CoverageStaleClaimPenalty,
+		CoverageProviderScopeMode:      cfg.CoverageProviderScopeMode,
+		ValidationBatchSize:            cfg.ValidationBatchSize,
+		ValidationIntervalMin:          cfg.ValidationIntervalMin,
+		ValidationTiers:                append([]string(nil), cfg.ValidationTiers...),
+		ValidationMaxManifestsPerHour:  cfg.ValidationMaxManifestsPerHour,
+		ValidationSamplePercent:        cfg.ValidationSamplePercent,
+		ValidationAllowSamplePayload:   cfg.ValidationAllowSamplePayload,
+		ValidationAllowPAR2:            cfg.ValidationAllowPAR2,
+		ValidationPublishProviderScope: cfg.ValidationPublishProviderScope,
+		ChecksumValidationEnabled:      cfg.ChecksumValidationEnabled,
+		ManifestCacheMaxBytes:          cfg.ManifestCacheMaxBytes,
+		ManifestCacheTTLDays:           cfg.ManifestCacheTTLDays,
+		ManifestCacheServeTrustedPools: cfg.ManifestCacheServeTrustedPools,
+		PullSyncEnabled:                cfg.PullSyncEnabled,
+		PullSyncIntervalMin:            cfg.PullSyncIntervalMin,
+		PushSyncEnabled:                cfg.PushSyncEnabled,
+		PushSyncIntervalMin:            cfg.PushSyncIntervalMin,
+		PushSyncBatchSize:              cfg.PushSyncBatchSize,
+		WebSocketGossipEnabled:         cfg.WebSocketGossipEnabled,
+		GossipIntervalMin:              cfg.GossipIntervalMin,
+		GossipBatchSize:                cfg.GossipBatchSize,
+		GossipTTL:                      cfg.GossipTTL,
+		GossipFanout:                   cfg.GossipFanout,
+		PeerExchangeEnabled:            cfg.PeerExchangeEnabled,
+		RelayEnabled:                   cfg.RelayEnabled,
+		MaxEventBytes:                  cfg.MaxEventBytes,
+		MaxManifestBytes:               cfg.MaxManifestBytes,
+		ManifestFetchTimeoutSeconds:    cfg.ManifestFetchTimeoutSeconds,
+		MaxBatchEvents:                 cfg.MaxBatchEvents,
+		RateLimitEventsPerMinute:       cfg.RateLimitEventsPerMinute,
+		TimeToleranceSeconds:           cfg.TimeToleranceSeconds,
+		MaxEventAgeHours:               cfg.MaxEventAgeHours,
+		NonceTTLSeconds:                cfg.NonceTTLSeconds,
+		ShareProviderBackbone:          cfg.ShareProviderBackbone,
+		ShareSourceIndexer:             cfg.ShareSourceIndexer,
+	}
+}
+
+func applyGoNZBNetRuntimeToConfig(out *config.GoNZBNetConfig, in *GoNZBNetRuntimeSettings) {
+	if out == nil || in == nil {
+		return
+	}
+	out.NodeAlias = strings.TrimSpace(in.NodeAlias)
+	out.AdvertiseURL = strings.TrimSpace(in.AdvertiseURL)
+	out.AllowInsecurePeerHTTP = in.AllowInsecurePeerHTTP
+	out.PublishPoolIDs = append([]string(nil), in.PublishPoolIDs...)
+	out.ManualPeers = append([]string(nil), in.ManualPeers...)
+	out.Visibility = strings.TrimSpace(in.Visibility)
+	out.AllowPoolCreation = in.AllowPoolCreation
+	out.AllowJoinRequests = in.AllowJoinRequests
+	out.AdmissionRelayEnabled = in.AdmissionRelayEnabled
+	out.ConsumerEnabled = in.ConsumerEnabled
+	out.ScannerEnabled = in.ScannerEnabled
+	out.IndexProjectionEnabled = in.IndexProjectionEnabled
+	out.ManifestBuilderEnabled = in.ManifestBuilderEnabled
+	out.ManifestCacheEnabled = in.ManifestCacheEnabled
+	out.ValidatorEnabled = in.ValidatorEnabled
+	out.HealthCheckerEnabled = in.HealthCheckerEnabled
+	out.CoverageEnabled = in.CoverageEnabled
+	out.SchedulerEnabled = in.SchedulerEnabled
+	out.PublishReleaseCardsEnabled = in.PublishReleaseCardsEnabled
+	out.PublishReleaseCardsBatchSize = in.PublishReleaseCardsBatchSize
+	out.PublishReleaseCardsIntervalMin = in.PublishReleaseCardsIntervalMin
+	out.ManifestAvailabilityEnabled = in.ManifestAvailabilityEnabled
+	out.HealthAttestationsEnabled = in.HealthAttestationsEnabled
+	out.HealthAttestationsBatchSize = in.HealthAttestationsBatchSize
+	out.HealthAttestationsIntervalMin = in.HealthAttestationsIntervalMin
+	out.ScannerMaxGroups = in.ScannerMaxGroups
+	out.ScannerMaxArticlesPerHour = in.ScannerMaxArticlesPerHour
+	out.ScannerClaimTTLMinutes = in.ScannerClaimTTLMinutes
+	out.ScannerCheckpointIntervalSecs = in.ScannerCheckpointIntervalSecs
+	out.ScannerRespectRemoteClaims = in.ScannerRespectRemoteClaims
+	out.ScannerAllowUnassignedWork = in.ScannerAllowUnassignedWork
+	out.CoverageMode = strings.TrimSpace(in.CoverageMode)
+	out.CoverageMinTrustForClaim = in.CoverageMinTrustForClaim
+	out.CoverageValidationOverlapPct = in.CoverageValidationOverlapPct
+	out.CoverageStaleClaimPenalty = in.CoverageStaleClaimPenalty
+	out.CoverageProviderScopeMode = strings.TrimSpace(in.CoverageProviderScopeMode)
+	out.ValidationBatchSize = in.ValidationBatchSize
+	out.ValidationIntervalMin = in.ValidationIntervalMin
+	out.ValidationTiers = append([]string(nil), in.ValidationTiers...)
+	out.ValidationMaxManifestsPerHour = in.ValidationMaxManifestsPerHour
+	out.ValidationSamplePercent = in.ValidationSamplePercent
+	out.ValidationAllowSamplePayload = in.ValidationAllowSamplePayload
+	out.ValidationAllowPAR2 = in.ValidationAllowPAR2
+	out.ValidationPublishProviderScope = in.ValidationPublishProviderScope
+	out.ChecksumValidationEnabled = in.ChecksumValidationEnabled
+	out.ManifestCacheMaxBytes = in.ManifestCacheMaxBytes
+	out.ManifestCacheTTLDays = in.ManifestCacheTTLDays
+	out.ManifestCacheServeTrustedPools = in.ManifestCacheServeTrustedPools
+	out.PullSyncEnabled = in.PullSyncEnabled
+	out.PullSyncIntervalMin = in.PullSyncIntervalMin
+	out.PushSyncEnabled = in.PushSyncEnabled
+	out.PushSyncIntervalMin = in.PushSyncIntervalMin
+	out.PushSyncBatchSize = in.PushSyncBatchSize
+	out.WebSocketGossipEnabled = in.WebSocketGossipEnabled
+	out.GossipIntervalMin = in.GossipIntervalMin
+	out.GossipBatchSize = in.GossipBatchSize
+	out.GossipTTL = in.GossipTTL
+	out.GossipFanout = in.GossipFanout
+	out.PeerExchangeEnabled = in.PeerExchangeEnabled
+	out.RelayEnabled = in.RelayEnabled
+	out.MaxEventBytes = in.MaxEventBytes
+	out.MaxManifestBytes = in.MaxManifestBytes
+	out.ManifestFetchTimeoutSeconds = in.ManifestFetchTimeoutSeconds
+	out.MaxBatchEvents = in.MaxBatchEvents
+	out.RateLimitEventsPerMinute = in.RateLimitEventsPerMinute
+	out.TimeToleranceSeconds = in.TimeToleranceSeconds
+	out.MaxEventAgeHours = in.MaxEventAgeHours
+	out.NonceTTLSeconds = in.NonceTTLSeconds
+	out.ShareProviderBackbone = in.ShareProviderBackbone
+	out.ShareSourceIndexer = in.ShareSourceIndexer
+}
+
 // ApplyToConfig applies runtime-editable settings on top of bootstrap config.
 func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config {
 	if base == nil {
@@ -434,6 +651,9 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 	effective.Servers = append([]config.ServerConfig(nil), base.Servers...)
 	effective.Indexers = append([]config.IndexerConfig(nil), base.Indexers...)
 	effective.Aggregator = base.Aggregator
+	effective.GoNZBNet.PublishPoolIDs = append([]string(nil), base.GoNZBNet.PublishPoolIDs...)
+	effective.GoNZBNet.ManualPeers = append([]string(nil), base.GoNZBNet.ManualPeers...)
+	effective.GoNZBNet.ValidationTiers = append([]string(nil), base.GoNZBNet.ValidationTiers...)
 	effective.Download.CleanupExtensions = append([]string(nil), base.Download.CleanupExtensions...)
 	effective.Indexing.Newsgroups = append([]string(nil), base.Indexing.Newsgroups...)
 
@@ -458,6 +678,10 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 		effective.Aggregator.Sources.LocalBlob.Enabled = runtime.Aggregator.Sources.LocalBlob.Enabled
 		effective.Aggregator.Sources.UsenetIndexer.Enabled = runtime.Aggregator.Sources.UsenetIndexer.Enabled
 		effective.Aggregator.Sources.GoNZBNet.Enabled = runtime.Aggregator.Sources.GoNZBNet.Enabled
+	}
+
+	if runtime.GoNZBNet != nil {
+		applyGoNZBNetRuntimeToConfig(&effective.GoNZBNet, runtime.GoNZBNet)
 	}
 
 	if runtime.Download != nil {
@@ -601,6 +825,7 @@ func ApplyPatch(current *RuntimeSettings, patch *RuntimeSettingsPatch) *RuntimeS
 		Indexers:          append([]IndexerRuntimeSettings(nil), current.Indexers...),
 		ArrIntegrations:   append([]ArrIntegrationRuntimeSettings(nil), current.ArrIntegrations...),
 		Aggregator:        cloneAggregator(current.Aggregator),
+		GoNZBNet:          cloneGoNZBNet(current.GoNZBNet),
 		Download:          cloneDownload(current.Download),
 		NNTPPool:          cloneNNTPPool(current.NNTPPool),
 		Indexing:          cloneIndexing(current.Indexing),
@@ -621,6 +846,9 @@ func ApplyPatch(current *RuntimeSettings, patch *RuntimeSettingsPatch) *RuntimeS
 	}
 	if patch.Aggregator != nil {
 		next.Aggregator = cloneAggregator(patch.Aggregator)
+	}
+	if patch.GoNZBNet != nil {
+		next.GoNZBNet = cloneGoNZBNet(patch.GoNZBNet)
 	}
 	if patch.Download != nil {
 		next.Download = cloneDownload(patch.Download)
@@ -652,6 +880,7 @@ func CloneRuntimeSettings(in *RuntimeSettings) *RuntimeSettings {
 		Indexers:          append([]IndexerRuntimeSettings(nil), in.Indexers...),
 		ArrIntegrations:   append([]ArrIntegrationRuntimeSettings(nil), in.ArrIntegrations...),
 		Aggregator:        cloneAggregator(in.Aggregator),
+		GoNZBNet:          cloneGoNZBNet(in.GoNZBNet),
 		Download:          cloneDownload(in.Download),
 		NNTPPool:          cloneNNTPPool(in.NNTPPool),
 		Indexing:          cloneIndexing(in.Indexing),
@@ -698,6 +927,7 @@ func RuntimeConfigured(in *RuntimeSettings) bool {
 		len(in.Indexers) > 0 ||
 		len(in.ArrIntegrations) > 0 ||
 		in.Aggregator != nil && (in.Aggregator.Sources.LocalBlob.Enabled || in.Aggregator.Sources.UsenetIndexer.Enabled || in.Aggregator.Sources.GoNZBNet.Enabled) ||
+		goNZBNetRuntimeConfigured(in.GoNZBNet) ||
 		downloadConfigured(in.Download) ||
 		indexingConfigured(in.Indexing)
 }
@@ -895,6 +1125,25 @@ func cloneAggregator(in *AggregatorRuntimeSettings) *AggregatorRuntimeSettings {
 	}
 	cp := *in
 	return &cp
+}
+
+func cloneGoNZBNet(in *GoNZBNetRuntimeSettings) *GoNZBNetRuntimeSettings {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	out.PublishPoolIDs = append([]string(nil), in.PublishPoolIDs...)
+	out.ManualPeers = append([]string(nil), in.ManualPeers...)
+	out.ValidationTiers = append([]string(nil), in.ValidationTiers...)
+	return &out
+}
+
+func goNZBNetRuntimeConfigured(in *GoNZBNetRuntimeSettings) bool {
+	return in != nil && (in.ConsumerEnabled || in.ScannerEnabled || in.IndexProjectionEnabled ||
+		in.ManifestBuilderEnabled || in.ManifestCacheEnabled || in.ValidatorEnabled ||
+		in.HealthCheckerEnabled || in.CoverageEnabled || in.SchedulerEnabled ||
+		in.PullSyncEnabled || in.PushSyncEnabled || in.WebSocketGossipEnabled ||
+		in.RelayEnabled || len(in.ManualPeers) > 0 || len(in.PublishPoolIDs) > 0)
 }
 
 func cloneIndexing(in *IndexingRuntimeSettings) *IndexingRuntimeSettings {

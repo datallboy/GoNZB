@@ -1326,6 +1326,79 @@ export type AggregatorRuntimeSettings = {
   }
 }
 
+export type GoNZBNetRuntimeSettings = {
+  node_alias: string
+  advertise_url: string
+  allow_insecure_peer_http: boolean
+  publish_pool_ids: string[]
+  manual_peers: string[]
+  visibility: string
+  allow_pool_creation: boolean
+  allow_join_requests: boolean
+  admission_relay_enabled: boolean
+  consumer_enabled: boolean
+  scanner_enabled: boolean
+  index_projection_enabled: boolean
+  manifest_builder_enabled: boolean
+  manifest_cache_enabled: boolean
+  validator_enabled: boolean
+  health_checker_enabled: boolean
+  coverage_enabled: boolean
+  scheduler_enabled: boolean
+  publish_release_cards_enabled: boolean
+  publish_release_cards_batch_size: number
+  publish_release_cards_interval_minutes: number
+  manifest_availability_enabled: boolean
+  health_attestations_enabled: boolean
+  health_attestations_batch_size: number
+  health_attestations_interval_minutes: number
+  scanner_max_groups: number
+  scanner_max_articles_per_hour: number
+  scanner_claim_ttl_minutes: number
+  scanner_checkpoint_interval_seconds: number
+  scanner_respect_remote_claims: boolean
+  scanner_allow_unassigned_work: boolean
+  coverage_mode: string
+  coverage_min_trust_for_claim: number
+  coverage_validation_overlap_percent: number
+  coverage_stale_claim_penalty: boolean
+  coverage_provider_scope_mode: string
+  validation_batch_size: number
+  validation_interval_minutes: number
+  validation_tiers: string[]
+  validation_max_manifests_per_hour: number
+  validation_sample_percent: number
+  validation_allow_sample_payload_fetch: boolean
+  validation_allow_par2_validation: boolean
+  validation_publish_provider_scope_hash: boolean
+  checksum_validation_enabled: boolean
+  manifest_cache_max_bytes: number
+  manifest_cache_ttl_days: number
+  manifest_cache_serve_to_trusted_pools: boolean
+  pull_sync_enabled: boolean
+  pull_sync_interval_minutes: number
+  push_sync_enabled: boolean
+  push_sync_interval_minutes: number
+  push_sync_batch_size: number
+  websocket_gossip_enabled: boolean
+  gossip_interval_minutes: number
+  gossip_batch_size: number
+  gossip_ttl: number
+  gossip_fanout: number
+  peer_exchange_enabled: boolean
+  relay_enabled: boolean
+  max_event_bytes: number
+  max_manifest_bytes: number
+  manifest_fetch_timeout_seconds: number
+  max_batch_events: number
+  rate_limit_events_per_minute: number
+  time_tolerance_seconds: number
+  max_event_age_hours: number
+  nonce_ttl_seconds: number
+  share_provider_backbone_hash: boolean
+  share_source_indexer_hash: boolean
+}
+
 export type ServerRuntimeSettings = {
   id: string
   host: string
@@ -1380,6 +1453,7 @@ export type RuntimeSettings = {
   indexer_servers?: ServerRuntimeSettings[]
   indexers?: IndexerRuntimeSettings[]
   aggregator?: AggregatorRuntimeSettings
+  gonzbnet?: GoNZBNetRuntimeSettings
   download?: DownloadRuntimeSettings
   nntp_pool?: NNTPPoolRuntimeSettings
   indexing?: IndexingRuntimeSettings

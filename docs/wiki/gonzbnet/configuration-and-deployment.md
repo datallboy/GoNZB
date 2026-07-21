@@ -26,8 +26,36 @@ interface. An empty value preserves the default all-interface listener. The
 local E2E fixture sets `bind_address: 127.0.0.1` on every test node.
 
 The module is disabled by default. Configuration is loaded from YAML and can
-be overridden through GoNZB's environment binding. Local runtime settings can
-also change supported operational fields through the admin settings surface.
+be overridden through GoNZB's environment binding. After bootstrap, use
+**Settings > GoNZBNet** for operational behavior. Saved runtime settings take
+precedence over the corresponding YAML values and reload the module.
+
+## Bootstrap And Runtime Settings
+
+Keep fields that establish process and protocol identity in `config.yaml` or a
+protected environment/secret source:
+
+- `modules.gonzbnet.enabled`, PostgreSQL DSN, server port, and bind address;
+- `mode`, `spec_version`, `private_network`, `network_id`, and `local_pool_id`;
+- `http_enabled` and `http_base_path`;
+- `keys_dir` and `key_password`;
+- `relay_api_key`;
+- reserved privacy controls `live_query_enabled` and `send_user_context`.
+
+The GoNZBNet runtime-settings section manages node alias and advertised URL,
+manual peers and publication pools, visibility/admission, participation roles,
+release/manifest/health publication, scanner and coverage policy, validation,
+manifest cache policy, pull/push/gossip/peer exchange/relay, transport limits,
+and optional provider/source hash disclosure. The aggregator's GoNZBNet source
+toggle is kept in the same tab because it controls whether local users consume
+the resulting federated catalog.
+
+YAML examples in this document remain useful as bootstrap defaults and for
+unattended provisioning. Once a settings revision exists, make operational
+changes in one place—the WebUI or runtime settings API—to avoid mistaking a
+shadowed YAML value for the effective value. Existing installations whose
+saved settings predate the GoNZBNet section inherit their current YAML values
+until the section is first saved.
 
 ## Minimal Consumer
 

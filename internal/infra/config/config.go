@@ -706,7 +706,7 @@ func (c *Config) validate() error {
 	if c.GoNZBNet.LiveQueryEnabled {
 		return errors.New("gonzbnet.live_query_enabled is reserved; searches must use the local federated cache")
 	}
-	if err := validateGoNZBNetConfig(c.GoNZBNet); err != nil {
+	if err := validateGoNZBNetConfig(c.GoNZBNet, c.Modules.GoNZBNet.Enabled); err != nil {
 		return err
 	}
 	if err := validateIndexingStageConfig("indexing.scrape_latest", c.Indexing.ScrapeLatest); err != nil {
@@ -947,7 +947,7 @@ func (c *Config) validate() error {
 	return nil
 }
 
-func validateGoNZBNetConfig(cfg GoNZBNetConfig) error {
+func validateGoNZBNetConfig(cfg GoNZBNetConfig, moduleEnabled bool) error {
 	switch strings.TrimSpace(cfg.Visibility) {
 	case "", "private", "unlisted", "pool", "public":
 	default:
@@ -999,6 +999,51 @@ func validateGoNZBNetConfig(cfg GoNZBNetConfig) error {
 	}
 	if cfg.ManifestCacheTTLDays < 0 {
 		return errors.New("gonzbnet.manifest_cache_ttl_days must be greater than or equal to 0")
+	}
+	if !moduleEnabled {
+		return nil
+	}
+	if cfg.PublishReleaseCardsEnabled && cfg.PublishReleaseCardsBatchSize <= 0 {
+		return errors.New("gonzbnet.publish_release_cards_batch_size must be greater than 0")
+	}
+	if cfg.PublishReleaseCardsEnabled && cfg.PublishReleaseCardsIntervalMin <= 0 {
+		return errors.New("gonzbnet.publish_release_cards_interval_minutes must be greater than 0")
+	}
+	if cfg.HealthAttestationsEnabled && cfg.HealthAttestationsBatchSize <= 0 {
+		return errors.New("gonzbnet.health_attestations_batch_size must be greater than 0")
+	}
+	if cfg.HealthAttestationsEnabled && cfg.HealthAttestationsIntervalMin <= 0 {
+		return errors.New("gonzbnet.health_attestations_interval_minutes must be greater than 0")
+	}
+	if cfg.ValidatorEnabled && cfg.ValidationBatchSize <= 0 {
+		return errors.New("gonzbnet.validation_batch_size must be greater than 0")
+	}
+	if cfg.ValidatorEnabled && cfg.ValidationIntervalMin <= 0 {
+		return errors.New("gonzbnet.validation_interval_minutes must be greater than 0")
+	}
+	if cfg.PullSyncEnabled && cfg.PullSyncIntervalMin <= 0 {
+		return errors.New("gonzbnet.pull_sync_interval_minutes must be greater than 0")
+	}
+	if cfg.PushSyncEnabled && cfg.PushSyncIntervalMin <= 0 {
+		return errors.New("gonzbnet.push_sync_interval_minutes must be greater than 0")
+	}
+	if cfg.PushSyncEnabled && cfg.PushSyncBatchSize <= 0 {
+		return errors.New("gonzbnet.push_sync_batch_size must be greater than 0")
+	}
+	if cfg.WebSocketGossipEnabled && cfg.GossipIntervalMin <= 0 {
+		return errors.New("gonzbnet.gossip_interval_minutes must be greater than 0")
+	}
+	if cfg.WebSocketGossipEnabled && (cfg.GossipBatchSize <= 0 || cfg.GossipTTL <= 0 || cfg.GossipFanout <= 0) {
+		return errors.New("gonzbnet gossip batch size, ttl, and fanout must be greater than 0")
+	}
+	if cfg.HTTPEnabled && (cfg.MaxEventBytes <= 0 || cfg.MaxManifestBytes <= 0 || cfg.MaxBatchEvents <= 0) {
+		return errors.New("gonzbnet event, manifest, and batch limits must be greater than 0")
+	}
+	if cfg.ConsumerEnabled && cfg.ManifestFetchTimeoutSeconds <= 0 {
+		return errors.New("gonzbnet.manifest_fetch_timeout_seconds must be greater than 0")
+	}
+	if cfg.HTTPEnabled && (cfg.RateLimitEventsPerMinute <= 0 || cfg.TimeToleranceSeconds <= 0 || cfg.MaxEventAgeHours <= 0 || cfg.NonceTTLSeconds <= 0) {
+		return errors.New("gonzbnet rate and time limits must be greater than 0")
 	}
 	return nil
 }
