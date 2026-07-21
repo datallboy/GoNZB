@@ -643,13 +643,14 @@ func TestGoNZBNetAdminReportingRolesGroupsRuntimeComponents(t *testing.T) {
 	cfg := testGoNZBNetAdminConfig(t)
 	cfg.Modules.GoNZBNet.Enabled = true
 	cfg.GoNZBNet.PullSyncEnabled = true
+	cfg.GoNZBNet.ScannerEnabled = true
 	cfg.GoNZBNet.PublishReleaseCardsEnabled = true
 	lastSuccess := time.Now().UTC().Add(-time.Minute)
 	store := &fakeGoNZBNetAdminStore{
 		activePoolIDs: []string{"pool.local"},
 		activityRollups: []activity.Rollup{{
 			Component: activity.ComponentReleasePublisher, Job: activity.JobContribute,
-			LastSuccessAt: &lastSuccess,
+			LastSuccessAt: &lastSuccess, LastUsefulAt: &lastSuccess,
 		}},
 	}
 	e := echo.New()

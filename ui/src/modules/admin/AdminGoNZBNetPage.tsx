@@ -634,6 +634,15 @@ export function AdminGoNZBNetPage() {
     }, { replace: true })
   }
 
+  function selectPool(next: string) {
+    setPoolID(next)
+    setSearchParams((current) => {
+      const updated = new URLSearchParams(current)
+      updated.set('pool_id', next)
+      return updated
+    }, { replace: true })
+  }
+
   async function refresh() {
     setLoading(true)
     try {
@@ -740,6 +749,19 @@ export function AdminGoNZBNetPage() {
   useEffect(() => {
     void refresh()
   }, [effectivePoolID, mode, activityWindow])
+
+  useEffect(() => {
+    if (!trustPools.length || trustPools.some((pool) => pool.pool_id === effectivePoolID)) {
+      return
+    }
+    const firstPool = trustPools.find((pool) => pool.enabled) ?? trustPools[0]
+    setPoolID(firstPool.pool_id)
+    setSearchParams((current) => {
+      const updated = new URLSearchParams(current)
+      updated.set('pool_id', firstPool.pool_id)
+      return updated
+    }, { replace: true })
+  }, [effectivePoolID, setSearchParams, trustPools])
 
   async function handleCreatePool(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -1204,19 +1226,21 @@ export function AdminGoNZBNetPage() {
           <button className={`settings-tab${view === 'pools' ? ' is-active' : ''}`} type="button" role="tab" aria-selected={view === 'pools'} onClick={() => selectView('pools')}>Pools</button>
           <button className={`settings-tab${view === 'activity' ? ' is-active' : ''}`} type="button" role="tab" aria-selected={view === 'activity'} onClick={() => selectView('activity')}>Activity</button>
         </div>
-        {view === 'pools' || view === 'activity' ? (
+        {view === 'roles' || view === 'pools' || view === 'activity' ? (
           <div className="toolbar-grid">
             <label className="field">
               <span>Pool</span>
-              <input className="table-input" value={poolID} onChange={(event) => setPoolID(event.target.value)} />
+              <select className="table-input" value={poolID} onChange={(event) => selectPool(event.target.value)}>
+                {trustPools.length ? trustPools.map((pool) => <option key={pool.pool_id} value={pool.pool_id}>{pool.display_name || pool.pool_id} ({pool.pool_id})</option>) : <option value={poolID}>{poolID}</option>}
+              </select>
             </label>
-            <label className="field">
+            {view === 'activity' ? <label className="field">
               <span>Coverage mode</span>
               <select className="table-input" value={mode} onChange={(event) => setMode(event.target.value as ActionMode)}>
                 <option value="scanner">scanner</option>
                 <option value="validator">validator</option>
               </select>
-            </label>
+            </label> : null}
           </div>
         ) : null}
         {error ? <div className="banner error">{error}</div> : null}
@@ -1232,6 +1256,20 @@ export function AdminGoNZBNetPage() {
         articleAvailability={articleAvailability}
         activityWindow={activityWindow}
         onActivityWindowChange={selectActivityWindow}
+        evidence={{
+          poolID: effectivePoolID,
+          events: eventDiagnostics,
+          peers: peerDiagnostics,
+          deliveries: deliveryDiagnostics,
+          validationTasks: validationTaskDiagnostics,
+          releaseSources: releaseSourceDiagnostics,
+          manifestSources: manifestSourceDiagnostics,
+          health: healthDiagnostics,
+          articleAvailability,
+          assignments,
+          claims,
+          outcomes,
+        }}
       />
 
       {view === 'pools' ? (

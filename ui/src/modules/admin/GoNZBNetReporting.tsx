@@ -2,10 +2,20 @@ import type {
   GoNZBNetActivityReport,
   GoNZBNetActivityRollup,
   GoNZBNetArticleAvailabilityDiagnostic,
+  GoNZBNetCoverageAssignment,
+  GoNZBNetCoverageClaim,
+  GoNZBNetCoverageOutcome,
+  GoNZBNetEventDiagnostic,
+  GoNZBNetHealthAttestationDiagnostic,
+  GoNZBNetManifestSourceDiagnostic,
   GoNZBNetOverviewReport,
+  GoNZBNetPeerDeliveryDiagnostic,
+  GoNZBNetPeerDiagnostic,
   GoNZBNetPoolHealthReport,
+  GoNZBNetReleaseSourceDiagnostic,
   GoNZBNetRoleJob,
   GoNZBNetRolesReport,
+  GoNZBNetValidationTaskDiagnostic,
 } from '../../shared/types'
 import { formatDateTime, formatNumber } from '../../shared/lib/format'
 
@@ -20,6 +30,50 @@ type Props = {
   articleAvailability: GoNZBNetArticleAvailabilityDiagnostic[]
   activityWindow: string
   onActivityWindowChange: (window: string) => void
+  evidence: RoleEvidence
+}
+
+export type RoleEvidence = {
+  poolID: string
+  events: GoNZBNetEventDiagnostic[]
+  peers: GoNZBNetPeerDiagnostic[]
+  deliveries: GoNZBNetPeerDeliveryDiagnostic[]
+  validationTasks: GoNZBNetValidationTaskDiagnostic[]
+  releaseSources: GoNZBNetReleaseSourceDiagnostic[]
+  manifestSources: GoNZBNetManifestSourceDiagnostic[]
+  health: GoNZBNetHealthAttestationDiagnostic[]
+  articleAvailability: GoNZBNetArticleAvailabilityDiagnostic[]
+  assignments: GoNZBNetCoverageAssignment[]
+  claims: GoNZBNetCoverageClaim[]
+  outcomes: GoNZBNetCoverageOutcome[]
+}
+
+const jobGuide: Record<string, { reads: string; produces: string; idle: string }> = {
+  consume: {
+    reads: 'Signed release cards and manifest advertisements received from eligible pools.',
+    produces: 'Local searchable release/source rows and verified cached manifests for grabs.',
+    idle: 'It waits when peers have sent no new releases and no local grab needs a manifest.',
+  },
+  contribute: {
+    reads: 'Public-ready releases and generated manifests from this node’s local indexer.',
+    produces: 'Signed ReleaseCard, ResolutionManifest, and manifest-availability events for pools.',
+    idle: 'It publishes nothing when no new local release passes the public federation policy.',
+  },
+  verify: {
+    reads: 'Pending manifest-validation tasks plus articles reachable through configured NNTP providers.',
+    produces: 'Signed article-availability, checksum, and release-health attestations.',
+    idle: 'It completes an empty pass when no unclaimed validation task or health candidate exists.',
+  },
+  coordinate: {
+    reads: 'Pool coverage gaps, scanner capacity, active claims, checkpoints, and expired work.',
+    produces: 'Assignments, claims, scanner observations, completion outcomes, and reassignment decisions.',
+    idle: 'It waits when no coverage gap is assigned to this node and no stale claim needs reassignment.',
+  },
+  connection: {
+    reads: 'Peer outboxes, local undelivered events, admission state, and authenticated gossip traffic.',
+    produces: 'Accepted local event projections, peer deliveries, cursors, and connection health state.',
+    idle: 'A successful zero-item pass means peers are reachable but already synchronized.',
+  },
 }
 
 const statusText: Record<string, string> = {
@@ -35,7 +89,70 @@ function Status({ value }: { value: string }) {
   return <span className={`status-pill status-pill--table gonzbnet-status gonzbnet-status--${value}`}>{statusText[value] ?? value}</span>
 }
 
-function RoleSummary({ job, detail = false }: { job: GoNZBNetRoleJob; detail?: boolean }) {
+function shortID(value?: string) {
+  if (!value) return '—'
+  return value.length > 18 ? `${value.slice(0, 10)}…${value.slice(-6)}` : value
+}
+
+function Metric({ label, value, detail }: { label: string; value: string | number; detail?: string }) {
+  return <div className="stat-card"><span>{label}</span><strong>{typeof value === 'number' ? formatNumber(value) : value}</strong>{detail ? <small>{detail}</small> : null}</div>
+}
+
+function TaskResult({ component }: { component: GoNZBNetRoleJob['components'][number] }) {
+  const passes = component.successes + component.failures
+  const work = component.items_in + component.items_out
+  let result = `${formatNumber(component.items_in)} read · ${formatNumber(component.items_out)} produced`
+  if (passes > 0 && work === 0) result = `${formatNumber(passes)} passes completed; no eligible work found`
+  if (passes === 0) result = component.execution_mode === 'on_demand' ? 'Has not been requested yet' : 'Has not run yet'
+  return (
+    <div className="gonzbnet-task-result">
+      <strong>{result}</strong>
+      <span>{formatNumber(component.successes)} successful passes · {formatNumber(component.failures)} failed</span>
+      <span>{component.last_useful_at ? `Last result ${formatDateTime(component.last_useful_at)}` : 'No useful result recorded yet'}</span>
+      <span>{component.last_success_at ? `Last check ${formatDateTime(component.last_success_at)}` : 'No completed check yet'}</span>
+      {component.next_run_at ? <span>Next check {formatDateTime(component.next_run_at)}</span> : null}
+    </div>
+  )
+}
+
+function EmptyEvidence({ children }: { children: string }) {
+  return <div className="gonzbnet-evidence-empty">{children}</div>
+}
+
+function RecentSignedEvents({ events, nodeID }: { events: GoNZBNetEventDiagnostic[]; nodeID: string }) {
+  const local = events.filter((event) => event.author_node_id === nodeID).slice(0, 8)
+  if (!local.length) return <EmptyEvidence>This node has not produced a matching signed result in the loaded diagnostic window.</EmptyEvidence>
+  return (
+    <div className="table-scroll"><table className="data-table data-table--compact"><thead><tr><th>Result</th><th>Pool</th><th>Status</th><th>Created</th></tr></thead><tbody>{local.map((event) => (
+      <tr key={event.event_id}><td>{event.event_type}<div className="muted-copy mono-cell">{shortID(event.event_id)}</div></td><td>{event.pool_ids.join(', ') || 'network'}</td><td><Status value={event.validation_status} /></td><td>{formatDateTime(event.created_at)}</td></tr>
+    ))}</tbody></table></div>
+  )
+}
+
+function RoleEvidencePanel({ job, nodeID, evidence }: { job: GoNZBNetRoleJob; nodeID: string; evidence: RoleEvidence }) {
+  const poolEvents = evidence.events.filter((event) => event.pool_ids.includes(evidence.poolID))
+  if (job.key === 'consume') {
+    return <section className="gonzbnet-evidence stack"><h4>Data this role has produced locally</h4><div className="stat-grid"><Metric label="Pool releases" value={evidence.releaseSources.length} detail="projected into local search" /><Metric label="Resolvable" value={evidence.releaseSources.filter((item) => item.resolvable).length} detail="have an authorized manifest source" /><Metric label="Manifest sources" value={evidence.manifestSources.length} detail="known verified sources" /></div>{evidence.releaseSources.length ? <div className="table-scroll"><table className="data-table data-table--compact"><thead><tr><th>Release</th><th>Pool</th><th>Availability</th><th>Resolvable</th><th>Last seen</th></tr></thead><tbody>{evidence.releaseSources.slice(0, 8).map((item) => <tr key={`${item.release_id}-${item.source_node_id}`}><td>{item.title || shortID(item.release_id)}<div className="muted-copy mono-cell">{shortID(item.release_id)}</div></td><td>{item.pool_id}</td><td>{Math.round(item.availability_score * 100)}%</td><td>{item.resolvable ? 'Yes' : 'No'}</td><td>{formatDateTime(item.last_seen_at)}</td></tr>)}</tbody></table></div> : <EmptyEvidence>No federated releases have been projected into the local searchable catalog yet.</EmptyEvidence>}</section>
+  }
+  if (job.key === 'contribute') {
+    const types = new Set(['ReleaseCard', 'ResolutionManifest', 'ManifestAvailability'])
+    const events = poolEvents.filter((event) => types.has(event.event_type))
+    const local = events.filter((event) => event.author_node_id === nodeID)
+    return <section className="gonzbnet-evidence stack"><h4>Signed results published by this node</h4><div className="stat-grid"><Metric label="Release cards" value={local.filter((item) => item.event_type === 'ReleaseCard').length} /><Metric label="Manifests" value={local.filter((item) => item.event_type === 'ResolutionManifest').length} /><Metric label="Availability notices" value={local.filter((item) => item.event_type === 'ManifestAvailability').length} /></div><RecentSignedEvents events={events} nodeID={nodeID} /></section>
+  }
+  if (job.key === 'verify') {
+    const types = new Set(['ValidatorCapacity', 'ArticleAvailabilityAttestation', 'ChecksumAttestation', 'HealthAttestation'])
+    const signed = poolEvents.filter((event) => types.has(event.event_type))
+    const tasks = evidence.validationTasks.filter((item) => item.pool_id === evidence.poolID)
+    return <section className="gonzbnet-evidence stack"><h4>Validation inputs and results</h4><div className="stat-grid"><Metric label="Pending tasks" value={tasks.filter((item) => item.status === 'pending').length} detail={`${tasks.filter((item) => item.status === 'completed').length} completed in loaded rows`} /><Metric label="Article results" value={evidence.articleAvailability.length} detail="signed reachability attestations" /><Metric label="Health results" value={evidence.health.length} detail="signed release-health attestations" /></div>{evidence.articleAvailability.length || evidence.health.length ? <div className="table-scroll"><table className="data-table data-table--compact"><thead><tr><th>Evidence</th><th>Release</th><th>Status</th><th>Articles</th><th>Method</th><th>Checked</th></tr></thead><tbody>{evidence.articleAvailability.slice(0, 6).map((item) => <tr key={item.attestation_id}><td>Article availability</td><td className="mono-cell">{shortID(item.release_id)}</td><td><Status value={item.status} /></td><td>{formatNumber(item.articles_available)} / {formatNumber(item.articles_total)}</td><td>{item.method}</td><td>{formatDateTime(item.checked_at)}</td></tr>)}{evidence.health.slice(0, 6).map((item) => <tr key={item.attestation_id}><td>Release health</td><td className="mono-cell">{shortID(item.release_id)}</td><td><Status value={item.status} /></td><td>{formatNumber(item.articles_available)} / {formatNumber(item.articles_total)}</td><td>{item.method}</td><td>{formatDateTime(item.checked_at)}</td></tr>)}</tbody></table></div> : <EmptyEvidence>The validator is polling successfully, but it has produced no validation or health evidence yet. It needs pending manifest tasks sourced from pool releases.</EmptyEvidence>}<h4>Validation queue</h4>{tasks.length ? <div className="table-scroll"><table className="data-table data-table--compact"><thead><tr><th>Release</th><th>Manifest</th><th>Pool</th><th>Status</th><th>Attempts</th><th>Updated</th></tr></thead><tbody>{tasks.slice(0, 10).map((item) => <tr key={item.task_id}><td className="mono-cell">{shortID(item.release_id)}</td><td className="mono-cell">{shortID(item.manifest_id)}</td><td>{item.pool_id}</td><td><Status value={item.status} /></td><td>{formatNumber(item.attempts)}</td><td>{formatDateTime(item.completed_at ?? item.claimed_at ?? item.updated_at)}</td></tr>)}</tbody></table></div> : <EmptyEvidence>No validation tasks have been created from received manifests.</EmptyEvidence>}<h4>Recent signed validator output</h4><RecentSignedEvents events={signed} nodeID={nodeID} /></section>
+  }
+  if (job.key === 'coordinate') {
+    return <section className="gonzbnet-evidence stack"><h4>Coverage work coordinated by this node</h4><div className="stat-grid"><Metric label="Assignments" value={evidence.assignments.length} /><Metric label="Active claims" value={evidence.claims.filter((item) => item.status === 'active').length} /><Metric label="Outcomes" value={evidence.outcomes.length} detail={`${evidence.outcomes.reduce((sum, item) => sum + (item.release_count ?? 0), 0)} releases reported`} /></div>{evidence.outcomes.length ? <div className="table-scroll"><table className="data-table data-table--compact"><thead><tr><th>Group</th><th>Range</th><th>Outcome</th><th>Releases</th><th>At</th></tr></thead><tbody>{evidence.outcomes.slice(0, 8).map((item) => <tr key={item.outcome_id}><td>{item.group}</td><td>{item.range_start}–{item.range_end}</td><td><Status value={item.outcome_type} /></td><td>{formatNumber(item.release_count ?? 0)}</td><td>{formatDateTime(item.occurred_at)}</td></tr>)}</tbody></table></div> : <EmptyEvidence>No coverage completion or failure results exist in the selected pool.</EmptyEvidence>}</section>
+  }
+  return <section className="gonzbnet-evidence stack"><h4>Peer exchange results</h4><div className="stat-grid"><Metric label="Peers" value={evidence.peers.length} detail={`${evidence.peers.filter((item) => item.status === 'connected').length} connected`} /><Metric label="Deliveries" value={evidence.deliveries.length} detail={`${evidence.deliveries.filter((item) => item.status === 'accepted').length} accepted`} /><Metric label="Accepted events" value={poolEvents.filter((item) => item.validation_status === 'accepted').length} detail="in loaded diagnostic rows" /></div>{evidence.peers.length ? <div className="table-scroll"><table className="data-table data-table--compact"><thead><tr><th>Peer</th><th>Status</th><th>Failures</th><th>Last sync</th></tr></thead><tbody>{evidence.peers.slice(0, 8).map((item) => <tr key={item.id}><td>{item.peer_url}</td><td><Status value={item.enabled ? item.status : 'off'} /></td><td>{formatNumber(item.failure_count)}</td><td>{formatDateTime(item.last_sync_at)}</td></tr>)}</tbody></table></div> : <EmptyEvidence>No peers are configured, so pull and push passes can only complete with zero exchanged events.</EmptyEvidence>}</section>
+}
+
+function RoleSummary({ job, detail = false, nodeID = '', evidence }: { job: GoNZBNetRoleJob; detail?: boolean; nodeID?: string; evidence?: RoleEvidence }) {
   return (
     <article className="gonzbnet-job-card stack">
       <div className="gonzbnet-job-card__header">
@@ -51,6 +168,12 @@ function RoleSummary({ job, detail = false }: { job: GoNZBNetRoleJob; detail?: b
       </div>
       {job.warnings.map((warning) => <div className="banner" key={warning}>{warning}</div>)}
       {detail ? (
+        <>
+        <div className="gonzbnet-role-flow">
+          <div><span>Reads</span><p>{jobGuide[job.key]?.reads}</p></div>
+          <div><span>Produces</span><p>{jobGuide[job.key]?.produces}</p></div>
+          <div><span>Idle means</span><p>{jobGuide[job.key]?.idle}</p></div>
+        </div>
         <div className="gonzbnet-component-list">
           {job.components.map((component) => (
             <div className="gonzbnet-component-row" key={component.key}>
@@ -61,15 +184,15 @@ function RoleSummary({ job, detail = false }: { job: GoNZBNetRoleJob; detail?: b
               <div className="gonzbnet-component-row__metrics">
                 <Status value={component.status} />
                 <span>{component.execution_mode.replace('_', ' ')}</span>
-                <span>{formatNumber(component.successes)} successful</span>
-                <span>{formatNumber(component.failures)} failed</span>
-                <span>{component.last_success_at ? formatDateTime(component.last_success_at) : 'Never completed'}</span>
               </div>
+              <TaskResult component={component} />
               {component.reason ? <div className="muted-copy">{component.reason}</div> : null}
               {component.last_error ? <div className="banner error">{component.last_error}</div> : null}
             </div>
           ))}
         </div>
+        {evidence ? <RoleEvidencePanel job={job} nodeID={nodeID} evidence={evidence} /> : null}
+        </>
       ) : null}
     </article>
   )
@@ -98,7 +221,7 @@ function OverviewView({ report }: { report: GoNZBNetOverviewReport | null }) {
   )
 }
 
-function RolesView({ report }: { report: GoNZBNetRolesReport | null }) {
+function RolesView({ report, evidence }: { report: GoNZBNetRolesReport | null; evidence: RoleEvidence }) {
   if (!report) return <div className="page-card muted-copy">Role reporting is unavailable.</div>
   const enabled = report.jobs.filter((job) => job.configured)
   const disabled = report.jobs.filter((job) => !job.configured)
@@ -106,11 +229,11 @@ function RolesView({ report }: { report: GoNZBNetRolesReport | null }) {
     <div className="stack">
       <section className="page-card stack">
         <div><p className="eyebrow">What this node does</p><h2 className="section-title">Enabled jobs</h2></div>
-        <div className="gonzbnet-job-grid">{enabled.map((job) => <RoleSummary detail job={job} key={job.key} />)}</div>
+        <div className="gonzbnet-job-grid gonzbnet-job-grid--detail">{enabled.map((job) => <RoleSummary detail job={job} nodeID={report.node_id} evidence={evidence} key={job.key} />)}</div>
       </section>
       <details className="page-card">
         <summary>Off jobs ({disabled.length})</summary>
-        <div className="gonzbnet-job-grid gonzbnet-details-body">{disabled.map((job) => <RoleSummary detail job={job} key={job.key} />)}</div>
+        <div className="gonzbnet-job-grid gonzbnet-details-body">{disabled.map((job) => <RoleSummary detail job={job} nodeID={report.node_id} evidence={evidence} key={job.key} />)}</div>
       </details>
       <p className="muted-copy">Jobs are configured under <a href="/admin/settings?tab=gonzbnet">Settings → GoNZBNet</a>.</p>
     </div>
@@ -207,7 +330,7 @@ function ActivityView({ report, window, onWindowChange }: { report: GoNZBNetActi
 
 export function GoNZBNetReporting(props: Props) {
   if (props.view === 'overview') return <OverviewView report={props.overview} />
-  if (props.view === 'roles') return <RolesView report={props.roles} />
+  if (props.view === 'roles') return <RolesView report={props.roles} evidence={props.evidence} />
   if (props.view === 'pools') return <PoolsView report={props.poolHealth} availability={props.articleAvailability} />
   return <ActivityView report={props.activity} window={props.activityWindow} onWindowChange={props.onActivityWindowChange} />
 }

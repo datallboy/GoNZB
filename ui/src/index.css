@@ -32,6 +32,10 @@
   gap: 1rem;
 }
 
+.gonzbnet-job-grid--detail {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .gonzbnet-job-card {
   min-width: 0;
   padding: 1rem;
@@ -61,6 +65,58 @@
 .gonzbnet-component-list {
   display: grid;
   gap: 0.75rem;
+}
+
+.gonzbnet-role-flow {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.gonzbnet-role-flow > div,
+.gonzbnet-evidence,
+.gonzbnet-task-result,
+.gonzbnet-evidence-empty {
+  padding: 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: 0.6rem;
+  background: var(--bg-panel-strong);
+}
+
+.gonzbnet-role-flow span,
+.gonzbnet-evidence h4 {
+  color: var(--accent-strong);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.gonzbnet-role-flow p {
+  margin: 0.35rem 0 0;
+  color: var(--text-muted);
+}
+
+.gonzbnet-task-result {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1rem;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+}
+
+.gonzbnet-task-result strong {
+  width: 100%;
+  color: var(--text);
+}
+
+.gonzbnet-evidence h4 {
+  margin: 0;
+}
+
+.gonzbnet-evidence-empty {
+  color: var(--text-muted);
+  border-style: dashed;
 }
 
 .gonzbnet-component-row {
@@ -140,6 +196,10 @@
   .gonzbnet-activity-toolbar {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .gonzbnet-role-flow {
+    grid-template-columns: 1fr;
   }
 }
 

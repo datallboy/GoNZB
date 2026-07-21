@@ -88,6 +88,7 @@ type Snapshot struct {
 	Backlog             int64      `json:"backlog"`
 	LastAttemptAt       *time.Time `json:"last_attempt_at,omitempty"`
 	LastSuccessAt       *time.Time `json:"last_success_at,omitempty"`
+	LastUsefulAt        *time.Time `json:"last_useful_at,omitempty"`
 	LastFailureAt       *time.Time `json:"last_failure_at,omitempty"`
 	NextRunAt           *time.Time `json:"next_run_at,omitempty"`
 	LastError           string     `json:"last_error,omitempty"`
@@ -111,6 +112,7 @@ type Rollup struct {
 	LastError     string     `json:"last_error,omitempty"`
 	LastAttemptAt *time.Time `json:"last_attempt_at,omitempty"`
 	LastSuccessAt *time.Time `json:"last_success_at,omitempty"`
+	LastUsefulAt  *time.Time `json:"last_useful_at,omitempty"`
 	LastFailureAt *time.Time `json:"last_failure_at,omitempty"`
 }
 
@@ -138,6 +140,7 @@ type componentState struct {
 	backlog             int64
 	lastAttemptAt       *time.Time
 	lastSuccessAt       *time.Time
+	lastUsefulAt        *time.Time
 	lastFailureAt       *time.Time
 	lastError           string
 }
@@ -251,6 +254,10 @@ func (r *Registry) finish(component, poolID string, started time.Time, result Re
 	state.lastError = ""
 	rollup.Successes++
 	rollup.LastSuccessAt = timePtr(now)
+	if result.ItemsIn > 0 || result.ItemsOut > 0 || result.BytesIn > 0 || result.BytesOut > 0 {
+		state.lastUsefulAt = timePtr(now)
+		rollup.LastUsefulAt = timePtr(now)
+	}
 }
 
 func (r *Registry) Snapshot() []Snapshot {
@@ -398,6 +405,7 @@ func mergeState(out *Snapshot, state *componentState) {
 	out.Backlog += state.backlog
 	out.LastAttemptAt = latest(out.LastAttemptAt, state.lastAttemptAt)
 	out.LastSuccessAt = latest(out.LastSuccessAt, state.lastSuccessAt)
+	out.LastUsefulAt = latest(out.LastUsefulAt, state.lastUsefulAt)
 	out.LastFailureAt = latest(out.LastFailureAt, state.lastFailureAt)
 	if out.LastFailureAt != nil && state.lastFailureAt != nil && out.LastFailureAt.Equal(*state.lastFailureAt) {
 		out.LastError = state.lastError
@@ -449,6 +457,7 @@ func mergeRollup(target *Rollup, item Rollup) {
 	target.DurationMS += item.DurationMS
 	target.LastAttemptAt = latest(target.LastAttemptAt, item.LastAttemptAt)
 	target.LastSuccessAt = latest(target.LastSuccessAt, item.LastSuccessAt)
+	target.LastUsefulAt = latest(target.LastUsefulAt, item.LastUsefulAt)
 	if next := latest(target.LastFailureAt, item.LastFailureAt); next != target.LastFailureAt {
 		target.LastError = item.LastError
 		target.LastFailureAt = next

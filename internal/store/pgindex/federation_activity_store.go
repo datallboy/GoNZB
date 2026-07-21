@@ -33,8 +33,8 @@ func (s *Store) UpsertFederationActivityRollups(ctx context.Context, items []act
 				bucket_start, bucket_seconds, node_id, pool_id, component, job,
 				attempts, successes, failures, items_in, items_out, bytes_in,
 				bytes_out, duration_ms, last_error, last_attempt_at,
-				last_success_at, last_failure_at, updated_at
-			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NULLIF($15,''),$16,$17,$18,now())
+				last_success_at, last_useful_at, last_failure_at, updated_at
+			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NULLIF($15,''),$16,$17,$18,$19,now())
 			ON CONFLICT (bucket_start, bucket_seconds, node_id, pool_id, component)
 			DO UPDATE SET
 				attempts = federation_activity_rollups.attempts + EXCLUDED.attempts,
@@ -48,11 +48,12 @@ func (s *Store) UpsertFederationActivityRollups(ctx context.Context, items []act
 				last_error = CASE WHEN EXCLUDED.last_failure_at >= federation_activity_rollups.last_failure_at OR federation_activity_rollups.last_failure_at IS NULL THEN EXCLUDED.last_error ELSE federation_activity_rollups.last_error END,
 				last_attempt_at = GREATEST(federation_activity_rollups.last_attempt_at, EXCLUDED.last_attempt_at),
 				last_success_at = GREATEST(federation_activity_rollups.last_success_at, EXCLUDED.last_success_at),
+				last_useful_at = GREATEST(federation_activity_rollups.last_useful_at, EXCLUDED.last_useful_at),
 				last_failure_at = GREATEST(federation_activity_rollups.last_failure_at, EXCLUDED.last_failure_at),
 				updated_at = now()`,
 			item.BucketStart, item.BucketSeconds, strings.TrimSpace(item.NodeID), strings.TrimSpace(item.PoolID),
 			item.Component, item.Job, item.Attempts, item.Successes, item.Failures, item.ItemsIn, item.ItemsOut,
-			item.BytesIn, item.BytesOut, item.DurationMS, item.LastError, item.LastAttemptAt, item.LastSuccessAt, item.LastFailureAt); err != nil {
+			item.BytesIn, item.BytesOut, item.DurationMS, item.LastError, item.LastAttemptAt, item.LastSuccessAt, item.LastUsefulAt, item.LastFailureAt); err != nil {
 			return fmt.Errorf("upsert federation activity rollup: %w", err)
 		}
 	}
@@ -73,7 +74,7 @@ func (s *Store) ListFederationActivityRollups(ctx context.Context, query Federat
 		SELECT bucket_start, bucket_seconds, node_id, pool_id, component, job,
 		       attempts, successes, failures, items_in, items_out, bytes_in,
 		       bytes_out, duration_ms, COALESCE(last_error, ''),
-		       last_attempt_at, last_success_at, last_failure_at
+		       last_attempt_at, last_success_at, last_useful_at, last_failure_at
 		FROM federation_activity_rollups
 		WHERE bucket_start >= $1
 		  AND ($2 = '' OR pool_id = $2)
@@ -92,7 +93,7 @@ func (s *Store) ListFederationActivityRollups(ctx context.Context, query Federat
 			&item.BucketStart, &item.BucketSeconds, &item.NodeID, &item.PoolID, &item.Component, &item.Job,
 			&item.Attempts, &item.Successes, &item.Failures, &item.ItemsIn, &item.ItemsOut,
 			&item.BytesIn, &item.BytesOut, &item.DurationMS, &item.LastError,
-			&item.LastAttemptAt, &item.LastSuccessAt, &item.LastFailureAt,
+			&item.LastAttemptAt, &item.LastSuccessAt, &item.LastUsefulAt, &item.LastFailureAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan federation activity rollup: %w", err)
 		}
@@ -128,13 +129,13 @@ func (s *Store) CompactFederationActivityRollups(ctx context.Context, now time.T
 			bucket_start, bucket_seconds, node_id, pool_id, component, job,
 			attempts, successes, failures, items_in, items_out, bytes_in,
 			bytes_out, duration_ms, last_error, last_attempt_at,
-			last_success_at, last_failure_at, updated_at
+			last_success_at, last_useful_at, last_failure_at, updated_at
 		)
 		SELECT date_trunc('hour', bucket_start), 3600, node_id, pool_id, component, job,
 		       SUM(attempts), SUM(successes), SUM(failures), SUM(items_in), SUM(items_out),
 		       SUM(bytes_in), SUM(bytes_out), SUM(duration_ms),
 		       (array_agg(last_error ORDER BY last_failure_at DESC NULLS LAST))[1],
-		       MAX(last_attempt_at), MAX(last_success_at), MAX(last_failure_at), now()
+		       MAX(last_attempt_at), MAX(last_success_at), MAX(last_useful_at), MAX(last_failure_at), now()
 		FROM federation_activity_rollups
 		WHERE bucket_seconds = 300 AND bucket_start < $1
 		GROUP BY date_trunc('hour', bucket_start), node_id, pool_id, component, job
@@ -145,7 +146,8 @@ func (s *Store) CompactFederationActivityRollups(ctx context.Context, now time.T
 			items_out = EXCLUDED.items_out, bytes_in = EXCLUDED.bytes_in,
 			bytes_out = EXCLUDED.bytes_out, duration_ms = EXCLUDED.duration_ms,
 			last_error = EXCLUDED.last_error, last_attempt_at = EXCLUDED.last_attempt_at,
-			last_success_at = EXCLUDED.last_success_at, last_failure_at = EXCLUDED.last_failure_at,
+			last_success_at = EXCLUDED.last_success_at, last_useful_at = EXCLUDED.last_useful_at,
+			last_failure_at = EXCLUDED.last_failure_at,
 			updated_at = now()`, cutoff); err != nil {
 		return fmt.Errorf("compact federation activity rollups: %w", err)
 	}
