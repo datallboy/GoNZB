@@ -20,11 +20,11 @@ protocol detail:
   active pools, warnings, and pending admissions.
 - **Roles** explains the grouped jobs **Find and use releases**, **Contribute
   releases**, **Verify release health**, **Coordinate scanning**, and the
-  **Connection layer**. Each job states what it reads, what it produces, what an
-  idle pass means, and shows its workers and recent durable results. For example,
-  validators show their pending/completed manifest tasks and signed article or
-  release-health evidence. A successful empty poll is reported as a check, not
-  as useful work. Off jobs are kept in one collapsed section.
+  **Connection layer**. Select an enabled role tab to see what it reads, what it
+  produces, what an idle pass means, its workers, and recent durable results.
+  For example, validators show their pending/completed manifest tasks and signed
+  article or release-health evidence. A successful empty poll is reported as a
+  check, not as useful work. Off jobs are kept in one collapsed section.
 - **Pools** shows release-health evidence, article-availability evidence,
   freshness, reporting members, and their signed contributions. Pool creation,
   joining, admission, and membership controls are kept with this view.

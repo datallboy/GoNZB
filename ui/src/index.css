@@ -36,6 +36,22 @@
   grid-template-columns: minmax(0, 1fr);
 }
 
+.gonzbnet-role-tabs {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+}
+
+.gonzbnet-role-tabs .settings-tab {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.65rem;
+}
+
+.gonzbnet-role-tabs .status-pill {
+  font-size: 0.7rem;
+}
+
 .gonzbnet-job-card {
   min-width: 0;
   padding: 1rem;
