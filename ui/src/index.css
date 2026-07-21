@@ -52,6 +52,60 @@
   font-size: 0.7rem;
 }
 
+.gonzbnet-pool-rosters,
+.gonzbnet-member-grid {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.gonzbnet-pool-roster {
+  padding-top: 0.8rem;
+  border-top: 1px solid var(--border);
+}
+
+.gonzbnet-pool-roster__header,
+.gonzbnet-member-card__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.gonzbnet-pool-roster__header h3 {
+  margin: 0;
+}
+
+.gonzbnet-member-grid {
+  grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+}
+
+.gonzbnet-member-card {
+  min-width: 0;
+  padding: 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: 0.65rem;
+  background: var(--bg-panel-strong);
+}
+
+.gonzbnet-member-details {
+  display: grid;
+  gap: 0.65rem;
+  margin: 0.8rem 0 0;
+}
+
+.gonzbnet-member-details dt {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.gonzbnet-member-details dd {
+  margin: 0.2rem 0 0;
+  overflow-wrap: anywhere;
+}
+
 .gonzbnet-job-card {
   min-width: 0;
   padding: 1rem;
@@ -142,6 +196,7 @@
   border-top: 1px solid var(--border);
 }
 
+.gonzbnet-status--local,
 .gonzbnet-status--working,
 .gonzbnet-status--ready {
   color: var(--secondary);

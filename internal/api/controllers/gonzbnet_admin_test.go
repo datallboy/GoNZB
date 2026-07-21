@@ -680,6 +680,33 @@ func TestGoNZBNetAdminReportingRolesGroupsRuntimeComponents(t *testing.T) {
 	}
 }
 
+func TestPoolMemberOverviewGroupsRolesByUniqueNode(t *testing.T) {
+	members := []pgindex.PoolMemberRecord{
+		{NodeID: "node-a", Role: "admin", Status: "active", AllowedCapabilities: []string{"validator", "relay"}},
+		{NodeID: "node-a", Role: "witness", Status: "active", AllowedCapabilities: []string{"validator"}},
+		{NodeID: "node-b", Role: "member", Status: "revoked", AllowedCapabilities: []string{"consumer"}},
+	}
+	nodes := map[string]pgindex.NodeCapabilityView{
+		"node-a": {NodeID: "node-a", Status: "local"},
+		"node-b": {NodeID: "node-b", Alias: "Old node", BaseURL: "https://old.example/gonzbnet/v1", Status: "blocked"},
+	}
+
+	items := poolMemberOverview(members, nodes, "node-a", "Local indexer", "http://localhost:8080/gonzbnet/v1")
+	if len(items) != 1 {
+		t.Fatalf("expected one unique active node, got %+v", items)
+	}
+	item := items[0]
+	if !item.Local || item.Alias != "Local indexer" || item.BaseURL != "http://localhost:8080/gonzbnet/v1" {
+		t.Fatalf("expected local identity fallbacks, got %+v", item)
+	}
+	if strings.Join(item.Roles, ",") != "admin,witness" {
+		t.Fatalf("expected grouped pool roles, got %+v", item.Roles)
+	}
+	if strings.Join(item.Capabilities, ",") != "relay,validator" {
+		t.Fatalf("expected unique capabilities, got %+v", item.Capabilities)
+	}
+}
+
 func TestGoNZBNetAdminReportingPoolHealthReturnsSharedEvidence(t *testing.T) {
 	store := &fakeGoNZBNetAdminStore{poolHealth: pgindex.FederationPoolHealthReport{
 		PoolID:              "pool.remote",

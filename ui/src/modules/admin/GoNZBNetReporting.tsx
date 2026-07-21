@@ -79,6 +79,7 @@ const jobGuide: Record<string, { reads: string; produces: string; idle: string }
 
 const statusText: Record<string, string> = {
   off: 'Off',
+  local: 'This node',
   starting: 'Starting',
   ready: 'Ready',
   working: 'Working',
@@ -92,6 +93,21 @@ const roleTabLabel: Record<string, string> = {
   verify: 'Verify health',
   coordinate: 'Coordinate',
   connection: 'Connection',
+}
+
+const capabilityLabel: Record<string, string> = {
+  admin: 'Pool administration',
+  consumer: 'Release consumer',
+  scanner: 'Scanner',
+  indexer: 'Indexer',
+  manifest_builder: 'Manifest builder',
+  manifest_cache: 'Manifest cache',
+  validator: 'Validator',
+  health_checker: 'Health checker',
+  relay: 'Relay',
+  coverage: 'Coverage worker',
+  scheduler: 'Scheduler',
+  coverage_coordinator: 'Coverage coordinator',
 }
 
 function Status({ value }: { value: string }) {
@@ -126,6 +142,41 @@ function TaskResult({ component }: { component: GoNZBNetRoleJob['components'][nu
 
 function EmptyEvidence({ children }: { children: string }) {
   return <div className="gonzbnet-evidence-empty">{children}</div>
+}
+
+function displayCapability(value: string) {
+  return capabilityLabel[value] ?? value.replaceAll('_', ' ')
+}
+
+function displayNodeAddress(value: string) {
+  if (!value) return 'No advertised address'
+  try {
+    return new URL(value).host || value
+  } catch {
+    return value
+  }
+}
+
+function PoolMemberRoster({ pools }: { pools: GoNZBNetOverviewReport['pools'] }) {
+  return (
+    <section className="page-card stack">
+      <div><p className="eyebrow">Who is in each pool</p><h2 className="section-title">Pool members</h2><p className="muted-copy">A node can hold several pool roles. The node count is unique; roles are listed under that node.</p></div>
+      <div className="gonzbnet-pool-rosters">
+        {pools.map((pool) => <section className="gonzbnet-pool-roster stack" key={pool.pool_id}>
+          <div className="gonzbnet-pool-roster__header"><div><h3>{pool.display_name || pool.pool_id}</h3><span className="muted-copy mono-cell">{pool.pool_id}</span></div><strong>{formatNumber(pool.members)} node{pool.members === 1 ? '' : 's'}</strong></div>
+          {(pool.member_nodes ?? []).length ? <div className="gonzbnet-member-grid">{(pool.member_nodes ?? []).map((member) => <article className="gonzbnet-member-card" key={member.node_id}>
+            <div className="gonzbnet-member-card__header"><div><strong>{member.alias || (member.local ? 'This node' : shortID(member.node_id))}</strong><div className="muted-copy mono-cell" title={member.node_id}>{shortID(member.node_id)}</div></div><Status value={member.local ? 'local' : member.status} /></div>
+            <dl className="gonzbnet-member-details">
+              <div><dt>Address</dt><dd>{displayNodeAddress(member.base_url)}{member.local ? ' (this dashboard)' : ''}</dd></div>
+              <div><dt>Pool roles</dt><dd>{member.roles.length ? member.roles.join(' · ') : 'Member'}</dd></div>
+              <div><dt>Capabilities</dt><dd>{member.capabilities.length ? member.capabilities.map(displayCapability).join(' · ') : 'No operational capabilities granted'}</dd></div>
+            </dl>
+          </article>)}</div> : <EmptyEvidence>No active nodes are recorded for this pool.</EmptyEvidence>}
+        </section>)}
+      </div>
+      <p className="muted-copy">Set a recognizable node alias and advertised URL under <a href="/admin/settings?tab=gonzbnet">Settings → GoNZBNet</a> so other pool administrators can identify this node.</p>
+    </section>
+  )
 }
 
 function RecentSignedEvents({ events, nodeID }: { events: GoNZBNetEventDiagnostic[]; nodeID: string }) {
@@ -222,6 +273,7 @@ function OverviewView({ report }: { report: GoNZBNetOverviewReport | null }) {
         <div className="stat-card"><span>Release health</span><strong>{formatNumber(report.release_evidence.fresh)} fresh</strong><small>of {formatNumber(report.release_evidence.total)} shared reports</small></div>
         <div className="stat-card"><span>Article availability</span><strong>{formatNumber(report.article_evidence.fresh)} fresh</strong><small>from {formatNumber(report.article_evidence.reporters)} reporters</small></div>
       </div>
+      {report.pools.length ? <PoolMemberRoster pools={report.pools} /> : null}
       <div className="gonzbnet-job-grid">
         {report.jobs.filter((job) => job.configured).map((job) => <RoleSummary job={job} key={job.key} />)}
       </div>
