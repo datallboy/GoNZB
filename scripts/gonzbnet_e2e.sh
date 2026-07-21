@@ -10,7 +10,7 @@ BIN="$STATE/gonzb"
 NNTP_BIN="$STATE/nntpfixture"
 
 usage() {
-  echo "usage: $0 {test|start|bootstrap|configure-pool|admission-smoke|quorum-smoke|smoke|federation-smoke|release-smoke|nntp-smoke|stop|status|logs|reset}"
+  echo "usage: $0 {test|start|bootstrap|configure-pool|admission-smoke|quorum-smoke|smoke|federation-smoke|release-smoke|nntp-smoke|observability-smoke|stop|status|logs|reset}"
 }
 
 wait_http() {
@@ -98,6 +98,14 @@ admin_request() {
 
 admin_post() {
   admin_request "$@" >/dev/null
+}
+
+admin_get() {
+  name="$1"
+  port="$2"
+  path="$3"
+  dir="$STATE/$name"
+  curl -fsS -b "$dir/cookies.txt" "http://127.0.0.1:$port$path"
 }
 
 admin_put() {
@@ -565,6 +573,24 @@ release_smoke() {
   echo "repeat Newznab grab reused the local manifest/NZB cache"
 }
 
+observability_smoke() {
+  admin_get node-a 18081 /api/v1/admin/gonzbnet/overview |
+    jq -e '(.jobs | length) == 5 and (.pools | length) >= 1' >/dev/null
+  admin_get node-a 18081 /api/v1/admin/gonzbnet/roles |
+    jq -e '.jobs[] | select(.key == "contribute" and .configured == true)' >/dev/null
+  admin_get node-b 18082 /api/v1/admin/gonzbnet/roles |
+    jq -e '.jobs[] | select(.key == "verify" and .configured == true)' >/dev/null
+  admin_get node-c 18083 /api/v1/admin/gonzbnet/roles |
+    jq -e '.jobs[] | select(.key == "connection" and .configured == true)' >/dev/null
+  admin_get node-a 18081 '/api/v1/admin/gonzbnet/activity?window=24h&pool_id=pool.e2e' |
+    jq -e '.window == "24h" and (.items | type == "array")' >/dev/null
+  admin_get node-a 18081 /api/v1/admin/gonzbnet/pools/pool.e2e/health |
+    jq -e '.pool_id == "pool.e2e" and (.contributors | type == "array")' >/dev/null
+  admin_get node-b 18082 '/api/v1/admin/gonzbnet/diagnostics/article-availability?pool_id=pool.e2e' |
+    jq -e '.items | type == "array"' >/dev/null
+  echo "GoNZBNet grouped roles, activity history, and pool evidence reporting verified"
+}
+
 case "${1:-}" in
   test)
     "$0" reset
@@ -578,6 +604,7 @@ case "${1:-}" in
     "$0" federation-smoke
     "$0" release-smoke
     "$0" nntp-smoke
+    "$0" observability-smoke
     "$0" reset
     trap - 0 1 2 15
     echo "GoNZBNet E2E test passed"
@@ -653,6 +680,10 @@ case "${1:-}" in
   nntp-smoke)
     command -v jq >/dev/null 2>&1 || { echo "jq is required" >&2; exit 1; }
     nntp_smoke
+    ;;
+  observability-smoke)
+    command -v jq >/dev/null 2>&1 || { echo "jq is required" >&2; exit 1; }
+    observability_smoke
     ;;
   stop)
     stop_nodes

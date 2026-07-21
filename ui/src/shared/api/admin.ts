@@ -30,10 +30,12 @@ import type {
   AdminStageConfigPatch,
   AdminStagesResponse,
   GoNZBNetActionResponse,
+  GoNZBNetActivityReport,
   GoNZBNetAdmission,
   GoNZBNetAdmissionJoinResponse,
   GoNZBNetAdmissionRemote,
   GoNZBNetAssignmentRequest,
+  GoNZBNetArticleAvailabilityDiagnostic,
   GoNZBNetClaimRequest,
   GoNZBNetCoverageDashboard,
   GoNZBNetCoveragePlan,
@@ -54,6 +56,7 @@ import type {
   GoNZBNetManifestResolveResponse,
   GoNZBNetNodeCapability,
   GoNZBNetNodeProfileResponse,
+  GoNZBNetOverviewReport,
   GoNZBNetOutcomeRequest,
   GoNZBNetPeerActionResponse,
   GoNZBNetPeerDeliveryDiagnostic,
@@ -68,11 +71,13 @@ import type {
   GoNZBNetPoolMemberRevocationResponse,
   GoNZBNetPoolMember,
   GoNZBNetPoolMemberRequest,
+  GoNZBNetPoolHealthReport,
   GoNZBNetRejectedEventDiagnosticsResponse,
   GoNZBNetReleaseSourceDiagnostic,
   GoNZBNetReputationDiagnostic,
   GoNZBNetRolePoolAccess,
   GoNZBNetRolePoolAccessRequest,
+  GoNZBNetRolesReport,
   GoNZBNetScoreRecomputeRequest,
   GoNZBNetScoreRecomputeResponse,
   GoNZBNetSyncActionResponse,
@@ -481,6 +486,32 @@ export function getGoNZBNetConfigValidation() {
 
 export function getGoNZBNetMetrics() {
   return apiRequest<GoNZBNetMetrics>("/api/v1/admin/gonzbnet/metrics")
+}
+
+export function getGoNZBNetOverview() {
+  return apiRequest<GoNZBNetOverviewReport>("/api/v1/admin/gonzbnet/overview")
+}
+
+export function getGoNZBNetRoles() {
+  return apiRequest<GoNZBNetRolesReport>("/api/v1/admin/gonzbnet/roles")
+}
+
+export function getGoNZBNetActivity(params: { window?: string; pool_id?: string; node_id?: string; job?: string } = {}) {
+  return apiRequest<GoNZBNetActivityReport>(
+    `/api/v1/admin/gonzbnet/activity${goNZBNetQuery(params)}`,
+  )
+}
+
+export function getGoNZBNetPoolHealth(poolID: string) {
+  return apiRequest<GoNZBNetPoolHealthReport>(
+    `/api/v1/admin/gonzbnet/pools/${encodeURIComponent(poolID)}/health`,
+  )
+}
+
+export function getGoNZBNetArticleAvailability(poolID?: string, limit = 100) {
+  return apiRequest<GoNZBNetListResponse<GoNZBNetArticleAvailabilityDiagnostic>>(
+    `/api/v1/admin/gonzbnet/diagnostics/article-availability${goNZBNetQuery({ pool_id: poolID, limit })}`,
+  )
 }
 
 export function getGoNZBNetCoverageDashboard(poolID?: string) {

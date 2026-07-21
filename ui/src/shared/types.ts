@@ -2091,6 +2091,153 @@ export type GoNZBNetMetrics = {
   gauges: Record<string, number>
 }
 
+export type GoNZBNetActivityStatus = 'off' | 'starting' | 'ready' | 'working' | 'degraded' | 'blocked'
+
+export type GoNZBNetActivityComponent = {
+  key: string
+  job: string
+  label: string
+  description: string
+  execution_mode: 'scheduled' | 'event_driven' | 'on_demand'
+  configured: boolean
+  eligible: boolean
+  reason?: string
+  status: GoNZBNetActivityStatus
+  pools: string[]
+  running: number
+  attempts: number
+  successes: number
+  failures: number
+  consecutive_failures: number
+  items_in: number
+  items_out: number
+  bytes_in: number
+  bytes_out: number
+  backlog: number
+  last_attempt_at?: string
+  last_success_at?: string
+  last_failure_at?: string
+  next_run_at?: string
+  last_error?: string
+}
+
+export type GoNZBNetRoleJob = {
+  key: string
+  label: string
+  description: string
+  status: GoNZBNetActivityStatus
+  configured: boolean
+  pools: string[]
+  last_useful_at?: string
+  warnings: string[]
+  components: GoNZBNetActivityComponent[]
+}
+
+export type GoNZBNetRolesReport = {
+  generated_at: string
+  node_id: string
+  jobs: GoNZBNetRoleJob[]
+  warnings: string[]
+}
+
+export type GoNZBNetOverviewReport = {
+  generated_at: string
+  node_id: string
+  node_alias: string
+  module_enabled: boolean
+  jobs_healthy: number
+  jobs_configured: number
+  peers_connected: number
+  peers_total: number
+  pools: Array<{ pool_id: string; display_name: string; enabled: boolean; members: number }>
+  pending_admissions: number
+  release_evidence: GoNZBNetEvidenceSummary
+  article_evidence: GoNZBNetEvidenceSummary
+  warnings: string[]
+  jobs: GoNZBNetRoleJob[]
+}
+
+export type GoNZBNetActivityRollup = {
+  bucket_start: string
+  bucket_seconds: number
+  node_id: string
+  pool_id: string
+  component: string
+  job: string
+  attempts: number
+  successes: number
+  failures: number
+  items_in: number
+  items_out: number
+  bytes_in: number
+  bytes_out: number
+  duration_ms: number
+  last_error?: string
+  last_attempt_at?: string
+  last_success_at?: string
+  last_failure_at?: string
+}
+
+export type GoNZBNetActivityReport = {
+  generated_at: string
+  window: string
+  from: string
+  to: string
+  five_minute_until: string
+  retained_until: string
+  partial: boolean
+  items: GoNZBNetActivityRollup[]
+}
+
+export type GoNZBNetEvidenceSummary = {
+  total: number
+  fresh: number
+  aging: number
+  stale: number
+  reporters: number
+  statuses: Record<string, number>
+  last_checked_at?: string
+}
+
+export type GoNZBNetPoolHealthReport = {
+  pool_id: string
+  generated_at: string
+  fresh_before: string
+  stale_before: string
+  release_health: GoNZBNetEvidenceSummary
+  article_availability: GoNZBNetEvidenceSummary
+  contributors: Array<{
+    node_id: string
+    alias: string
+    release_cards: number
+    manifests: number
+    health_attestations: number
+    article_availability: number
+    coverage_events: number
+    total_events: number
+    last_contribution_at?: string
+  }>
+}
+
+export type GoNZBNetArticleAvailabilityDiagnostic = {
+  attestation_id: string
+  manifest_id: string
+  release_id: string
+  author_node_id: string
+  pool_id: string
+  checked_at: string
+  status: string
+  articles_total: number
+  articles_available: number
+  missing_articles: number
+  retention_days_observed: number
+  confidence: number
+  validation_score: number
+  method: string
+  source_event_id: string
+  updated_at: string
+}
+
 export type GoNZBNetManifestResolveRequest = {
   release_id: string
 }

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/datallboy/gonzb/internal/gonzbnet/activity"
 	"github.com/datallboy/gonzb/internal/gonzbnet/canonical"
 	"github.com/datallboy/gonzb/internal/gonzbnet/events"
 	"github.com/datallboy/gonzb/internal/gonzbnet/manifest"
@@ -84,7 +85,15 @@ func NewWithOptions(identity Identity, store Store, opts Options) *Resolver {
 	}
 }
 
-func (r *Resolver) ResolveNZB(ctx context.Context, releaseID string) (io.ReadCloser, error) {
+func (r *Resolver) ResolveNZB(ctx context.Context, releaseID string) (reader io.ReadCloser, err error) {
+	finishActivity := activity.Default.Begin(activity.ComponentManifestResolver, "")
+	defer func() {
+		items := int64(0)
+		if reader != nil {
+			items = 1
+		}
+		finishActivity(activity.Result{ItemsIn: 1, ItemsOut: items, Err: err})
+	}()
 	if r == nil || r.identity == nil || r.store == nil {
 		return nil, fmt.Errorf("manifest resolver dependencies are required")
 	}
@@ -95,6 +104,7 @@ func (r *Resolver) ResolveNZB(ctx context.Context, releaseID string) (io.ReadClo
 	if payload, ok, err := r.store.GetCachedFederatedNZBByReleaseID(ctx, releaseID); err != nil {
 		return nil, err
 	} else if ok {
+		activity.Default.Record(activity.ComponentManifestCache, "", activity.Result{ItemsIn: 1, ItemsOut: 1, BytesOut: int64(len(payload))})
 		return io.NopCloser(bytes.NewReader(payload)), nil
 	}
 	started := time.Now()
@@ -159,6 +169,7 @@ func (r *Resolver) ResolveNZB(ctx context.Context, releaseID string) (io.ReadClo
 	}); err != nil {
 		return nil, err
 	}
+	activity.Default.Record(activity.ComponentManifestCache, source.PoolID, activity.Result{ItemsIn: 1, ItemsOut: 1, BytesIn: int64(len(nzbPayload))})
 	_ = r.store.RecordFederatedManifestSourceSuccess(ctx, *source)
 	failed = false
 	return io.NopCloser(bytes.NewReader(nzbPayload)), nil

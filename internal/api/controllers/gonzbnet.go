@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/datallboy/gonzb/internal/app"
+	"github.com/datallboy/gonzb/internal/gonzbnet/activity"
 	"github.com/datallboy/gonzb/internal/gonzbnet/admission"
 	"github.com/datallboy/gonzb/internal/gonzbnet/canonical"
 	"github.com/datallboy/gonzb/internal/gonzbnet/coverage"
@@ -1183,6 +1184,11 @@ func (ctrl *GoNZBNetController) acceptConstrainedFederationEvents(c *echo.Contex
 		}
 	}
 	recordInboxMetrics(len(eventsIn), len(resp.Accepted), len(resp.Rejected))
+	if cfg.RelayEnabled {
+		activity.Default.Record(activity.ComponentRelay, "", activity.Result{
+			ItemsIn: int64(len(eventsIn)), ItemsOut: int64(len(resp.Accepted) + len(resp.Duplicate)),
+		})
+	}
 	return c.JSON(http.StatusOK, resp)
 }
 

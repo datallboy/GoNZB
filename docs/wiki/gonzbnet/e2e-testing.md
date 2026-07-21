@@ -83,9 +83,12 @@ curl -s http://127.0.0.1:18082/gonzbnet/v1/node | jq
 curl -s http://127.0.0.1:18083/gonzbnet/v1/caps | jq
 ```
 
-Open `/admin/gonzbnet` on each node for peer diagnostics, accepted/rejected
-events, deliveries, capabilities, coverage, validation tasks, manifests,
-health, reputation, and pool controls.
+Open `/admin/gonzbnet` on each node to compare its grouped roles, pool
+eligibility, activity, shared release health, article availability, and member
+contributions. Protocol-level diagnostics and governance remain under
+**Activity > Advanced tools**. The `observability-smoke` command verifies the
+scanner/publisher, validator, consumer/relay, activity-history, and pool-evidence
+reporting contracts across the fixture.
 
 ## Admission And Pool Isolation Test
 

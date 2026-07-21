@@ -8,7 +8,9 @@ servers:
     tls: false
     max_connections: 2
     priority: 1
-    roles: ["indexer", "validator"]
+    # GoNZBNet validation uses its own unscoped NNTP client scope; "scrape" is
+    # the closest valid provider role and keeps this disposable provider enabled.
+    roles: ["scrape"]
 modules:
   downloader: { enabled: false }
   aggregator: { enabled: true }

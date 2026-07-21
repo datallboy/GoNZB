@@ -90,8 +90,9 @@ GoNZBNet module is enabled.
 GoNZBNet is pre-release and implements the integrated v1 design. Public global
 discovery, DHT/mDNS discovery, NAT traversal, cross-pool bridging, and a
 standalone relay process are not implemented. First contact uses an explicit
-node address or a signed invitation. Protocol metrics are process-local and
-must be scraped externally when historical retention is required.
+node address or a signed invitation. Protocol metrics are process-local. The
+admin UI keeps bounded local activity history for operational visibility;
+external scraping is still required for alerting or retention beyond 90 days.
 
 Accepted inbound events and their required typed projections commit in one
 PostgreSQL transaction. The pending-projection table remains only as a repair

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/datallboy/gonzb/internal/app"
+	"github.com/datallboy/gonzb/internal/gonzbnet/activity"
 	"github.com/datallboy/gonzb/internal/gonzbnet/coverage"
 	"github.com/datallboy/gonzb/internal/gonzbnet/events"
 	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
@@ -638,6 +639,85 @@ func TestGoNZBNetAdminDeleteRolePoolAccessUsesPathValues(t *testing.T) {
 	}
 }
 
+func TestGoNZBNetAdminReportingRolesGroupsRuntimeComponents(t *testing.T) {
+	cfg := testGoNZBNetAdminConfig(t)
+	cfg.Modules.GoNZBNet.Enabled = true
+	cfg.GoNZBNet.PullSyncEnabled = true
+	cfg.GoNZBNet.PublishReleaseCardsEnabled = true
+	lastSuccess := time.Now().UTC().Add(-time.Minute)
+	store := &fakeGoNZBNetAdminStore{
+		activePoolIDs: []string{"pool.local"},
+		activityRollups: []activity.Rollup{{
+			Component: activity.ComponentReleasePublisher, Job: activity.JobContribute,
+			LastSuccessAt: &lastSuccess,
+		}},
+	}
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/gonzbnet/roles", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	ctrl := &GoNZBNetAdminController{appCtx: &app.Context{Config: cfg}, storeOverride: store}
+
+	if err := ctrl.ReportingRoles(c); err != nil {
+		t.Fatalf("ReportingRoles returned error: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var body gonzbnetRoleReport
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(body.Jobs) != 5 {
+		t.Fatalf("expected five grouped jobs, got %+v", body.Jobs)
+	}
+	if body.Jobs[0].Label != "Find and use releases" || body.Jobs[4].Label != "Connection layer" {
+		t.Fatalf("unexpected role grouping: %+v", body.Jobs)
+	}
+	if body.Jobs[1].LastUsefulAt == nil || !body.Jobs[1].LastUsefulAt.Equal(lastSuccess) {
+		t.Fatalf("expected persisted contribution activity after restart, got %+v", body.Jobs[1])
+	}
+}
+
+func TestGoNZBNetAdminReportingPoolHealthReturnsSharedEvidence(t *testing.T) {
+	store := &fakeGoNZBNetAdminStore{poolHealth: pgindex.FederationPoolHealthReport{
+		PoolID:              "pool.remote",
+		ReleaseHealth:       pgindex.FederationEvidenceSummary{Total: 4, Fresh: 3, Statuses: map[string]int64{"healthy": 3}},
+		ArticleAvailability: pgindex.FederationEvidenceSummary{Total: 2, Fresh: 2, Statuses: map[string]int64{"available": 2}},
+	}}
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/gonzbnet/pools/pool.remote/health", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.SetPathValues(echo.PathValues{{Name: "pool_id", Value: "pool.remote"}})
+	ctrl := &GoNZBNetAdminController{appCtx: &app.Context{Config: testGoNZBNetAdminConfig(t)}, storeOverride: store}
+
+	if err := ctrl.ReportingPoolHealth(c); err != nil {
+		t.Fatalf("ReportingPoolHealth returned error: %v", err)
+	}
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"release_health":{"total":4`) {
+		t.Fatalf("unexpected pool health response %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestGoNZBNetAdminArticleAvailabilityDiagnostics(t *testing.T) {
+	store := &fakeGoNZBNetAdminStore{articleAvailability: []pgindex.ArticleAvailabilityDiagnostic{{
+		AttestationID: "att-1", ReleaseID: "rel-1", PoolID: "pool.remote", Status: "available",
+	}}}
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/gonzbnet/diagnostics/article-availability?pool_id=pool.remote", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	ctrl := &GoNZBNetAdminController{appCtx: &app.Context{Config: testGoNZBNetAdminConfig(t)}, storeOverride: store}
+
+	if err := ctrl.ArticleAvailabilityDiagnostics(c); err != nil {
+		t.Fatalf("ArticleAvailabilityDiagnostics returned error: %v", err)
+	}
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"count":1`) {
+		t.Fatalf("unexpected availability response %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 const encryptedKeyEnvelopeMarker = "gonzbnet.ed25519.private.v1"
 
 func testGoNZBNetAdminConfig(t *testing.T) *config.Config {
@@ -706,6 +786,26 @@ type fakeGoNZBNetAdminStore struct {
 	deleteRoleAccessPoolID string
 	deleteRoleAccessRoleID string
 	deleteRoleAccessResult bool
+	activityRollups        []activity.Rollup
+	activePoolIDs          []string
+	poolHealth             pgindex.FederationPoolHealthReport
+	articleAvailability    []pgindex.ArticleAvailabilityDiagnostic
+}
+
+func (s *fakeGoNZBNetAdminStore) ListFederationActivityRollups(context.Context, pgindex.FederationActivityQuery) ([]activity.Rollup, error) {
+	return s.activityRollups, nil
+}
+
+func (s *fakeGoNZBNetAdminStore) ListActivePoolIDsForNodeCapabilities(context.Context, string, []string) ([]string, error) {
+	return s.activePoolIDs, nil
+}
+
+func (s *fakeGoNZBNetAdminStore) GetFederationPoolHealthReport(context.Context, string, time.Time) (pgindex.FederationPoolHealthReport, error) {
+	return s.poolHealth, nil
+}
+
+func (s *fakeGoNZBNetAdminStore) ListArticleAvailabilityDiagnostics(context.Context, string, int) ([]pgindex.ArticleAvailabilityDiagnostic, error) {
+	return s.articleAvailability, nil
 }
 
 func (s *fakeGoNZBNetAdminStore) ListTrustPools(context.Context) ([]pgindex.TrustPoolRecord, error) {

@@ -18,10 +18,12 @@
 | `internal/gonzbnet/coverage` | Scanner coverage model and scheduler |
 | `internal/gonzbnet/reassigner` | Stale claim recovery |
 | `internal/gonzbnet/metrics` | Process-local protocol counters |
+| `internal/gonzbnet/activity` | Grouped runtime state and low-write activity rollups |
 | `internal/store/pgindex/federation_*` | PostgreSQL event and projection stores |
 | `internal/runtime/wiring/gonzbnet_*` | Runtime lifecycle and scanner integration |
 | `internal/api/controllers/gonzbnet*` | Federation and local-admin HTTP handlers |
-| `ui/src/modules/admin/AdminGoNZBNetPage.tsx` | Admin WebUI |
+| `ui/src/modules/admin/AdminGoNZBNetPage.tsx` | Admin WebUI operations and advanced tools |
+| `ui/src/modules/admin/GoNZBNetReporting.tsx` | Overview, roles, pool evidence, and native SVG activity views |
 
 Configuration is defined in `internal/infra/config/config.go`, runtime settings
 in `internal/app/settings_types.go`, routes in `internal/api/router.go`, and CLI
@@ -39,8 +41,14 @@ The durable model has four layers:
 2. Governance: pools, policy, membership, role access, admissions, and peers.
 3. Content projections: releases, sources, manifests, validation, health,
    trust, moderation, scan output, and coverage.
-4. Operations: delivery cursors, pending/repair work, metrics inputs, and admin
-   diagnostics.
+4. Operations: delivery cursors, pending/repair work, coarse activity rollups,
+   metrics inputs, and admin diagnostics.
+
+Runtime activity is recorded in memory on worker hot paths and flushed as one
+batch every five minutes. Migration `024` stores five-minute buckets; the
+runtime compacts buckets older than 48 hours to hourly rows and deletes hourly
+history after 90 days. Signed pool reporting continues to use federation event
+and attestation projections as its source of truth.
 
 Inbound accepted append and required typed projection must use the federation
 transaction helper. Do not add a receive path that appends first and projects

@@ -13,17 +13,25 @@ coverage, validation, caching, synchronization, protocol limits, and privacy.
 The page identifies the bootstrap-only fields that still require YAML and a
 process restart.
 
-Open `/admin/gonzbnet`. `Overview` contains routine operations:
+Open `/admin/gonzbnet`. Its four views separate routine understanding from
+protocol detail:
 
-- node identity, advertised profile, readiness, and capability state;
-- peer status and synchronization;
-- trust-pool creation and policy;
-- direct-address or invitation-based joining;
-- pending admission approval/rejection and membership state.
+- **Overview** summarizes the node, healthy enabled jobs, connected peers,
+  active pools, warnings, and pending admissions.
+- **Roles** explains the grouped jobs **Find and use releases**, **Contribute
+  releases**, **Verify release health**, **Coordinate scanning**, and the
+  **Connection layer**. Expand a job to see its actual workers, execution style,
+  eligible pools, last useful work, and any blocking prerequisite. Off jobs are
+  kept in one collapsed section.
+- **Pools** shows release-health evidence, article-availability evidence,
+  freshness, reporting members, and their signed contributions. Pool creation,
+  joining, admission, and membership controls are kept with this view.
+- **Activity** graphs successful work, processed items, and failures from
+  bounded five-minute/hourly history. Raw protocol diagnostics, manual actions,
+  governance, and key operations remain available under **Advanced tools**.
 
-`Advanced` contains event and delivery diagnostics, rejected events,
-capabilities, coverage, validation tasks, manifests, release sources, health,
-reputation, role access, protocol metrics, and governance controls.
+These views are read-only descriptions of effective behavior. Use **Settings >
+GoNZBNet** to enable jobs or change their cadence and limits.
 
 Sensitive governance and key controls are grouped under **Destructive stuff**.
 Governance actions require `CONFIRM`. Key export and rotation retain the backend
@@ -89,16 +97,26 @@ history.
 
 ## Metrics
 
-Authenticated local-admin endpoints expose process-local metrics:
+Authenticated local-admin endpoints expose process-local metrics and bounded
+operator reporting:
 
 ```text
 GET /api/v1/admin/gonzbnet/metrics
 GET /api/v1/admin/gonzbnet/metrics/prometheus
+GET /api/v1/admin/gonzbnet/overview
+GET /api/v1/admin/gonzbnet/roles
+GET /api/v1/admin/gonzbnet/activity?window=24h&pool_id=POOL
+GET /api/v1/admin/gonzbnet/pools/POOL/health
+GET /api/v1/admin/gonzbnet/diagnostics/article-availability?pool_id=POOL
 ```
 
 Metrics contain no local usernames, API keys, searches, grabs, or download
-history. Counters reset when the process restarts. Scrape the Prometheus route
-when durable history or alerting is required.
+history. Prometheus counters reset when the process restarts. Activity reporting
+is flushed in five-minute batches, keeps five-minute buckets for 48 hours, then
+hourly buckets for 90 days. Pool health and member contribution summaries are
+derived from durable signed federation evidence rather than runtime counters.
+Scrape the Prometheus route when external alerting or longer retention is
+required.
 
 Useful operational signals include accepted/rejected events, signature and
 authorization failures, pull/push delivery results, manifest fetch/cache
