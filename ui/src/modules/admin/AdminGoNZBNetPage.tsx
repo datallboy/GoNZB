@@ -102,7 +102,6 @@ import type {
   GoNZBNetValidationGap,
 } from '../../shared/types'
 
-type ActionMode = 'scanner' | 'validator'
 type AdminView = 'overview' | 'roles' | 'pools' | 'activity'
 
 function adminView(value: string | null): AdminView {
@@ -550,7 +549,6 @@ export function AdminGoNZBNetPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const [view, setView] = useState<AdminView>(() => adminView(searchParams.get('view')))
   const [poolID, setPoolID] = useState(() => searchParams.get('pool_id') || defaultPoolID)
-  const [mode, setMode] = useState<ActionMode>('scanner')
   const [nodeProfile, setNodeProfile] = useState<GoNZBNetNodeProfileResponse | null>(null)
   const [configValidation, setConfigValidation] = useState<GoNZBNetConfigValidation | null>(null)
   const [protocolMetrics, setProtocolMetrics] = useState<GoNZBNetMetrics | null>(null)
@@ -685,8 +683,8 @@ export function AdminGoNZBNetPage() {
           getGoNZBNetCoverageDashboard(effectivePoolID),
           getGoNZBNetCoverageGroups(effectivePoolID),
           getGoNZBNetValidationGaps(effectivePoolID, 100),
-          getGoNZBNetCoverageSuggestions({ pool_id: effectivePoolID, mode, limit: 25 }),
-          getGoNZBNetCoveragePlan({ pool_id: effectivePoolID, mode, limit: 25 }),
+          getGoNZBNetCoverageSuggestions({ pool_id: effectivePoolID, limit: 25 }),
+          getGoNZBNetCoveragePlan({ pool_id: effectivePoolID, limit: 25 }),
           getGoNZBNetPeerDiagnostics(100),
           getGoNZBNetEventDiagnostics(100),
           getGoNZBNetRejectedEventDiagnostics(100),
@@ -748,7 +746,7 @@ export function AdminGoNZBNetPage() {
 
   useEffect(() => {
     void refresh()
-  }, [effectivePoolID, mode, activityWindow])
+  }, [effectivePoolID, activityWindow])
 
   useEffect(() => {
     if (!trustPools.length || trustPools.some((pool) => pool.pool_id === effectivePoolID)) {
@@ -1237,13 +1235,6 @@ export function AdminGoNZBNetPage() {
                 {trustPools.length ? trustPools.map((pool) => <option key={pool.pool_id} value={pool.pool_id}>{pool.display_name || pool.pool_id} ({pool.pool_id})</option>) : <option value={poolID}>{poolID}</option>}
               </select>
             </label>
-            {view === 'activity' ? <label className="field">
-              <span>Coverage mode</span>
-              <select className="table-input" value={mode} onChange={(event) => setMode(event.target.value as ActionMode)}>
-                <option value="scanner">scanner</option>
-                <option value="validator">validator</option>
-              </select>
-            </label> : null}
           </div>
         ) : null}
         {error ? <div className="banner error">{error}</div> : null}
@@ -2412,7 +2403,7 @@ export function AdminGoNZBNetPage() {
         </table>
       </SectionTable>
 
-      <SectionTable title={`Plan: ${label(plan?.mode, mode)}`} count={(plan?.suggestions ?? []).length}>
+      <SectionTable title="Coverage plan" count={(plan?.suggestions ?? []).length}>
         <AssignmentRows rows={(plan?.suggestions ?? []).map((item) => item.assignment)} />
       </SectionTable>
 
