@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import type {
   GoNZBNetActivityReport,
   GoNZBNetActivityRollup,
@@ -83,6 +84,14 @@ const statusText: Record<string, string> = {
   working: 'Working',
   degraded: 'Needs attention',
   blocked: 'Blocked',
+}
+
+const roleTabLabel: Record<string, string> = {
+  consume: 'Find & use',
+  contribute: 'Contribute',
+  verify: 'Verify health',
+  coordinate: 'Coordinate',
+  connection: 'Connection',
 }
 
 function Status({ value }: { value: string }) {
@@ -222,14 +231,26 @@ function OverviewView({ report }: { report: GoNZBNetOverviewReport | null }) {
 }
 
 function RolesView({ report, evidence }: { report: GoNZBNetRolesReport | null; evidence: RoleEvidence }) {
+  const [selectedKey, setSelectedKey] = useState('')
   if (!report) return <div className="page-card muted-copy">Role reporting is unavailable.</div>
   const enabled = report.jobs.filter((job) => job.configured)
   const disabled = report.jobs.filter((job) => !job.configured)
+  const selected = enabled.find((job) => job.key === selectedKey) ?? enabled[0]
   return (
     <div className="stack">
       <section className="page-card stack">
         <div><p className="eyebrow">What this node does</p><h2 className="section-title">Enabled jobs</h2></div>
-        <div className="gonzbnet-job-grid gonzbnet-job-grid--detail">{enabled.map((job) => <RoleSummary detail job={job} nodeID={report.node_id} evidence={evidence} key={job.key} />)}</div>
+        {selected ? <>
+          <div className="settings-tabs gonzbnet-role-tabs" role="tablist" aria-label="Enabled GoNZBNet roles">
+            {enabled.map((job) => {
+              const active = job.key === selected.key
+              return <button className={`settings-tab${active ? ' is-active' : ''}`} id={`gonzbnet-role-tab-${job.key}`} type="button" role="tab" aria-selected={active} aria-controls={`gonzbnet-role-panel-${job.key}`} onClick={() => setSelectedKey(job.key)} key={job.key}><span>{roleTabLabel[job.key] ?? job.label}</span><Status value={job.status} /></button>
+            })}
+          </div>
+          <div id={`gonzbnet-role-panel-${selected.key}`} role="tabpanel" aria-labelledby={`gonzbnet-role-tab-${selected.key}`}>
+            <RoleSummary detail job={selected} nodeID={report.node_id} evidence={evidence} />
+          </div>
+        </> : <EmptyEvidence>No GoNZBNet jobs are enabled on this node.</EmptyEvidence>}
       </section>
       <details className="page-card">
         <summary>Off jobs ({disabled.length})</summary>
