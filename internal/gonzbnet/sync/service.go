@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/datallboy/gonzb/internal/gonzbnet/activity"
 	"github.com/datallboy/gonzb/internal/gonzbnet/canonical"
 	"github.com/datallboy/gonzb/internal/gonzbnet/coverage"
 	"github.com/datallboy/gonzb/internal/gonzbnet/eventbody"
@@ -273,8 +274,15 @@ func (s *Service) UpsertManualPeers(ctx context.Context, peerURLs []string) erro
 	return nil
 }
 
-func (s *Service) SyncOnce(ctx context.Context) (Result, error) {
-	var result Result
+func (s *Service) SyncOnce(ctx context.Context) (result Result, err error) {
+	finish := activity.Default.Begin(activity.ComponentPullSync, "")
+	var activityErr error
+	defer func() {
+		if err != nil {
+			activityErr = err
+		}
+		finish(activity.Result{ItemsIn: int64(result.Accepted + result.Duplicate + result.Rejected), ItemsOut: int64(result.Projected), Err: activityErr})
+	}()
 	if s == nil || s.identity == nil || s.store == nil {
 		return result, fmt.Errorf("sync dependencies are required")
 	}
@@ -288,6 +296,9 @@ func (s *Service) SyncOnce(ctx context.Context) (Result, error) {
 		peerResult, err := s.syncPeer(ctx, peer)
 		gonzbnetmetrics.Default.ObservePeerSync(time.Since(started))
 		if err != nil {
+			if activityErr == nil {
+				activityErr = err
+			}
 			gonzbnetmetrics.Default.Add(gonzbnetmetrics.PeerFailuresTotal, 1)
 			_ = s.store.MarkFederationPeerSyncFailure(ctx, peer.ID, err.Error())
 			if s.logger != nil {
@@ -306,8 +317,15 @@ func (s *Service) SyncOnce(ctx context.Context) (Result, error) {
 	return result, nil
 }
 
-func (s *Service) PushOnce(ctx context.Context, limit int) (Result, error) {
-	var result Result
+func (s *Service) PushOnce(ctx context.Context, limit int) (result Result, err error) {
+	finish := activity.Default.Begin(activity.ComponentPushSync, "")
+	var activityErr error
+	defer func() {
+		if err != nil {
+			activityErr = err
+		}
+		finish(activity.Result{ItemsIn: int64(result.Accepted + result.Duplicate + result.Rejected), ItemsOut: int64(result.Accepted), Err: activityErr})
+	}()
 	if s == nil || s.identity == nil || s.store == nil {
 		return result, fmt.Errorf("sync dependencies are required")
 	}
@@ -321,6 +339,9 @@ func (s *Service) PushOnce(ctx context.Context, limit int) (Result, error) {
 		peerResult, err := s.pushPeer(ctx, peer, limit)
 		gonzbnetmetrics.Default.ObservePeerSync(time.Since(started))
 		if err != nil {
+			if activityErr == nil {
+				activityErr = err
+			}
 			gonzbnetmetrics.Default.Add(gonzbnetmetrics.PeerFailuresTotal, 1)
 			_ = s.store.MarkFederationPeerSyncFailure(ctx, peer.ID, err.Error())
 			if s.logger != nil {
@@ -392,8 +413,19 @@ func (s *Service) RunGossip(ctx context.Context, interval time.Duration, opts Go
 	}
 }
 
-func (s *Service) GossipOnce(ctx context.Context, opts GossipOptions) (Result, error) {
-	var result Result
+func (s *Service) GossipOnce(ctx context.Context, opts GossipOptions) (result Result, err error) {
+	finish := activity.Default.Begin(activity.ComponentGossip, "")
+	var activityErr error
+	defer func() {
+		if err != nil {
+			activityErr = err
+		}
+		activityResult := activity.Result{ItemsIn: int64(result.Accepted + result.Duplicate + result.Rejected), ItemsOut: int64(result.Accepted), Err: activityErr}
+		finish(activityResult)
+		if opts.PeerExchangeEnabled {
+			activity.Default.Record(activity.ComponentPeerExchange, "", activityResult)
+		}
+	}()
 	if s == nil || s.identity == nil || s.store == nil {
 		return result, fmt.Errorf("sync dependencies are required")
 	}
@@ -412,6 +444,9 @@ func (s *Service) GossipOnce(ctx context.Context, opts GossipOptions) (Result, e
 		attempted++
 		peerResult, err := s.gossipPeer(ctx, peers[i], opts)
 		if err != nil {
+			if activityErr == nil {
+				activityErr = err
+			}
 			_ = s.store.MarkFederationPeerSyncFailure(ctx, peers[i].ID, err.Error())
 			if s.logger != nil {
 				s.logger.Warn("gonzbnet websocket gossip failed peer=%s: %v", peers[i].PeerURL, err)
@@ -552,6 +587,11 @@ func (s *Service) syncPeer(ctx context.Context, peer pgindex.FederationPeerRecor
 			s.resolveProjection(ctx, &event)
 			if receivedEventHasProjection(event.EventType) {
 				result.Projected++
+				poolID := ""
+				if len(event.PoolIDs) == 1 {
+					poolID = event.PoolIDs[0]
+				}
+				activity.Default.Record(activity.ComponentIndexProjection, poolID, activity.Result{ItemsIn: 1, ItemsOut: 1})
 			}
 		}
 		if page.NextCursor != "" {

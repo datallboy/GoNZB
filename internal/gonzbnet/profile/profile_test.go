@@ -145,6 +145,25 @@ func TestNodeProfileOnlyAdvertisesActiveProductionPaths(t *testing.T) {
 	}
 }
 
+func TestNodeProfileAdvertisesActiveManifestBuilder(t *testing.T) {
+	node, err := identity.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("identity: %v", err)
+	}
+	profile, err := NodeProfileFor(context.Background(), node, Config{
+		AdvertiseURL:        "https://node.example/gonzbnet/v1",
+		Scanner:             true,
+		PublishReleaseCards: true,
+		ManifestBuilder:     true,
+	}, time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("node profile: %v", err)
+	}
+	if !profile.Capabilities.ManifestBuilder {
+		t.Fatalf("active manifest builder should be advertised: %+v", profile.Capabilities)
+	}
+}
+
 func TestNodeProfileAdvertisesEnabledReleaseAndHealthPublishers(t *testing.T) {
 	node, err := identity.LoadOrCreate(t.TempDir())
 	if err != nil {

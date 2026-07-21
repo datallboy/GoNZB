@@ -276,7 +276,7 @@ func NodeProfileFor(ctx context.Context, identity Identity, cfg Config, now time
 			Consumer:            cfg.Consumer,
 			Scanner:             cfg.Scanner,
 			Indexer:             cfg.Indexer,
-			ManifestBuilder:     false,
+			ManifestBuilder:     cfg.ManifestBuilder && cfg.Scanner && cfg.PublishReleaseCards,
 			ManifestCache:       cfg.ManifestCache,
 			Validator:           cfg.Validator,
 			HealthChecker:       cfg.HealthChecker,

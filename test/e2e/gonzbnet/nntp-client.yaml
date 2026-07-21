@@ -8,7 +8,7 @@ servers:
     tls: false
     max_connections: 2
     priority: 1
-    roles: ["indexer", "validator"]
+    roles: ["scrape"]
 modules:
   downloader: { enabled: false }
   aggregator: { enabled: false }

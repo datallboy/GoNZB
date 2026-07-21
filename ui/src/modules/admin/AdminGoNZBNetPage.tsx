@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import {
   approveGoNZBNetAdmission,
   approveGoNZBNetPoolMember,
@@ -16,6 +17,8 @@ import {
   exportGoNZBNetKey,
   getGoNZBNetConfigValidation,
   getGoNZBNetAdmissions,
+  getGoNZBNetActivity,
+  getGoNZBNetArticleAvailability,
   getGoNZBNetCoverageDashboard,
   getGoNZBNetCoverageGroups,
   getGoNZBNetCoveragePlan,
@@ -26,14 +29,17 @@ import {
   getGoNZBNetMetrics,
   getGoNZBNetNodeCapabilities,
   getGoNZBNetNodeProfile,
+  getGoNZBNetOverview,
   getGoNZBNetPoolControlEvents,
   getGoNZBNetPoolMembers,
+  getGoNZBNetPoolHealth,
   getGoNZBNetPeerDeliveryDiagnostics,
   getGoNZBNetPeerDiagnostics,
   getGoNZBNetRejectedEventDiagnostics,
   getGoNZBNetReleaseSourceDiagnostics,
   getGoNZBNetReputationDiagnostics,
   getGoNZBNetRolePoolAccess,
+  getGoNZBNetRoles,
   getGoNZBNetTombstones,
   getGoNZBNetTrustPools,
   getGoNZBNetValidationTaskDiagnostics,
@@ -57,10 +63,13 @@ import {
   upsertGoNZBNetRolePoolAccess,
   upsertGoNZBNetTrustPool,
 } from '../../shared/api/admin'
+import { GoNZBNetReporting } from './GoNZBNetReporting'
 import { formatDateTime, formatNumber } from '../../shared/lib/format'
 import type {
   GoNZBNetAdmission,
+  GoNZBNetActivityReport,
   GoNZBNetAdmissionRemote,
+  GoNZBNetArticleAvailabilityDiagnostic,
   GoNZBNetCoverageAssignment,
   GoNZBNetCoverageClaim,
   GoNZBNetConfigValidation,
@@ -75,15 +84,18 @@ import type {
   GoNZBNetMetrics,
   GoNZBNetNodeCapability,
   GoNZBNetNodeProfileResponse,
+  GoNZBNetOverviewReport,
   GoNZBNetPeerDeliveryDiagnostic,
   GoNZBNetPeerDiagnostic,
   GoNZBNetPoolControlEvent,
+  GoNZBNetPoolHealthReport,
   GoNZBNetPoolMember,
   GoNZBNetRejectedEventDiagnostic,
   GoNZBNetRejectedEventSummary,
   GoNZBNetReleaseSourceDiagnostic,
   GoNZBNetReputationDiagnostic,
   GoNZBNetRolePoolAccess,
+  GoNZBNetRolesReport,
   GoNZBNetTombstone,
   GoNZBNetTrustPool,
   GoNZBNetValidationTaskDiagnostic,
@@ -91,7 +103,15 @@ import type {
 } from '../../shared/types'
 
 type ActionMode = 'scanner' | 'validator'
-type AdminView = 'overview' | 'advanced'
+type AdminView = 'overview' | 'roles' | 'pools' | 'activity'
+
+function adminView(value: string | null): AdminView {
+  return value === 'roles' || value === 'pools' || value === 'activity' ? value : 'overview'
+}
+
+function reportingWindow(value: string | null) {
+  return value === '1h' || value === '7d' || value === '30d' ? value : '24h'
+}
 
 type AssignmentForm = {
   assignment_id: string
@@ -527,8 +547,9 @@ function OutcomeRows({ rows }: { rows: GoNZBNetCoverageOutcome[] }) {
 }
 
 export function AdminGoNZBNetPage() {
-  const [view, setView] = useState<AdminView>('overview')
-  const [poolID, setPoolID] = useState(defaultPoolID)
+  const [searchParams, setSearchParams] = useSearchParams()
+  const [view, setView] = useState<AdminView>(() => adminView(searchParams.get('view')))
+  const [poolID, setPoolID] = useState(() => searchParams.get('pool_id') || defaultPoolID)
   const [mode, setMode] = useState<ActionMode>('scanner')
   const [nodeProfile, setNodeProfile] = useState<GoNZBNetNodeProfileResponse | null>(null)
   const [configValidation, setConfigValidation] = useState<GoNZBNetConfigValidation | null>(null)
@@ -578,6 +599,12 @@ export function AdminGoNZBNetPage() {
   const [destructiveConfirmation, setDestructiveConfirmation] = useState('')
   const [exportedKey, setExportedKey] = useState('')
   const [peerURL, setPeerURL] = useState('')
+  const [reportingOverview, setReportingOverview] = useState<GoNZBNetOverviewReport | null>(null)
+  const [reportingRoles, setReportingRoles] = useState<GoNZBNetRolesReport | null>(null)
+  const [reportingActivity, setReportingActivity] = useState<GoNZBNetActivityReport | null>(null)
+  const [poolHealth, setPoolHealth] = useState<GoNZBNetPoolHealthReport | null>(null)
+  const [articleAvailability, setArticleAvailability] = useState<GoNZBNetArticleAvailabilityDiagnostic[]>([])
+  const [activityWindow, setActivityWindow] = useState(() => reportingWindow(searchParams.get('window')))
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [actionStatus, setActionStatus] = useState<string | null>(null)
@@ -587,6 +614,25 @@ export function AdminGoNZBNetPage() {
   const suggestedReleaseID = useMemo(() => {
     return validationGaps.find((item) => item.release_id)?.release_id ?? releaseSourceDiagnostics.find((item) => item.release_id)?.release_id ?? ''
   }, [validationGaps, releaseSourceDiagnostics])
+
+  function selectView(next: AdminView) {
+    setView(next)
+    setSearchParams((current) => {
+      const updated = new URLSearchParams(current)
+      updated.set('view', next)
+      return updated
+    }, { replace: true })
+  }
+
+  function selectActivityWindow(next: string) {
+    const normalized = reportingWindow(next)
+    setActivityWindow(normalized)
+    setSearchParams((current) => {
+      const updated = new URLSearchParams(current)
+      updated.set('window', normalized)
+      return updated
+    }, { replace: true })
+  }
 
   async function refresh() {
     setLoading(true)
@@ -616,6 +662,11 @@ export function AdminGoNZBNetPage() {
         nextManifestSources,
         nextHealth,
         nextReputation,
+        nextReportingOverview,
+        nextReportingRoles,
+        nextReportingActivity,
+        nextPoolHealth,
+        nextArticleAvailability,
       ] =
         await Promise.all([
           getGoNZBNetNodeCapabilities(),
@@ -642,6 +693,11 @@ export function AdminGoNZBNetPage() {
           getGoNZBNetManifestSourceDiagnostics(effectivePoolID, 100),
           getGoNZBNetHealthDiagnostics(effectivePoolID, 100),
           getGoNZBNetReputationDiagnostics(100),
+          getGoNZBNetOverview(),
+          getGoNZBNetRoles(),
+          getGoNZBNetActivity({ window: activityWindow, pool_id: effectivePoolID }),
+          getGoNZBNetPoolHealth(effectivePoolID).catch(() => null),
+          getGoNZBNetArticleAvailability(effectivePoolID, 100).catch(() => ({ items: [], count: 0 })),
         ])
       setNodes(nextNodes.items ?? [])
       setNodeProfile(nextNodeProfile)
@@ -668,6 +724,11 @@ export function AdminGoNZBNetPage() {
       setManifestSourceDiagnostics(nextManifestSources.items ?? [])
       setHealthDiagnostics(nextHealth.items ?? [])
       setReputationDiagnostics(nextReputation.items ?? [])
+      setReportingOverview(nextReportingOverview)
+      setReportingRoles(nextReportingRoles)
+      setReportingActivity(nextReportingActivity)
+      setPoolHealth(nextPoolHealth)
+      setArticleAvailability(nextArticleAvailability.items ?? [])
       setError(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load GoNZBNet admin state')
@@ -678,7 +739,7 @@ export function AdminGoNZBNetPage() {
 
   useEffect(() => {
     void refresh()
-  }, [effectivePoolID, mode])
+  }, [effectivePoolID, mode, activityWindow])
 
   async function handleCreatePool(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -1122,7 +1183,6 @@ export function AdminGoNZBNetPage() {
   const staleClaims = dashboard?.stale_claims ?? []
   const outcomes = dashboard?.outcomes ?? []
   const duplicates = dashboard?.duplicates ?? []
-  const coveragePercent = Math.round((dashboard?.coverage_score ?? 0) * 100)
   const peerSyncMetric = protocolMetrics?.durations.gonzbnet_peer_sync_duration_seconds
   const peerSyncAverage = peerSyncMetric?.count ? peerSyncMetric.sum_seconds / peerSyncMetric.count : 0
 
@@ -1139,10 +1199,12 @@ export function AdminGoNZBNetPage() {
           </button>
         </div>
         <div className="settings-tabs" role="tablist" aria-label="GoNZBNet administration view">
-          <button className={`settings-tab${view === 'overview' ? ' is-active' : ''}`} type="button" role="tab" aria-selected={view === 'overview'} onClick={() => setView('overview')}>Overview</button>
-          <button className={`settings-tab${view === 'advanced' ? ' is-active' : ''}`} type="button" role="tab" aria-selected={view === 'advanced'} onClick={() => setView('advanced')}>Advanced</button>
+          <button className={`settings-tab${view === 'overview' ? ' is-active' : ''}`} type="button" role="tab" aria-selected={view === 'overview'} onClick={() => selectView('overview')}>Overview</button>
+          <button className={`settings-tab${view === 'roles' ? ' is-active' : ''}`} type="button" role="tab" aria-selected={view === 'roles'} onClick={() => selectView('roles')}>Roles</button>
+          <button className={`settings-tab${view === 'pools' ? ' is-active' : ''}`} type="button" role="tab" aria-selected={view === 'pools'} onClick={() => selectView('pools')}>Pools</button>
+          <button className={`settings-tab${view === 'activity' ? ' is-active' : ''}`} type="button" role="tab" aria-selected={view === 'activity'} onClick={() => selectView('activity')}>Activity</button>
         </div>
-        {view === 'advanced' ? (
+        {view === 'pools' || view === 'activity' ? (
           <div className="toolbar-grid">
             <label className="field">
               <span>Pool</span>
@@ -1159,18 +1221,21 @@ export function AdminGoNZBNetPage() {
         ) : null}
         {error ? <div className="banner error">{error}</div> : null}
         {actionStatus ? <div className="banner">{actionStatus}</div> : null}
-        <div className="stat-grid">
-          <StatCard label="Node" value={nodeProfile ? 'Online' : 'Unavailable'} detail={shortID(nodeProfile?.node_id)} />
-          <StatCard label="Peers" value={formatNumber(peerDiagnostics.length)} detail={`${formatNumber(deliveryDiagnostics.length)} delivery records`} />
-          <StatCard label="Trust pools" value={formatNumber(trustPools.length)} detail={`${formatNumber(poolMembers.length)} selected-pool members`} />
-          <StatCard label="Release sources" value={formatNumber(releaseSourceDiagnostics.length)} detail={`${formatNumber(manifestSourceDiagnostics.length)} manifest sources`} />
-          <StatCard label="Config" value={configValidation?.valid ? 'Valid' : 'Review'} detail={`${formatNumber(configValidation?.issues.length ?? 0)} issues`} />
-          {view === 'advanced' ? <StatCard label="Coverage" value={`${coveragePercent}%`} detail={`${formatNumber(outcomes.length)} outcomes`} /> : null}
-          {view === 'advanced' ? <StatCard label="Event log" value={formatNumber(eventDiagnostics.length)} detail={`${formatNumber(rejectedDiagnostics.length)} rejected events`} /> : null}
-          {view === 'advanced' ? <StatCard label="Health" value={formatNumber(healthDiagnostics.length)} detail={`${formatNumber(reputationDiagnostics.length)} reputation events`} /> : null}
-        </div>
       </div>
 
+      <GoNZBNetReporting
+        view={view}
+        overview={reportingOverview}
+        roles={reportingRoles}
+        activity={reportingActivity}
+        poolHealth={poolHealth}
+        articleAvailability={articleAvailability}
+        activityWindow={activityWindow}
+        onActivityWindowChange={selectActivityWindow}
+      />
+
+      {view === 'pools' ? (
+        <>
       <div className="two-column-grid">
         <form className="page-card stack" onSubmit={handleCreatePool}>
           <h2 className="section-title">Create pool</h2>
@@ -1252,8 +1317,10 @@ export function AdminGoNZBNetPage() {
           </tbody>
         </table>
       </SectionTable>
+        </>
+      ) : null}
 
-      {view === 'overview' ? (
+      {view === 'pools' ? (
         <div className="two-column-grid">
           <SectionTable title="Pools" count={trustPools.length}>
             <table className="data-table data-table--compact">
@@ -1285,8 +1352,10 @@ export function AdminGoNZBNetPage() {
             </table>
           </SectionTable>
         </div>
-      ) : (
-        <>
+      ) : view === 'activity' ? (
+        <details className="page-card gonzbnet-advanced-tools">
+          <summary>Advanced protocol and governance tools</summary>
+          <div className="stack gonzbnet-details-body">
       <div className="button-row">
         <button className="secondary-button" type="button" onClick={() => void handleRecomputeScores()}>Recompute scores</button>
         <a className="secondary-button" href="/api/v1/admin/gonzbnet/metrics/prometheus" target="_blank" rel="noreferrer">Prometheus</a>
@@ -2453,8 +2522,9 @@ export function AdminGoNZBNetPage() {
           </form>
         </div>
       </section>
-        </>
-      )}
+          </div>
+        </details>
+      ) : null}
     </div>
   )
 }

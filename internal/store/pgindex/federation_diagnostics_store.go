@@ -142,6 +142,25 @@ type HealthAttestationDiagnostic struct {
 	UpdatedAt             time.Time `json:"updated_at"`
 }
 
+type ArticleAvailabilityDiagnostic struct {
+	AttestationID         string    `json:"attestation_id"`
+	ManifestID            string    `json:"manifest_id"`
+	ReleaseID             string    `json:"release_id"`
+	AuthorNodeID          string    `json:"author_node_id"`
+	PoolID                string    `json:"pool_id"`
+	CheckedAt             time.Time `json:"checked_at"`
+	Status                string    `json:"status"`
+	ArticlesTotal         int       `json:"articles_total"`
+	ArticlesAvailable     int       `json:"articles_available"`
+	MissingArticles       int       `json:"missing_articles"`
+	RetentionDaysObserved int       `json:"retention_days_observed"`
+	Confidence            float64   `json:"confidence"`
+	ValidationScore       float64   `json:"validation_score"`
+	Method                string    `json:"method"`
+	SourceEventID         string    `json:"source_event_id"`
+	UpdatedAt             time.Time `json:"updated_at"`
+}
+
 type ReputationDiagnostic struct {
 	ID              int64     `json:"id"`
 	NodeID          string    `json:"node_id"`
@@ -458,6 +477,47 @@ func (s *Store) ListHealthAttestationDiagnostics(ctx context.Context, poolID str
 	for rows.Next() {
 		var item HealthAttestationDiagnostic
 		if err := rows.Scan(&item.AttestationID, &item.ManifestID, &item.ReleaseID, &item.AuthorNodeID, &item.PoolID, &item.CheckedAt, &item.Status, &item.ArticlesTotal, &item.ArticlesAvailable, &item.MissingArticles, &item.RepairAvailable, &item.RepairConfidence, &item.RetentionDaysObserved, &item.Confidence, &item.AvailabilityScore, &item.Method, &item.SourceEventID, &item.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ListArticleAvailabilityDiagnostics(ctx context.Context, poolID string, limit int) ([]ArticleAvailabilityDiagnostic, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("pgindex store is not initialized")
+	}
+	limit = clampDiagnosticsLimit(limit, 100)
+	args := []any{limit}
+	filter := ""
+	if poolID = strings.TrimSpace(poolID); poolID != "" {
+		filter = "WHERE pool_id = $2"
+		args = append(args, poolID)
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT attestation_id, manifest_id, release_id, author_node_id, pool_id,
+		       checked_at, status, articles_total, articles_available,
+		       missing_articles, retention_days_observed, confidence,
+		       validation_score, COALESCE(method, ''), source_event_id, updated_at
+		FROM article_availability_attestations
+		`+filter+`
+		ORDER BY checked_at DESC, attestation_id
+		LIMIT $1`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list article availability diagnostics: %w", err)
+	}
+	defer rows.Close()
+	out := make([]ArticleAvailabilityDiagnostic, 0)
+	for rows.Next() {
+		var item ArticleAvailabilityDiagnostic
+		if err := rows.Scan(
+			&item.AttestationID, &item.ManifestID, &item.ReleaseID, &item.AuthorNodeID,
+			&item.PoolID, &item.CheckedAt, &item.Status, &item.ArticlesTotal,
+			&item.ArticlesAvailable, &item.MissingArticles, &item.RetentionDaysObserved,
+			&item.Confidence, &item.ValidationScore, &item.Method, &item.SourceEventID,
+			&item.UpdatedAt,
+		); err != nil {
 			return nil, err
 		}
 		out = append(out, item)

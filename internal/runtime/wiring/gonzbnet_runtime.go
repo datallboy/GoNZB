@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/datallboy/gonzb/internal/app"
+	"github.com/datallboy/gonzb/internal/gonzbnet/activity"
 	"github.com/datallboy/gonzb/internal/gonzbnet/admission"
 	"github.com/datallboy/gonzb/internal/gonzbnet/canonical"
 	"github.com/datallboy/gonzb/internal/gonzbnet/capability"
@@ -43,9 +44,13 @@ type gonzbnetRuntimeModule struct {
 		ProjectFederationPoolEvent(context.Context, *events.SignedEvent) error
 		UpsertFederationPeerURL(context.Context, string) (int64, error)
 	}
-	pullSync *gonzbnetsync.Service
-	cancel   context.CancelFunc
-	running  bool
+	pullSync      *gonzbnetsync.Service
+	activityStore interface {
+		UpsertFederationActivityRollups(context.Context, []activity.Rollup) error
+		CompactFederationActivityRollups(context.Context, time.Time) error
+	}
+	cancel  context.CancelFunc
+	running bool
 }
 
 func (m *gonzbnetRuntimeModule) Name() string { return moduleNameGoNZBNet }
@@ -56,12 +61,14 @@ func (m *gonzbnetRuntimeModule) Enabled() bool {
 
 func (m *gonzbnetRuntimeModule) Build(ctx context.Context) error {
 	m.stop()
+	activity.Default.Configure(goNZBNetActivityDefinitions(m.appCtx))
 	m.identity = nil
 	m.publisherStore = nil
 	m.poolStore = nil
 	m.reassignStore = nil
 	m.admissionStore = nil
 	m.pullSync = nil
+	m.activityStore = nil
 	if !m.Enabled() {
 		return nil
 	}
@@ -136,6 +143,12 @@ func (m *gonzbnetRuntimeModule) Build(ctx context.Context) error {
 		return fmt.Errorf("pgindex store does not support gonzbnet admission polling")
 	}
 	m.admissionStore = admissionStore
+	if activityStore, ok := m.appCtx.PGIndexStore.(interface {
+		UpsertFederationActivityRollups(context.Context, []activity.Rollup) error
+		CompactFederationActivityRollups(context.Context, time.Time) error
+	}); ok {
+		m.activityStore = activityStore
+	}
 	return nil
 }
 
@@ -167,6 +180,9 @@ func (m *gonzbnetRuntimeModule) Start(ctx context.Context) error {
 	childCtx, cancel := context.WithCancel(ctx)
 	m.cancel = cancel
 	m.running = true
+	if m.activityStore != nil {
+		go m.runActivityFlush(childCtx)
+	}
 	if admissionEnabled {
 		go m.runAdmissionPolling(childCtx, 30*time.Second)
 	}
@@ -176,8 +192,10 @@ func (m *gonzbnetRuntimeModule) Start(ctx context.Context) error {
 		batchSize := m.appCtx.Config.GoNZBNet.PublishReleaseCardsBatchSize
 		m.appCtx.Logger.Info("starting gonzbnet release-card publisher interval=%s batch_size=%d", interval, batchSize)
 		go func() {
-			if err := m.runAcrossPools(childCtx, interval, capability.RequiredForEvent(pools.EventTypeReleaseCard), func(ctx context.Context, service *publisher.Service) error {
-				_, err := service.PublishOnce(ctx, batchSize)
+			if err := m.runAcrossPools(childCtx, interval, capability.RequiredForEvent(pools.EventTypeReleaseCard), func(ctx context.Context, poolID string, service *publisher.Service) error {
+				finish := activity.Default.Begin(activity.ComponentReleasePublisher, poolID)
+				result, err := service.PublishOnce(ctx, batchSize)
+				finish(activity.Result{ItemsIn: int64(result.Scanned), ItemsOut: int64(result.Published), Err: err})
 				return err
 			}); err != nil && childCtx.Err() == nil {
 				m.appCtx.Logger.Error("gonzbnet release-card publisher failed: %v", err)
@@ -189,8 +207,10 @@ func (m *gonzbnetRuntimeModule) Start(ctx context.Context) error {
 		batchSize := m.appCtx.Config.GoNZBNet.HealthAttestationsBatchSize
 		m.appCtx.Logger.Info("starting gonzbnet health attestation publisher interval=%s batch_size=%d", interval, batchSize)
 		go func() {
-			if err := m.runAcrossPools(childCtx, interval, capability.RequiredForEvent(pools.EventTypeHealthAttestation), func(ctx context.Context, service *publisher.Service) error {
-				_, err := service.PublishHealthOnce(ctx, batchSize)
+			if err := m.runAcrossPools(childCtx, interval, capability.RequiredForEvent(pools.EventTypeHealthAttestation), func(ctx context.Context, poolID string, service *publisher.Service) error {
+				finish := activity.Default.Begin(activity.ComponentHealthPublisher, poolID)
+				result, err := service.PublishHealthOnce(ctx, batchSize)
+				finish(activity.Result{ItemsIn: int64(result.Scanned), ItemsOut: int64(result.Published), Err: err})
 				return err
 			}); err != nil && childCtx.Err() == nil {
 				m.appCtx.Logger.Error("gonzbnet health attestation publisher failed: %v", err)
@@ -206,8 +226,10 @@ func (m *gonzbnetRuntimeModule) Start(ctx context.Context) error {
 		}
 		m.appCtx.Logger.Info("starting gonzbnet validator interval=%s batch_size=%d checksum_validation=%v", interval, batchSize, opts.ChecksumEnabled)
 		go func() {
-			if err := m.runAcrossPools(childCtx, interval, []string{capability.Validator}, func(ctx context.Context, service *publisher.Service) error {
-				_, err := service.PublishValidationOnce(ctx, batchSize, opts)
+			if err := m.runAcrossPools(childCtx, interval, []string{capability.Validator}, func(ctx context.Context, poolID string, service *publisher.Service) error {
+				finish := activity.Default.Begin(activity.ComponentValidator, poolID)
+				result, err := service.PublishValidationOnce(ctx, batchSize, opts)
+				finish(activity.Result{ItemsIn: int64(result.Claimed), ItemsOut: int64(result.Published), Backlog: int64(result.Failed), Err: err})
 				return err
 			}); err != nil && childCtx.Err() == nil {
 				m.appCtx.Logger.Error("gonzbnet validator failed: %v", err)
@@ -381,14 +403,14 @@ func gonzbnetReleaseReadyPolicy(appCtx *app.Context) pgindex.ReleaseReadyPolicy 
 	})
 }
 
-func (m *gonzbnetRuntimeModule) runAcrossPools(ctx context.Context, interval time.Duration, requiredCapabilities []string, run func(context.Context, *publisher.Service) error) error {
+func (m *gonzbnetRuntimeModule) runAcrossPools(ctx context.Context, interval time.Duration, requiredCapabilities []string, run func(context.Context, string, *publisher.Service) error) error {
 	for {
 		poolIDs, err := m.activePoolIDs(ctx, requiredCapabilities)
 		if err != nil {
 			return err
 		}
 		for _, poolID := range poolIDs {
-			if err := run(ctx, m.publisherForPool(poolID)); err != nil {
+			if err := run(ctx, poolID, m.publisherForPool(poolID)); err != nil {
 				return fmt.Errorf("pool %s: %w", poolID, err)
 			}
 		}
@@ -412,11 +434,15 @@ func (m *gonzbnetRuntimeModule) runReassignAcrossPools(ctx context.Context, inte
 			return err
 		}
 		for _, poolID := range poolIDs {
+			finish := activity.Default.Begin(activity.ComponentCoverageScheduler, poolID)
 			service, err := reassigner.New(m.identity, m.reassignStore, poolID, m.appCtx.Config.GoNZBNet.CoverageMinTrustForClaim)
 			if err != nil {
+				finish(activity.Result{Err: err})
 				return err
 			}
-			if _, err := service.RunOnce(ctx, limit); err != nil {
+			result, err := service.RunOnce(ctx, limit)
+			finish(activity.Result{ItemsIn: int64(result.StaleClaims), ItemsOut: int64(result.AssignmentsCreated), Err: err})
+			if err != nil {
 				return fmt.Errorf("pool %s: %w", poolID, err)
 			}
 		}
@@ -435,7 +461,10 @@ func (m *gonzbnetRuntimeModule) runReassignAcrossPools(ctx context.Context, inte
 
 func (m *gonzbnetRuntimeModule) runAdmissionPolling(ctx context.Context, interval time.Duration) {
 	for {
-		if err := m.refreshPendingAdmissions(ctx); err != nil && ctx.Err() == nil {
+		finish := activity.Default.Begin(activity.ComponentAdmissionPoller, "")
+		err := m.refreshPendingAdmissions(ctx)
+		finish(activity.Result{Err: err})
+		if err != nil && ctx.Err() == nil {
 			m.appCtx.Logger.Warn("gonzbnet admission refresh failed: %v", err)
 		}
 		timer := time.NewTimer(interval)
@@ -446,6 +475,65 @@ func (m *gonzbnetRuntimeModule) runAdmissionPolling(ctx context.Context, interva
 		case <-timer.C:
 		}
 	}
+}
+
+func (m *gonzbnetRuntimeModule) runActivityFlush(ctx context.Context) {
+	ticker := time.NewTicker(activity.RollupBucket)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := m.flushActivity(ctx); err != nil && ctx.Err() == nil {
+				m.appCtx.Logger.Warn("gonzbnet activity rollup flush failed: %v", err)
+			}
+		}
+	}
+}
+
+func (m *gonzbnetRuntimeModule) flushActivity(ctx context.Context) error {
+	if m.activityStore == nil || m.identity == nil {
+		return nil
+	}
+	nodeID, err := m.identity.NodeID(ctx)
+	if err != nil {
+		return err
+	}
+	items := activity.Default.DrainRollups(nodeID)
+	if len(items) == 0 {
+		return nil
+	}
+	if err := m.activityStore.UpsertFederationActivityRollups(ctx, items); err != nil {
+		activity.Default.RestoreRollups(items)
+		return err
+	}
+	return m.activityStore.CompactFederationActivityRollups(ctx, time.Now().UTC())
+}
+
+func goNZBNetActivityDefinitions(appCtx *app.Context) []activity.Definition {
+	if appCtx == nil || appCtx.Config == nil {
+		return nil
+	}
+	cfg := appCtx.Config.GoNZBNet
+	return activity.Definitions(activity.Configuration{
+		ModuleEnabled: appCtx.Config.Modules.GoNZBNet.Enabled, StoreReady: appCtx.PGIndexStore != nil,
+		ConsumerEnabled: cfg.ConsumerEnabled, ScannerEnabled: cfg.ScannerEnabled,
+		IndexProjectionEnabled: cfg.IndexProjectionEnabled, ManifestCacheEnabled: cfg.ManifestCacheEnabled,
+		ValidatorEnabled: cfg.ValidatorEnabled, HealthCheckerEnabled: cfg.HealthCheckerEnabled,
+		CoverageEnabled: cfg.CoverageEnabled, SchedulerEnabled: cfg.SchedulerEnabled,
+		PublishReleaseCardsEnabled: cfg.PublishReleaseCardsEnabled, HealthAttestationsEnabled: cfg.HealthAttestationsEnabled,
+		PullSyncEnabled: cfg.PullSyncEnabled, PushSyncEnabled: cfg.PushSyncEnabled,
+		WebSocketGossipEnabled: cfg.WebSocketGossipEnabled, RelayEnabled: cfg.RelayEnabled,
+		PeerExchangeEnabled: cfg.PeerExchangeEnabled, CoverageMode: cfg.CoverageMode,
+		PublishReleaseCardsInterval: time.Duration(cfg.PublishReleaseCardsIntervalMin * float64(time.Minute)),
+		HealthAttestationsInterval:  time.Duration(cfg.HealthAttestationsIntervalMin * float64(time.Minute)),
+		ValidationInterval:          time.Duration(cfg.ValidationIntervalMin * float64(time.Minute)),
+		PullSyncInterval:            time.Duration(cfg.PullSyncIntervalMin * float64(time.Minute)),
+		PushSyncInterval:            time.Duration(cfg.PushSyncIntervalMin * float64(time.Minute)),
+		GossipInterval:              time.Duration(cfg.GossipIntervalMin * float64(time.Minute)),
+		CoverageSchedulerInterval:   time.Duration(cfg.ScannerCheckpointIntervalSecs) * time.Second,
+	})
 }
 
 func (m *gonzbnetRuntimeModule) refreshPendingAdmissions(ctx context.Context) error {

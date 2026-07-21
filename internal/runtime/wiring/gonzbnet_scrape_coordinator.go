@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/datallboy/gonzb/internal/app"
+	"github.com/datallboy/gonzb/internal/gonzbnet/activity"
 	"github.com/datallboy/gonzb/internal/gonzbnet/capability"
 	"github.com/datallboy/gonzb/internal/gonzbnet/coverage"
 	"github.com/datallboy/gonzb/internal/gonzbnet/events"
@@ -67,6 +68,11 @@ func (c *gonzbnetScrapeRangeCoordinator) ObserveScrapeRun(ctx context.Context, m
 	if c == nil {
 		return
 	}
+	items := int64(0)
+	if value, ok := metrics["article_headers_seen"].(int64); ok {
+		items = value
+	}
+	activity.Default.Record(activity.ComponentScanner, c.poolID, activity.Result{ItemsIn: items, ItemsOut: items, Err: runErr})
 	nodeID, err := c.localNode(ctx)
 	if err != nil {
 		return
