@@ -19,6 +19,8 @@ If you are trying to understand or run GoNZB, start with:
   - maintained stage ownership, flow, schema, partition, retention, release, and operations reference
 - [GoNZBNet Wiki](./wiki/gonzbnet/README.md)
   - maintained architecture, configuration, protocol, operations, development, and E2E reference
+- [Production Readiness](./PRODUCTION_READINESS.md)
+  - current release gates, verified checks, deployment recommendation, and usability backlog
 - [GoNZBNet Implementation Specification](./GoNZBNet_Codex_Implementation_Spec.md)
   - original design reference; the current-state wiki and code take precedence
 
