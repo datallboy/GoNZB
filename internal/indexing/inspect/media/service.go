@@ -248,7 +248,6 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 	probeMode := "heuristic"
 	ffprobeError := ""
 	ffprobeWarning := ""
-	prefixProbeWarning := ""
 	archiveExtractError := ""
 	materializedBytes := int64(0)
 	mediaTitle := ""
@@ -288,43 +287,6 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 				SourceKind:   "inspect_media",
 				Metadata:     artifactMetadata,
 			}}
-			if probeErr != nil {
-				prefixProbeWarning = ffprobeDetail(ffprobeOutput, probeErr)
-				if expectedTruncatedPrefixProbeEOF(sample.BytesRead, sample.ExactSize, prefixProbeWarning) {
-					artifactMetadata["ffprobe_warning_detail"] = prefixProbeWarning
-					if sample.ExactSize <= s.opts.MaxBytes {
-						probeMode = "ffprobe_full_fallback"
-						fullPath := filepath.Join(workspace.Dir, "media-full"+strings.ToLower(filepath.Ext(candidate.FileName)))
-						materialized, materializeErr := inspectpkg.MaterializeBinaryToWorkspace(ctx, s.repo, s.fetcher, candidate, fullPath, s.opts.MaxBytes)
-						if materializeErr != nil {
-							ffprobeResult = nil
-							ffprobeOutput = nil
-							probeErr = fmt.Errorf("materialize full media fallback: %w", materializeErr)
-						} else {
-							materializedBytes += materialized.BytesWritten
-							artifactRows = append(artifactRows, pgindex.BinaryInspectionArtifactRecord{
-								BinaryID:     candidate.BinaryID,
-								ReleaseID:    candidate.ReleaseID,
-								StageName:    stageName,
-								ArtifactRole: "materialized_media_full",
-								ArtifactName: candidate.FileName,
-								BytesTotal:   materialized.BytesWritten,
-								MIMEType:     materialized.MIMEType,
-								Signature:    materialized.Signature,
-								SourceKind:   "inspect_media",
-								Metadata: map[string]any{
-									"probe_mode":      "ffprobe_full_fallback",
-									"exact_size":      materialized.ExactSize,
-									"fallback_reason": "prefix_inconclusive",
-								},
-							})
-							fullProbeCtx, fullCancel := context.WithTimeout(ctx, s.opts.ToolTimeout)
-							ffprobeResult, ffprobeOutput, probeErr = inspectpkg.RunFFProbe(fullProbeCtx, s.runner, s.opts.FFProbePath, materialized.OutputPath)
-							fullCancel()
-						}
-					}
-				}
-			}
 			if ffprobeResult != nil {
 				mediaTitle = firstNonEmpty(mediaTitle, ffprobeFormatTitle(ffprobeResult.Format.Tags))
 				for _, stream := range ffprobeResult.Streams {
@@ -388,8 +350,11 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 				runtimeSeconds = int(inspectpkg.ParseSeconds(ffprobeResult.Format.Duration))
 			}
 			if probeErr != nil {
-				probeDetail := ffprobeDetail(ffprobeOutput, probeErr)
-				if probeMode == "ffprobe_direct_prefix" && expectedTruncatedPrefixProbeEOF(sample.BytesRead, sample.ExactSize, probeDetail) {
+				probeDetail := strings.TrimSpace(string(ffprobeOutput))
+				if probeDetail == "" {
+					probeDetail = probeErr.Error()
+				}
+				if expectedTruncatedPrefixProbeEOF(sample.BytesRead, sample.ExactSize, probeDetail) {
 					ffprobeWarning = probeDetail
 					artifactMetadata["ffprobe_warning_detail"] = probeDetail
 				} else {
@@ -539,9 +504,6 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		summary["ffprobe_warning_detail"] = ffprobeWarning
 		summary["probe_skip_reason"] = "prefix_inconclusive"
 	}
-	if prefixProbeWarning != "" && probeMode == "ffprobe_full_fallback" {
-		summary["prefix_probe_warning_detail"] = prefixProbeWarning
-	}
 	if archiveExtractError != "" {
 		summary["archive_extract_error_detail"] = archiveExtractError
 		summary["probe_skip_reason"] = "archive_extract_failed"
@@ -635,16 +597,6 @@ func expectedTruncatedPrefixProbeEOF(bytesRead, exactSize int64, detail string) 
 	}
 	detail = strings.ToLower(strings.TrimSpace(detail))
 	return strings.Contains(detail, "file ended prematurely") || strings.Contains(detail, "end of file")
-}
-
-func ffprobeDetail(output []byte, err error) string {
-	if detail := strings.TrimSpace(string(output)); detail != "" {
-		return detail
-	}
-	if err != nil {
-		return strings.TrimSpace(err.Error())
-	}
-	return ""
 }
 
 func shouldSkipArchiveProbe(isVideo, isAudio bool, resolution, videoCodec, audioCodec string) bool {
