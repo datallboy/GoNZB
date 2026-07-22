@@ -394,7 +394,17 @@ func (s *Store) listReadyYEncRecoveryCandidates(ctx context.Context, limit int, 
 		}
 
 		out = make([]YEncRecoveryCandidate, 0, limit)
-		priority, err := claimPriority0YEncRecoveryCandidates(ctx, tx, limit)
+		latestReserve := yencRecoveryPercentLimit(limit, yEncLatestReservePercent(ctx, tx))
+		stats.NewestRequested = latestReserve
+		if latestReserve > 0 {
+			newest, err := claimNewestYEncRecoveryCandidates(ctx, tx, latestReserve)
+			if err != nil {
+				return err
+			}
+			stats.SelectedNewest += len(newest)
+			out = append(out, newest...)
+		}
+		priority, err := claimPriority0YEncRecoveryCandidates(ctx, tx, limit-len(out))
 		if err != nil {
 			return err
 		}
@@ -424,7 +434,7 @@ func (s *Store) listReadyYEncRecoveryCandidates(ctx context.Context, limit int, 
 			if newestLimit <= 0 && len(out) == 0 && targetLimit > 0 {
 				newestLimit = limit
 			}
-			stats.NewestRequested = newestLimit
+			stats.NewestRequested += newestLimit
 			if newestLimit > 0 {
 				newest, err := claimNewestYEncRecoveryCandidates(ctx, tx, newestLimit)
 				if err != nil {
@@ -461,7 +471,7 @@ func (s *Store) listReadyYEncRecoveryCandidates(ctx context.Context, limit int, 
 				newestLimit = limit - len(out)
 			}
 		}
-		stats.NewestRequested = newestLimit
+		stats.NewestRequested += newestLimit
 		if newestLimit > 0 {
 			newest, err := claimNewestYEncRecoveryCandidates(ctx, tx, newestLimit)
 			if err != nil {

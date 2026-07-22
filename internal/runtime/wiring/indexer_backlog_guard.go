@@ -203,6 +203,7 @@ func yencAdmissionConfigFromRuntime(in app.IndexingRecoveryAdmissionRuntimeSetti
 		Priority0OverflowCap:        int64(in.Priority0OverflowCap),
 		Priority0ReservoirBatches:   in.Priority0ReservoirBatches,
 		NearTimeCohortBucketMinutes: in.NearTimeCohortBucketMinutes,
+		LatestReservePercent:        in.LatestReservePercent,
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -1040,6 +1041,9 @@ func (s *Store) InsertArticleHeaders(ctx context.Context, providerID, newsgroupI
 			if err := upsertArticleHeaderCrosspostGroupsBatch(ctx, tx, providerID, newsgroupID, batch, resolvedHeaders); err != nil {
 				return err
 			}
+			if err := recordSourceBucketIngestionInTx(ctx, tx, providerID, newsgroupID, resolvedHeaders); err != nil {
+				return err
+			}
 
 			if err := tx.Commit(); err != nil {
 				return err
@@ -1055,6 +1059,50 @@ func (s *Store) InsertArticleHeaders(ctx context.Context, providerID, newsgroupI
 	}
 
 	return inserted, nil
+}
+
+func recordSourceBucketIngestionInTx(ctx context.Context, tx *sql.Tx, providerID, newsgroupID int64, headers []articleHeaderResolution) error {
+	if tx == nil || len(headers) == 0 {
+		return nil
+	}
+	counts := make(map[string]int64)
+	for _, header := range headers {
+		dayKey, _ := nativePartitionDayKeys(header.SourcePostedAt)
+		counts[dayKey]++
+	}
+	dayKeys := make([]string, 0, len(counts))
+	for dayKey := range counts {
+		dayKeys = append(dayKeys, dayKey)
+	}
+	sort.Strings(dayKeys)
+	dayCounts := make([]int64, 0, len(dayKeys))
+	for _, dayKey := range dayKeys {
+		dayCounts = append(dayCounts, counts[dayKey])
+	}
+	if _, err := tx.ExecContext(ctx, `
+		WITH observed AS (
+			SELECT day_key::date AS source_day, header_count
+			FROM unnest($1::text[], $2::bigint[]) AS input(day_key, header_count)
+		)
+		INSERT INTO indexer_source_bucket_state (
+			provider_id, newsgroup_id, source_day, state,
+			first_ingested_at, last_ingested_at, last_progress_at,
+			headers_ingested, terminal_reason, purge_eligible_at, purged_at, updated_at
+		)
+		SELECT $3, $4, source_day, 'active', NOW(), NOW(), NOW(), header_count, '', NULL, NULL, NOW()
+		FROM observed
+		ON CONFLICT (provider_id, newsgroup_id, source_day) DO UPDATE
+		SET state = 'active',
+		    last_ingested_at = NOW(),
+		    last_progress_at = NOW(),
+		    headers_ingested = indexer_source_bucket_state.headers_ingested + EXCLUDED.headers_ingested,
+		    terminal_reason = '',
+		    purge_eligible_at = NULL,
+		    purged_at = NULL,
+		    updated_at = NOW()`, dayKeys, dayCounts, providerID, newsgroupID); err != nil {
+		return fmt.Errorf("record source bucket ingestion: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) ensureSourceWorkPartitionsForPreparedHeaders(ctx context.Context, batch []preparedArticleHeaderInsert) error {
