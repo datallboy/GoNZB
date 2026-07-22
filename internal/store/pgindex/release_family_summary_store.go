@@ -3077,6 +3077,9 @@ func (s *Store) RefreshQueuedReleaseFamilySummariesWithMetrics(ctx context.Conte
 	if limit > releaseFamilySummaryRefreshCap {
 		limit = releaseFamilySummaryRefreshCap
 	}
+	if err := s.provisionReleasePartitionsForQueuedWork(ctx, limit); err != nil {
+		return ReleaseSummaryRefreshMetrics{}, err
+	}
 	hotLimit := limit
 	if hotLimit > releaseFamilySummaryRefreshHotCap {
 		hotLimit = releaseFamilySummaryRefreshHotCap
@@ -3395,6 +3398,9 @@ func dedupeReleaseFamilySummaryKeys(keys []releaseFamilySummaryKey) []releaseFam
 
 func refreshDequeuedReleaseFamilySummaryKeysPhaseA(ctx context.Context, conn *sql.Conn, keys []releaseFamilySummaryKey) (releaseSummaryRefreshMetrics, error) {
 	metrics := releaseSummaryRefreshMetrics{}
+	if err := verifyReleasePartitionBundleForKeys(ctx, conn, keys); err != nil {
+		return metrics, err
+	}
 	releaseFamilyKeys := make([]releaseFamilySummaryKey, 0, len(keys))
 	baseStemKeys := make([]releaseFamilySummaryKey, 0, len(keys))
 	otherKeys := make([]releaseFamilySummaryKey, 0, len(keys))
@@ -3429,6 +3435,52 @@ func refreshDequeuedReleaseFamilySummaryKeysPhaseA(ctx context.Context, conn *sq
 		}
 	}
 	return metrics, nil
+}
+
+func verifyReleasePartitionBundleForKeys(ctx context.Context, conn *sql.Conn, keys []releaseFamilySummaryKey) error {
+	if conn == nil || len(keys) == 0 {
+		return nil
+	}
+	args := make([]any, 0, len(keys)*4)
+	values := make([]string, 0, len(keys))
+	for i, key := range keys {
+		base := i*4 + 1
+		values = append(values, fmt.Sprintf("($%d::bigint,$%d::bigint,$%d::text,$%d::text)", base, base+1, base+2, base+3))
+		args = append(args, key.ProviderID, key.NewsgroupID, key.KeyKind, key.FamilyKey)
+	}
+	var missing int
+	err := conn.QueryRowContext(ctx, fmt.Sprintf(`
+		WITH requested(provider_id, newsgroup_id, key_kind, family_key) AS (
+			VALUES %s
+		), output_days AS (
+			SELECT COALESCE(MIN(bos.posted_at), NOW()) AS source_posted_at
+			FROM requested r
+			LEFT JOIN binary_identity_current bic
+			  ON bic.provider_id = r.provider_id
+			 AND bic.newsgroup_id = r.newsgroup_id
+			 AND (
+			      (r.key_kind = 'release_family' AND bic.release_family_key = r.family_key)
+			      OR
+			      (r.key_kind = 'base_stem' AND LOWER(BTRIM(bic.base_stem)) = r.family_key)
+			 )
+			LEFT JOIN binary_observation_stats bos
+			  ON bos.source_posted_at = bic.source_posted_at
+			 AND bos.binary_id = bic.binary_id
+			GROUP BY r.provider_id, r.newsgroup_id, r.key_kind, r.family_key
+		)
+		SELECT COUNT(*)
+		FROM output_days
+		WHERE to_regclass('public.release_family_readiness_summaries_' || to_char(source_posted_at AT TIME ZONE 'UTC', 'YYYYMMDD')) IS NULL
+		   OR to_regclass('public.release_ready_candidates_' || to_char(source_posted_at AT TIME ZONE 'UTC', 'YYYYMMDD')) IS NULL
+		   OR to_regclass('public.release_recovered_file_set_candidates_' || to_char(source_posted_at AT TIME ZONE 'UTC', 'YYYYMMDD')) IS NULL
+		   OR to_regclass('public.release_stage_dirty_families_' || to_char(source_posted_at AT TIME ZONE 'UTC', 'YYYYMMDD')) IS NULL`, strings.Join(values, ",")), args...).Scan(&missing)
+	if err != nil {
+		return fmt.Errorf("verify release daily partitions: %w", err)
+	}
+	if missing > 0 {
+		return fmt.Errorf("missing release daily partitions for %d queued source days; refusing to route rows into default partitions", missing)
+	}
+	return nil
 }
 
 func (s *Store) finalizeReleaseFamilySummaryMaterialization(ctx context.Context, keys []releaseFamilySummaryKey) (releaseSummaryRefreshMetrics, error) {

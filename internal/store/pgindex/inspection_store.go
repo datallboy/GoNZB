@@ -1904,6 +1904,13 @@ func (s *Store) ClaimBinaryInspectionCandidates(ctx context.Context, req BinaryI
 	if _, err := inspectCandidateFilter(req.StageName, req.Options.RequireExpectedFileCount); err != nil {
 		return nil, err
 	}
+	preview, err := s.listBinaryInspectionCandidates(ctx, s.db, req.StageName, req.Limit, req.Options)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.ensurePartitionBundleForBinaryIDs(ctx, partitionBundleInspect, inspectionCandidateBinaryIDs(preview)); err != nil {
+		return nil, err
+	}
 	if isQueuedInspectionStage(req.StageName) {
 		refreshLimit := req.Limit * 10
 		if refreshLimit < 1000 {
@@ -2021,6 +2028,7 @@ func (s *Store) ClaimBinaryInspectionCandidates(ctx context.Context, req BinaryI
 			NOW() + ($3::DOUBLE PRECISION * INTERVAL '1 second'),
 			NOW()
 			FROM locked_binaries req
+			WHERE to_regclass('public.binary_inspections_' || to_char(req.source_posted_at AT TIME ZONE 'UTC', 'YYYYMMDD')) IS NOT NULL
 			ON CONFLICT (source_posted_at, stage_name, binary_id) DO UPDATE
 			SET release_id = COALESCE(EXCLUDED.release_id, binary_inspections.release_id),
 		    status = 'running',
@@ -2060,6 +2068,9 @@ func (s *Store) StartBinaryInspection(ctx context.Context, stageName string, bin
 	}
 	if binaryID <= 0 {
 		return fmt.Errorf("binary id is required")
+	}
+	if err := s.ensurePartitionBundleForBinaryIDs(ctx, partitionBundleInspect, []int64{binaryID}); err != nil {
+		return err
 	}
 
 	var sourceUpdated any
@@ -2614,6 +2625,9 @@ func (s *Store) ReplaceBinaryInspectionArtifacts(ctx context.Context, stageName 
 	if stageName == "" {
 		return fmt.Errorf("stage name is required")
 	}
+	if err := s.ensurePartitionBundleForBinaryIDs(ctx, partitionBundleInspect, []int64{binaryID}); err != nil {
+		return err
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -2634,6 +2648,9 @@ func (s *Store) ReplaceBinaryInspectionArtifacts(ctx context.Context, stageName 
 func (s *Store) ReplaceBinaryArchiveEntries(ctx context.Context, binaryID int64, rows []BinaryArchiveEntryRecord) error {
 	if binaryID <= 0 {
 		return fmt.Errorf("binary id is required")
+	}
+	if err := s.ensurePartitionBundleForBinaryIDs(ctx, partitionBundleInspect, []int64{binaryID}); err != nil {
+		return err
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -2714,6 +2731,9 @@ func (s *Store) ReplaceBinaryArchiveEntries(ctx context.Context, binaryID int64,
 func (s *Store) ReplaceBinaryMediaStreams(ctx context.Context, binaryID int64, rows []BinaryMediaStreamRecord) error {
 	if binaryID <= 0 {
 		return fmt.Errorf("binary id is required")
+	}
+	if err := s.ensurePartitionBundleForBinaryIDs(ctx, partitionBundleInspect, []int64{binaryID}); err != nil {
+		return err
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -2809,6 +2829,9 @@ func (s *Store) ReplaceBinaryTextEvidence(ctx context.Context, stageName string,
 	if stageName == "" {
 		return fmt.Errorf("stage name is required")
 	}
+	if err := s.ensurePartitionBundleForBinaryIDs(ctx, partitionBundleInspect, []int64{binaryID}); err != nil {
+		return err
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -2886,6 +2909,9 @@ func (s *Store) ReplaceBinaryPAR2Sets(ctx context.Context, binaryID int64, rows 
 	if binaryID <= 0 {
 		return fmt.Errorf("binary id is required")
 	}
+	if err := s.ensurePartitionBundleForBinaryIDs(ctx, partitionBundleInspect, []int64{binaryID}); err != nil {
+		return err
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -2906,6 +2932,9 @@ func (s *Store) ReplaceBinaryPAR2Sets(ctx context.Context, binaryID int64, rows 
 func (s *Store) ReplaceBinaryPAR2Targets(ctx context.Context, binaryID int64, rows []BinaryPAR2TargetRecord) error {
 	if binaryID <= 0 {
 		return fmt.Errorf("binary id is required")
+	}
+	if err := s.ensurePartitionBundleForBinaryIDs(ctx, partitionBundleInspect, []int64{binaryID}); err != nil {
+		return err
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -2941,6 +2970,13 @@ func (s *Store) ApplyBinaryPAR2TargetCoverage(ctx context.Context, binaryID int6
 func (s *Store) ApplyPAR2InspectionBatch(ctx context.Context, rows []PAR2InspectionBatchRecord) (*PAR2InspectionBatchResult, error) {
 	if len(rows) == 0 {
 		return &PAR2InspectionBatchResult{}, nil
+	}
+	binaryIDs := make([]int64, 0, len(rows))
+	for _, row := range rows {
+		binaryIDs = append(binaryIDs, row.BinaryID)
+	}
+	if err := s.ensurePartitionBundleForBinaryIDs(ctx, partitionBundleInspect, binaryIDs); err != nil {
+		return nil, err
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -3333,7 +3369,18 @@ func parseInt64PGIndex(value string) int64 {
 }
 
 func (s *Store) finishBinaryInspection(ctx context.Context, in BinaryInspectionRecord, fallbackStatus string) error {
+	if err := s.ensurePartitionBundleForBinaryIDs(ctx, partitionBundleInspect, []int64{in.BinaryID}); err != nil {
+		return err
+	}
 	return s.finishBinaryInspectionWithDB(ctx, s.db, in, fallbackStatus)
+}
+
+func inspectionCandidateBinaryIDs(candidates []BinaryInspectionCandidate) []int64 {
+	ids := make([]int64, 0, len(candidates))
+	for _, candidate := range candidates {
+		ids = append(ids, candidate.BinaryID)
+	}
+	return ids
 }
 
 type inspectionExecer interface {
