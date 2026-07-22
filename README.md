@@ -128,7 +128,29 @@ If `/config/config.yaml` exists, GoNZB will use it automatically in container-st
 ./bin/gonzb --file my_file.nzb
 ```
 
-### Docker
+### Docker Compose (recommended for an all-in-one personal server)
+
+The included Compose stack starts GoNZB and a checksummed PostgreSQL 17
+database, keeps both databases and NZB data in named volumes, and publishes the
+UI on localhost by default.
+
+```bash
+cp .env.example .env
+# Set two independently generated passwords in .env.
+docker compose up -d --build
+```
+
+Open `http://localhost:8080/setup`, create the initial administrator, then use
+**Admin > Settings** to configure NNTP servers, downloader paths, aggregator
+sources, and indexer stages. Copy `config.yaml.example` to `config.yaml` and set
+`GONZB_CONFIG_PATH=./config.yaml` in `.env` only when changing hard module gates
+or GoNZBNet bootstrap settings.
+
+Do not publish port 8080 directly to the Internet. Put an authenticated TLS
+reverse proxy in front of it and change `GONZB_BIND_ADDRESS` only after that
+protection is in place.
+
+### Standalone Docker image
 
 ```bash
 docker build \
@@ -144,8 +166,24 @@ docker run -d \
   -v $(pwd)/config:/config \
   -v $(pwd)/downloads:/downloads \
   -v $(pwd)/store:/store \
-  gonzb:latest serve
+  gonzb:latest --config /config/config.yaml serve
 ```
+
+The standalone container needs a reachable PostgreSQL server whenever the
+Usenet indexer is enabled. Compose is the simpler supported starting point.
+
+## Connect Radarr, Sonarr, Prowlarr, or another Newznab client
+
+1. In GoNZB, open **Admin > Security > Users**, select the account that the
+   client should use, and create an API token.
+2. Add a generic Newznab indexer in the client.
+3. Use `http://<gonzb-host>:8080/api` as the URL and the generated account token
+   as the API key.
+4. Test capabilities and search before enabling automatic grabs.
+
+The current compatibility surface supports capabilities, generic/movie/TV
+search, and NZB retrieval. See the production-readiness notes in the docs for
+known pagination and filtering limitations.
 
 ## API Surfaces
 
@@ -174,3 +212,4 @@ docker run -d \
 - [Docs Index](docs/README.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Indexer Wiki](docs/wiki/indexer/README.md)
+- [GoNZBNet Wiki](docs/wiki/gonzbnet/README.md)

@@ -2,8 +2,10 @@
 
 # The port the HTTP server will listen on
 port: "8080"
-# Optional address to bind. Empty listens on all interfaces.
-bind_address: ""
+# Safe local default. Use 0.0.0.0 only behind a trusted firewall, private
+# network, or TLS reverse proxy. The included Compose stack overrides this
+# inside its private container network while publishing localhost on the host.
+bind_address: "127.0.0.1"
 
 # Hard module gates. These decide which backend/UI surfaces are loaded.
 modules:
@@ -110,7 +112,9 @@ store:
   search_persistence_enabled: true # false = ephemeral (non-persistent) aggregator results
 
   # PostgreSQL DSN for the Usenet/NZB Indexer module when modules.usenet_indexer.enabled is true.
-  pg_dsn: "postgres://gonzb:gonzb@localhost:5432/gonzb?sslmode=disable"
+  # The included compose.yml overrides this with its private PostgreSQL address.
+  # Change the host and credentials when running the binary directly.
+  pg_dsn: "postgres://gonzb:change-me@localhost:5432/gonzb?sslmode=disable"
   # Optional privileged PostgreSQL DSN for explicit offline maintenance commands only.
   # Do not use this DSN for serve/supervisor runtime.
   pg_maintenance_dsn: ""
