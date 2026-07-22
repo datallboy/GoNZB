@@ -63,6 +63,7 @@ type usenetIndexerConfig struct {
 	ScrapeLatest                                    indexerStageConfig
 	ScrapeBackfill                                  indexerStageConfig
 	ScrapeTimeframe                                 indexerStageConfig
+	ScrapeDeferred                                  indexerStageConfig
 	ScrapeTimeframes                                []scrape.Timeframe
 	PosterMaterialize                               indexerStageConfig
 	CrosspostPopularityRefresh                      indexerStageConfig
@@ -154,6 +155,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		scrapeLatestSvc         *scrape.Service
 		scrapeBackfillSvc       *scrape.Service
 		scrapeTimeframeSvc      *scrape.Service
+		scrapeDeferredSvc       *scrape.Service
 		scrapeProvider          io.Closer
 		nntpStats               func() app.NNTPRuntimeStats
 		assembleFetcher         inspectpkg.ArticleFetcher
@@ -212,6 +214,20 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			Timeframes:              runtimeCfg.ScrapeTimeframes,
 		},
 	)
+	scrapeDeferredSvc = scrape.NewService(
+		appCtx.PGIndexStore,
+		nil,
+		appCtx.Logger,
+		scrape.Options{
+			BatchSize:               int64(runtimeCfg.ScrapeDeferred.BatchSize),
+			MaxBatches:              runtimeCfg.ScrapeDeferred.MaxBatches,
+			MaxNewSourceDaysPerPass: runtimeCfg.MaxNewSourceDaysPerPass,
+			DeferredClaimOwner:      stageOwner + "-scrape-deferred",
+			DeferredClaimLease:      5 * time.Minute,
+			RangeCoordinator:        rangeCoordinator,
+			RunObserver:             scrapeObserver,
+		},
+	)
 
 	if runtimeCfg.ScrapeServer != nil {
 		manager, ownedManager, err := indexerNNTPManager(appCtx, runtimeCfg)
@@ -222,7 +238,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		assembleClient := indexerNNTPClient(manager, "assemble")
 		recoverYEncClient := indexerNNTPClient(manager, "recover_yenc")
 
-		if len(runtimeCfg.Newsgroups) > 0 || len(runtimeCfg.ScrapeTimeframes) > 0 {
+		if len(runtimeCfg.Newsgroups) > 0 || len(runtimeCfg.ScrapeTimeframes) > 0 || runtimeCfg.ScrapeDeferred.Enabled {
 			scrapeAdapter := scrape.NewNNTPAdapter(scrapeClient)
 			scrapeLatestSvc = scrape.NewService(
 				appCtx.PGIndexStore,
@@ -266,6 +282,20 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 					RangeCoordinator:        rangeCoordinator,
 					RunObserver:             scrapeObserver,
 					Timeframes:              runtimeCfg.ScrapeTimeframes,
+				},
+			)
+			scrapeDeferredSvc = scrape.NewService(
+				appCtx.PGIndexStore,
+				scrapeAdapter,
+				appCtx.Logger,
+				scrape.Options{
+					BatchSize:               int64(runtimeCfg.ScrapeDeferred.BatchSize),
+					MaxBatches:              runtimeCfg.ScrapeDeferred.MaxBatches,
+					MaxNewSourceDaysPerPass: runtimeCfg.MaxNewSourceDaysPerPass,
+					DeferredClaimOwner:      stageOwner + "-scrape-deferred",
+					DeferredClaimLease:      5 * time.Minute,
+					RangeCoordinator:        rangeCoordinator,
+					RunObserver:             scrapeObserver,
 				},
 			)
 		}
@@ -406,6 +436,17 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			Backoff:     runtimeCfg.ScrapeTimeframe.Backoff,
 			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
 				return marshalStageMetrics(scrapeTimeframeSvc.RunTimeframesOnceWithMetrics(ctx))
+			}),
+		},
+		{
+			Name:        supervisor.StageScrapeDeferred,
+			Interval:    runtimeCfg.ScrapeDeferred.Interval,
+			Enabled:     runtimeCfg.ScrapeDeferred.Enabled,
+			BatchSize:   runtimeCfg.ScrapeDeferred.BatchSize,
+			Concurrency: 1,
+			Backoff:     runtimeCfg.ScrapeDeferred.Backoff,
+			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
+				return marshalStageMetrics(scrapeDeferredSvc.RunDeferredOnceWithMetrics(ctx))
 			}),
 		},
 		{
@@ -937,6 +978,7 @@ func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) 
 		ScrapeLatest:               newIndexerStageConfig(indexingCfg.ScrapeLatest),
 		ScrapeBackfill:             newIndexerStageConfig(indexingCfg.ScrapeBackfill),
 		ScrapeTimeframe:            newIndexerStageConfig(indexingCfg.ScrapeTimeframe),
+		ScrapeDeferred:             newIndexerStageConfig(indexingCfg.ScrapeDeferred),
 		ScrapeTimeframes:           scrapeTimeframesFromRuntime(indexingCfg.ScrapeTimeframes),
 		PosterMaterialize:          newIndexerStageConfig(indexingCfg.PosterMaterialize),
 		CrosspostPopularityRefresh: newIndexerStageConfig(indexingCfg.CrosspostPopularityRefresh),

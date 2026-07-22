@@ -46,6 +46,12 @@ A scrape pass introduces at most 32 new source days by default. Additional
 article-number ranges appear in the deferred-range view and drain separately so
 they do not block latest checks.
 
+Keep `scrape_deferred` enabled. It is the durable queue consumer for both
+partition-cap and recovery-pressure deferrals. `ready` rows are waiting,
+`running` rows hold a renewable claim, `completed` rows were ingested, and
+`abandoned` rows exhausted repeated fetch attempts and need an operator to
+inspect the recorded error/provider availability.
+
 Use **Indexer > Newsgroups and Wildcards > Historical scrape timeframes** for
 bounded historical work. Give each row a unique stable ID, select an inclusive
 start/end date, save it, then enable the `scrape_timeframe` command under

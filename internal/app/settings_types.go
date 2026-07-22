@@ -383,6 +383,7 @@ type IndexingRuntimeSettings struct {
 	ScrapeLatest                IndexingStageRuntimeSettings                      `json:"scrape_latest,omitempty"`
 	ScrapeBackfill              IndexingStageRuntimeSettings                      `json:"scrape_backfill,omitempty"`
 	ScrapeTimeframe             IndexingStageRuntimeSettings                      `json:"scrape_timeframe,omitempty"`
+	ScrapeDeferred              IndexingStageRuntimeSettings                      `json:"scrape_deferred,omitempty"`
 	PosterMaterialize           IndexingStageRuntimeSettings                      `json:"poster_materialize,omitempty"`
 	CrosspostPopularityRefresh  IndexingStageRuntimeSettings                      `json:"crosspost_popularity_refresh,omitempty"`
 	ArticleCohortSchedule       IndexingStageRuntimeSettings                      `json:"article_cohort_schedule,omitempty"`

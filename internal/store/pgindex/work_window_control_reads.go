@@ -36,6 +36,7 @@ type DeferredArticleRangeSummary struct {
 	PriorityScore         float64    `json:"priority_score"`
 	State                 string     `json:"state"`
 	Attempts              int        `json:"attempts"`
+	LastError             string     `json:"last_error"`
 	UpdatedAt             time.Time  `json:"updated_at"`
 }
 
@@ -129,6 +130,7 @@ func (s *Store) ListDeferredArticleRanges(ctx context.Context, state string, lim
 			dar.priority_score,
 			dar.state,
 			dar.attempts,
+			dar.last_error,
 			dar.updated_at
 		FROM deferred_article_ranges dar
 		JOIN usenet_providers up ON up.id = dar.provider_id
@@ -145,7 +147,7 @@ func (s *Store) ListDeferredArticleRanges(ctx context.Context, state string, lim
 		var item DeferredArticleRangeSummary
 		var postedMin sql.NullTime
 		var postedMax sql.NullTime
-		if err := rows.Scan(&item.ID, &item.ProviderID, &item.ProviderKey, &item.NewsgroupID, &item.GroupName, &item.ArticleLow, &item.ArticleHigh, &postedMin, &postedMax, &item.EstimatedArticleCount, &item.Reason, &item.PriorityScore, &item.State, &item.Attempts, &item.UpdatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.ProviderID, &item.ProviderKey, &item.NewsgroupID, &item.GroupName, &item.ArticleLow, &item.ArticleHigh, &postedMin, &postedMax, &item.EstimatedArticleCount, &item.Reason, &item.PriorityScore, &item.State, &item.Attempts, &item.LastError, &item.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan deferred article range: %w", err)
 		}
 		if postedMin.Valid {

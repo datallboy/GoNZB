@@ -240,6 +240,9 @@ type UsenetIndexStore interface {
 	ResolveScrapeTimeframeProgress(ctx context.Context, timeframeID string, providerID, newsgroupID, articleLow, articleHigh int64, empty bool) error
 	AdvanceScrapeTimeframeProgress(ctx context.Context, timeframeID string, providerID, newsgroupID, nextArticle int64, completed bool) error
 	FailScrapeTimeframeProgress(ctx context.Context, timeframeID string, providerID, newsgroupID int64, cause string) error
+	ClaimDeferredArticleRange(ctx context.Context, owner string, lease time.Duration) (*pgindex.DeferredArticleRangeClaim, error)
+	CompleteDeferredArticleRange(ctx context.Context, id int64, owner string) error
+	FailDeferredArticleRange(ctx context.Context, id int64, owner, cause string, maxAttempts int) error
 	ListIndexerGroupProfiles(ctx context.Context, limit int) ([]pgindex.IndexerGroupProfileSummary, error)
 	ListDeferredArticleRanges(ctx context.Context, state string, limit int) ([]pgindex.DeferredArticleRangeSummary, error)
 	RunArticleCohortScheduler(ctx context.Context, req pgindex.ArticleCohortSchedulerRequest) (*pgindex.ArticleCohortSchedulerResult, error)

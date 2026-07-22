@@ -28,6 +28,14 @@ provisions only the exact observed days it will admit, never a continuous date
 horizon. A pass that encounters more than the configured new-day cap admits the
 newest work and durably defers the remaining article-number ranges.
 
+`scrape_deferred` is the bounded consumer for those durable ranges. It claims
+one range with a lease, fetches at most its configured batch size, and writes a
+smaller continuation range before completing the claim. A source-day cap may
+also create smaller child ranges. Fetch failures retry with bounded attempts;
+exhausted failures become operator-visible `abandoned` work instead of moving a
+scrape checkpoint again. Keep this stage enabled whenever any scrape producer
+is enabled.
+
 Runtime group tiering controls how much work each group can admit:
 
 - hot groups get freshness priority and the largest recovery budget;

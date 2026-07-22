@@ -17,6 +17,7 @@ type StageKey =
   | 'scrape_latest'
   | 'scrape_backfill'
   | 'scrape_timeframe'
+  | 'scrape_deferred'
   | 'poster_materialize'
   | 'crosspost_popularity_refresh'
   | 'assemble'
@@ -57,6 +58,7 @@ const stageDefinitions: StageDefinition[] = [
   { key: 'scrape_latest', label: 'Scrape latest', supportsConcurrency: true, showMaxBatches: true, defaultMaxBatches: 1, description: 'Round-robin head scan. Each worker takes one group claim at a time so large group sets stay responsive.', batchHelpText: 'Article numbers requested per group claim.', maxBatchesHelpText: 'Maximum group claims per scheduled run. Default 1 keeps each pass narrow; raise to scan more groups per pass.', concurrencyHelpText: 'Parallel NNTP XOVER workers. Default 1. Higher values consume more indexer NNTP slots and Postgres ingest capacity.' },
   { key: 'scrape_backfill', label: 'Scrape backfill', supportsConcurrency: true, showMaxBatches: true, defaultMaxBatches: 1, description: 'Round-robin older article scan. Use concurrency plus max batches to spread work across many groups safely.', batchHelpText: 'Article numbers requested per group claim.', maxBatchesHelpText: 'Maximum group claims per scheduled run. Default 1 keeps backfill from monopolizing provider and DB capacity.', concurrencyHelpText: 'Parallel NNTP XOVER workers. Default 1. Higher values consume more indexer NNTP slots and Postgres ingest capacity.' },
   { key: 'scrape_timeframe', label: 'Scrape historical timeframes', supportsConcurrency: false, showMaxBatches: true, defaultMaxBatches: 1, description: 'Processes explicitly configured date windows without changing latest or backfill progress. Dates are resolved to article-number bounds using bounded XOVER probes.', batchHelpText: 'Article numbers requested from one timeframe per pass.', maxBatchesHelpText: 'Maximum configured timeframe entries advanced per scheduled run. Default 1 keeps historical work subordinate to latest indexing.' },
+  { key: 'scrape_deferred', label: 'Drain deferred scrape ranges', supportsConcurrency: false, showMaxBatches: true, defaultMaxBatches: 1, description: 'Claims durable article ranges postponed by partition-day or recovery-cap limits. Keep enabled whenever latest, backfill, or historical scrape can create deferred work.', batchHelpText: 'Maximum article numbers in the claimed deferred range; the saved range itself remains the source of truth.', maxBatchesHelpText: 'Maximum deferred ranges claimed per run. Default 1 prevents catch-up work from displacing latest freshness.' },
   { key: 'poster_materialize', label: 'Poster materialize', supportsConcurrency: false, description: 'Drains queued raw poster names into the poster dimension and per-header poster projection without mutating scrape payload rows.', batchHelpText: 'Queued poster rows claimed per run.' },
   { key: 'crosspost_popularity_refresh', label: 'Crosspost popularity', supportsConcurrency: false, description: 'Refreshes the cross-post popularity report from raw Xref telemetry. Reporting-only; not required for release formation.', batchHelpText: 'Observed cross-post groups claimed per run.' },
   { key: 'assemble', label: 'Assemble', supportsConcurrency: true, showBinaryUpsertChunk: true, showLaneBalance: true, description: 'Creates and completes binary files from scraped article headers. Internally balances completion work and fresh binary creation.', batchHelpText: 'Article headers claimed per worker pass.', concurrencyHelpText: 'CPU/DB workers. Raise only if Postgres and CPU have headroom.' },
@@ -76,7 +78,7 @@ const stageDefinitions: StageDefinition[] = [
 ]
 
 const stageGroups: Array<{ title: string; keys: StageKey[] }> = [
-  { title: 'Scrape commands', keys: ['scrape_latest', 'scrape_backfill', 'scrape_timeframe', 'poster_materialize', 'crosspost_popularity_refresh'] },
+  { title: 'Scrape commands', keys: ['scrape_latest', 'scrape_backfill', 'scrape_timeframe', 'scrape_deferred', 'poster_materialize', 'crosspost_popularity_refresh'] },
   { title: 'Assemble and recovery commands', keys: ['assemble', 'recover_yenc'] },
   { title: 'Release commands', keys: ['release_summary_refresh', 'release', 'release_generate_nzb', 'release_archive_nzb'] },
   { title: 'Inspection commands', keys: ['inspect_discovery', 'inspect_par2', 'inspect_nfo', 'inspect_archive', 'inspect_password', 'inspect_media'] },
@@ -207,6 +209,7 @@ function defaultSettings(): RuntimeSettings {
       scrape_latest: stageDefaults(5000, 1, { max_batches: 1 }),
       scrape_backfill: stageDefaults(5000, 1, { max_batches: 1 }),
       scrape_timeframe: { ...stageDefaults(5000, 1, { max_batches: 1 }), enabled: false },
+      scrape_deferred: { ...stageDefaults(5000, 1, { max_batches: 1 }), enabled: true },
       poster_materialize: stageDefaults(10000),
       crosspost_popularity_refresh: stageDefaults(1000),
       assemble: stageDefaults(5000, 1, { binary_upsert_db_chunk_size: 250, lane_a_target_pct: 70, lane_b_min_pct: 30 }),
@@ -380,6 +383,7 @@ function normalizeSettings(input?: RuntimeSettings): RuntimeSettings {
       scrape_latest: { ...defaults.indexing!.scrape_latest, ...indexing.scrape_latest },
       scrape_backfill: { ...defaults.indexing!.scrape_backfill, ...indexing.scrape_backfill },
       scrape_timeframe: { ...defaults.indexing!.scrape_timeframe, ...indexing.scrape_timeframe },
+      scrape_deferred: { ...defaults.indexing!.scrape_deferred, ...indexing.scrape_deferred },
       poster_materialize: { ...defaults.indexing!.poster_materialize, ...indexing.poster_materialize },
       crosspost_popularity_refresh: { ...defaults.indexing!.crosspost_popularity_refresh, ...indexing.crosspost_popularity_refresh },
       assemble: { ...defaults.indexing!.assemble, ...indexing.assemble },

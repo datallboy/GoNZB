@@ -555,6 +555,7 @@ func indexingStages(indexing *app.IndexingRuntimeSettings) []namedStage {
 		{name: "scrape_latest", config: indexing.ScrapeLatest},
 		{name: "scrape_backfill", config: indexing.ScrapeBackfill},
 		{name: "scrape_timeframe", config: indexing.ScrapeTimeframe},
+		{name: "scrape_deferred", config: indexing.ScrapeDeferred},
 		{name: "article_cohort_schedule", config: indexing.ArticleCohortSchedule},
 		{name: "assemble", config: indexing.Assemble},
 		{name: "recover_yenc", config: indexing.RecoverYEnc},

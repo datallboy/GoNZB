@@ -33,6 +33,7 @@ func DefaultRuntimeSettings() *RuntimeSettings {
 			ScrapeLatest:                defaultScrapeStage(false),
 			ScrapeBackfill:              defaultScrapeStage(false),
 			ScrapeTimeframe:             defaultScrapeStage(false),
+			ScrapeDeferred:              defaultScrapeStage(true),
 			PosterMaterialize:           defaultStage(false, 2, 10000, 0),
 			CrosspostPopularityRefresh:  defaultStage(false, 2, 1000, 0),
 			ArticleCohortSchedule:       defaultStage(true, 0.25, 50000, 0),
@@ -328,6 +329,7 @@ func IndexingRuntimeFromConfig(cfg config.IndexingConfig) IndexingRuntimeSetting
 	out.ScrapeLatest = indexStageRuntimeFromConfigWithConcurrency(cfg.ScrapeLatest, true, 10, 5000)
 	out.ScrapeBackfill = indexStageRuntimeFromConfigWithConcurrency(cfg.ScrapeBackfill, true, 10, 5000)
 	out.ScrapeTimeframe = defaultScrapeStage(false)
+	out.ScrapeDeferred = defaultScrapeStage(true)
 	out.PosterMaterialize = indexStageRuntimeFromConfig(cfg.PosterMaterialize, true, 2, 10000)
 	out.CrosspostPopularityRefresh = indexStageRuntimeFromConfig(cfg.CrosspostPopularityRefresh, true, 2, 1000)
 	out.ArticleCohortSchedule = defaultStage(true, 0.25, 50000, 0)
@@ -1180,6 +1182,7 @@ func cloneIndexing(in *IndexingRuntimeSettings) *IndexingRuntimeSettings {
 		ScrapeLatest:                in.ScrapeLatest,
 		ScrapeBackfill:              in.ScrapeBackfill,
 		ScrapeTimeframe:             mergeStageRuntimeSettings(defaultScrapeStage(false), in.ScrapeTimeframe),
+		ScrapeDeferred:              mergeStageRuntimeSettings(defaultScrapeStage(true), in.ScrapeDeferred),
 		PosterMaterialize:           mergeStageRuntimeSettings(defaultStage(false, 2, 10000, 0), in.PosterMaterialize),
 		CrosspostPopularityRefresh:  mergeStageRuntimeSettings(defaultStage(false, 2, 1000, 0), in.CrosspostPopularityRefresh),
 		ArticleCohortSchedule:       mergeStageRuntimeSettings(defaultStage(false, 0.25, 50000, 0), in.ArticleCohortSchedule),
