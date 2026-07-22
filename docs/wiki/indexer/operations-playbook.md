@@ -37,6 +37,13 @@ WHERE pg_get_expr(child.relpartbound, child.oid) = 'DEFAULT'
 ORDER BY parent::text;
 ```
 
+Normal latest indexing provisions two days behind the current UTC day, the
+current day, and eight days ahead. Retention duration does not require empty
+partitions to exist for the entire retention horizon. Before enabling a
+historical backfill, set `create_partitions_days_before` far enough back to
+cover the requested source dates and allow provisioning to finish; active stage
+write paths intentionally do not execute partition DDL.
+
 ## Runtime Checks
 
 Use the admin API for runtime settings and maintenance tasks. Prefer `gonzb

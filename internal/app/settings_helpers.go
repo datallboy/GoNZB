@@ -167,9 +167,12 @@ func defaultRetentionSettings() IndexingRetentionRuntimeSettings {
 		FailedProbeHours:                48,
 		ArchivedReleaseDetailGraceHours: 6,
 		MetadataIncompleteReleaseHours:  48,
-		CreatePartitionsDaysBefore:      180,
-		CreatePartitionsDaysAhead:       8,
-		PurgeDryRunDefault:              true,
+		// Keep startup provisioning aligned with the active latest-indexing
+		// window. Historical backfills must explicitly widen this horizon before
+		// their supervisor stages are enabled.
+		CreatePartitionsDaysBefore: 2,
+		CreatePartitionsDaysAhead:  8,
+		PurgeDryRunDefault:         true,
 	}
 }
 
