@@ -155,6 +155,14 @@ var indexerScrapeBackfillCmd = &cobra.Command{
 	},
 }
 
+var indexerScrapeTimeframeCmd = &cobra.Command{
+	Use:   "timeframe",
+	Short: "Scrape configured historical date windows; use --once for a single pass",
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteIndexerScrapeTimeframe(scrapeOnce)
+	},
+}
+
 var indexerAssembleCmd = &cobra.Command{
 	Use:   "assemble",
 	Short: "Assemble binaries from queued article headers",
@@ -427,6 +435,7 @@ func init() {
 	indexerScrapeCmd.Flags().BoolVar(&scrapeOnce, "once", false, "Run one scrape pass and exit")
 	indexerScrapeLatestCmd.Flags().BoolVar(&scrapeOnce, "once", false, "Run one latest scrape pass and exit")
 	indexerScrapeBackfillCmd.Flags().BoolVar(&scrapeOnce, "once", false, "Run one backfill scrape pass and exit instead of continuous backfill mode")
+	indexerScrapeTimeframeCmd.Flags().BoolVar(&scrapeOnce, "once", false, "Run one historical timeframe scrape pass and exit instead of continuous mode")
 
 	indexerAssembleCmd.Flags().BoolVar(&assembleOnce, "once", false, "Run one assemble pass and exit instead of continuous mode")
 	indexerRecoverYEncCmd.Flags().BoolVar(&recoverYEncOnce, "once", false, "Run one yEnc recovery pass and exit instead of continuous mode")
@@ -473,6 +482,7 @@ func init() {
 	indexerCmd.AddCommand(indexerScrapeCmd)
 	indexerScrapeCmd.AddCommand(indexerScrapeLatestCmd)
 	indexerScrapeCmd.AddCommand(indexerScrapeBackfillCmd)
+	indexerScrapeCmd.AddCommand(indexerScrapeTimeframeCmd)
 
 	indexerCmd.AddCommand(indexerAssembleCmd)
 	indexerCmd.AddCommand(indexerRecoverYEncCmd)
