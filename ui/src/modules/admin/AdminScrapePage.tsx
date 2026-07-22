@@ -22,6 +22,7 @@ import type {
 const emptyState: AdminScrapeConfigResponse = {
   explicit_groups: [],
   scrape_timeframes: [],
+  timeframe_progress: [],
   wildcard_rules: [],
   provider_group_inventory: [],
   provider_inventory_count: 0,
@@ -63,6 +64,7 @@ function normalizeScrapeResponse(input?: Partial<AdminScrapeConfigResponse> | nu
   return {
     explicit_groups: input?.explicit_groups ?? [],
     scrape_timeframes: input?.scrape_timeframes ?? [],
+    timeframe_progress: input?.timeframe_progress ?? [],
     wildcard_rules: input?.wildcard_rules ?? [],
     provider_group_inventory: input?.provider_group_inventory ?? [],
     provider_inventory_count: input?.provider_inventory_count ?? input?.provider_group_inventory?.length ?? 0,
@@ -73,6 +75,41 @@ function normalizeScrapeResponse(input?: Partial<AdminScrapeConfigResponse> | nu
     preview_total: input?.preview_total ?? input?.preview_groups?.length ?? 0,
     crosspost_popularity: input?.crosspost_popularity ?? [],
   }
+}
+
+function matchingTimeframeProgress(data: AdminScrapeConfigResponse, timeframe: ScrapeTimeframe) {
+  return data.timeframe_progress.filter((item) => item.timeframe_id === timeframe.id && item.group_name.toLowerCase() === timeframe.group_name.trim().toLowerCase())
+}
+
+function timeframeProgressLabel(data: AdminScrapeConfigResponse, timeframe: ScrapeTimeframe) {
+  const items = matchingTimeframeProgress(data, timeframe)
+  if (items.length === 0) {
+    return timeframe.enabled ? 'Not started' : 'Disabled'
+  }
+  return items.map((item) => `${item.provider_key}: ${item.state}`).join(', ')
+}
+
+function timeframeArticleRangeLabel(data: AdminScrapeConfigResponse, timeframe: ScrapeTimeframe) {
+  const items = matchingTimeframeProgress(data, timeframe)
+  if (items.length === 0) {
+    return 'Not resolved'
+  }
+  if (items.every((item) => item.state === 'empty')) {
+    return 'No articles in window'
+  }
+  if (items.every((item) => item.article_low <= 0)) {
+    return 'Not resolved'
+  }
+  return items.map((item) => {
+    if (item.state === 'empty') {
+      return `${item.provider_key}: no articles`
+    }
+    const current = item.state === 'completed' ? item.article_high : Math.max(item.article_low, item.next_article)
+    const total = Math.max(1, item.article_high - item.article_low + 1)
+    const completed = Math.max(0, Math.min(total, current - item.article_low))
+    const percent = item.state === 'completed' ? 100 : Math.floor((completed / total) * 100)
+    return `${item.provider_key}: ${current.toLocaleString()} / ${item.article_high.toLocaleString()} (${percent}%)`
+  }).join(', ')
 }
 
 export function AdminScrapePage() {
@@ -391,6 +428,8 @@ export function AdminScrapePage() {
                 <th>Start date</th>
                 <th>End date</th>
                 <th>Enabled</th>
+                <th>Progress</th>
+                <th>Article range</th>
                 <th>Actions</th>
               </tr>
             </thead>
@@ -402,6 +441,8 @@ export function AdminScrapePage() {
                   <td><input className="table-input" type="date" value={timeframe.start_date} onChange={(event) => updateTimeframe(index, { start_date: event.target.value })} /></td>
                   <td><input className="table-input" type="date" value={timeframe.end_date} onChange={(event) => updateTimeframe(index, { end_date: event.target.value })} /></td>
                   <td><InlineCheckbox checked={timeframe.enabled} onChange={(enabled) => updateTimeframe(index, { enabled })} /></td>
+                  <td>{timeframeProgressLabel(data, timeframe)}</td>
+                  <td>{timeframeArticleRangeLabel(data, timeframe)}</td>
                   <td>
                     <button className="secondary-button secondary-button--small" type="button" onClick={() => setData((current) => ({ ...current, scrape_timeframes: current.scrape_timeframes.filter((_, itemIndex) => itemIndex !== index) }))}>
                       Remove
@@ -409,7 +450,7 @@ export function AdminScrapePage() {
                   </td>
                 </tr>
               ))}
-              <EmptyRow visible={data.scrape_timeframes.length === 0} colSpan={6} message="No historical scrape timeframes configured." />
+              <EmptyRow visible={data.scrape_timeframes.length === 0} colSpan={8} message="No historical scrape timeframes configured." />
             </tbody>
           </table>
         </div>

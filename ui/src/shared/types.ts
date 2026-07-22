@@ -1156,6 +1156,25 @@ export type ScrapeTimeframe = {
   enabled: boolean
 }
 
+export type ScrapeTimeframeProgress = {
+  timeframe_id: string
+  provider_id: number
+  provider_key: string
+  newsgroup_id: number
+  group_name: string
+  window_start: string
+  window_end: string
+  article_low: number
+  article_high: number
+  next_article: number
+  state: 'pending' | 'active' | 'completed' | 'empty' | 'failed'
+  resolved_at?: string
+  completed_at?: string
+  last_attempt_at?: string
+  last_error?: string
+  updated_at: string
+}
+
 export type ScrapeWildcardRule = {
   id: string
   pattern: string
@@ -1490,6 +1509,7 @@ export type RuntimeSettings = {
 export type AdminScrapeConfigResponse = {
   explicit_groups: ScrapeExplicitGroup[]
   scrape_timeframes: ScrapeTimeframe[]
+  timeframe_progress: ScrapeTimeframeProgress[]
   wildcard_rules: ScrapeWildcardRule[]
   provider_group_inventory: ScrapeProviderInventoryItem[]
   provider_inventory_count?: number
