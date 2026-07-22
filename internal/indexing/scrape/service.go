@@ -219,11 +219,6 @@ func (s *Service) RunBackfillOnce(ctx context.Context) error {
 	return err
 }
 
-func (s *Service) runMode(ctx context.Context, mode string) error {
-	_, err := s.runModeWithMetrics(ctx, mode)
-	return err
-}
-
 func (s *Service) RunLatestOnceWithMetrics(ctx context.Context) (map[string]any, error) {
 	return s.runModeWithMetrics(ctx, "latest")
 }

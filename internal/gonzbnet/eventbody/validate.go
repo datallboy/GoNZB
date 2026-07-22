@@ -280,13 +280,3 @@ func findPrivateField(value any) string {
 	}
 	return ""
 }
-
-func contains(values []string, target string) bool {
-	target = strings.TrimSpace(target)
-	for _, value := range values {
-		if strings.TrimSpace(value) == target {
-			return true
-		}
-	}
-	return false
-}
