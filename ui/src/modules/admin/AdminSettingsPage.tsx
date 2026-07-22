@@ -1597,7 +1597,7 @@ export function AdminSettingsPage() {
             <NumberField
               label="Max inspect bytes"
               value={indexing.inspect.max_bytes}
-              helpText="Safety cap for materializing a binary during deep inspection, including a full-media fallback when an 8 MiB ffprobe prefix is inconclusive. This is not a release size filter."
+              helpText="Safety cap for materializing a binary during deep inspection. This is not a release size filter."
               onChange={(value) => setIndexing({ ...indexing, inspect: { ...indexing.inspect, max_bytes: value } })}
             />
             <NumberField

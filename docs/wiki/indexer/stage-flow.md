@@ -130,16 +130,6 @@ Inspect stages consume `binary_inspection_ready_queue` and write inspection
 history/evidence tables. Inspection results can improve archive, media, text,
 and PAR2 visibility without using upstream source tables as progress state.
 
-Direct media inspection first streams an 8 MiB decoded prefix to `ffprobe`.
-When a container cannot return stream metadata from that deliberately partial
-input, `inspect_media` materializes and probes the complete media binary only
-when its exact size fits `indexing.inspect.max_bytes`. The full payload remains
-transient, while structured format, stream, runtime, codec, resolution, audio,
-subtitle, and embedded-title facts are retained in inspection tables. If the
-binary exceeds the cap, inspection completes with an explicit
-`prefix_inconclusive` result and filename-derived facts instead of treating the
-expected prefix EOF as payload corruption.
-
 Ready-queue population is an internal part of inspection candidate selection,
 not a separately scheduled supervisor stage. Queued inspection stages perform
 bounded, advisory-locked top-ups when they need claimable work; operators only
