@@ -5,11 +5,29 @@ import (
 	"context"
 	"io"
 	"testing"
+	"time"
 
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/auth"
 	"github.com/datallboy/gonzb/internal/domain"
 )
+
+func TestSearchAllReturnsStableNewestFirstOrder(t *testing.T) {
+	store := &fakeManagerStore{searchResults: []*domain.Release{
+		{ID: "older", Source: "local", Title: "Zed", PublishDate: time.Unix(1, 0)},
+		{ID: "newer-b", Source: "local", Title: "Beta", PublishDate: time.Unix(2, 0)},
+		{ID: "newer-a", Source: "local", Title: "Alpha", PublishDate: time.Unix(2, 0)},
+	}}
+	manager := NewManager(store, fakeLogger{}, false, true)
+
+	results, err := manager.SearchAll(context.Background(), "release")
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(results) != 3 || results[0].ID != "newer-a" || results[1].ID != "newer-b" || results[2].ID != "older" {
+		t.Fatalf("unexpected stable order: %+v", results)
+	}
+}
 
 func TestSearchAllFiltersCachedGoNZBNetResultsWithoutPermission(t *testing.T) {
 	store := &fakeManagerStore{

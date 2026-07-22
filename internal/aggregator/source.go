@@ -18,7 +18,9 @@ const (
 type SearchRequest struct {
 	Type SearchType
 
-	Query string
+	Query      string
+	Categories []int
+	Limit      int
 
 	IMDbID   string
 	TVDBID   string

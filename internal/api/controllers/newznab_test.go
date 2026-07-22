@@ -37,7 +37,7 @@ func TestBuildRSSResponseUsesNumericCategoryAttr(t *testing.T) {
 		Size:        1024,
 		PublishDate: time.Unix(1, 0).UTC(),
 		Category:    "2040",
-	}}, "http://localhost:8080", "")
+	}}, "http://localhost:8080", "", 0, 1)
 
 	if len(resp.Channel.Items) != 1 {
 		t.Fatalf("expected one rss item, got %+v", resp.Channel.Items)
@@ -60,7 +60,7 @@ func TestBuildRSSResponseUsesLocalDownloadLinks(t *testing.T) {
 		Size:        2048,
 		PublishDate: time.Unix(1, 0).UTC(),
 		Category:    "2040",
-	}}, "http://local.example", "token")
+	}}, "http://local.example", "token", 0, 1)
 
 	if len(resp.Channel.Items) != 1 {
 		t.Fatalf("expected one rss item")
@@ -69,5 +69,34 @@ func TestBuildRSSResponseUsesLocalDownloadLinks(t *testing.T) {
 	expected := "http://local.example/api?t=get&id=local-composite-id&apikey=token"
 	if item.Link != expected || item.Enclosure.URL != expected {
 		t.Fatalf("expected local download URL %q, got link=%q enclosure=%q", expected, item.Link, item.Enclosure.URL)
+	}
+}
+
+func TestNewznabCategoryParsingAndRootFiltering(t *testing.T) {
+	categories := parseNewznabCategories("2000, 2040,invalid,2040")
+	if len(categories) != 2 || categories[0] != 2000 || categories[1] != 2040 {
+		t.Fatalf("unexpected parsed categories: %v", categories)
+	}
+
+	results := filterNewznabCategories([]*domain.Release{
+		{ID: "movie", Category: "2040"},
+		{ID: "tv", Category: "5040"},
+		{ID: "unknown", Category: "not-a-category"},
+	}, []int{newsnab.MoviesRoot})
+	if len(results) != 1 || results[0].ID != "movie" {
+		t.Fatalf("expected only movie-root result, got %+v", results)
+	}
+}
+
+func TestBuildRSSResponseReportsRequestedWindow(t *testing.T) {
+	resp := buildRSSResponse([]*domain.Release{{
+		ID:          "rel-2",
+		Title:       "Page two",
+		PublishDate: time.Unix(2, 0).UTC(),
+		Category:    "2040",
+	}}, "http://localhost:8080", "", 100, 235)
+
+	if resp.Channel.Response.Offset != 100 || resp.Channel.Response.Total != 235 {
+		t.Fatalf("unexpected response window: %+v", resp.Channel.Response)
 	}
 }
