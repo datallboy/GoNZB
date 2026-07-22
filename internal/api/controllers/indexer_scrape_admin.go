@@ -621,23 +621,9 @@ func ensureWildcardRules(in []app.IndexingWildcardRuleRuntimeSettings) []app.Ind
 	return in
 }
 
-func ensureProviderInventory(in []app.IndexingProviderGroupInventoryRuntimeSettings) []app.IndexingProviderGroupInventoryRuntimeSettings {
-	if in == nil {
-		return []app.IndexingProviderGroupInventoryRuntimeSettings{}
-	}
-	return in
-}
-
 func ensureMaterializedGroups(in []app.IndexingMaterializedGroupRuntimeSettings) []app.IndexingMaterializedGroupRuntimeSettings {
 	if in == nil {
 		return []app.IndexingMaterializedGroupRuntimeSettings{}
-	}
-	return in
-}
-
-func ensurePreviewGroups(in []scrapePreviewItem) []scrapePreviewItem {
-	if in == nil {
-		return []scrapePreviewItem{}
 	}
 	return in
 }

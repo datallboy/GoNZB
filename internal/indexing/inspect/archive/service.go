@@ -549,13 +549,6 @@ func probeStrategy(probe *inspectpkg.ArchiveProbeResult) string {
 	return probe.Strategy
 }
 
-func probePath(probe *inspectpkg.ArchiveProbeResult) string {
-	if probe == nil {
-		return ""
-	}
-	return probe.ProbePath
-}
-
 func probeError(probe *inspectpkg.ArchiveProbeResult) string {
 	if probe == nil {
 		return ""
