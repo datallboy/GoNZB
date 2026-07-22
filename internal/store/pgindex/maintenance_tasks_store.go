@@ -693,7 +693,7 @@ func (s *Store) partitionDefaultRehomeDays(ctx context.Context, targetTables []s
 			continue
 		}
 		rows, err := s.db.QueryContext(ctx, `
-			SELECT (date_trunc('day', source_posted_at))::date::text AS day_key, COUNT(*)::bigint
+			SELECT (source_posted_at AT TIME ZONE 'UTC')::date::text AS day_key, COUNT(*)::bigint
 			FROM `+quoteIdentifier(defaultTable)+`
 			GROUP BY day_key
 			ORDER BY day_key`)
@@ -731,6 +731,14 @@ func (s *Store) partitionDefaultRehomeDays(ctx context.Context, targetTables []s
 }
 
 func (s *Store) rehomeDefaultPartitionDay(ctx context.Context, dayKey string, targetTables []string) (map[string]int64, error) {
+	dayStart, err := time.ParseInLocation("2006-01-02", dayKey, time.UTC)
+	if err != nil {
+		return nil, fmt.Errorf("parse default partition rehome day %q: %w", dayKey, err)
+	}
+	dayEnd := dayStart.AddDate(0, 0, 1)
+	dayStartLiteral := quoteLiteral(dayStart.Format(time.RFC3339))
+	dayEndLiteral := quoteLiteral(dayEnd.Format(time.RFC3339))
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("begin default partition rehome tx: %w", err)
@@ -757,11 +765,11 @@ func (s *Store) rehomeDefaultPartitionDay(ctx context.Context, dayKey string, ta
 		detached = append(detached, table)
 		childTable := table + "_" + strings.ReplaceAll(dayKey, "-", "")
 		if _, err := tx.ExecContext(ctx, fmt.Sprintf(
-			`CREATE TABLE IF NOT EXISTS %s PARTITION OF %s FOR VALUES FROM (%s::date::timestamptz) TO ((%s::date + 1)::timestamptz)`,
+			`CREATE TABLE IF NOT EXISTS %s PARTITION OF %s FOR VALUES FROM (%s::timestamptz) TO (%s::timestamptz)`,
 			quoteIdentifier(childTable),
 			quoteIdentifier(table),
-			quoteLiteral(dayKey),
-			quoteLiteral(dayKey),
+			dayStartLiteral,
+			dayEndLiteral,
 		)); err != nil {
 			return nil, fmt.Errorf("create dated partition %s: %w", childTable, err)
 		}
@@ -785,15 +793,15 @@ func (s *Store) rehomeDefaultPartitionDay(ctx context.Context, dayKey string, ta
 			INSERT INTO %s (%s)
 			SELECT %s
 			FROM %s
-			WHERE source_posted_at >= %s::date::timestamptz
-			  AND source_posted_at < (%s::date + 1)::timestamptz
+			WHERE source_posted_at >= %s::timestamptz
+			  AND source_posted_at < %s::timestamptz
 			ON CONFLICT DO NOTHING`,
 			quoteIdentifier(table),
 			columnSQL,
 			columnSQL,
 			quoteIdentifier(defaultTable),
-			quoteLiteral(dayKey),
-			quoteLiteral(dayKey),
+			dayStartLiteral,
+			dayEndLiteral,
 		))
 		if err != nil {
 			return nil, fmt.Errorf("copy %s default rows for %s: %w", table, dayKey, err)
@@ -810,11 +818,11 @@ func (s *Store) rehomeDefaultPartitionDay(ctx context.Context, dayKey string, ta
 		defaultTable := table + "_default"
 		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
 			DELETE FROM %s
-			WHERE source_posted_at >= %s::date::timestamptz
-			  AND source_posted_at < (%s::date + 1)::timestamptz`,
+			WHERE source_posted_at >= %s::timestamptz
+			  AND source_posted_at < %s::timestamptz`,
 			quoteIdentifier(defaultTable),
-			quoteLiteral(dayKey),
-			quoteLiteral(dayKey),
+			dayStartLiteral,
+			dayEndLiteral,
 		)); err != nil {
 			return nil, fmt.Errorf("delete moved %s rows for %s: %w", defaultTable, dayKey, err)
 		}

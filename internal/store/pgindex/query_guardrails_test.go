@@ -137,6 +137,7 @@ func TestActiveStagePartitionProvisioningUsesExactShortTransactions(t *testing.T
 
 func TestDownstreamPartitionedWritersProvisionTheirStageBundles(t *testing.T) {
 	cases := map[string][]string{
+		"assembly_store.go":                 {"provisionAssemblyPartitionsForBinaryRecords", "provisionAssemblyPartitionsForBinaryPartRecords", "partitionBundleAssemble"},
 		"article_cohort_scheduler_store.go": {"provisionSchedulerPartitionsForReadyWork", "article_cohort_candidates_"},
 		"inspect_ready_queue_store.go":      {"ensurePartitionBundleForBinaryIDs", "partitionBundleInspect", "binary_inspection_ready_queue_"},
 		"inspection_store.go":               {"ensurePartitionBundleForBinaryIDs", "partitionBundleInspect", "binary_inspections_"},
@@ -148,6 +149,15 @@ func TestDownstreamPartitionedWritersProvisionTheirStageBundles(t *testing.T) {
 			if !strings.Contains(src, term) {
 				t.Fatalf("%s must provision and fail closed on its stage-owned partitions; missing %q", fileName, term)
 			}
+		}
+	}
+}
+
+func TestPartitionDefaultRehomeUsesUTCDayBoundaries(t *testing.T) {
+	src := readGuardrailSource(t, "maintenance_tasks_store.go")
+	for _, required := range []string{"source_posted_at AT TIME ZONE 'UTC'", "time.ParseInLocation(\"2006-01-02\", dayKey, time.UTC)", "dayStart.Format(time.RFC3339)", "dayEnd.Format(time.RFC3339)"} {
+		if !strings.Contains(src, required) {
+			t.Fatalf("partition default rehome must use UTC day boundaries; missing %q", required)
 		}
 	}
 }

@@ -1627,6 +1627,9 @@ func (s *Store) UpsertBinaries(ctx context.Context, records []BinaryRecord) ([]i
 	if len(records) == 0 {
 		return nil, nil
 	}
+	if err := s.provisionAssemblyPartitionsForBinaryRecords(ctx, records); err != nil {
+		return nil, fmt.Errorf("provision assemble partitions before binary upsert: %w", err)
+	}
 
 	prepared := make([]preparedBinaryRecord, 0, len(records))
 	for _, record := range records {
@@ -2906,6 +2909,9 @@ func (s *Store) UpsertBinaryParts(ctx context.Context, records []BinaryPartRecor
 	if len(records) == 0 {
 		return nil
 	}
+	if err := s.provisionAssemblyPartitionsForBinaryPartRecords(ctx, records); err != nil {
+		return fmt.Errorf("provision assemble partitions before binary part upsert: %w", err)
+	}
 
 	return retryRetryablePostgresTx(ctx, defaultRetryableTxAttempts, func() error {
 		tx, err := s.db.BeginTx(ctx, nil)
@@ -2929,6 +2935,30 @@ func (s *Store) UpsertBinaryParts(ctx context.Context, records []BinaryPartRecor
 		}
 		return nil
 	})
+}
+
+func (s *Store) provisionAssemblyPartitionsForBinaryRecords(ctx context.Context, records []BinaryRecord) error {
+	days := make([]time.Time, 0, len(records))
+	now := time.Now().UTC()
+	for _, record := range records {
+		if record.PostedAt == nil || record.PostedAt.IsZero() {
+			days = append(days, now)
+			continue
+		}
+		days = append(days, record.PostedAt.UTC())
+	}
+	return s.provisionPartitionBundleForDays(ctx, partitionBundleAssemble, days)
+}
+
+func (s *Store) provisionAssemblyPartitionsForBinaryPartRecords(ctx context.Context, records []BinaryPartRecord) error {
+	days := make([]time.Time, 0, len(records))
+	for _, record := range records {
+		if record.SourcePostedAt.IsZero() {
+			return fmt.Errorf("source posted at is required for article header %d", record.ArticleHeaderID)
+		}
+		days = append(days, record.SourcePostedAt.UTC())
+	}
+	return s.provisionPartitionBundleForDays(ctx, partitionBundleAssemble, days)
 }
 
 func upsertBinaryPartsChunk(ctx context.Context, tx *sql.Tx, records []BinaryPartRecord) error {
