@@ -60,12 +60,16 @@ func (s *Source) Search(ctx context.Context, req aggregator.SearchRequest) ([]*d
 		return []*domain.Release{}, nil
 	}
 
+	limit := req.Limit
+	if limit <= 0 {
+		limit = 100
+	}
 	items, err := s.store.SearchFederatedReleaseCards(ctx, pgindex.FederatedReleaseCardSearchParams{
 		Query:  strings.TrimSpace(req.Query),
 		IMDBID: strings.TrimSpace(req.IMDbID),
 		TVDBID: parseInt64(req.TVDBID),
 		Pools:  pools,
-		Limit:  100,
+		Limit:  limit,
 	})
 	if err != nil {
 		return nil, err

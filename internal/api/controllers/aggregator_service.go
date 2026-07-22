@@ -12,15 +12,17 @@ import (
 )
 
 type aggregatorSearchRequest struct {
-	Type     string
-	Query    string
-	IMDbID   string
-	TVDBID   string
-	TVMazeID string
-	RageID   string
-	Season   string
-	Episode  string
-	Genre    string
+	Type       string
+	Query      string
+	Categories []int
+	Limit      int
+	IMDbID     string
+	TVDBID     string
+	TVMazeID   string
+	RageID     string
+	Season     string
+	Episode    string
+	Genre      string
 }
 
 type aggregatorService interface {
@@ -48,15 +50,17 @@ func (s *runtimeAggregatorService) Search(ctx context.Context, req aggregatorSea
 	}
 
 	results, err := s.module.Search(ctx, app.SearchRequest{
-		Type:     req.Type,
-		Query:    req.Query,
-		IMDbID:   req.IMDbID,
-		TVDBID:   req.TVDBID,
-		TVMazeID: req.TVMazeID,
-		RageID:   req.RageID,
-		Season:   req.Season,
-		Episode:  req.Episode,
-		Genre:    req.Genre,
+		Type:       req.Type,
+		Query:      req.Query,
+		Categories: append([]int(nil), req.Categories...),
+		Limit:      req.Limit,
+		IMDbID:     req.IMDbID,
+		TVDBID:     req.TVDBID,
+		TVMazeID:   req.TVMazeID,
+		RageID:     req.RageID,
+		Season:     req.Season,
+		Episode:    req.Episode,
+		Genre:      req.Genre,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("search releases: %w", err)

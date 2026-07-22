@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +16,8 @@ import (
 )
 
 const gonzbnetSourceName = "gonzbnet"
+
+const maxCachedNZBBytes int64 = 64 << 20
 
 type Manager struct {
 	mu                       sync.RWMutex
@@ -55,6 +58,9 @@ func (m *Manager) SearchAll(ctx context.Context, query string) ([]*domain.Releas
 // CHANGED: structured search request path for real Newznab movie/tvsearch support.
 func (m *Manager) SearchAllWithRequest(ctx context.Context, req app.SearchRequest) ([]*domain.Release, error) {
 	internalReq := toSearchRequest(req)
+	if internalReq.Limit <= 0 {
+		internalReq.Limit = 100
+	}
 	merged := make(map[string]*domain.Release, 256)
 	order := make([]string, 0, 256)
 
@@ -81,7 +87,7 @@ func (m *Manager) SearchAllWithRequest(ctx context.Context, req app.SearchReques
 
 	// Only generic text search uses the local cache search path for now.
 	if m.searchPersistenceEnabled && internalReq.Type == SearchTypeGeneric && internalReq.Query != "" {
-		cacheResults, err := m.store.SearchAggregatorReleaseCache(ctx, internalReq.Query, 100)
+		cacheResults, err := m.store.SearchAggregatorReleaseCache(ctx, internalReq.Query, internalReq.Limit)
 		if err != nil {
 			m.logger.Warn("Failed to search aggregator_release_cache: %v", err)
 		} else {
@@ -141,6 +147,17 @@ func (m *Manager) SearchAllWithRequest(ctx context.Context, req app.SearchReques
 			allResults = append(allResults, rel)
 		}
 	}
+	sort.SliceStable(allResults, func(i, j int) bool {
+		if !allResults[i].PublishDate.Equal(allResults[j].PublishDate) {
+			return allResults[i].PublishDate.After(allResults[j].PublishDate)
+		}
+		leftTitle := strings.ToLower(strings.TrimSpace(allResults[i].Title))
+		rightTitle := strings.ToLower(strings.TrimSpace(allResults[j].Title))
+		if leftTitle != rightTitle {
+			return leftTitle < rightTitle
+		}
+		return allResults[i].ID < allResults[j].ID
+	})
 
 	m.mu.Lock()
 	m.recentResults = make(map[string]*domain.Release, len(allResults))
@@ -229,9 +246,12 @@ func (m *Manager) GetNZB(ctx context.Context, rel *domain.Release) (io.ReadClose
 
 	// Read once so we can both cache atomically and still return data on
 	// cache-write failures without re-downloading from upstream.
-	payload, err := io.ReadAll(body)
+	payload, err := io.ReadAll(io.LimitReader(body, maxCachedNZBBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("failed reading nzb payload: %w", err)
+	}
+	if int64(len(payload)) > maxCachedNZBBytes {
+		return nil, fmt.Errorf("nzb payload exceeds %d byte cache limit", maxCachedNZBBytes)
 	}
 
 	if err := m.store.SaveNZBAtomically(rel.ID, payload); err != nil {
@@ -337,14 +357,16 @@ func toSearchRequest(req app.SearchRequest) SearchRequest {
 	}
 
 	return SearchRequest{
-		Type:     searchType,
-		Query:    req.Query,
-		IMDbID:   req.IMDbID,
-		TVDBID:   req.TVDBID,
-		TVMazeID: req.TVMazeID,
-		RageID:   req.RageID,
-		Season:   req.Season,
-		Episode:  req.Episode,
-		Genre:    req.Genre,
+		Type:       searchType,
+		Query:      req.Query,
+		Categories: append([]int(nil), req.Categories...),
+		Limit:      req.Limit,
+		IMDbID:     req.IMDbID,
+		TVDBID:     req.TVDBID,
+		TVMazeID:   req.TVMazeID,
+		RageID:     req.RageID,
+		Season:     req.Season,
+		Episode:    req.Episode,
+		Genre:      req.Genre,
 	}
 }

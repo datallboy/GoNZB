@@ -181,9 +181,8 @@ Usenet indexer is enabled. Compose is the simpler supported starting point.
    as the API key.
 4. Test capabilities and search before enabling automatic grabs.
 
-The current compatibility surface supports capabilities, generic/movie/TV
-search, and NZB retrieval. See the production-readiness notes in the docs for
-known pagination and filtering limitations.
+The compatibility surface supports capabilities, generic/movie/TV search,
+category filtering, bounded pagination, and NZB retrieval.
 
 ## API Surfaces
 

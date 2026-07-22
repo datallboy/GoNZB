@@ -18,6 +18,12 @@ type NewznabController struct {
 	Service aggregatorService
 }
 
+const (
+	newznabDefaultLimit = 100
+	newznabMaxLimit     = 100
+	newznabMaxWindow    = 1000
+)
+
 func NewNewznabController(module app.AggregatorModule) *NewznabController {
 	return &NewznabController{
 		Service: newAggregatorService(module),
@@ -50,13 +56,12 @@ func (ctrl *NewznabController) handleCaps(c *echo.Context) error {
 
 	caps := NewznabCaps{
 		Server: ServerInfo{
-			AppVersion: "0.6.0",
-			Version:    "0.5",
-			Title:      "GoNZB",
-			Strapline:  "Unified Usenet platform",
-			Email:      "",
-			URL:        baseAddr,
-			Image:      "",
+			Version:   "1.0",
+			Title:     "GoNZB",
+			Strapline: "Unified Usenet platform",
+			Email:     "",
+			URL:       baseAddr,
+			Image:     "",
 		},
 		Limits: Limits{
 			Max:     100,
@@ -69,15 +74,15 @@ func (ctrl *NewznabController) handleCaps(c *echo.Context) error {
 		Searching: Searching{
 			Search: SearchCapability{
 				Available:       "yes",
-				SupportedParams: "q",
+				SupportedParams: "q,cat,limit,offset",
 			},
 			TVSearch: SearchCapability{
 				Available:       "yes",
-				SupportedParams: "q,rid,tvdbid,imdbid,tvmazeid,season,ep",
+				SupportedParams: "q,rid,tvdbid,imdbid,tvmazeid,season,ep,cat,limit,offset",
 			},
 			Movie: SearchCapability{
 				Available:       "yes",
-				SupportedParams: "q,imdbid,genre",
+				SupportedParams: "q,imdbid,genre,cat,limit,offset",
 			},
 		},
 		Categories: buildCapCategories(),
@@ -91,17 +96,23 @@ func (ctrl *NewznabController) handleCaps(c *echo.Context) error {
 // handleSearch triggers a search across all configured indexers
 func (ctrl *NewznabController) handleSearch(c *echo.Context) error {
 	searchType := queryParamLower(c, "t")
+	limit := boundedQueryInt(queryParamTrimmed(c, "limit"), newznabDefaultLimit, 1, newznabMaxLimit)
+	offset := boundedQueryInt(queryParamTrimmed(c, "offset"), 0, 0, newznabMaxWindow)
+	fetchLimit := min(newznabMaxWindow, offset+limit)
+	categories := parseNewznabCategories(queryParamTrimmed(c, "cat"))
 
 	results, err := ctrl.Service.Search(c.Request().Context(), aggregatorSearchRequest{
-		Type:     searchType,
-		Query:    queryParamTrimmed(c, "q"),
-		IMDbID:   queryParamTrimmed(c, "imdbid"),
-		TVDBID:   queryParamTrimmed(c, "tvdbid"),
-		TVMazeID: queryParamTrimmed(c, "tvmazeid"),
-		RageID:   queryParamTrimmed(c, "rid"),
-		Season:   queryParamTrimmed(c, "season"),
-		Episode:  queryParamTrimmed(c, "ep"),
-		Genre:    queryParamTrimmed(c, "genre"),
+		Type:       searchType,
+		Query:      queryParamTrimmed(c, "q"),
+		Categories: categories,
+		Limit:      fetchLimit,
+		IMDbID:     queryParamTrimmed(c, "imdbid"),
+		TVDBID:     queryParamTrimmed(c, "tvdbid"),
+		TVMazeID:   queryParamTrimmed(c, "tvmazeid"),
+		RageID:     queryParamTrimmed(c, "rid"),
+		Season:     queryParamTrimmed(c, "season"),
+		Episode:    queryParamTrimmed(c, "ep"),
+		Genre:      queryParamTrimmed(c, "genre"),
 	})
 	if err != nil {
 		if aggregatorErrorStatus(err) == http.StatusServiceUnavailable {
@@ -117,7 +128,16 @@ func (ctrl *NewznabController) handleSearch(c *echo.Context) error {
 		apiKey = c.Request().Header.Get("X-API-Key")
 	}
 
-	rssResp := buildRSSResponse(results, baseAddr, apiKey)
+	results = filterNewznabCategories(results, categories)
+	total := len(results)
+	if offset >= total {
+		results = []*domain.Release{}
+	} else {
+		end := min(total, offset+limit)
+		results = results[offset:end]
+	}
+
+	rssResp := buildRSSResponse(results, baseAddr, apiKey, offset, total)
 	return c.XML(http.StatusOK, rssResp)
 }
 
@@ -159,7 +179,7 @@ func (ctrl *NewznabController) HandleDownload(c *echo.Context) error {
 }
 
 // buildRSSResponse maps internal Releases to the outgoing Newznab XML format
-func buildRSSResponse(results []*domain.Release, baseAddr, apiKey string) NewznabRSS {
+func buildRSSResponse(results []*domain.Release, baseAddr, apiKey string, offset, total int) NewznabRSS {
 	items := make([]RSSItem, 0, len(results))
 
 	for _, res := range results {
@@ -177,6 +197,18 @@ func buildRSSResponse(results []*domain.Release, baseAddr, apiKey string) Newzna
 			downloadURL = fmt.Sprintf("%s&apikey=%s", downloadURL, url.QueryEscape(apiKey))
 		}
 
+		attributes := []Attr{
+			{Name: "category", Value: categoryAttr},
+			{Name: "size", Value: fmt.Sprintf("%d", res.Size)},
+			{Name: "guid", Value: res.ID},
+		}
+		if poster := strings.TrimSpace(res.Poster); poster != "" {
+			attributes = append(attributes, Attr{Name: "poster", Value: poster})
+		}
+		if strings.TrimSpace(res.Password) != "" {
+			attributes = append(attributes, Attr{Name: "password", Value: "1"})
+		}
+
 		items = append(items, RSSItem{
 			Title: res.Title,
 			GUID: RSSGUID{
@@ -191,11 +223,7 @@ func buildRSSResponse(results []*domain.Release, baseAddr, apiKey string) Newzna
 				Length: res.Size,
 				Type:   "application/x-nzb",
 			},
-			Attributes: []Attr{
-				{Name: "category", Value: categoryAttr},
-				{Name: "size", Value: fmt.Sprintf("%d", res.Size)},
-				{Name: "guid", Value: res.ID},
-			},
+			Attributes: attributes,
 		})
 	}
 
@@ -208,11 +236,65 @@ func buildRSSResponse(results []*domain.Release, baseAddr, apiKey string) Newzna
 			Link:        baseAddr,
 			Items:       items,
 			Response: Response{
-				Offset: 0,
-				Total:  len(items),
+				Offset: offset,
+				Total:  total,
 			},
 		},
 	}
+}
+
+func boundedQueryInt(value string, fallback, minimum, maximum int) int {
+	parsed, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil {
+		return fallback
+	}
+	if parsed < minimum {
+		return minimum
+	}
+	if parsed > maximum {
+		return maximum
+	}
+	return parsed
+}
+
+func parseNewznabCategories(value string) []int {
+	out := make([]int, 0)
+	seen := make(map[int]struct{})
+	for _, token := range strings.Split(value, ",") {
+		id, err := strconv.Atoi(strings.TrimSpace(token))
+		if err != nil || id <= 0 {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
+}
+
+func filterNewznabCategories(results []*domain.Release, categories []int) []*domain.Release {
+	if len(categories) == 0 {
+		return results
+	}
+	out := make([]*domain.Release, 0, len(results))
+	for _, result := range results {
+		if result == nil {
+			continue
+		}
+		categoryID, ok := newsnab.ParseID(result.Category)
+		if !ok {
+			continue
+		}
+		for _, requested := range categories {
+			if categoryID == requested || (requested%1000 == 0 && categoryID >= requested && categoryID < requested+1000) {
+				out = append(out, result)
+				break
+			}
+		}
+	}
+	return out
 }
 
 func buildCapCategories() []CapCategory {
