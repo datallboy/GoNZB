@@ -144,7 +144,7 @@ func TestDefaultRuntimeSettingsAreOperationallyDisabled(t *testing.T) {
 	if runtime.Indexing.InspectPAR2.Concurrency != 4 {
 		t.Fatalf("expected inspect_par2 concurrency default, got %+v", runtime.Indexing.InspectPAR2)
 	}
-	if runtime.Indexing.Retention.CreatePartitionsDaysBefore != 2 || runtime.Indexing.Retention.CreatePartitionsDaysAhead != 8 {
+	if runtime.Indexing.Retention.CreatePartitionsDaysBefore != 2 || runtime.Indexing.Retention.CreatePartitionsDaysAhead != 2 {
 		t.Fatalf("expected a small rolling partition horizon, got %+v", runtime.Indexing.Retention)
 	}
 }

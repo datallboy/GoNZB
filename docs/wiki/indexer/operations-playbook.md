@@ -38,7 +38,8 @@ ORDER BY parent::text;
 ```
 
 Normal latest indexing provisions two days behind the current UTC day, the
-current day, and eight days ahead. Retention duration does not require empty
+current day, and two days ahead. The running indexer refreshes that rolling
+window every six hours. Retention duration does not require empty
 partitions to exist for the entire retention horizon. Before enabling a
 historical backfill, set `create_partitions_days_before` far enough back to
 cover the requested source dates and allow provisioning to finish; active stage

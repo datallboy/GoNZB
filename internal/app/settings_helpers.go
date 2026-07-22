@@ -171,7 +171,7 @@ func defaultRetentionSettings() IndexingRetentionRuntimeSettings {
 		// window. Historical backfills must explicitly widen this horizon before
 		// their supervisor stages are enabled.
 		CreatePartitionsDaysBefore: 2,
-		CreatePartitionsDaysAhead:  8,
+		CreatePartitionsDaysAhead:  2,
 		PurgeDryRunDefault:         true,
 	}
 }
