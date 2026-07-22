@@ -87,6 +87,7 @@ func (ctrl *AuthController) CreateInitialUser(c *echo.Context) error {
 		Value:    session.ID,
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   requestUsesHTTPS(c),
 		SameSite: http.SameSiteLaxMode,
 		Expires:  session.ExpiresAt,
 	})
@@ -120,6 +121,7 @@ func (ctrl *AuthController) CreateSession(c *echo.Context) error {
 		Value:    session.ID,
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   requestUsesHTTPS(c),
 		SameSite: http.SameSiteLaxMode,
 		Expires:  session.ExpiresAt,
 	})
@@ -150,6 +152,7 @@ func (ctrl *AuthController) DeleteSession(c *echo.Context) error {
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   requestUsesHTTPS(c),
 		SameSite: http.SameSiteLaxMode,
 		Expires:  time.Unix(0, 0),
 		MaxAge:   -1,
@@ -158,6 +161,7 @@ func (ctrl *AuthController) DeleteSession(c *echo.Context) error {
 		Name:     csrfCookieName,
 		Value:    "",
 		Path:     "/",
+		Secure:   requestUsesHTTPS(c),
 		SameSite: http.SameSiteLaxMode,
 		Expires:  time.Unix(0, 0),
 		MaxAge:   -1,
@@ -388,8 +392,13 @@ func ensureCSRFCookie(c *echo.Context, expiresAt time.Time) string {
 		Value:    token,
 		Path:     "/",
 		HttpOnly: false,
+		Secure:   requestUsesHTTPS(c),
 		SameSite: http.SameSiteLaxMode,
 		Expires:  expiresAt,
 	})
 	return token
+}
+
+func requestUsesHTTPS(c *echo.Context) bool {
+	return c != nil && strings.EqualFold(strings.TrimSpace(c.Scheme()), "https")
 }

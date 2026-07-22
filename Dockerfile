@@ -25,8 +25,10 @@ RUN apk add --no-cache build-base make wget tar
 WORKDIR /tmp/unrar
 
 ARG UNRAR_URL=https://www.rarlab.com/rar/unrarsrc-7.2.4.tar.gz
+ARG UNRAR_SHA256=b02e571a33af7711cd803080500370dc1d28eea82b2032480819d27462ad8b31
 
 RUN wget -O unrar.tar.gz "${UNRAR_URL}" \
+    && echo "${UNRAR_SHA256}  unrar.tar.gz" | sha256sum -c - \
     && tar -xzf unrar.tar.gz --strip-components=1 \
     && make -f makefile
 
@@ -43,6 +45,7 @@ RUN apk --no-cache add \
     unzip \
     7zip \
     su-exec
+RUN ln -s /usr/bin/7zz /usr/bin/7za
 
 COPY --from=unrar-builder /tmp/unrar/unrar /usr/bin/unrar
 RUN chmod +x /usr/bin/unrar

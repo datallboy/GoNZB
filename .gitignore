@@ -25,6 +25,8 @@ testdata
 # Local scratch files
 .tmp/
 .e2e/
+.env
+!.env.example
 
 # Runtime stores contain generated databases, blobs, NZBs, and node keys.
 /store/
