@@ -25,6 +25,12 @@ type ScrapeTimeframeProgress struct {
 	UpdatedAt     time.Time  `json:"updated_at"`
 }
 
+type ScrapeTimeframeProgressSummary struct {
+	ScrapeTimeframeProgress
+	ProviderKey string `json:"provider_key"`
+	GroupName   string `json:"group_name"`
+}
+
 func (s *Store) EnsureScrapeTimeframeProgress(ctx context.Context, timeframeID string, providerID, newsgroupID int64, windowStart, windowEnd time.Time) (*ScrapeTimeframeProgress, error) {
 	timeframeID = strings.TrimSpace(timeframeID)
 	windowStart = windowStart.UTC()
@@ -155,4 +161,61 @@ func (s *Store) loadScrapeTimeframeProgress(ctx context.Context, timeframeID str
 		item.LastAttemptAt = ptrUTC(lastAttemptAt.Time)
 	}
 	return &item, nil
+}
+
+func (s *Store) ListScrapeTimeframeProgress(ctx context.Context, limit int) ([]ScrapeTimeframeProgressSummary, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 500
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT p.timeframe_id, p.provider_id, p.newsgroup_id,
+		       p.window_start, p.window_end, p.article_low, p.article_high,
+		       p.next_article, p.state, p.resolved_at, p.completed_at,
+		       p.last_attempt_at, p.last_error, p.updated_at,
+		       up.provider_key, ng.group_name
+		FROM indexer_scrape_timeframe_progress p
+		JOIN usenet_providers up ON up.id = p.provider_id
+		JOIN newsgroups ng ON ng.id = p.newsgroup_id
+		ORDER BY CASE p.state
+		           WHEN 'active' THEN 0
+		           WHEN 'failed' THEN 1
+		           WHEN 'pending' THEN 2
+		           ELSE 3
+		         END,
+		         p.updated_at DESC,
+		         p.timeframe_id
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list scrape timeframe progress: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]ScrapeTimeframeProgressSummary, 0, limit)
+	for rows.Next() {
+		var item ScrapeTimeframeProgressSummary
+		var resolvedAt, completedAt, lastAttemptAt sql.NullTime
+		if err := rows.Scan(
+			&item.TimeframeID, &item.ProviderID, &item.NewsgroupID,
+			&item.WindowStart, &item.WindowEnd, &item.ArticleLow, &item.ArticleHigh,
+			&item.NextArticle, &item.State, &resolvedAt, &completedAt,
+			&lastAttemptAt, &item.LastError, &item.UpdatedAt,
+			&item.ProviderKey, &item.GroupName,
+		); err != nil {
+			return nil, fmt.Errorf("scan scrape timeframe progress: %w", err)
+		}
+		if resolvedAt.Valid {
+			item.ResolvedAt = ptrUTC(resolvedAt.Time)
+		}
+		if completedAt.Valid {
+			item.CompletedAt = ptrUTC(completedAt.Time)
+		}
+		if lastAttemptAt.Valid {
+			item.LastAttemptAt = ptrUTC(lastAttemptAt.Time)
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate scrape timeframe progress: %w", err)
+	}
+	return out, nil
 }

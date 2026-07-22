@@ -364,6 +364,7 @@ func buildScrapeAdminResponse(ctx context.Context, appCtx *app.Context, runtime 
 	return map[string]any{
 		"explicit_groups":                ensureExplicitGroups(indexing.ExplicitGroups),
 		"scrape_timeframes":              ensureScrapeTimeframes(indexing.ScrapeTimeframes),
+		"timeframe_progress":             loadScrapeTimeframeProgress(ctx, appCtx),
 		"wildcard_rules":                 ensureWildcardRules(indexing.WildcardRules),
 		"provider_group_inventory":       []app.IndexingProviderGroupInventoryRuntimeSettings{},
 		"provider_inventory_count":       stats.Count,
@@ -374,6 +375,25 @@ func buildScrapeAdminResponse(ctx context.Context, appCtx *app.Context, runtime 
 		"preview_total":                  0,
 		"crosspost_popularity":           []scrapeCrosspostPopularityItem{},
 	}
+}
+
+type scrapeTimeframeProgressReader interface {
+	ListScrapeTimeframeProgress(ctx context.Context, limit int) ([]pgindex.ScrapeTimeframeProgressSummary, error)
+}
+
+func loadScrapeTimeframeProgress(ctx context.Context, appCtx *app.Context) []pgindex.ScrapeTimeframeProgressSummary {
+	if appCtx == nil || appCtx.PGIndexStore == nil {
+		return []pgindex.ScrapeTimeframeProgressSummary{}
+	}
+	reader, ok := appCtx.PGIndexStore.(scrapeTimeframeProgressReader)
+	if !ok {
+		return []pgindex.ScrapeTimeframeProgressSummary{}
+	}
+	items, err := reader.ListScrapeTimeframeProgress(ctx, 500)
+	if err != nil {
+		return []pgindex.ScrapeTimeframeProgressSummary{}
+	}
+	return items
 }
 
 func loadCrosspostPopularity(ctx context.Context, appCtx *app.Context, indexing *app.IndexingRuntimeSettings, limit int) []scrapeCrosspostPopularityItem {
