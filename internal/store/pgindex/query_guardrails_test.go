@@ -117,16 +117,21 @@ func TestNativeSourceWorkPartitionTargetsMatchSprintScope(t *testing.T) {
 	}
 }
 
-func TestActiveStagePartitionGuardsVerifyInsteadOfProvisioning(t *testing.T) {
+func TestActiveStagePartitionProvisioningUsesExactShortTransactions(t *testing.T) {
 	src := readGuardrailSource(t, "partition_provision.go")
 	if strings.Contains(src, "pgindex_ensure_source_work_partitions") {
 		t.Fatalf("partition provisioning must not call pgindex_ensure_source_work_partitions; multi-parent runtime DDL caused relation-lock deadlocks")
 	}
-	if !strings.Contains(src, "partition DDL is not allowed from active indexer stage write paths") {
-		t.Fatalf("active stage partition guards must fail closed when children are missing instead of creating partitions")
+	for _, required := range []string{"partitionBundleScrape", "partitionBundleScheduler", "partitionBundleAssemble", "partitionBundleYEnc", "partitionBundleInspect", "partitionBundleRelease"} {
+		if !strings.Contains(src, required) {
+			t.Fatalf("partition provisioning must define the %s stage bundle", required)
+		}
 	}
-	if !strings.Contains(src, "ProvisionSourceWorkPartitions") || !strings.Contains(src, "pgindex_ensure_daily_partition") {
-		t.Fatalf("offline/startup partition provisioning should create individual parent/day children")
+	if !strings.Contains(src, "BeginTx") || !strings.Contains(src, "set_config('lock_timeout'") || !strings.Contains(src, "pgindex_ensure_daily_partition") {
+		t.Fatalf("partition provisioning should create one parent/day child in a bounded transaction")
+	}
+	if !strings.Contains(src, "offline default-rehome workflow") || !strings.Contains(src, "refusing to route rows into default partitions") {
+		t.Fatalf("partition provisioning must fail closed when a default contains the source day")
 	}
 }
 
