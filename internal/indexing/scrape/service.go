@@ -41,6 +41,7 @@ type repository interface {
 	RefreshYEncRecoveryAdmissionSnapshot(ctx context.Context) (*pgindex.YEncRecoveryAdmissionSnapshot, error)
 	UpsertIndexerGroupProfile(ctx context.Context, providerID, newsgroupID int64, tier, reason string) error
 	UpsertDeferredArticleRange(ctx context.Context, in pgindex.DeferredArticleRangeRecord) error
+	ExistingScrapeSourceDays(ctx context.Context, sourcePostedAt []time.Time) (map[string]bool, error)
 }
 
 type provider interface {
@@ -76,6 +77,7 @@ type Options struct {
 	BatchSize                int64
 	Concurrency              int
 	MaxBatches               int
+	MaxNewSourceDaysPerPass  int
 	BackfillUntilDateByGroup map[string]time.Time
 	RangeCoordinator         RangeCoordinator
 	RunObserver              func(context.Context, map[string]any, error)
@@ -153,8 +155,18 @@ type runMetrics struct {
 	DeferredRanges     int
 	RangesSkipped      int
 	AssignedRanges     int
+	NewSourceDays      int
 	RotationStartIndex int
 	RotationNextIndex  int
+}
+
+type sourceDayAdmissionContextKey struct{}
+
+type sourceDayAdmission struct {
+	mu       sync.Mutex
+	maxNew   int
+	newDays  int
+	admitted map[string]struct{}
 }
 
 type groupRunResult struct {
@@ -190,6 +202,9 @@ func NewService(repo repository, p provider, log logger, opts Options) *Service 
 	}
 	if opts.MaxBatches <= 0 {
 		opts.MaxBatches = opts.Concurrency
+	}
+	if opts.MaxNewSourceDaysPerPass <= 0 {
+		opts.MaxNewSourceDaysPerPass = 32
 	}
 
 	return &Service{
@@ -244,6 +259,11 @@ func (s *Service) runModeWithMetrics(ctx context.Context, mode string) (map[stri
 		}
 	}
 
+	admission := &sourceDayAdmission{
+		maxNew:   s.opts.MaxNewSourceDaysPerPass,
+		admitted: make(map[string]struct{}),
+	}
+	ctx = context.WithValue(ctx, sourceDayAdmissionContextKey{}, admission)
 	groups := s.effectiveGroups()
 	hasAssignedRanges := s.hasAssignedRangeProvider()
 	if len(groups) == 0 && !hasAssignedRanges {
@@ -273,6 +293,9 @@ func (s *Service) runModeWithMetrics(ctx context.Context, mode string) (map[stri
 	if runErr == nil {
 		runErr = s.runGroups(ctx, providerID, mode, groups, metrics)
 	}
+	admission.mu.Lock()
+	metrics.NewSourceDays = admission.newDays
+	admission.mu.Unlock()
 
 	status := "completed"
 	errText := ""
@@ -497,7 +520,7 @@ func (s *Service) runExplicitRange(ctx context.Context, providerID int64, mode s
 	if skipped {
 		return groupRunResult{HadWork: true, RangesSkipped: 1, AssignedRanges: 1}, nil
 	}
-	headers, inserted, _, cutoffFiltered, actualProviderID, err := s.fetchInsertRange(ctx, providerID, newsgroupID, group, request.RangeStart, request.RangeEnd, nil, "")
+	headers, inserted, _, cutoffFiltered, deferredRanges, actualProviderID, err := s.fetchInsertRange(ctx, mode, providerID, newsgroupID, group, request.RangeStart, request.RangeEnd, nil, "")
 	if err != nil {
 		_ = s.failScrapeRange(ctx, decision, err)
 		return groupRunResult{}, err
@@ -519,6 +542,7 @@ func (s *Service) runExplicitRange(ctx context.Context, providerID int64, mode s
 		ArticleHeadersSeen: int64(len(headers)),
 		ArticlesInserted:   inserted,
 		CutoffFiltered:     int64(cutoffFiltered),
+		DeferredRanges:     deferredRanges,
 		AssignedRanges:     1,
 	}, nil
 }
@@ -561,7 +585,7 @@ func (s *Service) runExplicitWindow(ctx context.Context, providerID int64, mode 
 	if skipped {
 		return groupRunResult{HadWork: true, RangesSkipped: 1, AssignedRanges: 1}, nil
 	}
-	headers, inserted, _, cutoffFiltered, actualProviderID, err := s.fetchInsertRange(ctx, providerID, newsgroupID, group, from, to, nil, stats.ProviderID)
+	headers, inserted, _, cutoffFiltered, deferredRanges, actualProviderID, err := s.fetchInsertRange(ctx, mode, providerID, newsgroupID, group, from, to, nil, stats.ProviderID)
 	if err != nil {
 		_ = s.failScrapeRange(ctx, decision, err)
 		return groupRunResult{}, err
@@ -583,6 +607,7 @@ func (s *Service) runExplicitWindow(ctx context.Context, providerID int64, mode 
 		ArticleHeadersSeen: int64(len(headers)),
 		ArticlesInserted:   inserted,
 		CutoffFiltered:     int64(cutoffFiltered),
+		DeferredRanges:     deferredRanges,
 		AssignedRanges:     1,
 	}, nil
 }
@@ -766,7 +791,7 @@ func (s *Service) runLatestGroup(ctx context.Context, providerID int64, group st
 		return result, nil
 	}
 
-	headers, inserted, _, _, actualProviderID, err := s.fetchInsertRange(ctx, providerID, newsgroupID, group, start, to, nil, stats.ProviderID)
+	headers, inserted, _, _, deferredRanges, actualProviderID, err := s.fetchInsertRange(ctx, "latest", providerID, newsgroupID, group, start, to, nil, stats.ProviderID)
 	if err != nil {
 		_ = s.failScrapeRange(ctx, decision, err)
 		return groupRunResult{}, err
@@ -796,6 +821,7 @@ func (s *Service) runLatestGroup(ctx context.Context, providerID int64, group st
 		ArticleHeadersSeen: int64(len(headers)),
 		ArticlesInserted:   inserted,
 		CheckpointUpdates:  1,
+		DeferredRanges:     deferredRanges,
 	}, nil
 }
 
@@ -925,7 +951,7 @@ func (s *Service) runBackfillGroup(ctx context.Context, providerID int64, group 
 		c := cutoffDate.UTC()
 		cutoff = &c
 	}
-	headers, inserted, oldestSeen, cutoffFiltered, actualProviderID, err := s.fetchInsertRange(ctx, providerID, newsgroupID, group, start, end, cutoff, stats.ProviderID)
+	headers, inserted, oldestSeen, cutoffFiltered, deferredRanges, actualProviderID, err := s.fetchInsertRange(ctx, "backfill", providerID, newsgroupID, group, start, end, cutoff, stats.ProviderID)
 	if err != nil {
 		_ = s.failScrapeRange(ctx, decision, err)
 		return groupRunResult{}, err
@@ -955,6 +981,7 @@ func (s *Service) runBackfillGroup(ctx context.Context, providerID int64, group 
 				ArticleHeadersSeen: int64(len(headers)),
 				ArticlesInserted:   inserted,
 				CutoffFiltered:     int64(cutoffFiltered),
+				DeferredRanges:     deferredRanges,
 			}, nil
 		}
 	}
@@ -987,6 +1014,7 @@ func (s *Service) runBackfillGroup(ctx context.Context, providerID int64, group 
 		ArticlesInserted:   inserted,
 		CutoffFiltered:     int64(cutoffFiltered),
 		CheckpointUpdates:  1,
+		DeferredRanges:     deferredRanges,
 	}, nil
 }
 
@@ -1051,7 +1079,7 @@ func (s *Service) failScrapeRange(ctx context.Context, decision RangeDecision, c
 	return s.opts.RangeCoordinator.FailScrapeRange(ctx, decision, cause)
 }
 
-func (s *Service) fetchInsertRange(ctx context.Context, providerID, newsgroupID int64, group string, from, to int64, cutoff *time.Time, expectedProviderKey string) ([]pgindex.ArticleHeader, int64, *time.Time, int, int64, error) {
+func (s *Service) fetchInsertRange(ctx context.Context, mode string, providerID, newsgroupID int64, group string, from, to int64, cutoff *time.Time, expectedProviderKey string) ([]pgindex.ArticleHeader, int64, *time.Time, int, int, int64, error) {
 	var (
 		rows      []OverviewHeader
 		actualKey string
@@ -1064,12 +1092,12 @@ func (s *Service) fetchInsertRange(ctx context.Context, providerID, newsgroupID 
 		actualKey = s.provider.ID()
 	}
 	if err != nil {
-		return nil, 0, nil, 0, 0, fmt.Errorf("xover %s %d-%d: %w", group, from, to, err)
+		return nil, 0, nil, 0, 0, 0, fmt.Errorf("xover %s %d-%d: %w", group, from, to, err)
 	}
 	if strings.TrimSpace(actualKey) != "" && strings.TrimSpace(expectedProviderKey) != "" && !strings.EqualFold(actualKey, expectedProviderKey) {
 		providerID, err = s.effectiveProviderID(ctx, providerID, actualKey)
 		if err != nil {
-			return nil, 0, nil, 0, 0, err
+			return nil, 0, nil, 0, 0, 0, err
 		}
 	}
 
@@ -1123,15 +1151,168 @@ func (s *Service) fetchInsertRange(ctx context.Context, providerID, newsgroupID 
 		})
 	}
 
+	headers, deferredRanges, err := s.admitHeaderSourceDays(ctx, mode, providerID, newsgroupID, headers)
+	if err != nil {
+		return nil, 0, oldestSeen, cutoffFiltered, 0, 0, fmt.Errorf("admit source days %s %d-%d: %w", group, from, to, err)
+	}
+	admittedArticles := make(map[int64]struct{}, len(headers))
+	for _, header := range headers {
+		admittedArticles[header.ArticleNumber] = struct{}{}
+	}
+	observations = slices.DeleteFunc(observations, func(observation pgindex.ScrapeRangeObservation) bool {
+		_, ok := admittedArticles[observation.ArticleNumber]
+		return !ok
+	})
+
 	inserted, err := s.repo.InsertArticleHeaders(ctx, providerID, newsgroupID, headers)
 	if err != nil {
-		return nil, 0, oldestSeen, cutoffFiltered, 0, fmt.Errorf("insert headers %s %d-%d: %w", group, from, to, err)
+		return nil, 0, oldestSeen, cutoffFiltered, deferredRanges, 0, fmt.Errorf("insert headers %s %d-%d: %w", group, from, to, err)
 	}
 	if err := s.repo.ObserveScrapeRange(ctx, providerID, newsgroupID, from, to, observations); err != nil {
-		return nil, 0, oldestSeen, cutoffFiltered, 0, fmt.Errorf("observe scrape range %s %d-%d: %w", group, from, to, err)
+		return nil, 0, oldestSeen, cutoffFiltered, deferredRanges, 0, fmt.Errorf("observe scrape range %s %d-%d: %w", group, from, to, err)
 	}
 
-	return headers, inserted, oldestSeen, cutoffFiltered, providerID, nil
+	return headers, inserted, oldestSeen, cutoffFiltered, deferredRanges, providerID, nil
+}
+
+func (s *Service) admitHeaderSourceDays(ctx context.Context, mode string, providerID, newsgroupID int64, headers []pgindex.ArticleHeader) ([]pgindex.ArticleHeader, int, error) {
+	admission, _ := ctx.Value(sourceDayAdmissionContextKey{}).(*sourceDayAdmission)
+	if admission == nil || admission.maxNew <= 0 || len(headers) == 0 {
+		return headers, 0, nil
+	}
+
+	now := time.Now().UTC()
+	dates := make([]time.Time, 0, len(headers))
+	dayByArticle := make(map[int64]string, len(headers))
+	uniqueDays := make(map[string]time.Time)
+	for _, header := range headers {
+		postedAt := now
+		if header.DateUTC != nil {
+			postedAt = header.DateUTC.UTC()
+		}
+		dayKey := postedAt.Format("2006-01-02")
+		dayByArticle[header.ArticleNumber] = dayKey
+		if _, ok := uniqueDays[dayKey]; !ok {
+			uniqueDays[dayKey] = postedAt
+			dates = append(dates, postedAt)
+		}
+	}
+
+	existing, err := s.repo.ExistingScrapeSourceDays(ctx, dates)
+	if err != nil {
+		return nil, 0, err
+	}
+	dayKeys := make([]string, 0, len(uniqueDays))
+	for dayKey := range uniqueDays {
+		dayKeys = append(dayKeys, dayKey)
+	}
+	slices.Sort(dayKeys)
+	slices.Reverse(dayKeys)
+
+	allowed := make(map[string]bool, len(dayKeys))
+	admission.mu.Lock()
+	for _, dayKey := range dayKeys {
+		if existing[dayKey] {
+			allowed[dayKey] = true
+			continue
+		}
+		if _, ok := admission.admitted[dayKey]; ok {
+			allowed[dayKey] = true
+			continue
+		}
+		if admission.newDays >= admission.maxNew {
+			continue
+		}
+		admission.admitted[dayKey] = struct{}{}
+		admission.newDays++
+		allowed[dayKey] = true
+	}
+	admission.mu.Unlock()
+
+	admitted := make([]pgindex.ArticleHeader, 0, len(headers))
+	rejected := make([]pgindex.ArticleHeader, 0)
+	for _, header := range headers {
+		if allowed[dayByArticle[header.ArticleNumber]] {
+			admitted = append(admitted, header)
+		} else {
+			rejected = append(rejected, header)
+		}
+	}
+	if len(rejected) == 0 {
+		return admitted, 0, nil
+	}
+
+	slices.SortFunc(rejected, func(a, b pgindex.ArticleHeader) int {
+		switch {
+		case a.ArticleNumber < b.ArticleNumber:
+			return -1
+		case a.ArticleNumber > b.ArticleNumber:
+			return 1
+		default:
+			return 0
+		}
+	})
+	ranges := splitDeferredHeaderRanges(rejected)
+	for _, deferred := range ranges {
+		if err := s.repo.UpsertDeferredArticleRange(ctx, pgindex.DeferredArticleRangeRecord{
+			ProviderID:               providerID,
+			NewsgroupID:              newsgroupID,
+			ArticleLow:               deferred.low,
+			ArticleHigh:              deferred.high,
+			PostedAtMin:              deferred.postedAtMin,
+			PostedAtMax:              deferred.postedAtMax,
+			EstimatedArticleCount:    deferred.count,
+			EstimatedObfuscatedCount: deferred.count,
+			Reason:                   "partition_source_day_cap",
+			PriorityScore:            deferredSourceDayPriority(mode),
+		}); err != nil {
+			return nil, 0, err
+		}
+	}
+	if s.log != nil {
+		s.log.Info("scrape %s deferred source days: ranges=%d articles=%d max_new_days=%d", mode, len(ranges), len(rejected), admission.maxNew)
+	}
+	return admitted, len(ranges), nil
+}
+
+type deferredHeaderRange struct {
+	low         int64
+	high        int64
+	count       int64
+	postedAtMin *time.Time
+	postedAtMax *time.Time
+}
+
+func splitDeferredHeaderRanges(headers []pgindex.ArticleHeader) []deferredHeaderRange {
+	if len(headers) == 0 {
+		return nil
+	}
+	ranges := make([]deferredHeaderRange, 0, 1)
+	for _, header := range headers {
+		if len(ranges) == 0 || header.ArticleNumber > ranges[len(ranges)-1].high+1 {
+			ranges = append(ranges, deferredHeaderRange{low: header.ArticleNumber, high: header.ArticleNumber})
+		}
+		current := &ranges[len(ranges)-1]
+		current.high = header.ArticleNumber
+		current.count++
+		if header.DateUTC != nil {
+			postedAt := header.DateUTC.UTC()
+			if current.postedAtMin == nil || postedAt.Before(*current.postedAtMin) {
+				current.postedAtMin = ptrTime(postedAt)
+			}
+			if current.postedAtMax == nil || postedAt.After(*current.postedAtMax) {
+				current.postedAtMax = ptrTime(postedAt)
+			}
+		}
+	}
+	return ranges
+}
+
+func deferredSourceDayPriority(mode string) float64 {
+	if mode == "latest" {
+		return 95
+	}
+	return 15
 }
 
 func (s *Service) deferRangeWhenRecoveryPressured(ctx context.Context, mode string, providerID, newsgroupID int64, group string, from, to int64) (bool, error) {
@@ -1261,6 +1442,7 @@ func (m *runMetrics) toMap() map[string]any {
 		"deferred_ranges":      m.DeferredRanges,
 		"ranges_skipped":       m.RangesSkipped,
 		"assigned_ranges":      m.AssignedRanges,
+		"new_source_days":      m.NewSourceDays,
 		"batch_size":           m.BatchSize,
 		"rotation_start_index": m.RotationStartIndex,
 		"rotation_next_index":  m.RotationNextIndex,

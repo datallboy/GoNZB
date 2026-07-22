@@ -270,6 +270,44 @@ func (s *Store) missingPartitionBundleChildren(ctx context.Context, bundle parti
 	return missing, nil
 }
 
+// ExistingScrapeSourceDays reports which requested UTC source days already
+// have the complete scrape-owned partition bundle. Callers use this to ensure
+// existing sparse days do not consume the per-pass new-day admission budget.
+func (s *Store) ExistingScrapeSourceDays(ctx context.Context, sourcePostedAt []time.Time) (map[string]bool, error) {
+	days, dayKeys, err := normalizedPartitionDays(sourcePostedAt)
+	if err != nil {
+		return nil, err
+	}
+	existing := make(map[string]bool, len(dayKeys))
+	for _, dayKey := range dayKeys {
+		_, childSuffix := nativePartitionDayKeys(days[dayKey])
+		missing, err := s.missingPartitionBundleChildren(ctx, partitionBundleScrape, childSuffix)
+		if err != nil {
+			return nil, fmt.Errorf("check existing scrape partitions for source day %s: %w", dayKey, err)
+		}
+		existing[dayKey] = len(missing) == 0
+	}
+	return existing, nil
+}
+
+func normalizedPartitionDays(sourcePostedAt []time.Time) (map[string]time.Time, []string, error) {
+	days := make(map[string]time.Time, len(sourcePostedAt))
+	for _, postedAt := range sourcePostedAt {
+		dayKey, _ := nativePartitionDayKeys(postedAt)
+		dayStart, err := time.ParseInLocation("2006-01-02", dayKey, time.UTC)
+		if err != nil {
+			return nil, nil, fmt.Errorf("parse partition day %s: %w", dayKey, err)
+		}
+		days[dayKey] = dayStart
+	}
+	dayKeys := make([]string, 0, len(days))
+	for dayKey := range days {
+		dayKeys = append(dayKeys, dayKey)
+	}
+	sort.Strings(dayKeys)
+	return days, dayKeys, nil
+}
+
 func (s *Store) ensurePartitionBundleForBinaryIDs(ctx context.Context, bundle partitionBundle, binaryIDs []int64) error {
 	if s == nil || s.db == nil || len(binaryIDs) == 0 {
 		return nil

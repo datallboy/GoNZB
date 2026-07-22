@@ -56,6 +56,82 @@ func TestRunBackfillRespectsUntilDateBeforeInsert(t *testing.T) {
 	}
 }
 
+func TestRunLatestDefersSourceDaysBeyondPerPassLimit(t *testing.T) {
+	const sourceDays = 35
+	base := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	headers := make([]OverviewHeader, 0, sourceDays)
+	for i := 0; i < sourceDays; i++ {
+		postedAt := base.AddDate(0, 0, i)
+		headers = append(headers, OverviewHeader{
+			ArticleNumber: int64(i + 1),
+			MessageID:     fmt.Sprintf("<article-%d>", i+1),
+			DateUTC:       &postedAt,
+		})
+	}
+	repo := &fakeScrapeRepo{}
+	svc := NewService(repo, fakeScrapeProvider{
+		stats:   GroupStats{Low: 1, High: sourceDays},
+		headers: headers,
+	}, testScrapeLogger{}, Options{
+		Newsgroups:              []string{"alt.binaries.sparse"},
+		BatchSize:               sourceDays,
+		MaxNewSourceDaysPerPass: 32,
+	})
+
+	metrics, err := svc.RunLatestOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("RunLatestOnceWithMetrics() error = %v", err)
+	}
+	if len(repo.insertedHeaders) != 32 {
+		t.Fatalf("expected newest 32 source days to be inserted, got %d", len(repo.insertedHeaders))
+	}
+	if got := repo.insertedHeaders[0].ArticleNumber; got != 4 {
+		t.Fatalf("expected oldest admitted article to be 4, got %d", got)
+	}
+	if len(repo.deferredRanges) != 1 {
+		t.Fatalf("expected one durable deferred range, got %+v", repo.deferredRanges)
+	}
+	deferred := repo.deferredRanges[0]
+	if deferred.ArticleLow != 1 || deferred.ArticleHigh != 3 || deferred.Reason != "partition_source_day_cap" {
+		t.Fatalf("unexpected deferred range: %+v", deferred)
+	}
+	if !repo.latestCheckpointUpdated || repo.latestCheckpointValue != sourceDays {
+		t.Fatalf("expected checkpoint to advance only after durable deferral, got updated=%v value=%d", repo.latestCheckpointUpdated, repo.latestCheckpointValue)
+	}
+	if len(repo.observedRanges) != 1 || len(repo.observedRanges[0].observations) != 32 {
+		t.Fatalf("expected observations only for admitted headers, got %+v", repo.observedRanges)
+	}
+	if got := metrics["new_source_days"]; got != 32 {
+		t.Fatalf("expected new_source_days=32, got %v", got)
+	}
+}
+
+func TestRunLatestExistingSourceDayDoesNotConsumeNewDayLimit(t *testing.T) {
+	base := time.Date(2026, 2, 1, 12, 0, 0, 0, time.UTC)
+	headers := make([]OverviewHeader, 0, 3)
+	for i := 0; i < 3; i++ {
+		postedAt := base.AddDate(0, 0, i)
+		headers = append(headers, OverviewHeader{ArticleNumber: int64(i + 1), MessageID: fmt.Sprintf("<existing-%d>", i), DateUTC: &postedAt})
+	}
+	repo := &fakeScrapeRepo{existingScrapeDays: map[string]bool{base.Format("2006-01-02"): true}}
+	svc := NewService(repo, fakeScrapeProvider{stats: GroupStats{Low: 1, High: 3}, headers: headers}, testScrapeLogger{}, Options{
+		Newsgroups:              []string{"alt.binaries.existing"},
+		BatchSize:               3,
+		MaxNewSourceDaysPerPass: 2,
+	})
+
+	metrics, err := svc.RunLatestOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("RunLatestOnceWithMetrics() error = %v", err)
+	}
+	if len(repo.insertedHeaders) != 3 || len(repo.deferredRanges) != 0 {
+		t.Fatalf("expected existing plus two new days to be admitted, inserted=%d deferred=%+v", len(repo.insertedHeaders), repo.deferredRanges)
+	}
+	if got := metrics["new_source_days"]; got != 2 {
+		t.Fatalf("expected two newly admitted days, got %v", got)
+	}
+}
+
 func TestRunBackfillSkipsGroupWhenCutoffReachedForAnotherProvider(t *testing.T) {
 	cutoff := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
 	repo := &fakeScrapeRepo{
@@ -698,6 +774,7 @@ type fakeScrapeRepo struct {
 	admissionSnapshot         *pgindex.YEncRecoveryAdmissionSnapshot
 	deferredRanges            []pgindex.DeferredArticleRangeRecord
 	observedRanges            []observedScrapeRange
+	existingScrapeDays        map[string]bool
 }
 
 type observedScrapeRange struct {
@@ -863,6 +940,15 @@ func (f *fakeScrapeRepo) UpsertIndexerGroupProfile(context.Context, int64, int64
 func (f *fakeScrapeRepo) UpsertDeferredArticleRange(_ context.Context, in pgindex.DeferredArticleRangeRecord) error {
 	f.deferredRanges = append(f.deferredRanges, in)
 	return nil
+}
+
+func (f *fakeScrapeRepo) ExistingScrapeSourceDays(_ context.Context, sourcePostedAt []time.Time) (map[string]bool, error) {
+	out := make(map[string]bool, len(sourcePostedAt))
+	for _, postedAt := range sourcePostedAt {
+		dayKey := postedAt.UTC().Format("2006-01-02")
+		out[dayKey] = f.existingScrapeDays[dayKey]
+	}
+	return out, nil
 }
 
 func (f *fakeScrapeRepo) groupName(newsgroupID int64) string {
