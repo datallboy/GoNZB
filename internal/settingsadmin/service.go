@@ -734,7 +734,9 @@ func gonzbnetRequirements(base *config.Config) []string {
 }
 
 func indexerConfigured(runtime *app.RuntimeSettings) bool {
-	return runtime != nil && len(app.IndexerNNTPServers(runtime)) > 0 && runtime.Indexing != nil && len(app.EffectiveNewsgroupNames(runtime.Indexing)) > 0
+	return runtime != nil &&
+		len(app.IndexerNNTPServers(runtime)) > 0 &&
+		hasConfiguredIndexerScrapeSource(runtime.Indexing)
 }
 
 func indexerRequirements(runtime *app.RuntimeSettings) []string {
@@ -742,10 +744,30 @@ func indexerRequirements(runtime *app.RuntimeSettings) []string {
 	if runtime == nil || len(app.IndexerNNTPServers(runtime)) == 0 {
 		reqs = append(reqs, "configure at least one NNTP server")
 	}
-	if runtime == nil || runtime.Indexing == nil || len(app.EffectiveNewsgroupNames(runtime.Indexing)) == 0 {
-		reqs = append(reqs, "configure at least one scrape group")
+	if runtime == nil || !hasConfiguredIndexerScrapeSource(runtime.Indexing) {
+		reqs = append(reqs, "configure at least one active scrape group or enabled historical timeframe")
 	}
 	return reqs
+}
+
+func hasConfiguredIndexerScrapeSource(indexing *app.IndexingRuntimeSettings) bool {
+	if indexing == nil {
+		return false
+	}
+	if len(app.EffectiveNewsgroupNames(indexing)) > 0 {
+		return true
+	}
+	for _, timeframe := range indexing.ScrapeTimeframes {
+		if !timeframe.Enabled || strings.TrimSpace(timeframe.ID) == "" || strings.TrimSpace(timeframe.GroupName) == "" {
+			continue
+		}
+		start, startErr := time.Parse("2006-01-02", strings.TrimSpace(timeframe.StartDate))
+		end, endErr := time.Parse("2006-01-02", strings.TrimSpace(timeframe.EndDate))
+		if startErr == nil && endErr == nil && !end.Before(start) {
+			return true
+		}
+	}
+	return false
 }
 
 func anyIndexerStageEnabled(indexing *app.IndexingRuntimeSettings) bool {
