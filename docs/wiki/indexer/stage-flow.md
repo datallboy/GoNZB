@@ -15,15 +15,20 @@ Latest scrape feeds the current day. Backfill fills older daily buckets. Scrape
 is capped by downstream backlog pressure so source rows do not grow without a
 consumer path.
 
+XOVER may return source dates far outside the current calendar window. Scrape
+provisions only the exact observed days it will admit, never a continuous date
+horizon. A pass that encounters more than the configured new-day cap admits the
+newest work and durably defers the remaining article-number ranges.
+
 Runtime group tiering controls how much work each group can admit:
 
 - hot groups get freshness priority and the largest recovery budget;
 - warm groups run while queue depth and recovery lag are healthy;
 - cold groups are sampled or deferred and must not starve hot groups.
 
-Hard caps stop new scrape/recovery admission when downstream queues are above
-their configured limits. Soft pressure should reduce backfill first, then warm
-and cold work, while preserving latest hot-group freshness where possible.
+Hard recovery caps reserve capacity for latest high-value work. Backfill and
+low-yield recovery stop at the non-reserved limit; structured latest assembly
+may continue while the independently bounded source queue has capacity.
 
 ## Assemble
 

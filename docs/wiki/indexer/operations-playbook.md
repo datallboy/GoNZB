@@ -37,13 +37,21 @@ WHERE pg_get_expr(child.relpartbound, child.oid) = 'DEFAULT'
 ORDER BY parent::text;
 ```
 
-Normal latest indexing provisions two days behind the current UTC day, the
-current day, and two days ahead. The running indexer refreshes that rolling
-window every six hours. Retention duration does not require empty
-partitions to exist for the entire retention horizon. Before enabling a
-historical backfill, set `create_partitions_days_before` far enough back to
-cover the requested source dates and allow provisioning to finish; active stage
-write paths intentionally do not execute partition DDL.
+Normal latest indexing proactively provisions the scrape bundle for the current
+UTC day and two days ahead. Exact older days are provisioned from the dates
+actually returned by XOVER before their rows are written. Backfill does not
+require widening a date horizon.
+
+A scrape pass introduces at most 32 new source days by default. Additional
+article-number ranges appear in the deferred-range view and drain separately so
+they do not block latest checks.
+
+Any default-partition row is an operator-visible fault. Pause all indexer
+writers, run the default-rehome dry-run for the affected day, then execute the
+offline rehome. Do not schedule default rehome while indexer stages are active.
+
+Outcome retention is audit-only by default. Review terminal reasons, archive
+durability, and default-partition health before enabling destructive purge.
 
 ## Runtime Checks
 

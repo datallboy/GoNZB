@@ -45,28 +45,44 @@ These tables stay unpartitioned:
   `release_ready_candidates`, `release_recovered_file_set_candidates`,
   `release_stage_dirty_families`
 
+## Provisioning Contract
+
+Partitions are created for source days actually observed in work, not for a
+retention-sized calendar horizon. Provisioning is grouped by stage ownership:
+
+- scrape provisions only header, ingest-support, assembly-input, and poster
+  queue parents;
+- scheduler, assemble, yEnc, inspect, and release stages provision their own
+  output parents immediately before beginning a write transaction;
+- each parent/day child is created in its own short DDL transaction so no
+  partition operation holds locks across several hot parents;
+- every write path verifies the required child after provisioning and refuses
+  to use a default partition.
+
+Startup creates the scrape bundle for the current UTC day and the configured
+small look-ahead window. A UTC-rollover task refreshes that look-ahead. These
+proactive children reduce first-write latency; they are not required for
+correctness and do not replace exact-day provisioning.
+
+One scrape pass may introduce at most 32 previously unseen source days by
+default. Work beyond that cap is recorded as a durable deferred article range
+before a latest/backfill checkpoint advances. Existing days do not consume the
+cap.
+
+Default partitions are quarantine/fallback surfaces for legacy or external
+writes. Application stages must keep them empty. Rows found there block the
+affected source day and are moved only by the offline default-rehome workflow.
+
 ## Query Shape Rules
 
-- Native daily partitions must be pre-provisioned before the indexer
-  supervisor starts active stages. Startup calls the partition provisioner for
-  the configured retention horizon, then scrape, assemble, yEnc, inspect, and
-  release work paths only verify that the child partitions already exist.
-- Runtime stage write paths must not run partition DDL. Even single-parent
-  `CREATE TABLE ... PARTITION OF` statements require relation locks that can
-  deadlock with active scrape/assemble/yEnc transactions touching other
-  partition parents. Missing partitions are a startup/provisioning blocker, not
-  something a hot writer should repair.
-- Startup provisioning may call `pgindex_ensure_daily_partition` for one
-  parent/day child at a time while no indexer stage transactions are running.
-  Multi-parent partition helper functions and runtime partition conversion
-  helpers are not part of the v0.8.0 baseline.
-- Runtime settings `indexing.retention.create_partitions_days_before` and
-  `indexing.retention.create_partitions_days_ahead` define the startup
-  provision horizon. Defaults are intentionally backfill-friendly
-  (`180` days before, `8` days ahead) so older configured groups do not fall
-  into default partitions or trigger live DDL.
-- Default partitions are emergency-only. They are monitored by retention
-  dry-runs and should remain empty for normal scrape/backfill/stage work.
+- Partition DDL runs outside stage data transactions. Multi-parent DDL inside
+  a hot writer transaction remains forbidden.
+- `pgindex_ensure_daily_partition` is called for one parent/day child per short
+  transaction with a bounded lock timeout. A missing child defers/retries the
+  affected work; it never permits a default-partition write.
+- `indexing.partitions.precreate_days_ahead` controls proactive scrape children
+  and defaults to `2`. The legacy `create_partitions_days_before` setting is
+  ignored because retention duration and partition provisioning are unrelated.
 - Joins to partitioned source tables must include `source_posted_at`.
 - Upserts into partitioned tables must use conflict targets that include
   `source_posted_at`.
