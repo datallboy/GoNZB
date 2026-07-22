@@ -135,6 +135,23 @@ func TestActiveStagePartitionProvisioningUsesExactShortTransactions(t *testing.T
 	}
 }
 
+func TestDownstreamPartitionedWritersProvisionTheirStageBundles(t *testing.T) {
+	cases := map[string][]string{
+		"article_cohort_scheduler_store.go": {"provisionSchedulerPartitionsForReadyWork", "article_cohort_candidates_"},
+		"inspect_ready_queue_store.go":      {"ensurePartitionBundleForBinaryIDs", "partitionBundleInspect", "binary_inspection_ready_queue_"},
+		"inspection_store.go":               {"ensurePartitionBundleForBinaryIDs", "partitionBundleInspect", "binary_inspections_"},
+		"release_family_summary_store.go":   {"provisionReleasePartitionsForQueuedWork"},
+	}
+	for fileName, required := range cases {
+		src := readGuardrailSource(t, fileName)
+		for _, term := range required {
+			if !strings.Contains(src, term) {
+				t.Fatalf("%s must provision and fail closed on its stage-owned partitions; missing %q", fileName, term)
+			}
+		}
+	}
+}
+
 func TestPartitionedWritersUseSourcePostedConflictTargets(t *testing.T) {
 	files := []string{
 		"assembly_store.go",

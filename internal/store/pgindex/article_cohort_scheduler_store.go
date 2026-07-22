@@ -48,6 +48,9 @@ func (s *Store) RunArticleCohortScheduler(ctx context.Context, req ArticleCohort
 	if req.YEncQueueMax <= 0 {
 		req.YEncQueueMax = articleCohortDefaultYEncLimit
 	}
+	if err := s.provisionSchedulerPartitionsForReadyWork(ctx, 32); err != nil {
+		return nil, err
+	}
 	started := time.Now()
 	out := &ArticleCohortSchedulerResult{}
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -143,6 +146,7 @@ func runSubjectCompleteCohortSchedule(ctx context.Context, tx *sql.Tx, batchSize
 			  ON p.source_posted_at = q.source_posted_at
 			 AND p.article_header_id = q.article_header_id
 			WHERE (q.claim_until IS NULL OR q.claim_until < NOW())
+			  AND to_regclass('public.article_cohort_candidates_' || to_char(q.source_posted_at AT TIME ZONE 'UTC', 'YYYYMMDD')) IS NOT NULL
 			  AND q.queue_kind = 'structured'
 			  AND BTRIM(COALESCE(p.subject_file_name, '')) <> ''
 			  AND COALESCE(p.subject_file_index, 0) > 0
@@ -350,6 +354,7 @@ func runOpaqueYEncCohortSchedule(ctx context.Context, tx *sql.Tx, batchSize, que
 			FROM binary_observation_stats
 			WHERE total_parts <= 1
 			  AND observed_parts <= 1
+			  AND to_regclass('public.article_cohort_candidates_' || to_char(source_posted_at AT TIME ZONE 'UTC', 'YYYYMMDD')) IS NOT NULL
 			  AND posted_at IS NOT NULL
 			  AND source_posted_at >= $4
 			  AND source_posted_at < $5
@@ -452,6 +457,7 @@ func runOpaqueYEncCohortSchedule(ctx context.Context, tx *sql.Tx, batchSize, que
 			FROM binary_observation_stats
 			WHERE total_parts <= 1
 			  AND observed_parts <= 1
+			  AND to_regclass('public.article_cohort_candidates_' || to_char(source_posted_at AT TIME ZONE 'UTC', 'YYYYMMDD')) IS NOT NULL
 			  AND posted_at IS NOT NULL
 			  AND source_posted_at >= $5
 			  AND source_posted_at < $6

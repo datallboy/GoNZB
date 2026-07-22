@@ -357,6 +357,114 @@ func (s *Store) ensurePartitionBundleForBinaryIDs(ctx context.Context, bundle pa
 	return s.provisionPartitionBundleForDays(ctx, bundle, days)
 }
 
+func (s *Store) provisionSchedulerPartitionsForReadyWork(ctx context.Context, limitDays int) error {
+	if s == nil || s.db == nil {
+		return nil
+	}
+	if limitDays <= 0 || limitDays > 32 {
+		limitDays = 32
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		WITH source_days AS (
+			SELECT DISTINCT date_trunc('day', source_posted_at)::timestamptz AS source_day
+			FROM article_header_assembly_queue
+			WHERE source_posted_at IS NOT NULL
+			  AND (claim_until IS NULL OR claim_until < NOW())
+			UNION
+			SELECT DISTINCT date_trunc('day', source_posted_at)::timestamptz
+			FROM binary_observation_stats
+			WHERE source_posted_at IS NOT NULL
+			  AND total_parts <= 1
+			  AND observed_parts <= 1
+		)
+		SELECT source_day
+		FROM source_days
+		ORDER BY source_day DESC
+		LIMIT $1`, limitDays)
+	if err != nil {
+		return fmt.Errorf("list scheduler source days for partition precreate: %w", err)
+	}
+	defer rows.Close()
+	days := make([]time.Time, 0, limitDays)
+	for rows.Next() {
+		var day time.Time
+		if err := rows.Scan(&day); err != nil {
+			return fmt.Errorf("scan scheduler source day for partition precreate: %w", err)
+		}
+		days = append(days, day)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate scheduler source days for partition precreate: %w", err)
+	}
+	return s.provisionPartitionBundleForDays(ctx, partitionBundleScheduler, days)
+}
+
+func (s *Store) provisionReleasePartitionsForQueuedWork(ctx context.Context, limit int) error {
+	if s == nil || s.db == nil || limit <= 0 {
+		return nil
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		WITH queued AS MATERIALIZED (
+			SELECT provider_id, newsgroup_id, key_kind, family_key
+			FROM release_family_summary_refresh_queue
+			ORDER BY queued_at, provider_id, newsgroup_id, key_kind, family_key
+			LIMIT $1
+		), queued_days AS (
+			SELECT COALESCE(MIN(bos.posted_at), NOW()) AS source_posted_at
+			FROM queued q
+			LEFT JOIN binary_identity_current bic
+			  ON bic.provider_id = q.provider_id
+			 AND bic.newsgroup_id = q.newsgroup_id
+			 AND (
+			      (q.key_kind = 'release_family' AND bic.release_family_key = q.family_key)
+			      OR
+			      (q.key_kind = 'base_stem' AND LOWER(BTRIM(bic.base_stem)) = q.family_key)
+			 )
+			LEFT JOIN binary_observation_stats bos
+			  ON bos.source_posted_at = bic.source_posted_at
+			 AND bos.binary_id = bic.binary_id
+			GROUP BY q.provider_id, q.newsgroup_id, q.key_kind, q.family_key
+		), candidate_days AS (
+			SELECT source_posted_at
+			FROM release_family_readiness_summaries s
+			WHERE s.readiness_bucket = 'actionable'
+			  AND NOT EXISTS (
+			      SELECT 1 FROM release_ready_candidates c
+			      WHERE c.source_posted_at = s.source_posted_at
+			        AND c.provider_id = s.provider_id
+			        AND c.newsgroup_id = s.newsgroup_id
+			        AND c.key_kind = s.key_kind
+			        AND c.family_key = s.family_key
+			  )
+			ORDER BY s.updated_at DESC
+			LIMIT $1
+		)
+		SELECT DISTINCT source_posted_at
+		FROM (
+			SELECT source_posted_at FROM queued_days
+			UNION ALL
+			SELECT source_posted_at FROM candidate_days
+		) days
+		WHERE source_posted_at IS NOT NULL
+		ORDER BY source_posted_at`, limit)
+	if err != nil {
+		return fmt.Errorf("list release source days for partition precreate: %w", err)
+	}
+	defer rows.Close()
+	days := make([]time.Time, 0)
+	for rows.Next() {
+		var day time.Time
+		if err := rows.Scan(&day); err != nil {
+			return fmt.Errorf("scan release source day for partition precreate: %w", err)
+		}
+		days = append(days, day)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate release source days for partition precreate: %w", err)
+	}
+	return s.provisionPartitionBundleForDays(ctx, partitionBundleRelease, days)
+}
+
 func ensureYEncRecoveryPartitionsForBinaryIDsInTx(ctx context.Context, tx *sql.Tx, binaryIDs []int64) error {
 	if tx == nil || len(binaryIDs) == 0 {
 		return nil
