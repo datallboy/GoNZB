@@ -13,6 +13,39 @@ type SourceBucketOutcomePolicy struct {
 	YEncTerminalAttempts int
 }
 
+type SourceBucketOutcomeSummary struct {
+	ProviderID           int64      `json:"provider_id"`
+	ProviderKey          string     `json:"provider_key"`
+	NewsgroupID          int64      `json:"newsgroup_id"`
+	GroupName            string     `json:"group_name"`
+	SourceDay            string     `json:"source_day"`
+	State                string     `json:"state"`
+	HeadersIngested      int64      `json:"headers_ingested"`
+	OpenWorkCount        int64      `json:"open_work_count"`
+	ExhaustedWorkCount   int64      `json:"exhausted_work_count"`
+	TerminalReleaseCount int64      `json:"terminal_release_count"`
+	TerminalReason       string     `json:"terminal_reason"`
+	LastIngestedAt       time.Time  `json:"last_ingested_at"`
+	LastProgressAt       time.Time  `json:"last_progress_at"`
+	SettledAt            *time.Time `json:"settled_at,omitempty"`
+	PurgeEligibleAt      *time.Time `json:"purge_eligible_at,omitempty"`
+	PurgedAt             *time.Time `json:"purged_at,omitempty"`
+	LastReconciledAt     *time.Time `json:"last_reconciled_at,omitempty"`
+}
+
+type SourceBucketOutcomeReport struct {
+	TotalBuckets         int64                        `json:"total_buckets"`
+	ActiveBuckets        int64                        `json:"active_buckets"`
+	SuccessBuckets       int64                        `json:"success_buckets"`
+	NoYieldBuckets       int64                        `json:"no_yield_buckets"`
+	PurgeEligibleBuckets int64                        `json:"purge_eligible_buckets"`
+	PurgedBuckets        int64                        `json:"purged_buckets"`
+	HeadersIngested      int64                        `json:"headers_ingested"`
+	OpenWorkCount        int64                        `json:"open_work_count"`
+	TerminalReleaseCount int64                        `json:"terminal_release_count"`
+	Items                []SourceBucketOutcomeSummary `json:"items"`
+}
+
 type sourceBucketOutcomeCandidate struct {
 	ProviderID     int64
 	NewsgroupID    int64
@@ -39,6 +72,102 @@ func normalizeSourceBucketOutcomePolicy(policy SourceBucketOutcomePolicy) Source
 		policy.YEncTerminalAttempts = 4
 	}
 	return policy
+}
+
+func (s *Store) GetSourceBucketOutcomeReport(ctx context.Context, limit int) (*SourceBucketOutcomeReport, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("pgindex store is not initialized")
+	}
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	report := &SourceBucketOutcomeReport{}
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)::bigint,
+		       COUNT(*) FILTER (WHERE state = 'active')::bigint,
+		       COUNT(*) FILTER (WHERE state = 'success')::bigint,
+		       COUNT(*) FILTER (WHERE state = 'no_yield')::bigint,
+		       COUNT(*) FILTER (WHERE state IN ('success', 'no_yield', 'purge_eligible') AND purge_eligible_at <= NOW())::bigint,
+		       COUNT(*) FILTER (WHERE state = 'purged')::bigint,
+		       COALESCE(SUM(headers_ingested), 0)::bigint,
+		       COALESCE(SUM(open_work_count), 0)::bigint,
+		       COALESCE(SUM(terminal_release_count), 0)::bigint
+		FROM indexer_source_bucket_state`).Scan(
+		&report.TotalBuckets,
+		&report.ActiveBuckets,
+		&report.SuccessBuckets,
+		&report.NoYieldBuckets,
+		&report.PurgeEligibleBuckets,
+		&report.PurgedBuckets,
+		&report.HeadersIngested,
+		&report.OpenWorkCount,
+		&report.TerminalReleaseCount,
+	); err != nil {
+		return nil, fmt.Errorf("summarize source bucket outcomes: %w", err)
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT state.provider_id, up.provider_key,
+		       state.newsgroup_id, ng.group_name, state.source_day,
+		       state.state, state.headers_ingested, state.open_work_count,
+		       state.exhausted_work_count, state.terminal_release_count,
+		       state.terminal_reason, state.last_ingested_at,
+		       state.last_progress_at, state.settled_at,
+		       state.purge_eligible_at, state.purged_at,
+		       state.last_reconciled_at
+		FROM indexer_source_bucket_state state
+		JOIN usenet_providers up ON up.id = state.provider_id
+		JOIN newsgroups ng ON ng.id = state.newsgroup_id
+		ORDER BY CASE state.state
+		           WHEN 'active' THEN 0
+		           WHEN 'success' THEN 1
+		           WHEN 'no_yield' THEN 2
+		           WHEN 'purge_eligible' THEN 3
+		           ELSE 4
+		         END,
+		         state.open_work_count DESC,
+		         state.last_progress_at DESC,
+		         state.source_day DESC
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list source bucket outcomes: %w", err)
+	}
+	defer rows.Close()
+	report.Items = make([]SourceBucketOutcomeSummary, 0, limit)
+	for rows.Next() {
+		var item SourceBucketOutcomeSummary
+		var sourceDay time.Time
+		var settledAt, purgeEligibleAt, purgedAt, lastReconciledAt sql.NullTime
+		if err := rows.Scan(
+			&item.ProviderID, &item.ProviderKey,
+			&item.NewsgroupID, &item.GroupName, &sourceDay,
+			&item.State, &item.HeadersIngested, &item.OpenWorkCount,
+			&item.ExhaustedWorkCount, &item.TerminalReleaseCount,
+			&item.TerminalReason, &item.LastIngestedAt,
+			&item.LastProgressAt, &settledAt,
+			&purgeEligibleAt, &purgedAt, &lastReconciledAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan source bucket outcome: %w", err)
+		}
+		item.SourceDay = sourceDay.UTC().Format("2006-01-02")
+		if settledAt.Valid {
+			item.SettledAt = ptrUTC(settledAt.Time)
+		}
+		if purgeEligibleAt.Valid {
+			item.PurgeEligibleAt = ptrUTC(purgeEligibleAt.Time)
+		}
+		if purgedAt.Valid {
+			item.PurgedAt = ptrUTC(purgedAt.Time)
+		}
+		if lastReconciledAt.Valid {
+			item.LastReconciledAt = ptrUTC(lastReconciledAt.Time)
+		}
+		report.Items = append(report.Items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate source bucket outcomes: %w", err)
+	}
+	return report, nil
 }
 
 // ReconcileSourceBucketOutcomes refreshes durable per-provider/group/day

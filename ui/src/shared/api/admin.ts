@@ -7,6 +7,7 @@ import type {
   IndexerNNTPStats,
   IndexerOverviewStreamSnapshot,
   IndexerRecoveryCapacity,
+  IndexerSourceBucketOutcomeReport,
   IndexerStorageStatus,
   IndexerStageThroughput,
   AdminAttentionListParams,
@@ -122,12 +123,16 @@ export function getAdminGroupProfiles(limit = 50) {
   return apiRequest<IndexerGroupProfileResponse>(`/api/v1/admin/indexer/work/group-profiles?limit=${limit}`)
 }
 
-export function getAdminDeferredRanges(limit = 50, state = "queued") {
+export function getAdminDeferredRanges(limit = 50, state = "") {
   const query = new URLSearchParams({ limit: String(limit) })
   if (state) {
     query.set("state", state)
   }
   return apiRequest<IndexerDeferredArticleRangeResponse>(`/api/v1/admin/indexer/work/deferred-ranges?${query.toString()}`)
+}
+
+export function getAdminSourceBucketOutcomes(limit = 100) {
+  return apiRequest<IndexerSourceBucketOutcomeReport>(`/api/v1/admin/indexer/work/source-outcomes?limit=${limit}`)
 }
 
 export function getAdminArticleCohorts(params: { kind?: string; status?: string; limit?: number; offset?: number } = {}) {

@@ -184,17 +184,48 @@ export type IndexerDeferredArticleRange = {
   provider_key: string
   newsgroup_id: number
   group_name: string
-  range_kind: string
   state: string
   reason: string
   article_low: number
   article_high: number
-  estimated_count: number
-  priority: number
-  attempt_count: number
-  not_before?: string
-  last_attempt_at?: string
-  created_at?: string
+  estimated_article_count: number
+  priority_score: number
+  attempts: number
+  last_error?: string
+  updated_at?: string
+}
+
+export type IndexerSourceBucketOutcome = {
+  provider_id: number
+  provider_key: string
+  newsgroup_id: number
+  group_name: string
+  source_day: string
+  state: string
+  headers_ingested: number
+  open_work_count: number
+  exhausted_work_count: number
+  terminal_release_count: number
+  terminal_reason: string
+  last_ingested_at: string
+  last_progress_at: string
+  settled_at?: string
+  purge_eligible_at?: string
+  purged_at?: string
+  last_reconciled_at?: string
+}
+
+export type IndexerSourceBucketOutcomeReport = {
+  total_buckets: number
+  active_buckets: number
+  success_buckets: number
+  no_yield_buckets: number
+  purge_eligible_buckets: number
+  purged_buckets: number
+  headers_ingested: number
+  open_work_count: number
+  terminal_release_count: number
+  items: IndexerSourceBucketOutcome[]
 }
 
 export type IndexerDeferredArticleRangeResponse = {
