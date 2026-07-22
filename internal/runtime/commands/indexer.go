@@ -57,6 +57,23 @@ func (r *Runner) ExecuteIndexerScrapeBackfill(once bool) {
 	}
 }
 
+func (r *Runner) ExecuteIndexerScrapeTimeframe(once bool) {
+	appCtx, ctx, cleanup := r.setupIndexerCommand("Usenet/NZB Indexer is not configured. Set store.pg_dsn and at least one historical scrape timeframe.")
+	defer cleanup()
+
+	if once {
+		if err := appCtx.UsenetIndexer.RunStageOnce(ctx, "scrape_timeframe"); err != nil {
+			appCtx.Logger.Fatal("indexer scrape timeframe --once failed: %v", err)
+		}
+		appCtx.Logger.Info("indexer scrape timeframe --once completed")
+		return
+	}
+
+	if err := wiring.RunIndexerScrapeTimeframeScheduler(ctx, appCtx); err != nil {
+		appCtx.Logger.Fatal("indexer timeframe scheduler failed: %v", err)
+	}
+}
+
 func (r *Runner) ExecuteIndexerAssemble(once bool) {
 	appCtx, ctx, cleanup := r.setupIndexerCommand("Usenet/NZB Indexer is not configured. Set store.pg_dsn.")
 	defer cleanup()

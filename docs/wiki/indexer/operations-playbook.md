@@ -57,6 +57,11 @@ bounded historical work. Give each row a unique stable ID, select an inclusive
 start/end date, save it, then enable the `scrape_timeframe` command under
 **Settings > Indexer**. Multiple rows may use the same group. The command keeps
 separate progress for every row and never rewrites latest/backfill cursors.
+Run one pass without starting the supervisor with:
+
+```sh
+go run ./cmd/gonzb --config config.yaml indexer scrape timeframe --once
+```
 
 Any default-partition row is an operator-visible fault. Pause all indexer
 writers, run the default-rehome dry-run for the affected day, then execute the
