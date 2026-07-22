@@ -1209,6 +1209,22 @@ export type IndexingRuntimeSettings = {
     max_blocking_yenc: number
     resume_blocking_yenc: number
   }
+  partitions?: {
+    precreate_days_ahead: number
+    max_new_source_days_per_pass: number
+    ddl_lock_timeout_seconds: number
+  }
+  retention?: {
+    source_settle_hours: number
+    no_yield_grace_days: number
+    yenc_terminal_attempts: number
+    execute_outcome_purge: boolean
+    [key: string]: number | boolean
+  }
+  recovery_admission?: {
+    latest_reserve_percent: number
+    [key: string]: number
+  }
   release_summary_refresh: AdminStageConfigPatch
   release_generate_nzb: AdminStageConfigPatch
   release_archive_nzb: AdminStageConfigPatch
