@@ -2,12 +2,30 @@ package settings
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/infra/config"
 )
+
+func TestNewStoreRestrictsDatabasePermissions(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "settings.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	info, err := os.Stat(dbPath)
+	if err != nil {
+		t.Fatalf("stat settings database: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0600 {
+		t.Fatalf("expected settings database permissions 0600, got %04o", got)
+	}
+}
 
 func TestGetRuntimeSettingsReturnsDefaultsForFreshStore(t *testing.T) {
 	store, err := NewStore(filepath.Join(t.TempDir(), "settings.db"))
