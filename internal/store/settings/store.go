@@ -27,7 +27,7 @@ type Store struct {
 
 func NewStore(dbPath string) (*Store, error) {
 	dbDir := filepath.Dir(dbPath)
-	if err := os.MkdirAll(dbDir, 0755); err != nil {
+	if err := os.MkdirAll(dbDir, 0700); err != nil {
 		return nil, fmt.Errorf("failed to create settings db dir: %w", err)
 	}
 
@@ -49,8 +49,21 @@ func NewStore(dbPath string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("validate settings schema: %w", err)
 	}
+	if err := restrictSettingsFilePermissions(dbPath); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 
 	return s, nil
+}
+
+func restrictSettingsFilePermissions(dbPath string) error {
+	for _, path := range []string{dbPath, dbPath + "-wal", dbPath + "-shm"} {
+		if err := os.Chmod(path, 0600); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("restrict settings file permissions for %s: %w", path, err)
+		}
+	}
+	return nil
 }
 
 func (s *Store) Close() error {
