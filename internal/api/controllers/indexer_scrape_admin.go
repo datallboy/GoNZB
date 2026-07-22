@@ -50,16 +50,25 @@ func (ctrl *IndexerScrapeAdminController) UpdateConfig(c *echo.Context) error {
 		current.Indexing = app.DefaultRuntimeSettings().Indexing
 	}
 	next := app.CloneRuntimeSettings(current)
-	next.Indexing.ExplicitGroups = append([]app.IndexingScrapeGroupRuntimeSettings(nil), body.ExplicitGroups...)
-	next.Indexing.ScrapeTimeframes = append([]app.IndexingScrapeTimeframeRuntimeSettings(nil), body.ScrapeTimeframes...)
-	next.Indexing.WildcardRules = append([]app.IndexingWildcardRuleRuntimeSettings(nil), body.WildcardRules...)
-	next.Indexing.MaterializedGroups = append([]app.IndexingMaterializedGroupRuntimeSettings(nil), body.MaterializedGroups...)
+	// Keep submitted empty arrays non-nil. A nil scrape configuration is the
+	// legacy-migration signal, so collapsing [] to nil can resurrect the old
+	// derived newsgroups list when the operator removes the final group.
+	next.Indexing.ExplicitGroups = cloneScrapeAdminSlice(body.ExplicitGroups)
+	next.Indexing.ScrapeTimeframes = cloneScrapeAdminSlice(body.ScrapeTimeframes)
+	next.Indexing.WildcardRules = cloneScrapeAdminSlice(body.WildcardRules)
+	next.Indexing.MaterializedGroups = cloneScrapeAdminSlice(body.MaterializedGroups)
 
 	updated, err := ctrl.appCtx.SettingsAdmin.Update(c.Request().Context(), &app.RuntimeSettingsPatch{Indexing: next.Indexing})
 	if err != nil {
 		return jsonError(c, settingsErrorStatus(err), err.Error())
 	}
 	return c.JSON(http.StatusOK, buildScrapeAdminResponse(c.Request().Context(), ctrl.appCtx, updated))
+}
+
+func cloneScrapeAdminSlice[T any](in []T) []T {
+	out := make([]T, len(in))
+	copy(out, in)
+	return out
 }
 
 func (ctrl *IndexerScrapeAdminController) ScanProviders(c *echo.Context) error {
