@@ -195,7 +195,17 @@ type IndexingRetentionRuntimeSettings struct {
 	MetadataIncompleteReleaseHours  int  `json:"metadata_incomplete_release_hours,omitempty"`
 	CreatePartitionsDaysBefore      int  `json:"create_partitions_days_before,omitempty"`
 	CreatePartitionsDaysAhead       int  `json:"create_partitions_days_ahead,omitempty"`
+	SourceSettleHours               int  `json:"source_settle_hours,omitempty"`
+	NoYieldGraceDays                int  `json:"no_yield_grace_days,omitempty"`
+	YEncTerminalAttempts            int  `json:"yenc_terminal_attempts,omitempty"`
+	ExecuteOutcomePurge             bool `json:"execute_outcome_purge,omitempty"`
 	PurgeDryRunDefault              bool `json:"purge_dry_run_default,omitempty"`
+}
+
+type IndexingPartitionRuntimeSettings struct {
+	PrecreateDaysAhead      int `json:"precreate_days_ahead,omitempty"`
+	MaxNewSourceDaysPerPass int `json:"max_new_source_days_per_pass,omitempty"`
+	DDLLockTimeoutSeconds   int `json:"ddl_lock_timeout_seconds,omitempty"`
 }
 
 type IndexingRecoveryAdmissionRuntimeSettings struct {
@@ -209,6 +219,7 @@ type IndexingRecoveryAdmissionRuntimeSettings struct {
 	Priority0OverflowCap        int `json:"priority0_overflow_cap,omitempty"`
 	Priority0ReservoirBatches   int `json:"priority0_reservoir_batches,omitempty"`
 	NearTimeCohortBucketMinutes int `json:"near_time_cohort_bucket_minutes,omitempty"`
+	LatestReservePercent        int `json:"latest_reserve_percent,omitempty"`
 }
 
 type IndexingScrapeTierRuntimeSettings struct {
@@ -369,6 +380,7 @@ type IndexingRuntimeSettings struct {
 	RecoverYEnc                 IndexingStageRuntimeSettings                      `json:"recover_yenc,omitempty"`
 	SourceWindow                IndexingSourceWindowRuntimeSettings               `json:"source_window,omitempty"`
 	Retention                   IndexingRetentionRuntimeSettings                  `json:"retention,omitempty"`
+	Partitions                  IndexingPartitionRuntimeSettings                  `json:"partitions,omitempty"`
 	RecoveryAdmission           IndexingRecoveryAdmissionRuntimeSettings          `json:"recovery_admission,omitempty"`
 	ScrapeTiers                 IndexingScrapeTierRuntimeSettings                 `json:"scrape_tiers,omitempty"`
 	DeferredBackfill            IndexingDeferredBackfillRuntimeSettings           `json:"deferred_backfill,omitempty"`
