@@ -137,7 +137,7 @@ func TestActiveStagePartitionProvisioningUsesExactShortTransactions(t *testing.T
 
 func TestDownstreamPartitionedWritersProvisionTheirStageBundles(t *testing.T) {
 	cases := map[string][]string{
-		"assembly_store.go":                 {"provisionAssemblyPartitionsForBinaryRecords", "provisionAssemblyPartitionsForBinaryPartRecords", "partitionBundleAssemble"},
+		"assembly_store.go":                 {"provisionAssemblyPartitionsForBinaryRecords", "provisionAssemblyPartitionsForBinaryPartRecords", "partitionBundleAssemble", "partitionBundleYEnc"},
 		"article_cohort_scheduler_store.go": {"provisionSchedulerPartitionsForReadyWork", "article_cohort_candidates_"},
 		"inspect_ready_queue_store.go":      {"ensurePartitionBundleForBinaryIDs", "partitionBundleInspect", "binary_inspection_ready_queue_"},
 		"inspection_store.go":               {"ensurePartitionBundleForBinaryIDs", "partitionBundleInspect", "binary_inspections_"},
