@@ -3430,6 +3430,9 @@ func (s *Store) RefreshBinaryStatsBatch(ctx context.Context, binaryIDs []int64) 
 	if err := s.ensurePartitionBundleForBinaryIDs(ctx, partitionBundleAssemble, uniqueBinaryIDs); err != nil {
 		return err
 	}
+	if err := s.ensurePartitionBundleForBinaryIDs(ctx, partitionBundleYEnc, uniqueBinaryIDs); err != nil {
+		return err
+	}
 
 	targets, err := s.loadBinaryStatsRefreshTargets(ctx, uniqueBinaryIDs)
 	if err != nil {
