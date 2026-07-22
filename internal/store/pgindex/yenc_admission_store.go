@@ -16,6 +16,7 @@ const (
 	defaultYEncAdmissionPriority0OverflowCap   = 25000
 	defaultYEncAdmissionPriority0Reservoir     = 5
 	defaultYEncAdmissionNearTimeBucketMinutes  = 5
+	defaultYEncAdmissionLatestReservePercent   = 10
 )
 
 type YEncRecoveryAdmissionConfig struct {
@@ -27,6 +28,7 @@ type YEncRecoveryAdmissionConfig struct {
 	Priority0OverflowCap        int64
 	Priority0ReservoirBatches   int
 	NearTimeCohortBucketMinutes int
+	LatestReservePercent        int
 }
 
 type YEncRecoveryAdmissionSnapshot struct {
@@ -58,9 +60,10 @@ func (s *Store) ConfigureYEncRecoveryAdmission(ctx context.Context, cfg YEncReco
 			priority0_overflow_cap,
 			priority0_reservoir_batches,
 			near_time_cohort_bucket_minutes,
+			latest_reserve_percent,
 			config_updated_at
 		)
-		VALUES (true, $1, $2, $3, $4, $5, $6, $7, $8, NOW())
+		VALUES (true, $1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
 		ON CONFLICT (id) DO UPDATE
 		SET soft_queue_hours = EXCLUDED.soft_queue_hours,
 		    hard_queue_multiplier = EXCLUDED.hard_queue_multiplier,
@@ -70,6 +73,7 @@ func (s *Store) ConfigureYEncRecoveryAdmission(ctx context.Context, cfg YEncReco
 		    priority0_overflow_cap = EXCLUDED.priority0_overflow_cap,
 		    priority0_reservoir_batches = EXCLUDED.priority0_reservoir_batches,
 		    near_time_cohort_bucket_minutes = EXCLUDED.near_time_cohort_bucket_minutes,
+		    latest_reserve_percent = EXCLUDED.latest_reserve_percent,
 		    config_updated_at = NOW()`,
 		cfg.SoftQueueHours,
 		cfg.HardQueueMultiplier,
@@ -79,6 +83,7 @@ func (s *Store) ConfigureYEncRecoveryAdmission(ctx context.Context, cfg YEncReco
 		cfg.Priority0OverflowCap,
 		cfg.Priority0ReservoirBatches,
 		cfg.NearTimeCohortBucketMinutes,
+		cfg.LatestReservePercent,
 	); err != nil {
 		return fmt.Errorf("configure yenc recovery admission: %w", err)
 	}
@@ -110,7 +115,33 @@ func normalizeYEncAdmissionConfig(cfg YEncRecoveryAdmissionConfig) YEncRecoveryA
 	if cfg.NearTimeCohortBucketMinutes <= 0 {
 		cfg.NearTimeCohortBucketMinutes = defaultYEncAdmissionNearTimeBucketMinutes
 	}
+	if cfg.LatestReservePercent <= 0 {
+		cfg.LatestReservePercent = defaultYEncAdmissionLatestReservePercent
+	}
+	if cfg.LatestReservePercent > 50 {
+		cfg.LatestReservePercent = 50
+	}
 	return cfg
+}
+
+func yEncLatestReservePercent(ctx context.Context, tx *sql.Tx) int {
+	if tx == nil {
+		return defaultYEncAdmissionLatestReservePercent
+	}
+	var percent int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT latest_reserve_percent
+		FROM indexer_recovery_capacity_state
+		WHERE id = true`).Scan(&percent); err != nil {
+		return defaultYEncAdmissionLatestReservePercent
+	}
+	if percent < 0 {
+		return 0
+	}
+	if percent > 50 {
+		return 50
+	}
+	return percent
 }
 
 func (s *Store) yEncPriority0ReservoirBatches(ctx context.Context) int {

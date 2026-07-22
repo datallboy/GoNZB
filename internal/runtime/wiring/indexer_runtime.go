@@ -73,6 +73,8 @@ type usenetIndexerConfig struct {
 	ReleasePurgeArchivedSourcesStage                indexerStageConfig
 	ReleaseReadyPolicy                              pgindex.ReleaseReadyPolicy
 	RetentionPolicy                                 pgindex.RawStageRetentionPolicy
+	OutcomePolicy                                   pgindex.SourceBucketOutcomePolicy
+	ExecuteOutcomePurge                             bool
 	PartitionCreateDaysAhead                        int
 	PartitionDDLLockTimeout                         time.Duration
 	MaxNewSourceDaysPerPass                         int
@@ -612,12 +614,25 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			updated, err := appCtx.PGIndexStore.RefreshIndexerGroupProfiles(ctx)
 			return map[string]any{"groups_scored": updated}, err
 		}),
+		maintenanceTaskStage(runtimeCfg, "outcome_reconcile", supervisor.StageName("maintenance.outcome_reconcile"), func(ctx context.Context, cfg app.IndexingMaintenanceTaskRuntimeSettings) (map[string]any, error) {
+			result, err := appCtx.PGIndexStore.ReconcileSourceBucketOutcomes(ctx, cfg.BatchSize, runtimeCfg.OutcomePolicy)
+			return maintenanceTaskMetrics(result), err
+		}),
 		maintenanceTaskStage(runtimeCfg, "raw_stage_retention", supervisor.StageName("maintenance.raw_stage_retention"), func(ctx context.Context, cfg app.IndexingMaintenanceTaskRuntimeSettings) (map[string]any, error) {
 			result, err := appCtx.PGIndexStore.RunRawStageRetentionTask(ctx, cfg.BatchSize, runtimeCfg.RetentionPolicy)
 			return maintenanceTaskMetrics(result), err
 		}),
 		maintenanceTaskStage(runtimeCfg, "partition_retention_drop", supervisor.StageName("maintenance.partition_retention_drop"), func(ctx context.Context, cfg app.IndexingMaintenanceTaskRuntimeSettings) (map[string]any, error) {
-			result, err := appCtx.PGIndexStore.RunPartitionRetentionTask(ctx, cfg.BatchSize)
+			var result *pgindex.MaintenanceTaskResult
+			var err error
+			if runtimeCfg.ExecuteOutcomePurge {
+				result, err = appCtx.PGIndexStore.RunPartitionRetentionTask(ctx, cfg.BatchSize)
+			} else {
+				result, err = appCtx.PGIndexStore.DryRunPartitionRetentionTask(ctx, cfg.BatchSize)
+				if result != nil {
+					result.Warnings = append(result.Warnings, "destructive outcome purge is disabled in runtime settings")
+				}
+			}
 			return maintenanceTaskMetrics(result), err
 		}),
 		maintenanceTaskStage(runtimeCfg, "partition_default_rehome", supervisor.StageName("maintenance.partition_default_rehome"), func(ctx context.Context, cfg app.IndexingMaintenanceTaskRuntimeSettings) (map[string]any, error) {
@@ -917,6 +932,12 @@ func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) 
 			FailedProbeHours: indexingCfg.Retention.FailedProbeHours,
 			DoneYEncHours:    indexingCfg.Retention.RawStageWarmHours,
 		},
+		OutcomePolicy: pgindex.SourceBucketOutcomePolicy{
+			SourceSettleHours:    indexingCfg.Retention.SourceSettleHours,
+			NoYieldGraceDays:     indexingCfg.Retention.NoYieldGraceDays,
+			YEncTerminalAttempts: indexingCfg.Retention.YEncTerminalAttempts,
+		},
+		ExecuteOutcomePurge:      indexingCfg.Retention.ExecuteOutcomePurge,
 		PartitionCreateDaysAhead: indexingCfg.Partitions.PrecreateDaysAhead,
 		PartitionDDLLockTimeout:  time.Duration(indexingCfg.Partitions.DDLLockTimeoutSeconds) * time.Second,
 		MaxNewSourceDaysPerPass:  indexingCfg.Partitions.MaxNewSourceDaysPerPass,

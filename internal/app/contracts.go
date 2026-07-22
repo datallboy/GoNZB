@@ -286,6 +286,7 @@ type UsenetIndexStore interface {
 	RunPartitionRetentionTask(ctx context.Context, batchSize int) (*pgindex.MaintenanceTaskResult, error)
 	DryRunPartitionDefaultRehomeTask(ctx context.Context, batchSize int) (*pgindex.MaintenanceTaskResult, error)
 	RunPartitionDefaultRehomeTask(ctx context.Context, batchSize int) (*pgindex.MaintenanceTaskResult, error)
+	ReconcileSourceBucketOutcomes(ctx context.Context, batchSize int, policy pgindex.SourceBucketOutcomePolicy) (*pgindex.MaintenanceTaskResult, error)
 	ConfigurePartitionProvisioning(ddlLockTimeout time.Duration)
 	ProvisionSourceWorkPartitions(ctx context.Context, daysBefore, daysAhead int) error
 	ListIndexerBinaries(ctx context.Context, params pgindex.IndexerBinaryListParams) ([]pgindex.IndexerBinarySummary, int, error)
