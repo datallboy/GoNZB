@@ -154,6 +154,79 @@ func TestRunOnceCompletesWhenTruncatedPrefixMakesFFProbeInconclusive(t *testing.
 	}
 }
 
+func TestRunOnceFallsBackToFullMediaProbeWithinInspectLimit(t *testing.T) {
+	now := time.Now().UTC()
+	body := make([]byte, directMediaProbePrefixBytes+1)
+	copy(body, []byte{0x1A, 0x45, 0xDF, 0xA3})
+	exactSize := int64(len(body))
+	repo := &fakeMediaRepository{
+		candidates: []pgindex.BinaryInspectionCandidate{{
+			BinaryID:        55,
+			ReleaseID:       "rel-media-full-fallback",
+			ReleaseTitle:    "Example Feature",
+			FileName:        "example.feature.mkv",
+			SourceUpdatedAt: &now,
+			TotalBytes:      exactSize,
+		}},
+		files: []pgindex.CatalogReleaseFile{{
+			ID:        605,
+			BinaryID:  55,
+			FileName:  "example.feature.mkv",
+			SizeBytes: exactSize,
+		}},
+	}
+
+	prefixDetail := "[matroska,webm] File ended prematurely\npipe:0: End of file\n{\n\n}"
+	fullProbeJSON := `{"format":{"duration":"5400","format_name":"matroska","tags":{"title":"Example Feature"}},"streams":[{"index":0,"codec_type":"video","codec_name":"hevc","width":3840,"height":2160},{"index":1,"codec_type":"audio","codec_name":"opus","channels":6}]}`
+	runner := &mediaRunner{
+		output:      []byte(fullProbeJSON),
+		inputOutput: []byte(prefixDetail),
+		inputErr:    fmt.Errorf("exit status 1"),
+	}
+	svc := NewService(
+		repo,
+		inspectpkg.NewWorkspaceManager(inspectpkg.Options{WorkDir: t.TempDir(), WorkspaceBackend: "disk"}),
+		mediaFetcher{body: body, fileName: "example.feature.mkv"},
+		runner,
+		nil,
+		testMediaLogger{},
+		inspectpkg.Options{FFProbePath: "ffprobe", MaxBytes: exactSize, WorkDir: t.TempDir(), WorkspaceBackend: "disk"},
+	)
+	if err := svc.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	if runner.runInputCall != 1 || runner.runCalls != 1 {
+		t.Fatalf("expected one prefix and one full-file probe, run=%d runInput=%d", runner.runCalls, runner.runInputCall)
+	}
+	if len(repo.failed) != 0 || len(repo.completed) != 1 {
+		t.Fatalf("expected successful full fallback, completed=%+v failed=%+v", repo.completed, repo.failed)
+	}
+	completed := repo.completed[0]
+	if completed.Summary["probe_mode"] != "ffprobe_full_fallback" {
+		t.Fatalf("expected full fallback probe mode, got %+v", completed.Summary)
+	}
+	if _, ok := completed.Summary["probe_skip_reason"]; ok {
+		t.Fatalf("did not expect skip reason after successful full fallback, got %+v", completed.Summary)
+	}
+	if completed.Summary["prefix_probe_warning_detail"] != prefixDetail {
+		t.Fatalf("expected retained prefix fallback reason, got %+v", completed.Summary)
+	}
+	if completed.MaterializedBytes != directMediaProbePrefixBytes+exactSize {
+		t.Fatalf("expected prefix plus full materialization bytes, got %d", completed.MaterializedBytes)
+	}
+	if len(repo.mediaStreams) != 2 || len(repo.releaseUpdates) != 1 {
+		t.Fatalf("expected persisted full-probe media facts, streams=%+v updates=%+v", repo.mediaStreams, repo.releaseUpdates)
+	}
+	update := repo.releaseUpdates[0]
+	if update.PrimaryResolution != "2160p" || update.PrimaryVideoCodec != "hevc" || update.PrimaryAudioCodec != "opus" || intValueMedia(update.RuntimeSeconds) != 5400 {
+		t.Fatalf("unexpected full-probe media update, got %+v", update)
+	}
+	if len(repo.artifacts) != 2 || repo.artifacts[1].ArtifactRole != "materialized_media_full" || repo.artifacts[1].BytesTotal != exactSize {
+		t.Fatalf("expected prefix and full materialization artifacts, got %+v", repo.artifacts)
+	}
+}
+
 func TestRunOnceSkipsArchiveProbeWhenArchiveEntryAlreadyHasStrongMediaSignals(t *testing.T) {
 	now := time.Now().UTC()
 	repo := &fakeMediaRepository{
@@ -371,6 +444,8 @@ func (f mediaFetcher) Fetch(context.Context, string, []string) (io.Reader, error
 type mediaRunner struct {
 	output       []byte
 	err          error
+	inputOutput  []byte
+	inputErr     error
 	runCalls     int
 	runInputCall int
 	inputBytes   int
@@ -386,6 +461,9 @@ func (f *mediaRunner) RunInput(_ context.Context, input io.Reader, _ string, _ .
 	if input != nil {
 		payload, _ := io.ReadAll(input)
 		f.inputBytes += len(payload)
+	}
+	if f.inputOutput != nil || f.inputErr != nil {
+		return f.inputOutput, f.inputErr
 	}
 	return f.output, f.err
 }
