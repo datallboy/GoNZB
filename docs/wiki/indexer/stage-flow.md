@@ -134,9 +134,11 @@ Direct media inspection is prefix-bounded. Matroska/WebM binaries are decoded
 from their EBML `Info` and `Tracks` elements and parsing stops before media
 clusters, retaining duration, embedded title, dimensions, codecs, audio tracks,
 languages, subtitles, and dispositions without materializing the payload.
-Other direct containers use the same bounded prefix with `ffprobe`. An
-inconclusive prefix is recorded explicitly; `inspect_media` does not download a
-complete direct media file merely to obtain container metadata.
+The same streaming parser is used for Matroska members extracted from archives;
+the extractor is stopped after `Tracks`. Other direct and archive-member
+containers use a bounded prefix with `ffprobe`. An inconclusive prefix is
+recorded explicitly; `inspect_media` does not download a complete media file
+merely to obtain container metadata.
 
 Ready-queue population is an internal part of inspection candidate selection,
 not a separately scheduled supervisor stage. Queued inspection stages perform

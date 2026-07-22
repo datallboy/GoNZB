@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 
@@ -70,9 +71,18 @@ func ParseMatroskaHeader(prefix []byte, exactSize int64) (*FFProbeResult, error)
 	if len(prefix) == 0 {
 		return nil, fmt.Errorf("matroska prefix is empty")
 	}
+	return ParseMatroskaHeaderReader(bytes.NewReader(prefix), exactSize)
+}
 
+// ParseMatroskaHeaderReader stops reading as soon as the Tracks element ends.
+// This lets archive inspection parse metadata directly from an extraction pipe
+// without draining the media payload that follows it.
+func ParseMatroskaHeaderReader(reader io.Reader, exactSize int64) (*FFProbeResult, error) {
+	if reader == nil {
+		return nil, fmt.Errorf("matroska reader is required")
+	}
 	var document matroskaHeaderDocument
-	err := ebml.Unmarshal(bytes.NewReader(prefix), &document, ebml.WithIgnoreUnknown(true))
+	err := ebml.Unmarshal(reader, &document, ebml.WithIgnoreUnknown(true))
 	if err != nil && !errors.Is(err, ebml.ErrReadStopped) {
 		return nil, fmt.Errorf("parse matroska header: %w", err)
 	}

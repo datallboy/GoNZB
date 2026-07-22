@@ -64,7 +64,7 @@ func MaterializeArchiveMediaToWorkspace(ctx context.Context, repo CatalogReader,
 		return nil, fmt.Errorf("archive-backed media probing is not implemented for %s", candidate.FileName)
 	}
 
-	extractedBytes, firstBytes, stderrText, partial, ffprobeResult, ffprobeOutput, ffprobeError, err := probeArchiveEntryStream(ctx, runner, opts.FFProbePath, opts.SevenZipPath, archivePath, entryName, opts.ToolTimeout)
+	extractedBytes, firstBytes, stderrText, partial, ffprobeResult, ffprobeOutput, ffprobeError, err := probeArchiveEntryStream(ctx, runner, opts.FFProbePath, opts.SevenZipPath, archivePath, entryName, archiveMediaOutputLimit(entryName, opts.MaxBytes), opts.ToolTimeout)
 	if err != nil {
 		return nil, err
 	}
@@ -203,12 +203,16 @@ func materializeArchiveMediaSevenZip(ctx context.Context, repo CatalogReader, fe
 	return totalWritten, nil
 }
 
-func probeArchiveEntryStream(ctx context.Context, runner CommandRunner, ffprobePath, sevenZipPath, archivePath, entryName string, timeout time.Duration) (int64, []byte, string, bool, *FFProbeResult, []byte, string, error) {
+func probeArchiveEntryStream(ctx context.Context, runner CommandRunner, ffprobePath, sevenZipPath, archivePath, entryName string, outputLimit int64, timeout time.Duration) (int64, []byte, string, bool, *FFProbeResult, []byte, string, error) {
 	if strings.TrimSpace(sevenZipPath) == "" {
 		return 0, nil, "", false, nil, nil, "", fmt.Errorf("7z path is required")
 	}
-	if runner == nil {
+	matroskaEntry := isMatroskaEntryName(entryName)
+	if runner == nil && !matroskaEntry {
 		return 0, nil, "", false, nil, nil, "", fmt.Errorf("ffprobe runner is required")
+	}
+	if outputLimit <= 0 {
+		outputLimit = defaultArchiveMediaOutputBytes
 	}
 
 	toolCtx, cancel := context.WithTimeout(ctx, timeout)
@@ -226,19 +230,58 @@ func probeArchiveEntryStream(ctx context.Context, runner CommandRunner, ffprobeP
 		return 0, nil, "", false, nil, nil, "", fmt.Errorf("start archive extraction: %w", err)
 	}
 
-	sampler := &countingPreviewReader{r: stdout}
-	ffprobeResult, ffprobeOutput, probeErr := RunFFProbeInput(toolCtx, runner, ffprobePath, sampler)
+	if matroskaEntry {
+		sampler := &countingPreviewReader{r: io.LimitReader(stdout, outputLimit)}
+		result, parseErr := ParseMatroskaHeaderReader(sampler, 0)
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		_ = cmd.Wait()
+		if parseErr != nil {
+			return sampler.n, sampler.preview(), stderr.String(), true, nil, nil, "", fmt.Errorf("parse Matroska archive entry header %q: %w", entryName, parseErr)
+		}
+		return sampler.n, sampler.preview(), stderr.String(), true, result, nil, "", nil
+	}
+
+	payload, readErr := io.ReadAll(io.LimitReader(stdout, outputLimit+1))
+	partial := int64(len(payload)) > outputLimit
+	if partial {
+		payload = payload[:outputLimit]
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+	}
 	waitErr := cmd.Wait()
-	if probeErr != nil && waitErr == nil {
-		return sampler.n, sampler.preview(), stderr.String(), false, ffprobeResult, ffprobeOutput, probeErr.Error(), nil
+	if readErr != nil {
+		return int64(len(payload)), previewBytes(payload), stderr.String(), partial, nil, nil, "", fmt.Errorf("read archive entry %q prefix: %w", entryName, readErr)
 	}
-	if waitErr != nil && sampler.n == 0 {
-		return sampler.n, sampler.preview(), stderr.String(), false, nil, ffprobeOutput, "", fmt.Errorf("extract archive entry %q from %s: %w", entryName, archivePath, waitErr)
+	if waitErr != nil {
+		partial = true
+		if len(payload) == 0 {
+			return 0, nil, stderr.String(), partial, nil, nil, "", fmt.Errorf("extract archive entry %q from %s: %w", entryName, archivePath, waitErr)
+		}
 	}
+	ffprobeResult, ffprobeOutput, probeErr := RunFFProbeInput(toolCtx, runner, ffprobePath, bytes.NewReader(payload))
 	if probeErr != nil {
-		return sampler.n, sampler.preview(), stderr.String(), false, ffprobeResult, ffprobeOutput, probeErr.Error(), nil
+		return int64(len(payload)), previewBytes(payload), stderr.String(), partial, ffprobeResult, ffprobeOutput, probeErr.Error(), nil
 	}
-	return sampler.n, sampler.preview(), stderr.String(), false, ffprobeResult, ffprobeOutput, "", nil
+	return int64(len(payload)), previewBytes(payload), stderr.String(), partial, ffprobeResult, ffprobeOutput, "", nil
+}
+
+func isMatroskaEntryName(entryName string) bool {
+	switch strings.ToLower(filepath.Ext(strings.TrimSpace(entryName))) {
+	case ".mkv", ".webm", ".mka", ".mks", ".mk3d":
+		return true
+	default:
+		return false
+	}
+}
+
+func previewBytes(payload []byte) []byte {
+	if len(payload) > 128 {
+		payload = payload[:128]
+	}
+	return append([]byte(nil), payload...)
 }
 
 type countingPreviewReader struct {
