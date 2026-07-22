@@ -354,10 +354,10 @@ func Load(path string) (*Config, error) {
 				path = "/config/config.yaml"
 			} else if _, errEx := os.Stat("config.yaml.example"); errEx == nil {
 				// If config.yaml is missing but example exists, give a helpful error
-				return nil, fmt.Errorf("configuration file 'config.yaml' not found\n\n" +
-					"To fix this, run:\n" +
+				return nil, errors.New("configuration file 'config.yaml' not found\n\n" +
+					"to fix this, run:\n" +
 					"  cp config.yaml.example config.yaml\n" +
-					"Then edit it with your Usenet credentials.")
+					"then edit it with your Usenet credentials")
 			} else {
 				return nil, fmt.Errorf("config file not found: %s", path)
 			}

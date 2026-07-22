@@ -3369,23 +3369,7 @@ func (s *Store) refreshQueuedReleaseFamilySummariesChunk(ctx context.Context, li
 	}); err != nil {
 		return ReleaseSummaryRefreshMetrics{}, err
 	}
-	return ReleaseSummaryRefreshMetrics{
-		Refreshed:                    metrics.Refreshed,
-		Dequeued:                     metrics.Dequeued,
-		Mode:                         metrics.Mode,
-		HotAttempts:                  metrics.HotAttempts,
-		ColdAttempts:                 metrics.ColdAttempts,
-		HotDequeued:                  metrics.HotDequeued,
-		ColdDequeued:                 metrics.ColdDequeued,
-		DequeueDuration:              metrics.DequeueDuration,
-		SummaryRefreshDuration:       metrics.SummaryRefreshDuration,
-		SummaryAggregateDuration:     metrics.SummaryAggregateDuration,
-		SummaryDominantDuration:      metrics.SummaryDominantDuration,
-		ReadyCandidateSyncDuration:   metrics.ReadyCandidateSyncDuration,
-		RecoveredFileSetSyncDuration: metrics.RecoveredFileSetSyncDuration,
-		PhaseADuration:               metrics.PhaseADuration,
-		PhaseBDuration:               metrics.PhaseBDuration,
-	}, nil
+	return ReleaseSummaryRefreshMetrics(metrics), nil
 }
 
 func dedupeReleaseFamilySummaryKeys(keys []releaseFamilySummaryKey) []releaseFamilySummaryKey {
