@@ -874,7 +874,7 @@ func addAssembleTimingMetrics(metrics map[string]any, started time.Time, headerM
 	metrics["refreshed_binaries_per_second"] = throughputPerSecond(refreshedBinaries, totalDuration)
 }
 
-func addBinaryUpsertTelemetryMetrics(metrics map[string]any, telemetry pgindex.BinaryUpsertTelemetry) {
+func addBinaryUpsertTelemetryMetrics(metrics map[string]any, telemetry *pgindex.BinaryUpsertTelemetry) {
 	metrics["binary_upsert_chunk_count"] = telemetry.ChunkCount
 	metrics["binary_upsert_chunk_rows"] = telemetry.ChunkRows
 	metrics["binary_upsert_chunk_retries"] = telemetry.ChunkRetries
@@ -912,7 +912,7 @@ func addBinaryUpsertTelemetryMetrics(metrics map[string]any, telemetry pgindex.B
 	metrics["binary_upsert_deferred_summary_keys"] = telemetry.DeferredSummaryKeyCount
 }
 
-func addBinaryStatsRefreshTelemetryMetrics(metrics map[string]any, telemetry pgindex.BinaryStatsRefreshTelemetry) {
+func addBinaryStatsRefreshTelemetryMetrics(metrics map[string]any, telemetry *pgindex.BinaryStatsRefreshTelemetry) {
 	metrics["binary_refresh_tx_count"] = telemetry.TxCount
 	metrics["binary_refresh_batch_count"] = telemetry.BatchCount
 	metrics["binary_refresh_binary_count"] = telemetry.BinaryCount

@@ -166,13 +166,13 @@ func (t *BinaryUpsertTelemetry) recordDeferredSummaryRefresh(keys int) {
 	t.DeferredSummaryKeyCount += keys
 }
 
-func (t *BinaryUpsertTelemetry) Snapshot() BinaryUpsertTelemetry {
+func (t *BinaryUpsertTelemetry) Snapshot() *BinaryUpsertTelemetry {
 	if t == nil {
-		return BinaryUpsertTelemetry{}
+		return &BinaryUpsertTelemetry{}
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return BinaryUpsertTelemetry{
+	return &BinaryUpsertTelemetry{
 		ChunkCount:                     t.ChunkCount,
 		ChunkRows:                      t.ChunkRows,
 		ChunkRetries:                   t.ChunkRetries,
@@ -540,13 +540,13 @@ func recordTelemetryDurationLocked(total *float64, max *float64, d time.Duration
 	}
 }
 
-func (t *BinaryStatsRefreshTelemetry) Snapshot() BinaryStatsRefreshTelemetry {
+func (t *BinaryStatsRefreshTelemetry) Snapshot() *BinaryStatsRefreshTelemetry {
 	if t == nil {
-		return BinaryStatsRefreshTelemetry{}
+		return &BinaryStatsRefreshTelemetry{}
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return BinaryStatsRefreshTelemetry{
+	return &BinaryStatsRefreshTelemetry{
 		TxCount:                       t.TxCount,
 		BatchCount:                    t.BatchCount,
 		BinaryCount:                   t.BinaryCount,

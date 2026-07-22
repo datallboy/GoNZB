@@ -129,9 +129,7 @@ func (m *Manager) SearchAllWithRequest(ctx context.Context, req app.SearchReques
 		close(resultsChan)
 	}()
 
-	allRemote := make([]*domain.Release, 0, 256)
 	for res := range resultsChan {
-		allRemote = append(allRemote, res...)
 		for _, rel := range res {
 			addOrMerge(rel, true)
 		}
