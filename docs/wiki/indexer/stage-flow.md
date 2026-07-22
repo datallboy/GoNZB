@@ -130,6 +130,14 @@ Inspect stages consume `binary_inspection_ready_queue` and write inspection
 history/evidence tables. Inspection results can improve archive, media, text,
 and PAR2 visibility without using upstream source tables as progress state.
 
+Direct media inspection is prefix-bounded. Matroska/WebM binaries are decoded
+from their EBML `Info` and `Tracks` elements and parsing stops before media
+clusters, retaining duration, embedded title, dimensions, codecs, audio tracks,
+languages, subtitles, and dispositions without materializing the payload.
+Other direct containers use the same bounded prefix with `ffprobe`. An
+inconclusive prefix is recorded explicitly; `inspect_media` does not download a
+complete direct media file merely to obtain container metadata.
+
 Ready-queue population is an internal part of inspection candidate selection,
 not a separately scheduled supervisor stage. Queued inspection stages perform
 bounded, advisory-locked top-ups when they need claimable work; operators only
