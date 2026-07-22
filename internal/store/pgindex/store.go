@@ -17,6 +17,8 @@ type Store struct {
 	manifestCacheMu       sync.RWMutex
 	manifestCacheMaxBytes int64
 	manifestCacheTTLDays  int
+	partitionPolicyMu     sync.RWMutex
+	partitionDDLLockLimit time.Duration
 
 	yencSeedScanMu               sync.Mutex
 	yencSeedScanBackoffUntil     time.Time
@@ -90,7 +92,7 @@ func newStore(dsn string, runMigrations bool) (*Store, error) {
 		return nil, fmt.Errorf("ping pg connection: %w", err)
 	}
 
-	s := &Store{db: db}
+	s := &Store{db: db, partitionDDLLockLimit: 5 * time.Second}
 
 	if runMigrations {
 		// run module migrations on startup.

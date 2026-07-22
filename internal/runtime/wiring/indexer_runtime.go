@@ -36,12 +36,12 @@ import (
 )
 
 type usenetIndexerRuntime struct {
-	service                   app.UsenetIndexerService
-	supervisor                *supervisor.Supervisor
-	scrapeProvider            io.Closer
-	nntpStats                 func() app.NNTPRuntimeStats
-	partitionCreateDaysBefore int
-	partitionCreateDaysAhead  int
+	service                  app.UsenetIndexerService
+	supervisor               *supervisor.Supervisor
+	scrapeProvider           io.Closer
+	nntpStats                func() app.NNTPRuntimeStats
+	partitionCreateDaysAhead int
+	partitionDDLLockTimeout  time.Duration
 }
 
 type usenetIndexerConfig struct {
@@ -73,8 +73,8 @@ type usenetIndexerConfig struct {
 	ReleasePurgeArchivedSourcesStage                indexerStageConfig
 	ReleaseReadyPolicy                              pgindex.ReleaseReadyPolicy
 	RetentionPolicy                                 pgindex.RawStageRetentionPolicy
-	PartitionCreateDaysBefore                       int
 	PartitionCreateDaysAhead                        int
+	PartitionDDLLockTimeout                         time.Duration
 	StorageGuard                                    pgindex.DatabaseStorageGuardConfig
 	MemoryGuard                                     IndexerMemoryGuardConfig
 	InspectDiscovery                                indexerStageConfig
@@ -668,12 +668,12 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 	})
 
 	return &usenetIndexerRuntime{
-		service:                   service,
-		supervisor:                supervisorSvc,
-		scrapeProvider:            scrapeProvider,
-		nntpStats:                 nntpStats,
-		partitionCreateDaysBefore: runtimeCfg.PartitionCreateDaysBefore,
-		partitionCreateDaysAhead:  runtimeCfg.PartitionCreateDaysAhead,
+		service:                  service,
+		supervisor:               supervisorSvc,
+		scrapeProvider:           scrapeProvider,
+		nntpStats:                nntpStats,
+		partitionCreateDaysAhead: runtimeCfg.PartitionCreateDaysAhead,
+		partitionDDLLockTimeout:  runtimeCfg.PartitionDDLLockTimeout,
 	}, nil
 }
 
@@ -912,8 +912,8 @@ func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) 
 			FailedProbeHours: indexingCfg.Retention.FailedProbeHours,
 			DoneYEncHours:    indexingCfg.Retention.RawStageWarmHours,
 		},
-		PartitionCreateDaysBefore: indexingCfg.Retention.CreatePartitionsDaysBefore,
-		PartitionCreateDaysAhead:  indexingCfg.Retention.CreatePartitionsDaysAhead,
+		PartitionCreateDaysAhead: indexingCfg.Partitions.PrecreateDaysAhead,
+		PartitionDDLLockTimeout:  time.Duration(indexingCfg.Partitions.DDLLockTimeoutSeconds) * time.Second,
 		StorageGuard: pgindex.DatabaseStorageGuardConfig{
 			Enabled:        indexingCfg.StorageGuard.Enabled,
 			DataDirectory:  indexingCfg.StorageGuard.DataDirectory,

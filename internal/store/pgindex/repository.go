@@ -1069,7 +1069,7 @@ func (s *Store) ensureSourceWorkPartitionsForPreparedHeaders(ctx context.Context
 		}
 		days = append(days, postedAt)
 	}
-	return s.verifySourceWorkPartitionsForDays(ctx, days)
+	return s.provisionPartitionBundleForDays(ctx, partitionBundleScrape, days)
 }
 
 func nativePartitionDayKeys(sourcePostedAt time.Time) (string, string) {

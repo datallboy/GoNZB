@@ -105,7 +105,7 @@ func (s *Store) BackfillYEncRecoveryWorkItems(ctx context.Context, limit int) (i
 	if len(binaryIDs) == 0 {
 		return 0, 0, nil
 	}
-	if err := s.ensureSourceWorkPartitionsForBinaryIDs(ctx, binaryIDs); err != nil {
+	if err := s.ensurePartitionBundleForBinaryIDs(ctx, partitionBundleYEnc, binaryIDs); err != nil {
 		return 0, 0, err
 	}
 
@@ -160,7 +160,7 @@ func (s *Store) BackfillPriorityYEncRecoveryWorkItems(ctx context.Context, limit
 			return 0, 0, fmt.Errorf("commit scheduled priority yenc selection tx: %w", err)
 		}
 		selectionCommitted = true
-		if err := s.ensureSourceWorkPartitionsForBinaryIDs(ctx, scheduledBinaryIDs); err != nil {
+		if err := s.ensurePartitionBundleForBinaryIDs(ctx, partitionBundleYEnc, scheduledBinaryIDs); err != nil {
 			return 0, 0, err
 		}
 		writeTx, err := s.db.BeginTx(ctx, nil)
@@ -218,7 +218,7 @@ func (s *Store) BackfillPriorityYEncRecoveryWorkItems(ctx context.Context, limit
 		return 0, 0, fmt.Errorf("commit priority yenc selection tx: %w", err)
 	}
 	selectionCommitted = true
-	if err := s.ensureSourceWorkPartitionsForBinaryIDs(ctx, binaryIDs); err != nil {
+	if err := s.ensurePartitionBundleForBinaryIDs(ctx, partitionBundleYEnc, binaryIDs); err != nil {
 		return 0, 0, err
 	}
 

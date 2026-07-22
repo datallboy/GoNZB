@@ -3397,7 +3397,7 @@ func (s *Store) RefreshBinaryStatsBatch(ctx context.Context, binaryIDs []int64) 
 	sort.Slice(uniqueBinaryIDs, func(i, j int) bool {
 		return uniqueBinaryIDs[i] < uniqueBinaryIDs[j]
 	})
-	if err := s.ensureSourceWorkPartitionsForBinaryIDs(ctx, uniqueBinaryIDs); err != nil {
+	if err := s.ensurePartitionBundleForBinaryIDs(ctx, partitionBundleAssemble, uniqueBinaryIDs); err != nil {
 		return err
 	}
 

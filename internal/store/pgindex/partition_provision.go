@@ -12,26 +12,111 @@ import (
 
 var nativePartitionProvisionMu sync.Mutex
 
-func (s *Store) ProvisionSourceWorkPartitions(ctx context.Context, daysBefore, daysAhead int) error {
+type partitionBundle string
+
+const (
+	partitionBundleScrape    partitionBundle = "scrape"
+	partitionBundleScheduler partitionBundle = "scheduler"
+	partitionBundleAssemble  partitionBundle = "assemble"
+	partitionBundleYEnc      partitionBundle = "yenc"
+	partitionBundleInspect   partitionBundle = "inspect"
+	partitionBundleRelease   partitionBundle = "release"
+)
+
+var partitionBundleParents = map[partitionBundle][]string{
+	partitionBundleScrape: {
+		"article_headers",
+		"article_header_ingest_payloads",
+		"article_header_crosspost_groups",
+		"article_header_poster_refs",
+		"article_header_assembly_queue",
+		"poster_materialization_queue",
+	},
+	partitionBundleScheduler: {
+		"article_cohort_candidates",
+		"article_cohort_assembly_queue",
+		"article_cohort_yenc_queue",
+	},
+	partitionBundleAssemble: {
+		"binary_parts",
+		"binary_observation_stats",
+		"binary_identity_current",
+		"binary_recovery_current",
+		"binary_lifecycle",
+		"binary_completion_keys",
+		"binary_grouping_evidence",
+		"binary_projection_events",
+		"binary_superseded_sources",
+	},
+	partitionBundleYEnc: {
+		"yenc_recovery_work_items",
+		"binary_recovery_current",
+		"binary_lifecycle",
+		"binary_projection_events",
+		"binary_superseded_sources",
+	},
+	partitionBundleInspect: {
+		"binary_inspection_ready_queue",
+		"binary_inspections",
+		"binary_inspection_artifacts",
+		"binary_archive_entries",
+		"binary_text_evidence",
+		"binary_media_streams",
+		"binary_par2_sets",
+		"binary_par2_targets",
+	},
+	partitionBundleRelease: {
+		"release_family_readiness_summaries",
+		"release_ready_candidates",
+		"release_recovered_file_set_candidates",
+		"release_stage_dirty_families",
+	},
+}
+
+// ConfigurePartitionProvisioning applies the lock budget used by each
+// individual parent/day DDL transaction.
+func (s *Store) ConfigurePartitionProvisioning(ddlLockTimeout time.Duration) {
+	if s == nil {
+		return
+	}
+	if ddlLockTimeout <= 0 {
+		ddlLockTimeout = 5 * time.Second
+	}
+	s.partitionPolicyMu.Lock()
+	s.partitionDDLLockLimit = ddlLockTimeout
+	s.partitionPolicyMu.Unlock()
+}
+
+func (s *Store) partitionDDLLockTimeout() time.Duration {
+	if s == nil {
+		return 5 * time.Second
+	}
+	s.partitionPolicyMu.RLock()
+	timeout := s.partitionDDLLockLimit
+	s.partitionPolicyMu.RUnlock()
+	if timeout <= 0 {
+		return 5 * time.Second
+	}
+	return timeout
+}
+
+func (s *Store) ProvisionSourceWorkPartitions(ctx context.Context, _ int, daysAhead int) error {
 	if s == nil || s.db == nil {
 		return nil
-	}
-	if daysBefore < 0 {
-		daysBefore = 0
 	}
 	if daysAhead < 0 {
 		daysAhead = 0
 	}
 
 	today := time.Now().UTC().Truncate(24 * time.Hour)
-	sourcePostedAt := make([]time.Time, 0, daysBefore+daysAhead+1)
-	for offset := -daysBefore; offset <= daysAhead; offset++ {
+	sourcePostedAt := make([]time.Time, 0, daysAhead+1)
+	for offset := 0; offset <= daysAhead; offset++ {
 		sourcePostedAt = append(sourcePostedAt, today.AddDate(0, 0, offset))
 	}
-	return s.provisionSourceWorkPartitionsForDays(ctx, sourcePostedAt)
+	return s.provisionPartitionBundleForDays(ctx, partitionBundleScrape, sourcePostedAt)
 }
 
-func (s *Store) verifySourceWorkPartitionsForDays(ctx context.Context, sourcePostedAt []time.Time) error {
+func (s *Store) verifyPartitionBundleForDays(ctx context.Context, bundle partitionBundle, sourcePostedAt []time.Time) error {
 	if s == nil || s.db == nil || len(sourcePostedAt) == 0 {
 		return nil
 	}
@@ -51,14 +136,14 @@ func (s *Store) verifySourceWorkPartitionsForDays(ctx context.Context, sourcePos
 	sort.Strings(dayKeys)
 
 	for _, dayKey := range dayKeys {
-		if err := s.verifySourceWorkPartitionsForDay(ctx, days[dayKey]); err != nil {
+		if err := s.verifyPartitionBundleForDay(ctx, bundle, days[dayKey]); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (s *Store) provisionSourceWorkPartitionsForDays(ctx context.Context, sourcePostedAt []time.Time) error {
+func (s *Store) provisionPartitionBundleForDays(ctx context.Context, bundle partitionBundle, sourcePostedAt []time.Time) error {
 	if s == nil || s.db == nil || len(sourcePostedAt) == 0 {
 		return nil
 	}
@@ -81,30 +166,30 @@ func (s *Store) provisionSourceWorkPartitionsForDays(ctx context.Context, source
 	defer nativePartitionProvisionMu.Unlock()
 
 	for _, dayKey := range dayKeys {
-		if err := s.provisionSourceWorkPartitionsForDay(ctx, days[dayKey]); err != nil {
+		if err := s.provisionPartitionBundleForDay(ctx, bundle, days[dayKey]); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (s *Store) verifySourceWorkPartitionsForDay(ctx context.Context, dayStart time.Time) error {
+func (s *Store) verifyPartitionBundleForDay(ctx context.Context, bundle partitionBundle, dayStart time.Time) error {
 	dayKey, childSuffix := nativePartitionDayKeys(dayStart)
-	missing, err := s.missingNativeDailyPartitions(ctx, childSuffix)
+	missing, err := s.missingPartitionBundleChildren(ctx, bundle, childSuffix)
 	if err != nil {
-		return fmt.Errorf("check native daily partitions for source day %s: %w", dayKey, err)
+		return fmt.Errorf("check %s daily partitions for source day %s: %w", bundle, dayKey, err)
 	}
 	if len(missing) == 0 {
 		return nil
 	}
-	return fmt.Errorf("missing native daily partitions for source day %s: %s; partition DDL is not allowed from active indexer stage write paths; pre-provision the partition horizon before running the supervisor", dayKey, strings.Join(missing, ", "))
+	return fmt.Errorf("missing %s daily partitions for source day %s: %s; refusing to route rows into default partitions", bundle, dayKey, strings.Join(missing, ", "))
 }
 
-func (s *Store) provisionSourceWorkPartitionsForDay(ctx context.Context, dayStart time.Time) error {
+func (s *Store) provisionPartitionBundleForDay(ctx context.Context, bundle partitionBundle, dayStart time.Time) error {
 	dayKey, childSuffix := nativePartitionDayKeys(dayStart)
-	missing, err := s.missingNativeDailyPartitions(ctx, childSuffix)
+	missing, err := s.missingPartitionBundleChildren(ctx, bundle, childSuffix)
 	if err != nil {
-		return fmt.Errorf("check native daily partitions for source day %s: %w", dayKey, err)
+		return fmt.Errorf("check %s daily partitions for source day %s: %w", bundle, dayKey, err)
 	}
 	for _, childName := range missing {
 		parentTable := strings.TrimSuffix(childName, "_"+childSuffix)
@@ -116,12 +201,12 @@ func (s *Store) provisionSourceWorkPartitionsForDay(ctx context.Context, dayStar
 		}
 	}
 
-	missing, err = s.missingNativeDailyPartitions(ctx, childSuffix)
+	missing, err = s.missingPartitionBundleChildren(ctx, bundle, childSuffix)
 	if err != nil {
 		return fmt.Errorf("verify native daily partitions for source day %s: %w", dayKey, err)
 	}
 	if len(missing) > 0 {
-		return fmt.Errorf("missing native daily partitions for source day %s after precreate: %s; refusing to route rows into default partitions", dayKey, strings.Join(missing, ", "))
+		return fmt.Errorf("missing %s daily partitions for source day %s after precreate: %s; refusing to route rows into default partitions", bundle, dayKey, strings.Join(missing, ", "))
 	}
 	return nil
 }
@@ -141,16 +226,39 @@ func (s *Store) ensureNativeDailyPartitionForTable(ctx context.Context, parentTa
 	if !valid {
 		return fmt.Errorf("table %q is not a native source/work partition target", parentTable)
 	}
-	_, err := s.db.ExecContext(ctx, `SELECT public.pgindex_ensure_daily_partition($1, $2::date)`, parentTable, dayKey)
-	return err
+	defaultHasRows, err := s.defaultPartitionHasRowsForDay(ctx, parentTable, dayKey)
+	if err != nil {
+		return fmt.Errorf("check %s_default for source day %s: %w", parentTable, dayKey, err)
+	}
+	if defaultHasRows {
+		return fmt.Errorf("%s_default contains rows for source day %s; run the offline default-rehome workflow before provisioning", parentTable, dayKey)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	lockTimeout := s.partitionDDLLockTimeout().Round(time.Millisecond).String()
+	if _, err := tx.ExecContext(ctx, `SELECT set_config('lock_timeout', $1, true)`, lockTimeout); err != nil {
+		return fmt.Errorf("set partition DDL lock timeout: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `SELECT public.pgindex_ensure_daily_partition($1, $2::date)`, parentTable, dayKey); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
-func (s *Store) missingNativeDailyPartitions(ctx context.Context, childSuffix string) ([]string, error) {
+func (s *Store) missingPartitionBundleChildren(ctx context.Context, bundle partitionBundle, childSuffix string) ([]string, error) {
 	if s == nil || s.db == nil {
 		return nil, nil
 	}
+	parents, ok := partitionBundleParents[bundle]
+	if !ok || len(parents) == 0 {
+		return nil, fmt.Errorf("unknown partition bundle %q", bundle)
+	}
 	missing := make([]string, 0)
-	for _, table := range nativeSourceWorkPartitionTables() {
+	for _, table := range parents {
 		ok, err := s.nativeDailyPartitionExists(ctx, table, childSuffix)
 		if err != nil {
 			return nil, fmt.Errorf("table=%s: %w", table, err)
@@ -162,7 +270,7 @@ func (s *Store) missingNativeDailyPartitions(ctx context.Context, childSuffix st
 	return missing, nil
 }
 
-func (s *Store) ensureSourceWorkPartitionsForBinaryIDs(ctx context.Context, binaryIDs []int64) error {
+func (s *Store) ensurePartitionBundleForBinaryIDs(ctx context.Context, bundle partitionBundle, binaryIDs []int64) error {
 	if s == nil || s.db == nil || len(binaryIDs) == 0 {
 		return nil
 	}
@@ -208,7 +316,7 @@ func (s *Store) ensureSourceWorkPartitionsForBinaryIDs(ctx context.Context, bina
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate binary source days for partition precreate: %w", err)
 	}
-	return s.verifySourceWorkPartitionsForDays(ctx, days)
+	return s.provisionPartitionBundleForDays(ctx, bundle, days)
 }
 
 func ensureYEncRecoveryPartitionsForBinaryIDsInTx(ctx context.Context, tx *sql.Tx, binaryIDs []int64) error {
