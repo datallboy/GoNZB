@@ -269,7 +269,7 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 	defer workspace.Cleanup()
 
 	encrypted := inspectpkg.InferEncrypted(candidate)
-	if s != nil && s.log != nil {
+	if s.log != nil {
 		s.log.Debug(
 			"inspect_archive: starting binary_id=%d release_id=%s file=%s",
 			candidate.BinaryID,
@@ -287,7 +287,7 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 				ErrorText:       err.Error(),
 				SourceUpdatedAt: candidate.SourceUpdatedAt,
 			})
-			if s != nil && s.log != nil {
+			if s.log != nil {
 				s.log.Warn("inspect_archive: candidate failed binary_id=%d release_id=%s err=%v", candidate.BinaryID, candidate.ReleaseID, err)
 			}
 			return nil
@@ -300,7 +300,7 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 	if probe != nil {
 		encrypted = encrypted || probe.Encrypted
 		encrypted = encrypted || isArchivePasswordPromptError(probe.ProbeError)
-		if s != nil && s.log != nil {
+		if s.log != nil {
 			s.log.Debug(
 				"inspect_archive: binary_id=%d release_id=%s strategy=%s files=%d materialized_bytes=%d",
 				candidate.BinaryID,
@@ -319,7 +319,7 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 			ErrorText:       strings.TrimSpace(probe.ProbeError),
 			SourceUpdatedAt: candidate.SourceUpdatedAt,
 		})
-		if s != nil && s.log != nil {
+		if s.log != nil {
 			s.log.Warn("inspect_archive: transient probe failure binary_id=%d release_id=%s err=%s", candidate.BinaryID, candidate.ReleaseID, strings.TrimSpace(probe.ProbeError))
 		}
 		return nil
