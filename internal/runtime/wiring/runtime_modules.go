@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/infra/config"
@@ -305,11 +306,31 @@ func (m *usenetIndexerRuntimeModule) startCurrentRuntime() {
 		}
 	}
 	m.appCtx.Logger.Info("starting usenet indexer supervisor")
+	go m.runPartitionProvisioner(childCtx, m.partitionCreateDaysBefore, m.partitionCreateDaysAhead)
 	go func() {
 		if err := service.Start(childCtx, 0); err != nil && childCtx.Err() == nil {
 			m.appCtx.Logger.Error("usenet indexer supervisor failed: %v", err)
 		}
 	}()
+}
+
+func (m *usenetIndexerRuntimeModule) runPartitionProvisioner(ctx context.Context, daysBefore, daysAhead int) {
+	const interval = 6 * time.Hour
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if m.appCtx == nil || m.appCtx.PGIndexStore == nil {
+				continue
+			}
+			if err := m.appCtx.PGIndexStore.ProvisionSourceWorkPartitions(ctx, daysBefore, daysAhead); err != nil && ctx.Err() == nil {
+				m.appCtx.Logger.Error("usenet indexer rolling partition provisioning failed: %v", err)
+			}
+		}
+	}
 }
 
 func (m *usenetIndexerRuntimeModule) stopRuntime() {
