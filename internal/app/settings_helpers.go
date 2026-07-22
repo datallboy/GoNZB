@@ -29,8 +29,10 @@ func DefaultRuntimeSettings() *RuntimeSettings {
 			WildcardRules:               []IndexingWildcardRuleRuntimeSettings{},
 			ProviderGroupInventory:      []IndexingProviderGroupInventoryRuntimeSettings{},
 			MaterializedGroups:          []IndexingMaterializedGroupRuntimeSettings{},
+			ScrapeTimeframes:            []IndexingScrapeTimeframeRuntimeSettings{},
 			ScrapeLatest:                defaultScrapeStage(false),
 			ScrapeBackfill:              defaultScrapeStage(false),
+			ScrapeTimeframe:             defaultScrapeStage(false),
 			PosterMaterialize:           defaultStage(false, 2, 10000, 0),
 			CrosspostPopularityRefresh:  defaultStage(false, 2, 1000, 0),
 			ArticleCohortSchedule:       defaultStage(true, 0.25, 50000, 0),
@@ -320,10 +322,12 @@ func IndexingRuntimeFromConfig(cfg config.IndexingConfig) IndexingRuntimeSetting
 		WildcardRules:            []IndexingWildcardRuleRuntimeSettings{},
 		ProviderGroupInventory:   []IndexingProviderGroupInventoryRuntimeSettings{},
 		MaterializedGroups:       []IndexingMaterializedGroupRuntimeSettings{},
+		ScrapeTimeframes:         []IndexingScrapeTimeframeRuntimeSettings{},
 	}
 
 	out.ScrapeLatest = indexStageRuntimeFromConfigWithConcurrency(cfg.ScrapeLatest, true, 10, 5000)
 	out.ScrapeBackfill = indexStageRuntimeFromConfigWithConcurrency(cfg.ScrapeBackfill, true, 10, 5000)
+	out.ScrapeTimeframe = defaultScrapeStage(false)
 	out.PosterMaterialize = indexStageRuntimeFromConfig(cfg.PosterMaterialize, true, 2, 10000)
 	out.CrosspostPopularityRefresh = indexStageRuntimeFromConfig(cfg.CrosspostPopularityRefresh, true, 2, 1000)
 	out.ArticleCohortSchedule = defaultStage(true, 0.25, 50000, 0)
@@ -1172,8 +1176,10 @@ func cloneIndexing(in *IndexingRuntimeSettings) *IndexingRuntimeSettings {
 		WildcardRules:               cloneWildcardRules(in.WildcardRules),
 		ProviderGroupInventory:      cloneProviderGroupInventory(in.ProviderGroupInventory),
 		MaterializedGroups:          cloneMaterializedGroups(in.MaterializedGroups),
+		ScrapeTimeframes:            cloneScrapeTimeframes(in.ScrapeTimeframes),
 		ScrapeLatest:                in.ScrapeLatest,
 		ScrapeBackfill:              in.ScrapeBackfill,
+		ScrapeTimeframe:             mergeStageRuntimeSettings(defaultScrapeStage(false), in.ScrapeTimeframe),
 		PosterMaterialize:           mergeStageRuntimeSettings(defaultStage(false, 2, 10000, 0), in.PosterMaterialize),
 		CrosspostPopularityRefresh:  mergeStageRuntimeSettings(defaultStage(false, 2, 1000, 0), in.CrosspostPopularityRefresh),
 		ArticleCohortSchedule:       mergeStageRuntimeSettings(defaultStage(false, 0.25, 50000, 0), in.ArticleCohortSchedule),
@@ -1353,6 +1359,12 @@ func normalizeIndexingScrapeConfig(indexing *IndexingRuntimeSettings) {
 		indexing.MaterializedGroups[i].ProviderIDs = slices.Compact(indexing.MaterializedGroups[i].ProviderIDs)
 		indexing.MaterializedGroups[i].RuleIDs = slices.Compact(indexing.MaterializedGroups[i].RuleIDs)
 	}
+	for i := range indexing.ScrapeTimeframes {
+		indexing.ScrapeTimeframes[i].ID = strings.TrimSpace(indexing.ScrapeTimeframes[i].ID)
+		indexing.ScrapeTimeframes[i].GroupName = strings.TrimSpace(indexing.ScrapeTimeframes[i].GroupName)
+		indexing.ScrapeTimeframes[i].StartDate = strings.TrimSpace(indexing.ScrapeTimeframes[i].StartDate)
+		indexing.ScrapeTimeframes[i].EndDate = strings.TrimSpace(indexing.ScrapeTimeframes[i].EndDate)
+	}
 	indexing.Newsgroups = EffectiveNewsgroupNames(indexing)
 	indexing.BackfillUntilDateByGroup = EffectiveBackfillUntilDateByGroup(indexing)
 }
@@ -1380,6 +1392,15 @@ func cloneExplicitGroups(in []IndexingScrapeGroupRuntimeSettings) []IndexingScra
 	}
 	out := make([]IndexingScrapeGroupRuntimeSettings, 0, len(in))
 	out = append(out, in...)
+	return out
+}
+
+func cloneScrapeTimeframes(in []IndexingScrapeTimeframeRuntimeSettings) []IndexingScrapeTimeframeRuntimeSettings {
+	if in == nil {
+		return nil
+	}
+	out := make([]IndexingScrapeTimeframeRuntimeSettings, len(in))
+	copy(out, in)
 	return out
 }
 

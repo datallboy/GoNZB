@@ -1474,6 +1474,8 @@ func stageSettingsForName(runtime *app.RuntimeSettings, stageName string) (app.I
 		return runtime.Indexing.ScrapeLatest, true
 	case string(supervisor.StageScrapeBackfill):
 		return runtime.Indexing.ScrapeBackfill, true
+	case string(supervisor.StageScrapeTimeframe):
+		return runtime.Indexing.ScrapeTimeframe, true
 	case string(supervisor.StagePosterMaterialize):
 		return runtime.Indexing.PosterMaterialize, true
 	case string(supervisor.StageCrosspostPopularityRefresh):
@@ -1540,6 +1542,7 @@ func stageSettingsForName(runtime *app.RuntimeSettings, stageName string) (app.I
 var allIndexerStages = []string{
 	string(supervisor.StageScrapeLatest),
 	string(supervisor.StageScrapeBackfill),
+	string(supervisor.StageScrapeTimeframe),
 	string(supervisor.StagePosterMaterialize),
 	string(supervisor.StageCrosspostPopularityRefresh),
 	string(supervisor.StageArticleCohortSchedule),
@@ -1728,6 +1731,8 @@ func applyIndexerStageConfigPatch(indexing *app.IndexingRuntimeSettings, stageNa
 		applyStagePatch(&indexing.ScrapeLatest, patch)
 	case string(supervisor.StageScrapeBackfill):
 		applyStagePatch(&indexing.ScrapeBackfill, patch)
+	case string(supervisor.StageScrapeTimeframe):
+		applyStagePatch(&indexing.ScrapeTimeframe, patch)
 	case string(supervisor.StagePosterMaterialize):
 		applyStagePatch(&indexing.PosterMaterialize, patch)
 	case string(supervisor.StageCrosspostPopularityRefresh):

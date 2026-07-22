@@ -69,6 +69,12 @@ default. Work beyond that cap is recorded as a durable deferred article range
 before a latest/backfill checkpoint advances. Existing days do not consume the
 cap.
 
+Explicit historical timeframes use the same exact-day provisioning and cap.
+Their configured UTC dates are search inputs, not a request to precreate every
+calendar partition in the window. Resolved article bounds and next-article
+progress remain in the unpartitioned
+`indexer_scrape_timeframe_progress` control table.
+
 Default partitions are quarantine/fallback surfaces for legacy or external
 writes. Application stages must keep them empty. Rows found there block the
 affected source day and are moved only by the offline default-rehome workflow.

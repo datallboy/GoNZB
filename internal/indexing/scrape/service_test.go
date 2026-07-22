@@ -132,6 +132,57 @@ func TestRunLatestExistingSourceDayDoesNotConsumeNewDayLimit(t *testing.T) {
 	}
 }
 
+func TestRunTimeframesKeepsIndependentProgressForSameGroup(t *testing.T) {
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	repo := &fakeScrapeRepo{}
+	provider := fakeScrapeProvider{
+		stats: GroupStats{Low: 1, High: 20},
+		xoverFn: func(_ context.Context, _ string, from, to int64) ([]OverviewHeader, error) {
+			rows := make([]OverviewHeader, 0, to-from+1)
+			for article := from; article <= to; article++ {
+				postedAt := base.AddDate(0, 0, int(article-1))
+				rows = append(rows, OverviewHeader{
+					ArticleNumber: article,
+					MessageID:     fmt.Sprintf("<timeframe-%d>", article),
+					DateUTC:       &postedAt,
+				})
+			}
+			return rows, nil
+		},
+	}
+	svc := NewService(repo, provider, testScrapeLogger{}, Options{
+		BatchSize:  10,
+		MaxBatches: 1,
+		Timeframes: []Timeframe{
+			{ID: "march-week", Group: "alt.binaries.history", Start: base.AddDate(0, 0, 2), End: base.AddDate(0, 0, 4)},
+			{ID: "older-week", Group: "alt.binaries.history", Start: base.AddDate(0, 0, 9), End: base.AddDate(0, 0, 11)},
+		},
+	})
+
+	metrics, err := svc.RunTimeframesOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("RunTimeframesOnceWithMetrics() error = %v", err)
+	}
+	if got := metrics["groups_scheduled"]; got != 1 {
+		t.Fatalf("expected one timeframe to use the first pass budget, got groups_scheduled=%v", got)
+	}
+	if _, err := svc.RunTimeframesOnceWithMetrics(context.Background()); err != nil {
+		t.Fatalf("second RunTimeframesOnceWithMetrics() error = %v", err)
+	}
+	if len(repo.timeframeProgress) != 2 {
+		t.Fatalf("expected two progress records, got %+v", repo.timeframeProgress)
+	}
+	for _, id := range []string{"march-week", "older-week"} {
+		progress := repo.timeframeProgress[timeframeProgressKey(id, 1, 1)]
+		if progress == nil || progress.State != "completed" {
+			t.Fatalf("expected %s to complete independently, got %+v", id, progress)
+		}
+	}
+	if len(repo.insertedHeaders) != 4 {
+		t.Fatalf("expected two articles from each date window, got %+v", repo.insertedHeaders)
+	}
+}
+
 func TestRunBackfillSkipsGroupWhenCutoffReachedForAnotherProvider(t *testing.T) {
 	cutoff := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
 	repo := &fakeScrapeRepo{
@@ -775,6 +826,7 @@ type fakeScrapeRepo struct {
 	deferredRanges            []pgindex.DeferredArticleRangeRecord
 	observedRanges            []observedScrapeRange
 	existingScrapeDays        map[string]bool
+	timeframeProgress         map[string]*pgindex.ScrapeTimeframeProgress
 }
 
 type observedScrapeRange struct {
@@ -949,6 +1001,60 @@ func (f *fakeScrapeRepo) ExistingScrapeSourceDays(_ context.Context, sourcePoste
 		out[dayKey] = f.existingScrapeDays[dayKey]
 	}
 	return out, nil
+}
+
+func timeframeProgressKey(timeframeID string, providerID, newsgroupID int64) string {
+	return fmt.Sprintf("%s/%d/%d", timeframeID, providerID, newsgroupID)
+}
+
+func (f *fakeScrapeRepo) EnsureScrapeTimeframeProgress(_ context.Context, timeframeID string, providerID, newsgroupID int64, windowStart, windowEnd time.Time) (*pgindex.ScrapeTimeframeProgress, error) {
+	if f.timeframeProgress == nil {
+		f.timeframeProgress = make(map[string]*pgindex.ScrapeTimeframeProgress)
+	}
+	key := timeframeProgressKey(timeframeID, providerID, newsgroupID)
+	progress := f.timeframeProgress[key]
+	if progress == nil || !progress.WindowStart.Equal(windowStart) || !progress.WindowEnd.Equal(windowEnd) {
+		progress = &pgindex.ScrapeTimeframeProgress{
+			TimeframeID: timeframeID,
+			ProviderID:  providerID,
+			NewsgroupID: newsgroupID,
+			WindowStart: windowStart,
+			WindowEnd:   windowEnd,
+			State:       "pending",
+		}
+		f.timeframeProgress[key] = progress
+	}
+	copy := *progress
+	return &copy, nil
+}
+
+func (f *fakeScrapeRepo) ResolveScrapeTimeframeProgress(_ context.Context, timeframeID string, providerID, newsgroupID, articleLow, articleHigh int64, empty bool) error {
+	progress := f.timeframeProgress[timeframeProgressKey(timeframeID, providerID, newsgroupID)]
+	progress.ArticleLow = articleLow
+	progress.ArticleHigh = articleHigh
+	progress.NextArticle = articleLow
+	progress.State = "active"
+	if empty {
+		progress.State = "empty"
+	}
+	return nil
+}
+
+func (f *fakeScrapeRepo) AdvanceScrapeTimeframeProgress(_ context.Context, timeframeID string, providerID, newsgroupID, nextArticle int64, completed bool) error {
+	progress := f.timeframeProgress[timeframeProgressKey(timeframeID, providerID, newsgroupID)]
+	progress.NextArticle = nextArticle
+	progress.State = "active"
+	if completed {
+		progress.State = "completed"
+	}
+	return nil
+}
+
+func (f *fakeScrapeRepo) FailScrapeTimeframeProgress(_ context.Context, timeframeID string, providerID, newsgroupID int64, cause string) error {
+	progress := f.timeframeProgress[timeframeProgressKey(timeframeID, providerID, newsgroupID)]
+	progress.State = "failed"
+	progress.LastError = cause
+	return nil
 }
 
 func (f *fakeScrapeRepo) groupName(newsgroupID int64) string {

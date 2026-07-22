@@ -30,6 +30,36 @@ func TestValidateRuntimeSettingsAllowsEnabledIndexerStageWithoutNewsgroup(t *tes
 	}
 }
 
+func TestValidateRuntimeSettingsAcceptsMultipleTimeframesForSameGroup(t *testing.T) {
+	runtime := app.DefaultRuntimeSettings()
+	runtime.Indexing.ScrapeTimeframes = []app.IndexingScrapeTimeframeRuntimeSettings{
+		{ID: "march-week", GroupName: "alt.binaries.test", StartDate: "2026-03-01", EndDate: "2026-03-07", Enabled: true},
+		{ID: "older-week", GroupName: "alt.binaries.test", StartDate: "2025-03-01", EndDate: "2025-03-07", Enabled: true},
+	}
+
+	if err := ValidateRuntimeSettings(&config.Config{}, runtime); err != nil {
+		t.Fatalf("expected same-group timeframes with distinct IDs to validate, got %v", err)
+	}
+}
+
+func TestValidateRuntimeSettingsRejectsInvalidScrapeTimeframes(t *testing.T) {
+	runtime := app.DefaultRuntimeSettings()
+	runtime.Indexing.ScrapeTimeframes = []app.IndexingScrapeTimeframeRuntimeSettings{
+		{ID: "duplicate", GroupName: "", StartDate: "bad", EndDate: "2026-03-07", Enabled: true},
+		{ID: "DUPLICATE", GroupName: "alt.binaries.test", StartDate: "2026-04-02", EndDate: "2026-04-01", Enabled: true},
+	}
+
+	err := ValidateRuntimeSettings(&config.Config{}, runtime)
+	if err == nil {
+		t.Fatalf("expected timeframe validation error")
+	}
+	for _, expected := range []string{"duplicates", "group_name", "start_date", "end_date must be on or after"} {
+		if !strings.Contains(err.Error(), expected) {
+			t.Fatalf("expected %q in validation error, got %v", expected, err)
+		}
+	}
+}
+
 func TestValidateRuntimeSettingsReportsIncompleteNewznabSource(t *testing.T) {
 	runtime := app.DefaultRuntimeSettings()
 	runtime.Indexers = []app.IndexerRuntimeSettings{{ID: "external"}}

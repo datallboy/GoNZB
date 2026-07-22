@@ -15,6 +15,14 @@ Latest scrape feeds the current day. Backfill fills older daily buckets. Scrape
 is capped by downstream backlog pressure so source rows do not grow without a
 consumer path.
 
+Historical timeframe scrape is an optional third mode. An operator may define
+multiple inclusive UTC date windows, including multiple windows for the same
+newsgroup. Each entry has a stable ID and independent durable progress in
+`indexer_scrape_timeframe_progress`; it does not move latest or backfill
+checkpoints. The stage locates date boundaries with bounded XOVER probes,
+persists the resulting article-number range, and then consumes that fixed range
+in normal scrape batches. Changing an entry's dates resets only that entry.
+
 XOVER may return source dates far outside the current calendar window. Scrape
 provisions only the exact observed days it will admit, never a continuous date
 horizon. A pass that encounters more than the configured new-day cap admits the

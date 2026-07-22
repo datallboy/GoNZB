@@ -46,6 +46,12 @@ A scrape pass introduces at most 32 new source days by default. Additional
 article-number ranges appear in the deferred-range view and drain separately so
 they do not block latest checks.
 
+Use **Indexer > Newsgroups and Wildcards > Historical scrape timeframes** for
+bounded historical work. Give each row a unique stable ID, select an inclusive
+start/end date, save it, then enable the `scrape_timeframe` command under
+**Settings > Indexer**. Multiple rows may use the same group. The command keeps
+separate progress for every row and never rewrites latest/backfill cursors.
+
 Any default-partition row is an operator-visible fault. Pause all indexer
 writers, run the default-rehome dry-run for the affected day, then execute the
 offline rehome. Do not schedule default rehome while indexer stages are active.

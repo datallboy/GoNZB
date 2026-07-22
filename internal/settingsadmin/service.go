@@ -373,6 +373,31 @@ func validateIndexing(indexing *app.IndexingRuntimeSettings) []string {
 			}
 		}
 	}
+	timeframeIDs := make(map[string]int, len(indexing.ScrapeTimeframes))
+	for i, timeframe := range indexing.ScrapeTimeframes {
+		id := strings.TrimSpace(timeframe.ID)
+		if id == "" {
+			issues = append(issues, fmt.Sprintf("indexing.scrape_timeframes[%d].id is required", i))
+		} else if previous, exists := timeframeIDs[strings.ToLower(id)]; exists {
+			issues = append(issues, fmt.Sprintf("indexing.scrape_timeframes[%d].id duplicates indexing.scrape_timeframes[%d].id", i, previous))
+		} else {
+			timeframeIDs[strings.ToLower(id)] = i
+		}
+		if strings.TrimSpace(timeframe.GroupName) == "" {
+			issues = append(issues, fmt.Sprintf("indexing.scrape_timeframes[%d].group_name is required", i))
+		}
+		start, startErr := time.Parse("2006-01-02", strings.TrimSpace(timeframe.StartDate))
+		end, endErr := time.Parse("2006-01-02", strings.TrimSpace(timeframe.EndDate))
+		if startErr != nil {
+			issues = append(issues, fmt.Sprintf("indexing.scrape_timeframes[%d].start_date must be YYYY-MM-DD", i))
+		}
+		if endErr != nil {
+			issues = append(issues, fmt.Sprintf("indexing.scrape_timeframes[%d].end_date must be YYYY-MM-DD", i))
+		}
+		if startErr == nil && endErr == nil && end.Before(start) {
+			issues = append(issues, fmt.Sprintf("indexing.scrape_timeframes[%d].end_date must be on or after start_date", i))
+		}
+	}
 	for i, rule := range indexing.WildcardRules {
 		if strings.TrimSpace(rule.Pattern) == "" {
 			issues = append(issues, fmt.Sprintf("indexing.wildcard_rules[%d].pattern is required", i))
@@ -529,6 +554,7 @@ func indexingStages(indexing *app.IndexingRuntimeSettings) []namedStage {
 	return []namedStage{
 		{name: "scrape_latest", config: indexing.ScrapeLatest},
 		{name: "scrape_backfill", config: indexing.ScrapeBackfill},
+		{name: "scrape_timeframe", config: indexing.ScrapeTimeframe},
 		{name: "article_cohort_schedule", config: indexing.ArticleCohortSchedule},
 		{name: "assemble", config: indexing.Assemble},
 		{name: "recover_yenc", config: indexing.RecoverYEnc},
@@ -727,6 +753,7 @@ func anyIndexerStageEnabled(indexing *app.IndexingRuntimeSettings) bool {
 	}
 	return indexing.ScrapeLatest.Enabled ||
 		indexing.ScrapeBackfill.Enabled ||
+		indexing.ScrapeTimeframe.Enabled ||
 		indexing.Assemble.Enabled ||
 		indexing.RecoverYEnc.Enabled ||
 		indexing.ReleaseSummaryRefresh.Enabled ||
