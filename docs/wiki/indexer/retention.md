@@ -29,6 +29,12 @@ Outcome reconciliation and dry-run reporting are enabled by default.
 Destructive outcome purge is disabled until an operator reviews the report and
 enables it explicitly.
 
+The **Indexer Work** page reports the ledger directly: active, successful,
+no-yield, purge-eligible, and purged bucket totals plus the provider/group/day
+rows with their header counts, open work, durable release count, terminal
+reason, and last progress. This is the primary check before reviewing a
+partition-retention dry-run.
+
 ## Partition Retention
 
 Partition retention drops whole daily partitions for source/work/projection

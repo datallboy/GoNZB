@@ -245,6 +245,7 @@ type UsenetIndexStore interface {
 	FailDeferredArticleRange(ctx context.Context, id int64, owner, cause string, maxAttempts int) error
 	ListIndexerGroupProfiles(ctx context.Context, limit int) ([]pgindex.IndexerGroupProfileSummary, error)
 	ListDeferredArticleRanges(ctx context.Context, state string, limit int) ([]pgindex.DeferredArticleRangeSummary, error)
+	GetSourceBucketOutcomeReport(ctx context.Context, limit int) (*pgindex.SourceBucketOutcomeReport, error)
 	RunArticleCohortScheduler(ctx context.Context, req pgindex.ArticleCohortSchedulerRequest) (*pgindex.ArticleCohortSchedulerResult, error)
 
 	ListUnassembledArticleHeaders(ctx context.Context, limit int) ([]pgindex.AssemblyCandidate, error)

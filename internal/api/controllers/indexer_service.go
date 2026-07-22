@@ -28,6 +28,7 @@ type indexerService interface {
 	RecoveryCapacity(ctx context.Context) (*pgindex.YEncRecoveryAdmissionSnapshot, error)
 	GroupProfiles(ctx context.Context, limit int) ([]pgindex.IndexerGroupProfileSummary, error)
 	DeferredArticleRanges(ctx context.Context, state string, limit int) ([]pgindex.DeferredArticleRangeSummary, error)
+	SourceBucketOutcomes(ctx context.Context, limit int) (*pgindex.SourceBucketOutcomeReport, error)
 	StageThroughput(ctx context.Context) (*pgindex.IndexerStageThroughput, error)
 	NNTPStats(ctx context.Context) (*app.NNTPRuntimeStats, error)
 	ListStages(ctx context.Context) ([]indexerStageView, error)
@@ -342,6 +343,13 @@ func (s *runtimeIndexerService) DeferredArticleRanges(ctx context.Context, state
 		return nil, errIndexerUnavailable
 	}
 	return s.store.ListDeferredArticleRanges(ctx, state, limit)
+}
+
+func (s *runtimeIndexerService) SourceBucketOutcomes(ctx context.Context, limit int) (*pgindex.SourceBucketOutcomeReport, error) {
+	if s == nil || s.store == nil {
+		return nil, errIndexerUnavailable
+	}
+	return s.store.GetSourceBucketOutcomeReport(ctx, limit)
 }
 
 func (s *runtimeIndexerService) StageThroughput(ctx context.Context) (*pgindex.IndexerStageThroughput, error) {

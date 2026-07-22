@@ -64,6 +64,9 @@ offline rehome. Do not schedule default rehome while indexer stages are active.
 
 Outcome retention is audit-only by default. Review terminal reasons, archive
 durability, and default-partition health before enabling destructive purge.
+The **Indexer Work** page shows the source-day ledger and deferred scrape queue;
+use it to distinguish active downstream work from successful/no-yield terminal
+buckets before running the retention dry-run.
 
 ## Runtime Checks
 
