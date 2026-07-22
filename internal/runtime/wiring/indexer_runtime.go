@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/datallboy/gonzb/internal/app"
@@ -61,6 +62,8 @@ type usenetIndexerConfig struct {
 	EnrichTMDB                                      tmdb.Options
 	ScrapeLatest                                    indexerStageConfig
 	ScrapeBackfill                                  indexerStageConfig
+	ScrapeTimeframe                                 indexerStageConfig
+	ScrapeTimeframes                                []scrape.Timeframe
 	PosterMaterialize                               indexerStageConfig
 	CrosspostPopularityRefresh                      indexerStageConfig
 	ArticleCohortSchedule                           indexerStageConfig
@@ -150,6 +153,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 	var (
 		scrapeLatestSvc         *scrape.Service
 		scrapeBackfillSvc       *scrape.Service
+		scrapeTimeframeSvc      *scrape.Service
 		scrapeProvider          io.Closer
 		nntpStats               func() app.NNTPRuntimeStats
 		assembleFetcher         inspectpkg.ArticleFetcher
@@ -194,6 +198,20 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			RunObserver:              scrapeObserver,
 		},
 	)
+	scrapeTimeframeSvc = scrape.NewService(
+		appCtx.PGIndexStore,
+		nil,
+		appCtx.Logger,
+		scrape.Options{
+			BatchSize:               int64(runtimeCfg.ScrapeTimeframe.BatchSize),
+			Concurrency:             runtimeCfg.ScrapeTimeframe.Concurrency,
+			MaxBatches:              runtimeCfg.ScrapeTimeframe.MaxBatches,
+			MaxNewSourceDaysPerPass: runtimeCfg.MaxNewSourceDaysPerPass,
+			RangeCoordinator:        rangeCoordinator,
+			RunObserver:             scrapeObserver,
+			Timeframes:              runtimeCfg.ScrapeTimeframes,
+		},
+	)
 
 	if runtimeCfg.ScrapeServer != nil {
 		manager, ownedManager, err := indexerNNTPManager(appCtx, runtimeCfg)
@@ -204,7 +222,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		assembleClient := indexerNNTPClient(manager, "assemble")
 		recoverYEncClient := indexerNNTPClient(manager, "recover_yenc")
 
-		if len(runtimeCfg.Newsgroups) > 0 {
+		if len(runtimeCfg.Newsgroups) > 0 || len(runtimeCfg.ScrapeTimeframes) > 0 {
 			scrapeAdapter := scrape.NewNNTPAdapter(scrapeClient)
 			scrapeLatestSvc = scrape.NewService(
 				appCtx.PGIndexStore,
@@ -234,6 +252,20 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 					BackfillUntilDateByGroup: runtimeCfg.BackfillUntilDateByGroup,
 					RangeCoordinator:         rangeCoordinator,
 					RunObserver:              scrapeObserver,
+				},
+			)
+			scrapeTimeframeSvc = scrape.NewService(
+				appCtx.PGIndexStore,
+				scrapeAdapter,
+				appCtx.Logger,
+				scrape.Options{
+					BatchSize:               int64(runtimeCfg.ScrapeTimeframe.BatchSize),
+					Concurrency:             runtimeCfg.ScrapeTimeframe.Concurrency,
+					MaxBatches:              runtimeCfg.ScrapeTimeframe.MaxBatches,
+					MaxNewSourceDaysPerPass: runtimeCfg.MaxNewSourceDaysPerPass,
+					RangeCoordinator:        rangeCoordinator,
+					RunObserver:             scrapeObserver,
+					Timeframes:              runtimeCfg.ScrapeTimeframes,
 				},
 			)
 		}
@@ -363,6 +395,17 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			Backoff:     runtimeCfg.ScrapeBackfill.Backoff,
 			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
 				return marshalStageMetrics(scrapeBackfillSvc.RunBackfillOnceWithMetrics(ctx))
+			}),
+		},
+		{
+			Name:        supervisor.StageScrapeTimeframe,
+			Interval:    runtimeCfg.ScrapeTimeframe.Interval,
+			Enabled:     runtimeCfg.ScrapeTimeframe.Enabled,
+			BatchSize:   runtimeCfg.ScrapeTimeframe.BatchSize,
+			Concurrency: runtimeCfg.ScrapeTimeframe.Concurrency,
+			Backoff:     runtimeCfg.ScrapeTimeframe.Backoff,
+			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
+				return marshalStageMetrics(scrapeTimeframeSvc.RunTimeframesOnceWithMetrics(ctx))
 			}),
 		},
 		{
@@ -893,6 +936,8 @@ func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) 
 		}),
 		ScrapeLatest:               newIndexerStageConfig(indexingCfg.ScrapeLatest),
 		ScrapeBackfill:             newIndexerStageConfig(indexingCfg.ScrapeBackfill),
+		ScrapeTimeframe:            newIndexerStageConfig(indexingCfg.ScrapeTimeframe),
+		ScrapeTimeframes:           scrapeTimeframesFromRuntime(indexingCfg.ScrapeTimeframes),
 		PosterMaterialize:          newIndexerStageConfig(indexingCfg.PosterMaterialize),
 		CrosspostPopularityRefresh: newIndexerStageConfig(indexingCfg.CrosspostPopularityRefresh),
 		ArticleCohortSchedule:      newIndexerStageConfig(indexingCfg.ArticleCohortSchedule),
@@ -1000,6 +1045,29 @@ func newIndexerStageConfig(in app.IndexingStageRuntimeSettings) indexerStageConf
 		FetchTimeoutSeconds:     in.FetchTimeoutSeconds,
 		NewestPct:               in.NewestPct,
 	}
+}
+
+func scrapeTimeframesFromRuntime(in []app.IndexingScrapeTimeframeRuntimeSettings) []scrape.Timeframe {
+	out := make([]scrape.Timeframe, 0, len(in))
+	for _, item := range in {
+		if !item.Enabled {
+			continue
+		}
+		id := strings.TrimSpace(item.ID)
+		group := strings.TrimSpace(item.GroupName)
+		start, startErr := time.ParseInLocation("2006-01-02", strings.TrimSpace(item.StartDate), time.UTC)
+		end, endErr := time.ParseInLocation("2006-01-02", strings.TrimSpace(item.EndDate), time.UTC)
+		if id == "" || group == "" || startErr != nil || endErr != nil || end.Before(start) {
+			continue
+		}
+		out = append(out, scrape.Timeframe{
+			ID:    id,
+			Group: group,
+			Start: start,
+			End:   end.AddDate(0, 0, 1),
+		})
+	}
+	return out
 }
 
 func recoverYEncFetchTimeout(in indexerStageConfig) time.Duration {

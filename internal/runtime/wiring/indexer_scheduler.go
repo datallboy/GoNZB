@@ -25,6 +25,10 @@ func RunIndexerScrapeBackfillScheduler(ctx context.Context, appCtx *app.Context)
 	return runIndexerStages(ctx, appCtx, supervisor.StageScrapeBackfill)
 }
 
+func RunIndexerScrapeTimeframeScheduler(ctx context.Context, appCtx *app.Context) error {
+	return runIndexerStages(ctx, appCtx, supervisor.StageScrapeTimeframe)
+}
+
 func RunIndexerAssembleScheduler(ctx context.Context, appCtx *app.Context) error {
 	return runIndexerStages(ctx, appCtx, supervisor.StageAssemble)
 }

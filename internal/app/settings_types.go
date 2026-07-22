@@ -340,6 +340,14 @@ type IndexingScrapeGroupRuntimeSettings struct {
 	Source            string `json:"source,omitempty"`
 }
 
+type IndexingScrapeTimeframeRuntimeSettings struct {
+	ID        string `json:"id,omitempty"`
+	GroupName string `json:"group_name,omitempty"`
+	StartDate string `json:"start_date,omitempty"`
+	EndDate   string `json:"end_date,omitempty"`
+	Enabled   bool   `json:"enabled,omitempty"`
+}
+
 type IndexingWildcardRuleRuntimeSettings struct {
 	ID      string `json:"id,omitempty"`
 	Pattern string `json:"pattern,omitempty"`
@@ -371,8 +379,10 @@ type IndexingRuntimeSettings struct {
 	WildcardRules               []IndexingWildcardRuleRuntimeSettings             `json:"wildcard_rules"`
 	ProviderGroupInventory      []IndexingProviderGroupInventoryRuntimeSettings   `json:"provider_group_inventory"`
 	MaterializedGroups          []IndexingMaterializedGroupRuntimeSettings        `json:"materialized_groups"`
+	ScrapeTimeframes            []IndexingScrapeTimeframeRuntimeSettings          `json:"scrape_timeframes"`
 	ScrapeLatest                IndexingStageRuntimeSettings                      `json:"scrape_latest,omitempty"`
 	ScrapeBackfill              IndexingStageRuntimeSettings                      `json:"scrape_backfill,omitempty"`
+	ScrapeTimeframe             IndexingStageRuntimeSettings                      `json:"scrape_timeframe,omitempty"`
 	PosterMaterialize           IndexingStageRuntimeSettings                      `json:"poster_materialize,omitempty"`
 	CrosspostPopularityRefresh  IndexingStageRuntimeSettings                      `json:"crosspost_popularity_refresh,omitempty"`
 	ArticleCohortSchedule       IndexingStageRuntimeSettings                      `json:"article_cohort_schedule,omitempty"`

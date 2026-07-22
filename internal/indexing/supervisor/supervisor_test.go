@@ -79,6 +79,7 @@ func TestRunIncludesMaterializerStagesByDefault(t *testing.T) {
 	stages := []Stage{
 		{Name: StageScrapeLatest},
 		{Name: StageScrapeBackfill},
+		{Name: StageScrapeTimeframe},
 		{Name: StagePosterMaterialize, Interval: time.Hour, Enabled: true, Runner: record(StagePosterMaterialize)},
 		{Name: StageCrosspostPopularityRefresh, Interval: time.Hour, Enabled: true, Runner: record(StageCrosspostPopularityRefresh)},
 		{Name: StageArticleCohortSchedule},
@@ -159,6 +160,7 @@ func TestRunPipelineIncludesInspectionAndMaintenanceExcludesPipeline(t *testing.
 	stages := []Stage{
 		{Name: StageScrapeLatest},
 		{Name: StageScrapeBackfill},
+		{Name: StageScrapeTimeframe},
 		{Name: StagePosterMaterialize},
 		{Name: StageCrosspostPopularityRefresh},
 		{Name: StageArticleCohortSchedule},

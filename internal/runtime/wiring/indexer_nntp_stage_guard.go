@@ -137,6 +137,12 @@ func (g *cachedNNTPTrafficGuard) evaluate(ctx context.Context, runtime *app.Runt
 			Reason:  fmt.Sprintf("scrape_backfill paused for nntp catch-up: active=%d capacity=%d waiting=%d", stats.Active, stats.Capacity, stats.Waiting),
 		}
 	}
+	if runtime.Indexing.ScrapeTimeframe.Enabled && (yencHot || runtime.Indexing.ScrapeLatest.Enabled || scopeHot(scopeActivity, "recover_yenc")) {
+		results[supervisor.StageScrapeTimeframe] = supervisor.StageGateDecision{
+			Allowed: false,
+			Reason:  fmt.Sprintf("scrape_timeframe paused for nntp catch-up: active=%d capacity=%d waiting=%d", stats.Active, stats.Capacity, stats.Waiting),
+		}
+	}
 
 	// Latest scraping yields only when yEnc has a meaningful backlog and the pool is already hot.
 	if runtime.Indexing.ScrapeLatest.Enabled && yencHot {
@@ -151,7 +157,7 @@ func (g *cachedNNTPTrafficGuard) evaluate(ctx context.Context, runtime *app.Runt
 
 func nntpGuardApplies(stageName supervisor.StageName) bool {
 	switch stageName {
-	case supervisor.StageScrapeLatest, supervisor.StageScrapeBackfill, supervisor.StageRecoverYEnc, supervisor.StageInspectPAR2:
+	case supervisor.StageScrapeLatest, supervisor.StageScrapeBackfill, supervisor.StageScrapeTimeframe, supervisor.StageRecoverYEnc, supervisor.StageInspectPAR2:
 		return true
 	default:
 		return false

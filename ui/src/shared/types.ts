@@ -1148,6 +1148,14 @@ export type ScrapeExplicitGroup = {
   source?: string
 }
 
+export type ScrapeTimeframe = {
+  id: string
+  group_name: string
+  start_date: string
+  end_date: string
+  enabled: boolean
+}
+
 export type ScrapeWildcardRule = {
   id: string
   pattern: string
@@ -1194,8 +1202,10 @@ export type IndexingRuntimeSettings = {
   wildcard_rules?: ScrapeWildcardRule[]
   provider_group_inventory?: ScrapeProviderInventoryItem[]
   materialized_groups?: ScrapeMaterializedGroup[]
+  scrape_timeframes?: ScrapeTimeframe[]
   scrape_latest: AdminStageConfigPatch
   scrape_backfill: AdminStageConfigPatch
+  scrape_timeframe: AdminStageConfigPatch
   poster_materialize: AdminStageConfigPatch
   crosspost_popularity_refresh: AdminStageConfigPatch
   assemble: AdminStageConfigPatch
@@ -1479,6 +1489,7 @@ export type RuntimeSettings = {
 
 export type AdminScrapeConfigResponse = {
   explicit_groups: ScrapeExplicitGroup[]
+  scrape_timeframes: ScrapeTimeframe[]
   wildcard_rules: ScrapeWildcardRule[]
   provider_group_inventory: ScrapeProviderInventoryItem[]
   provider_inventory_count?: number

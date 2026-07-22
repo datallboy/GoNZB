@@ -51,6 +51,7 @@ func (ctrl *IndexerScrapeAdminController) UpdateConfig(c *echo.Context) error {
 	}
 	next := app.CloneRuntimeSettings(current)
 	next.Indexing.ExplicitGroups = append([]app.IndexingScrapeGroupRuntimeSettings(nil), body.ExplicitGroups...)
+	next.Indexing.ScrapeTimeframes = append([]app.IndexingScrapeTimeframeRuntimeSettings(nil), body.ScrapeTimeframes...)
 	next.Indexing.WildcardRules = append([]app.IndexingWildcardRuleRuntimeSettings(nil), body.WildcardRules...)
 	next.Indexing.MaterializedGroups = append([]app.IndexingMaterializedGroupRuntimeSettings(nil), body.MaterializedGroups...)
 
@@ -270,6 +271,7 @@ func (ctrl *IndexerScrapeAdminController) ApplyWildcardGroups(c *echo.Context) e
 
 type scrapeAdminConfigPatch struct {
 	ExplicitGroups     []app.IndexingScrapeGroupRuntimeSettings       `json:"explicit_groups"`
+	ScrapeTimeframes   []app.IndexingScrapeTimeframeRuntimeSettings   `json:"scrape_timeframes"`
 	WildcardRules      []app.IndexingWildcardRuleRuntimeSettings      `json:"wildcard_rules"`
 	MaterializedGroups []app.IndexingMaterializedGroupRuntimeSettings `json:"materialized_groups"`
 }
@@ -361,6 +363,7 @@ func buildScrapeAdminResponse(ctx context.Context, appCtx *app.Context, runtime 
 	stats := loadProviderInventoryStats(ctx, appCtx, indexing)
 	return map[string]any{
 		"explicit_groups":                ensureExplicitGroups(indexing.ExplicitGroups),
+		"scrape_timeframes":              ensureScrapeTimeframes(indexing.ScrapeTimeframes),
 		"wildcard_rules":                 ensureWildcardRules(indexing.WildcardRules),
 		"provider_group_inventory":       []app.IndexingProviderGroupInventoryRuntimeSettings{},
 		"provider_inventory_count":       stats.Count,
@@ -610,6 +613,13 @@ func appendUniqueString(dst []string, values ...string) []string {
 func ensureExplicitGroups(in []app.IndexingScrapeGroupRuntimeSettings) []app.IndexingScrapeGroupRuntimeSettings {
 	if in == nil {
 		return []app.IndexingScrapeGroupRuntimeSettings{}
+	}
+	return in
+}
+
+func ensureScrapeTimeframes(in []app.IndexingScrapeTimeframeRuntimeSettings) []app.IndexingScrapeTimeframeRuntimeSettings {
+	if in == nil {
+		return []app.IndexingScrapeTimeframeRuntimeSettings{}
 	}
 	return in
 }
