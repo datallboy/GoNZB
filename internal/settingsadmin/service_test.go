@@ -142,7 +142,7 @@ func TestValidateRuntimeSettingsRejectsInvalidGoNZBNetSchedule(t *testing.T) {
 
 func TestBuildCapabilitiesReportsIndexerNeedsScrapeGroup(t *testing.T) {
 	runtime := app.DefaultRuntimeSettings()
-	runtime.IndexerServers = []app.ServerRuntimeSettings{{ID: "primary", Host: "news.example.com", Port: 563}}
+	runtime.Servers = []app.ServerRuntimeSettings{{ID: "primary", Host: "news.example.com", Port: 563}}
 
 	caps := BuildCapabilities(&config.Config{
 		Modules: config.ModulesConfig{UsenetIndexer: config.ModuleToggle{Enabled: true}},
@@ -152,8 +152,56 @@ func TestBuildCapabilitiesReportsIndexerNeedsScrapeGroup(t *testing.T) {
 	if indexer.Ready || len(indexer.Requirements) == 0 {
 		t.Fatalf("expected scrape-group requirement, got %+v", indexer)
 	}
-	if !strings.Contains(strings.Join(indexer.Requirements, " "), "scrape group") {
+	if !strings.Contains(strings.Join(indexer.Requirements, " "), "scrape group or enabled historical timeframe") {
 		t.Fatalf("expected scrape-group detail, got %+v", indexer.Requirements)
+	}
+}
+
+func TestBuildCapabilitiesAcceptsEnabledHistoricalScrapeTimeframe(t *testing.T) {
+	runtime := app.DefaultRuntimeSettings()
+	runtime.Servers = []app.ServerRuntimeSettings{{ID: "primary", Host: "news.example.com", Port: 563}}
+	runtime.Indexing.ExplicitGroups = []app.IndexingScrapeGroupRuntimeSettings{}
+	runtime.Indexing.MaterializedGroups = []app.IndexingMaterializedGroupRuntimeSettings{}
+	runtime.Indexing.Newsgroups = []string{}
+	runtime.Indexing.ScrapeTimeframes = []app.IndexingScrapeTimeframeRuntimeSettings{{
+		ID:        "historical-week",
+		GroupName: "alt.binaries.test",
+		StartDate: "2026-01-12",
+		EndDate:   "2026-01-18",
+		Enabled:   true,
+	}}
+
+	caps := BuildCapabilities(&config.Config{
+		Modules: config.ModulesConfig{UsenetIndexer: config.ModuleToggle{Enabled: true}},
+	}, runtime)
+
+	indexer := caps.Modules["usenet_indexer"]
+	if !indexer.Configured || !indexer.Ready || len(indexer.Requirements) != 0 {
+		t.Fatalf("expected enabled historical timeframe to satisfy indexer setup, got %+v", indexer)
+	}
+}
+
+func TestBuildCapabilitiesRejectsDisabledHistoricalScrapeTimeframeWithoutActiveGroups(t *testing.T) {
+	runtime := app.DefaultRuntimeSettings()
+	runtime.Servers = []app.ServerRuntimeSettings{{ID: "primary", Host: "news.example.com", Port: 563}}
+	runtime.Indexing.ExplicitGroups = []app.IndexingScrapeGroupRuntimeSettings{}
+	runtime.Indexing.MaterializedGroups = []app.IndexingMaterializedGroupRuntimeSettings{}
+	runtime.Indexing.Newsgroups = []string{}
+	runtime.Indexing.ScrapeTimeframes = []app.IndexingScrapeTimeframeRuntimeSettings{{
+		ID:        "historical-week",
+		GroupName: "alt.binaries.test",
+		StartDate: "2026-01-12",
+		EndDate:   "2026-01-18",
+		Enabled:   false,
+	}}
+
+	caps := BuildCapabilities(&config.Config{
+		Modules: config.ModulesConfig{UsenetIndexer: config.ModuleToggle{Enabled: true}},
+	}, runtime)
+
+	indexer := caps.Modules["usenet_indexer"]
+	if indexer.Ready || len(indexer.Requirements) == 0 {
+		t.Fatalf("expected disabled historical timeframe not to satisfy indexer setup, got %+v", indexer)
 	}
 }
 
