@@ -75,6 +75,7 @@ type usenetIndexerConfig struct {
 	RetentionPolicy                                 pgindex.RawStageRetentionPolicy
 	PartitionCreateDaysAhead                        int
 	PartitionDDLLockTimeout                         time.Duration
+	MaxNewSourceDaysPerPass                         int
 	StorageGuard                                    pgindex.DatabaseStorageGuardConfig
 	MemoryGuard                                     IndexerMemoryGuardConfig
 	InspectDiscovery                                indexerStageConfig
@@ -170,6 +171,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			BatchSize:                int64(runtimeCfg.ScrapeLatest.BatchSize),
 			Concurrency:              runtimeCfg.ScrapeLatest.Concurrency,
 			MaxBatches:               runtimeCfg.ScrapeLatest.MaxBatches,
+			MaxNewSourceDaysPerPass:  runtimeCfg.MaxNewSourceDaysPerPass,
 			BackfillUntilDateByGroup: runtimeCfg.BackfillUntilDateByGroup,
 			RangeCoordinator:         rangeCoordinator,
 			RunObserver:              scrapeObserver,
@@ -184,6 +186,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			BatchSize:                int64(runtimeCfg.ScrapeBackfill.BatchSize),
 			Concurrency:              runtimeCfg.ScrapeBackfill.Concurrency,
 			MaxBatches:               runtimeCfg.ScrapeBackfill.MaxBatches,
+			MaxNewSourceDaysPerPass:  runtimeCfg.MaxNewSourceDaysPerPass,
 			BackfillUntilDateByGroup: runtimeCfg.BackfillUntilDateByGroup,
 			RangeCoordinator:         rangeCoordinator,
 			RunObserver:              scrapeObserver,
@@ -210,6 +213,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 					BatchSize:                int64(runtimeCfg.ScrapeLatest.BatchSize),
 					Concurrency:              runtimeCfg.ScrapeLatest.Concurrency,
 					MaxBatches:               runtimeCfg.ScrapeLatest.MaxBatches,
+					MaxNewSourceDaysPerPass:  runtimeCfg.MaxNewSourceDaysPerPass,
 					BackfillUntilDateByGroup: runtimeCfg.BackfillUntilDateByGroup,
 					RangeCoordinator:         rangeCoordinator,
 					RunObserver:              scrapeObserver,
@@ -224,6 +228,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 					BatchSize:                int64(runtimeCfg.ScrapeBackfill.BatchSize),
 					Concurrency:              runtimeCfg.ScrapeBackfill.Concurrency,
 					MaxBatches:               runtimeCfg.ScrapeBackfill.MaxBatches,
+					MaxNewSourceDaysPerPass:  runtimeCfg.MaxNewSourceDaysPerPass,
 					BackfillUntilDateByGroup: runtimeCfg.BackfillUntilDateByGroup,
 					RangeCoordinator:         rangeCoordinator,
 					RunObserver:              scrapeObserver,
@@ -914,6 +919,7 @@ func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) 
 		},
 		PartitionCreateDaysAhead: indexingCfg.Partitions.PrecreateDaysAhead,
 		PartitionDDLLockTimeout:  time.Duration(indexingCfg.Partitions.DDLLockTimeoutSeconds) * time.Second,
+		MaxNewSourceDaysPerPass:  indexingCfg.Partitions.MaxNewSourceDaysPerPass,
 		StorageGuard: pgindex.DatabaseStorageGuardConfig{
 			Enabled:        indexingCfg.StorageGuard.Enabled,
 			DataDirectory:  indexingCfg.StorageGuard.DataDirectory,

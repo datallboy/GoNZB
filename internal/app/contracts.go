@@ -235,6 +235,7 @@ type UsenetIndexStore interface {
 	UpsertIndexerGroupProfile(ctx context.Context, providerID, newsgroupID int64, tier, reason string) error
 	RefreshIndexerGroupProfiles(ctx context.Context) (int64, error)
 	UpsertDeferredArticleRange(ctx context.Context, in pgindex.DeferredArticleRangeRecord) error
+	ExistingScrapeSourceDays(ctx context.Context, sourcePostedAt []time.Time) (map[string]bool, error)
 	ListIndexerGroupProfiles(ctx context.Context, limit int) ([]pgindex.IndexerGroupProfileSummary, error)
 	ListDeferredArticleRanges(ctx context.Context, state string, limit int) ([]pgindex.DeferredArticleRangeSummary, error)
 	RunArticleCohortScheduler(ctx context.Context, req pgindex.ArticleCohortSchedulerRequest) (*pgindex.ArticleCohortSchedulerResult, error)
