@@ -70,6 +70,35 @@ func TestParseMatroskaHeaderReturnsInfoAndTracksWithoutPayload(t *testing.T) {
 	}
 }
 
+func TestParseMatroskaHeaderReaderStopsBeforeMediaPayload(t *testing.T) {
+	document := matroskaHeaderDocument{
+		EBML: matroskaEBMLHeader{DocType: "matroska"},
+		Segment: matroskaHeaderSegment{
+			Info: matroskaHeaderInfo{TimecodeScale: 1_000_000, Duration: 1_000},
+			Tracks: matroskaHeaderTracks{Entries: []matroskaHeaderTrack{{
+				TrackNumber: 1,
+				TrackType:   1,
+				CodecID:     "V_MPEG4/ISO/AVC",
+				Video:       &matroskaHeaderVideo{PixelWidth: 1920, PixelHeight: 1080},
+			}}},
+		},
+	}
+	var header bytes.Buffer
+	if err := ebml.Marshal(&document, &header); err != nil {
+		t.Fatalf("marshal matroska header: %v", err)
+	}
+	payload := bytes.Repeat([]byte{0x55}, 1024*1024)
+	input := append(append([]byte(nil), header.Bytes()...), payload...)
+	reader := bytes.NewReader(input)
+
+	if _, err := ParseMatroskaHeaderReader(reader, 0); err != nil {
+		t.Fatalf("parse streaming matroska header: %v", err)
+	}
+	if consumed := len(input) - reader.Len(); consumed >= len(input) || reader.Len() < len(payload) {
+		t.Fatalf("expected parser to stop before payload, consumed=%d remaining=%d", consumed, reader.Len())
+	}
+}
+
 func TestParseMatroskaHeaderRejectsPrefixWithoutTracks(t *testing.T) {
 	var prefix bytes.Buffer
 	document := struct {
