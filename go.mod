@@ -3,6 +3,7 @@ module github.com/datallboy/gonzb
 go 1.25.5
 
 require (
+	github.com/at-wat/ebml-go v0.18.0
 	github.com/cyberphone/json-canonicalization v0.0.0-20241213102144-19d51d7fe467
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.9.2

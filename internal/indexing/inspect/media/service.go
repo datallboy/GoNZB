@@ -251,6 +251,7 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 	archiveExtractError := ""
 	materializedBytes := int64(0)
 	mediaTitle := ""
+	mediaTitleSource := ""
 	artifactRows := make([]pgindex.BinaryInspectionArtifactRecord, 0)
 	streamRows := make([]pgindex.BinaryMediaStreamRecord, 0)
 
@@ -266,14 +267,31 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		if err == nil {
 			probeMode = "ffprobe_direct_prefix"
 			materializedBytes += sample.BytesRead
-			probeCtx, cancel := context.WithTimeout(ctx, s.opts.ToolTimeout)
-			ffprobeResult, ffprobeOutput, probeErr := inspectpkg.RunFFProbeInput(probeCtx, s.runner, s.opts.FFProbePath, bytes.NewReader(sample.Prefix))
-			cancel()
 			artifactMetadata := map[string]any{
-				"probe_mode":          "ffprobe_direct_prefix",
-				"prefix_bytes":        sample.BytesRead,
-				"exact_size":          sample.ExactSize,
-				"streamed_to_ffprobe": true,
+				"prefix_bytes": sample.BytesRead,
+				"exact_size":   sample.ExactSize,
+			}
+			var ffprobeResult *inspectpkg.FFProbeResult
+			var ffprobeOutput []byte
+			var probeErr error
+			if sample.Signature == "matroska" {
+				ffprobeResult, probeErr = inspectpkg.ParseMatroskaHeader(sample.Prefix, sample.ExactSize)
+				if probeErr == nil {
+					probeMode = "matroska_header_prefix"
+					artifactMetadata["probe_mode"] = probeMode
+					artifactMetadata["header_parser"] = "ebml-go"
+					artifactMetadata["header_parser_version"] = "v1"
+				} else {
+					artifactMetadata["matroska_header_error_detail"] = probeErr.Error()
+				}
+			}
+			if ffprobeResult == nil {
+				probeMode = "ffprobe_direct_prefix"
+				artifactMetadata["probe_mode"] = probeMode
+				artifactMetadata["streamed_to_ffprobe"] = true
+				probeCtx, cancel := context.WithTimeout(ctx, s.opts.ToolTimeout)
+				ffprobeResult, ffprobeOutput, probeErr = inspectpkg.RunFFProbeInput(probeCtx, s.runner, s.opts.FFProbePath, bytes.NewReader(sample.Prefix))
+				cancel()
 			}
 			artifactRows = []pgindex.BinaryInspectionArtifactRecord{{
 				BinaryID:     candidate.BinaryID,
@@ -289,6 +307,13 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 			}}
 			if ffprobeResult != nil {
 				mediaTitle = firstNonEmpty(mediaTitle, ffprobeFormatTitle(ffprobeResult.Format.Tags))
+				if mediaTitle != "" {
+					if probeMode == "matroska_header_prefix" {
+						mediaTitleSource = "matroska_info_title"
+					} else {
+						mediaTitleSource = "ffprobe_format_tag"
+					}
+				}
 				for _, stream := range ffprobeResult.Streams {
 					language := ""
 					if stream.Tags != nil {
@@ -325,7 +350,7 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 						Channels:           stream.Channels,
 						Language:           language,
 						DurationSeconds:    inspectpkg.ParseSeconds(firstNonEmpty(stream.Duration, ffprobeResult.Format.Duration)),
-						BitRate:            inspectpkg.ParseInt64(firstNonEmpty(stream.BitRate, ffprobeResult.Format.BitRate)),
+						BitRate:            inspectpkg.ParseInt64(stream.BitRate),
 						DefaultDisposition: stream.Disposition.Default == 1,
 						ForcedDisposition:  stream.Disposition.Forced == 1,
 						Metadata: map[string]any{
@@ -434,7 +459,7 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 						Channels:           stream.Channels,
 						Language:           language,
 						DurationSeconds:    inspectpkg.ParseSeconds(firstNonEmpty(stream.Duration, ffprobeResult.Format.Duration)),
-						BitRate:            inspectpkg.ParseInt64(firstNonEmpty(stream.BitRate, ffprobeResult.Format.BitRate)),
+						BitRate:            inspectpkg.ParseInt64(stream.BitRate),
 						DefaultDisposition: stream.Disposition.Default == 1,
 						ForcedDisposition:  stream.Disposition.Forced == 1,
 						Metadata: map[string]any{
@@ -514,7 +539,10 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 	}
 	if mediaTitle != "" {
 		summary["media_title"] = mediaTitle
-		summary["media_title_source"] = "ffprobe_format_tag"
+		summary["media_title_source"] = mediaTitleSource
+	}
+	if probeMode == "matroska_header_prefix" {
+		summary["matroska_header_parser_version"] = "v1"
 	}
 	if !archiveBacked && ffprobeError != "" {
 		if err := s.repo.FailBinaryInspection(ctx, pgindex.BinaryInspectionRecord{
