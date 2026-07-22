@@ -247,6 +247,53 @@ func TestDeriveUsenetIndexerConfigKeepsExplicitBackfillCutoff(t *testing.T) {
 	}
 }
 
+func TestDeriveUsenetIndexerConfigUsesPersistedHistoricalScrapeSettings(t *testing.T) {
+	cfg := &config.Config{
+		Indexing: config.IndexingConfig{
+			Newsgroups: []string{"alt.binaries.bootstrap"},
+		},
+	}
+	runtime := app.DefaultRuntimeSettings().Indexing
+	runtime.Newsgroups = []string{}
+	runtime.ExplicitGroups = []app.IndexingScrapeGroupRuntimeSettings{}
+	runtime.MaterializedGroups = []app.IndexingMaterializedGroupRuntimeSettings{}
+	runtime.ScrapeLatest.Enabled = false
+	runtime.ScrapeBackfill.Enabled = false
+	runtime.ScrapeTimeframe.Enabled = true
+	runtime.ScrapeTimeframe.BatchSize = 1234
+	runtime.ScrapeTimeframes = []app.IndexingScrapeTimeframeRuntimeSettings{{
+		ID:        "january-test",
+		GroupName: "alt.binaries.history",
+		StartDate: "2026-01-12",
+		EndDate:   "2026-01-18",
+		Enabled:   true,
+	}}
+
+	got, err := deriveUsenetIndexerConfig(cfg, runtime)
+	if err != nil {
+		t.Fatalf("derive config: %v", err)
+	}
+	if len(got.Newsgroups) != 0 {
+		t.Fatalf("expected persisted empty active groups to override bootstrap groups, got %+v", got.Newsgroups)
+	}
+	if !got.ScrapeTimeframe.Enabled || got.ScrapeTimeframe.BatchSize != 1234 {
+		t.Fatalf("expected persisted timeframe stage settings, got %+v", got.ScrapeTimeframe)
+	}
+	if got.ScrapeLatest.Enabled || got.ScrapeBackfill.Enabled {
+		t.Fatalf("expected latest and backfill disabled, got latest=%+v backfill=%+v", got.ScrapeLatest, got.ScrapeBackfill)
+	}
+	if len(got.ScrapeTimeframes) != 1 {
+		t.Fatalf("expected one historical timeframe, got %+v", got.ScrapeTimeframes)
+	}
+	if got.ScrapeTimeframes[0].Group != "alt.binaries.history" {
+		t.Fatalf("unexpected timeframe group %+v", got.ScrapeTimeframes[0])
+	}
+	wantEnd := time.Date(2026, 1, 19, 0, 0, 0, 0, time.UTC)
+	if !got.ScrapeTimeframes[0].End.Equal(wantEnd) {
+		t.Fatalf("expected inclusive end date to become %s exclusive, got %s", wantEnd, got.ScrapeTimeframes[0].End)
+	}
+}
+
 func TestScopedIndexerServersUsesSharedRuntimeServers(t *testing.T) {
 	appCtx := &app.Context{
 		BootstrapConfig: &config.Config{},

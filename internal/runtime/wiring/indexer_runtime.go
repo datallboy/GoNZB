@@ -133,7 +133,11 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		cfg.Servers = servers
 		indexerConfig = &cfg
 	}
-	runtimeCfg, err := deriveUsenetIndexerConfig(indexerConfig)
+	var runtimeIndexing *app.IndexingRuntimeSettings
+	if runtime := indexerRuntimeSettings(appCtx); runtime != nil {
+		runtimeIndexing = runtime.Indexing
+	}
+	runtimeCfg, err := deriveUsenetIndexerConfig(indexerConfig, runtimeIndexing)
 	if err != nil {
 		return nil, err
 	}
@@ -908,14 +912,17 @@ func newIndexerStageOwner() string {
 	return ksuid.New().String()
 }
 
-func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) {
+func deriveUsenetIndexerConfig(cfg *config.Config, runtimeIndexing ...*app.IndexingRuntimeSettings) (usenetIndexerConfig, error) {
 	if cfg == nil {
 		return usenetIndexerConfig{}, fmt.Errorf("app config is required")
 	}
 
 	indexingCfg := app.IndexingRuntimeFromConfig(cfg.Indexing)
+	if len(runtimeIndexing) > 0 && runtimeIndexing[0] != nil {
+		indexingCfg = *app.CloneRuntimeSettings(&app.RuntimeSettings{Indexing: runtimeIndexing[0]}).Indexing
+	}
 	backfillCutoffs := map[string]time.Time{}
-	for group, rawDate := range cfg.Indexing.BackfillUntilDateByGroup {
+	for group, rawDate := range indexingCfg.BackfillUntilDateByGroup {
 		parsed, err := time.Parse("2006-01-02", rawDate)
 		if err != nil {
 			return usenetIndexerConfig{}, fmt.Errorf("parse indexing.backfill_until_date_by_group[%s]: %w", group, err)
