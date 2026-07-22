@@ -46,6 +46,9 @@ type repository interface {
 	ResolveScrapeTimeframeProgress(ctx context.Context, timeframeID string, providerID, newsgroupID, articleLow, articleHigh int64, empty bool) error
 	AdvanceScrapeTimeframeProgress(ctx context.Context, timeframeID string, providerID, newsgroupID, nextArticle int64, completed bool) error
 	FailScrapeTimeframeProgress(ctx context.Context, timeframeID string, providerID, newsgroupID int64, cause string) error
+	ClaimDeferredArticleRange(ctx context.Context, owner string, lease time.Duration) (*pgindex.DeferredArticleRangeClaim, error)
+	CompleteDeferredArticleRange(ctx context.Context, id int64, owner string) error
+	FailDeferredArticleRange(ctx context.Context, id int64, owner, cause string, maxAttempts int) error
 }
 
 type provider interface {
@@ -86,6 +89,9 @@ type Options struct {
 	RangeCoordinator         RangeCoordinator
 	RunObserver              func(context.Context, map[string]any, error)
 	Timeframes               []Timeframe
+	DeferredClaimOwner       string
+	DeferredClaimLease       time.Duration
+	DeferredMaxAttempts      int
 }
 
 type Timeframe struct {
@@ -218,6 +224,15 @@ func NewService(repo repository, p provider, log logger, opts Options) *Service 
 	if opts.MaxNewSourceDaysPerPass <= 0 {
 		opts.MaxNewSourceDaysPerPass = 32
 	}
+	if strings.TrimSpace(opts.DeferredClaimOwner) == "" {
+		opts.DeferredClaimOwner = "scrape-deferred"
+	}
+	if opts.DeferredClaimLease <= 0 {
+		opts.DeferredClaimLease = 5 * time.Minute
+	}
+	if opts.DeferredMaxAttempts <= 0 {
+		opts.DeferredMaxAttempts = 8
+	}
 
 	return &Service{
 		repo:                  repo,
@@ -258,6 +273,10 @@ func (s *Service) RunTimeframesOnceWithMetrics(ctx context.Context) (map[string]
 	return s.runModeWithMetrics(ctx, "timeframe")
 }
 
+func (s *Service) RunDeferredOnceWithMetrics(ctx context.Context) (map[string]any, error) {
+	return s.runModeWithMetrics(ctx, "deferred")
+}
+
 func (s *Service) runModeWithMetrics(ctx context.Context, mode string) (map[string]any, error) {
 	if s.repo == nil {
 		return nil, fmt.Errorf("scrape repo is required")
@@ -282,7 +301,7 @@ func (s *Service) runModeWithMetrics(ctx context.Context, mode string) (map[stri
 	ctx = context.WithValue(ctx, sourceDayAdmissionContextKey{}, admission)
 	groups := s.effectiveGroups()
 	hasAssignedRanges := s.hasAssignedRangeProvider()
-	if len(groups) == 0 && !hasAssignedRanges && (mode != "timeframe" || len(s.opts.Timeframes) == 0) {
+	if len(groups) == 0 && !hasAssignedRanges && mode != "deferred" && (mode != "timeframe" || len(s.opts.Timeframes) == 0) {
 		return (&runMetrics{Mode: mode, BatchSize: s.opts.BatchSize}).toMap(), nil
 	}
 	if s.provider == nil {
@@ -308,6 +327,8 @@ func (s *Service) runModeWithMetrics(ctx context.Context, mode string) (map[stri
 	var runErr error
 	if mode == "timeframe" {
 		runErr = s.runTimeframes(ctx, providerID, metrics)
+	} else if mode == "deferred" {
+		runErr = s.runDeferredRanges(ctx, metrics)
 	} else {
 		runErr = s.runAssignedRanges(ctx, providerID, mode, metrics)
 		if runErr == nil {
@@ -336,6 +357,73 @@ func (s *Service) runModeWithMetrics(ctx context.Context, mode string) (map[stri
 	}
 
 	return metrics.toMap(), runErr
+}
+
+func (s *Service) runDeferredRanges(ctx context.Context, metrics *runMetrics) error {
+	budget := s.opts.MaxBatches
+	if budget <= 0 {
+		budget = 1
+	}
+	for metrics.RangesFetched < budget {
+		claim, err := s.repo.ClaimDeferredArticleRange(ctx, s.opts.DeferredClaimOwner, s.opts.DeferredClaimLease)
+		if err != nil {
+			return err
+		}
+		if claim == nil {
+			return nil
+		}
+		metrics.GroupsTotal++
+		metrics.GroupsScheduled++
+		metrics.GroupsProcessed++
+		metrics.GroupsWithWork++
+		metrics.RangesFetched++
+		rangeEnd := claim.ArticleHigh
+		if s.opts.BatchSize > 0 && rangeEnd-claim.ArticleLow+1 > s.opts.BatchSize {
+			rangeEnd = claim.ArticleLow + s.opts.BatchSize - 1
+		}
+
+		headers, inserted, _, cutoffFiltered, deferredRanges, _, fetchErr := s.fetchInsertRange(
+			ctx,
+			"deferred",
+			claim.ProviderID,
+			claim.NewsgroupID,
+			claim.GroupName,
+			claim.ArticleLow,
+			rangeEnd,
+			nil,
+			claim.ProviderKey,
+		)
+		if fetchErr != nil {
+			_ = s.repo.FailDeferredArticleRange(ctx, claim.ID, s.opts.DeferredClaimOwner, fetchErr.Error(), s.opts.DeferredMaxAttempts)
+			return fetchErr
+		}
+		metrics.ArticleHeadersSeen += int64(len(headers))
+		metrics.ArticlesInserted += inserted
+		metrics.CutoffFiltered += int64(cutoffFiltered)
+		metrics.DeferredRanges += deferredRanges
+		if rangeEnd < claim.ArticleHigh {
+			if err := s.repo.UpsertDeferredArticleRange(ctx, pgindex.DeferredArticleRangeRecord{
+				ProviderID:            claim.ProviderID,
+				NewsgroupID:           claim.NewsgroupID,
+				ArticleLow:            rangeEnd + 1,
+				ArticleHigh:           claim.ArticleHigh,
+				EstimatedArticleCount: claim.ArticleHigh - rangeEnd,
+				Reason:                claim.Reason,
+				PriorityScore:         claim.PriorityScore,
+			}); err != nil {
+				_ = s.repo.FailDeferredArticleRange(ctx, claim.ID, s.opts.DeferredClaimOwner, err.Error(), s.opts.DeferredMaxAttempts)
+				return err
+			}
+			metrics.DeferredRanges++
+		}
+		if err := s.repo.CompleteDeferredArticleRange(ctx, claim.ID, s.opts.DeferredClaimOwner); err != nil {
+			return err
+		}
+		if s.log != nil {
+			s.log.Info("scrape deferred completed: id=%d group=%s range=%d-%d inserted=%d attempts=%d", claim.ID, claim.GroupName, claim.ArticleLow, rangeEnd, inserted, claim.Attempts)
+		}
+	}
+	return nil
 }
 
 func (s *Service) checkCriticalIndexerIntegrity(ctx context.Context) (*pgindex.IndexerIntegrityReport, error) {

@@ -24,6 +24,7 @@ const (
 	StageScrapeLatest                  StageName = "scrape_latest"
 	StageScrapeBackfill                StageName = "scrape_backfill"
 	StageScrapeTimeframe               StageName = "scrape_timeframe"
+	StageScrapeDeferred                StageName = "scrape_deferred"
 	StagePosterMaterialize             StageName = "poster_materialize"
 	StageCrosspostPopularityRefresh    StageName = "crosspost_popularity_refresh"
 	StageArticleCohortSchedule         StageName = "article_cohort_schedule"
@@ -184,6 +185,7 @@ func pipelineStageNames() []StageName {
 		StageScrapeLatest,
 		StageScrapeBackfill,
 		StageScrapeTimeframe,
+		StageScrapeDeferred,
 		StagePosterMaterialize,
 		StageCrosspostPopularityRefresh,
 		StageArticleCohortSchedule,

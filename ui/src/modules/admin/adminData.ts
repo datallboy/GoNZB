@@ -3,6 +3,7 @@ export const stageOptions = [
   { value: 'scrape_latest', label: 'Scrape Latest' },
   { value: 'scrape_backfill', label: 'Scrape Backfill' },
   { value: 'scrape_timeframe', label: 'Scrape Historical Timeframes' },
+  { value: 'scrape_deferred', label: 'Drain Deferred Scrape Ranges' },
   { value: 'poster_materialize', label: 'Poster Materialize' },
   { value: 'crosspost_popularity_refresh', label: 'Crosspost Popularity' },
   { value: 'assemble', label: 'Assemble' },

@@ -1225,6 +1225,7 @@ export type IndexingRuntimeSettings = {
   scrape_latest: AdminStageConfigPatch
   scrape_backfill: AdminStageConfigPatch
   scrape_timeframe: AdminStageConfigPatch
+  scrape_deferred: AdminStageConfigPatch
   poster_materialize: AdminStageConfigPatch
   crosspost_popularity_refresh: AdminStageConfigPatch
   assemble: AdminStageConfigPatch

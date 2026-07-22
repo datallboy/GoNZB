@@ -183,6 +183,67 @@ func TestRunTimeframesKeepsIndependentProgressForSameGroup(t *testing.T) {
 	}
 }
 
+func TestRunDeferredClaimsAndCompletesDurableRange(t *testing.T) {
+	postedAt := time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC)
+	repo := &fakeScrapeRepo{
+		deferredClaims: []*pgindex.DeferredArticleRangeClaim{{
+			ID: 17, ProviderID: 1, ProviderKey: "fake", NewsgroupID: 9,
+			GroupName: "alt.binaries.deferred", ArticleLow: 100, ArticleHigh: 101,
+		}},
+	}
+	provider := fakeScrapeProvider{headers: []OverviewHeader{
+		{ArticleNumber: 100, MessageID: "<deferred-100>", DateUTC: &postedAt},
+		{ArticleNumber: 101, MessageID: "<deferred-101>", DateUTC: &postedAt},
+	}}
+	svc := NewService(repo, provider, testScrapeLogger{}, Options{BatchSize: 2, MaxBatches: 1})
+
+	metrics, err := svc.RunDeferredOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("RunDeferredOnceWithMetrics() error = %v", err)
+	}
+	if len(repo.insertedHeaders) != 2 {
+		t.Fatalf("expected deferred headers to be inserted, got %+v", repo.insertedHeaders)
+	}
+	if !slices.Equal(repo.completedDeferredClaims, []int64{17}) {
+		t.Fatalf("expected deferred claim 17 to complete, got %+v", repo.completedDeferredClaims)
+	}
+	if got := metrics["ranges_fetched"]; got != 1 {
+		t.Fatalf("expected one deferred range fetch, got %v", got)
+	}
+}
+
+func TestRunDeferredSplitsLargeClaimAtBatchBoundary(t *testing.T) {
+	postedAt := time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC)
+	repo := &fakeScrapeRepo{
+		deferredClaims: []*pgindex.DeferredArticleRangeClaim{{
+			ID: 18, ProviderID: 1, ProviderKey: "fake", NewsgroupID: 9,
+			GroupName: "alt.binaries.deferred", ArticleLow: 100, ArticleHigh: 109,
+			Reason: "partition_source_day_cap", PriorityScore: 20,
+		}},
+	}
+	provider := fakeScrapeProvider{xoverFn: func(_ context.Context, _ string, from, to int64) ([]OverviewHeader, error) {
+		rows := make([]OverviewHeader, 0, to-from+1)
+		for article := from; article <= to; article++ {
+			rows = append(rows, OverviewHeader{ArticleNumber: article, MessageID: fmt.Sprintf("<deferred-%d>", article), DateUTC: &postedAt})
+		}
+		return rows, nil
+	}}
+	svc := NewService(repo, provider, testScrapeLogger{}, Options{BatchSize: 3, MaxBatches: 1})
+
+	if _, err := svc.RunDeferredOnceWithMetrics(context.Background()); err != nil {
+		t.Fatalf("RunDeferredOnceWithMetrics() error = %v", err)
+	}
+	if len(repo.insertedHeaders) != 3 {
+		t.Fatalf("expected one three-article batch, got %d", len(repo.insertedHeaders))
+	}
+	if len(repo.deferredRanges) != 1 || repo.deferredRanges[0].ArticleLow != 103 || repo.deferredRanges[0].ArticleHigh != 109 {
+		t.Fatalf("expected durable 103-109 continuation, got %+v", repo.deferredRanges)
+	}
+	if !slices.Equal(repo.completedDeferredClaims, []int64{18}) {
+		t.Fatalf("expected original claim to complete after continuation write, got %+v", repo.completedDeferredClaims)
+	}
+}
+
 func TestRunBackfillSkipsGroupWhenCutoffReachedForAnotherProvider(t *testing.T) {
 	cutoff := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
 	repo := &fakeScrapeRepo{
@@ -827,6 +888,9 @@ type fakeScrapeRepo struct {
 	observedRanges            []observedScrapeRange
 	existingScrapeDays        map[string]bool
 	timeframeProgress         map[string]*pgindex.ScrapeTimeframeProgress
+	deferredClaims            []*pgindex.DeferredArticleRangeClaim
+	completedDeferredClaims   []int64
+	failedDeferredClaims      []int64
 }
 
 type observedScrapeRange struct {
@@ -1054,6 +1118,26 @@ func (f *fakeScrapeRepo) FailScrapeTimeframeProgress(_ context.Context, timefram
 	progress := f.timeframeProgress[timeframeProgressKey(timeframeID, providerID, newsgroupID)]
 	progress.State = "failed"
 	progress.LastError = cause
+	return nil
+}
+
+func (f *fakeScrapeRepo) ClaimDeferredArticleRange(context.Context, string, time.Duration) (*pgindex.DeferredArticleRangeClaim, error) {
+	if len(f.deferredClaims) == 0 {
+		return nil, nil
+	}
+	claim := f.deferredClaims[0]
+	f.deferredClaims = f.deferredClaims[1:]
+	copy := *claim
+	return &copy, nil
+}
+
+func (f *fakeScrapeRepo) CompleteDeferredArticleRange(_ context.Context, id int64, _ string) error {
+	f.completedDeferredClaims = append(f.completedDeferredClaims, id)
+	return nil
+}
+
+func (f *fakeScrapeRepo) FailDeferredArticleRange(_ context.Context, id int64, _, _ string, _ int) error {
+	f.failedDeferredClaims = append(f.failedDeferredClaims, id)
 	return nil
 }
 
