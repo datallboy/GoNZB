@@ -247,6 +247,7 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 	}
 	probeMode := "heuristic"
 	ffprobeError := ""
+	ffprobeWarning := ""
 	archiveExtractError := ""
 	materializedBytes := int64(0)
 	mediaTitle := ""
@@ -268,6 +269,12 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 			probeCtx, cancel := context.WithTimeout(ctx, s.opts.ToolTimeout)
 			ffprobeResult, ffprobeOutput, probeErr := inspectpkg.RunFFProbeInput(probeCtx, s.runner, s.opts.FFProbePath, bytes.NewReader(sample.Prefix))
 			cancel()
+			artifactMetadata := map[string]any{
+				"probe_mode":          "ffprobe_direct_prefix",
+				"prefix_bytes":        sample.BytesRead,
+				"exact_size":          sample.ExactSize,
+				"streamed_to_ffprobe": true,
+			}
 			artifactRows = []pgindex.BinaryInspectionArtifactRecord{{
 				BinaryID:     candidate.BinaryID,
 				ReleaseID:    candidate.ReleaseID,
@@ -278,13 +285,7 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 				MIMEType:     sample.MIMEType,
 				Signature:    sample.Signature,
 				SourceKind:   "inspect_media",
-				Metadata: map[string]any{
-					"probe_mode":           "ffprobe_direct_prefix",
-					"prefix_bytes":         sample.BytesRead,
-					"exact_size":           sample.ExactSize,
-					"streamed_to_ffprobe":  true,
-					"ffprobe_error_detail": errorString(probeErr),
-				},
+				Metadata:     artifactMetadata,
 			}}
 			if ffprobeResult != nil {
 				mediaTitle = firstNonEmpty(mediaTitle, ffprobeFormatTitle(ffprobeResult.Format.Tags))
@@ -349,9 +350,16 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 				runtimeSeconds = int(inspectpkg.ParseSeconds(ffprobeResult.Format.Duration))
 			}
 			if probeErr != nil {
-				ffprobeError = strings.TrimSpace(string(ffprobeOutput))
-				if ffprobeError == "" && probeErr != nil {
-					ffprobeError = probeErr.Error()
+				probeDetail := strings.TrimSpace(string(ffprobeOutput))
+				if probeDetail == "" {
+					probeDetail = probeErr.Error()
+				}
+				if expectedTruncatedPrefixProbeEOF(sample.BytesRead, sample.ExactSize, probeDetail) {
+					ffprobeWarning = probeDetail
+					artifactMetadata["ffprobe_warning_detail"] = probeDetail
+				} else {
+					ffprobeError = probeDetail
+					artifactMetadata["ffprobe_error_detail"] = probeDetail
 				}
 			}
 		} else {
@@ -492,6 +500,10 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		summary["ffprobe_error_detail"] = ffprobeError
 		summary["probe_skip_reason"] = "ffprobe_failed"
 	}
+	if ffprobeWarning != "" {
+		summary["ffprobe_warning_detail"] = ffprobeWarning
+		summary["probe_skip_reason"] = "prefix_inconclusive"
+	}
 	if archiveExtractError != "" {
 		summary["archive_extract_error_detail"] = archiveExtractError
 		summary["probe_skip_reason"] = "archive_extract_failed"
@@ -577,6 +589,14 @@ func directMediaProbePrefixLimit(maxBytes int64) int64 {
 		return maxBytes
 	}
 	return directMediaProbePrefixBytes
+}
+
+func expectedTruncatedPrefixProbeEOF(bytesRead, exactSize int64, detail string) bool {
+	if bytesRead <= 0 || exactSize <= bytesRead {
+		return false
+	}
+	detail = strings.ToLower(strings.TrimSpace(detail))
+	return strings.Contains(detail, "file ended prematurely") || strings.Contains(detail, "end of file")
 }
 
 func shouldSkipArchiveProbe(isVideo, isAudio bool, resolution, videoCodec, audioCodec string) bool {

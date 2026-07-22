@@ -96,6 +96,64 @@ func TestRunOnceUsesFFProbeFactsAndOnlyUpdatesMediaOutputs(t *testing.T) {
 	}
 }
 
+func TestRunOnceCompletesWhenTruncatedPrefixMakesFFProbeInconclusive(t *testing.T) {
+	now := time.Now().UTC()
+	repo := &fakeMediaRepository{
+		candidates: []pgindex.BinaryInspectionCandidate{{
+			BinaryID:        54,
+			ReleaseID:       "rel-media-prefix-eof",
+			ReleaseTitle:    "Example.Feature.2026.1080p.HEVC",
+			FileName:        "example.feature.2026.mkv",
+			SourceUpdatedAt: &now,
+			TotalBytes:      1024,
+		}},
+		files: []pgindex.CatalogReleaseFile{{
+			ID:        604,
+			BinaryID:  54,
+			FileName:  "example.feature.2026.mkv",
+			SizeBytes: 1024,
+		}},
+	}
+
+	probeDetail := "[matroska,webm] File ended prematurely\npipe:0: End of file\n{\n\n}"
+	runner := &mediaRunner{output: []byte(probeDetail), err: fmt.Errorf("exit status 1")}
+	svc := NewService(
+		repo,
+		inspectpkg.NewWorkspaceManager(inspectpkg.Options{WorkDir: t.TempDir()}),
+		mediaFetcher{
+			body:      []byte{0x1A, 0x45, 0xDF, 0xA3, 0x00, 0x00, 0x00, 0x00},
+			fileName:  "example.feature.2026.mkv",
+			exactSize: 1024,
+		},
+		runner,
+		nil,
+		testMediaLogger{},
+		inspectpkg.Options{FFProbePath: "ffprobe", MaxBytes: 8},
+	)
+	if err := svc.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	if len(repo.failed) != 0 || len(repo.completed) != 1 {
+		t.Fatalf("expected inconclusive truncated prefix to complete, completed=%+v failed=%+v", repo.completed, repo.failed)
+	}
+	if got := repo.completed[0].Summary["probe_skip_reason"]; got != "prefix_inconclusive" {
+		t.Fatalf("expected prefix_inconclusive summary, got %+v", repo.completed[0].Summary)
+	}
+	if repo.completed[0].Summary["ffprobe_warning_detail"] != probeDetail {
+		t.Fatalf("expected ffprobe warning detail, got %+v", repo.completed[0].Summary)
+	}
+	if len(repo.releaseUpdates) != 1 || intValueMedia(repo.releaseUpdates[0].VideoCount) != 1 {
+		t.Fatalf("expected heuristic media update, got %+v", repo.releaseUpdates)
+	}
+	if len(repo.artifacts) != 1 || repo.artifacts[0].Metadata["ffprobe_warning_detail"] != probeDetail {
+		t.Fatalf("expected warning on prefix artifact, got %+v", repo.artifacts)
+	}
+	if _, ok := repo.artifacts[0].Metadata["ffprobe_error_detail"]; ok {
+		t.Fatalf("did not expect hard ffprobe error metadata, got %+v", repo.artifacts[0].Metadata)
+	}
+}
+
 func TestRunOnceSkipsArchiveProbeWhenArchiveEntryAlreadyHasStrongMediaSignals(t *testing.T) {
 	now := time.Now().UTC()
 	repo := &fakeMediaRepository{
@@ -296,12 +354,17 @@ func (f *fakeMediaRepository) ListCatalogReleaseNewsgroups(context.Context, stri
 }
 
 type mediaFetcher struct {
-	body     []byte
-	fileName string
+	body      []byte
+	fileName  string
+	exactSize int
 }
 
 func (f mediaFetcher) Fetch(context.Context, string, []string) (io.Reader, error) {
-	payload := fmt.Sprintf("=ybegin part=1 total=1 line=128 size=%d name=%s\r\n=ypart begin=1 end=%d\r\n%s\r\n=yend size=%d pcrc32=00000000\r\n", len(f.body), f.fileName, len(f.body), encodeYEncMedia(f.body), len(f.body))
+	exactSize := f.exactSize
+	if exactSize <= 0 {
+		exactSize = len(f.body)
+	}
+	payload := fmt.Sprintf("=ybegin part=1 total=1 line=128 size=%d name=%s\r\n=ypart begin=1 end=%d\r\n%s\r\n=yend size=%d pcrc32=00000000\r\n", exactSize, f.fileName, len(f.body), encodeYEncMedia(f.body), len(f.body))
 	return bytes.NewBufferString(payload), nil
 }
 
