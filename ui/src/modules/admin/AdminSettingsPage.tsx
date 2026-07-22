@@ -216,6 +216,20 @@ function defaultSettings(): RuntimeSettings {
         max_blocking_yenc: 50000,
         resume_blocking_yenc: 10000,
       },
+      partitions: {
+        precreate_days_ahead: 2,
+        max_new_source_days_per_pass: 32,
+        ddl_lock_timeout_seconds: 5,
+      },
+      retention: {
+        source_settle_hours: 24,
+        no_yield_grace_days: 7,
+        yenc_terminal_attempts: 4,
+        execute_outcome_purge: false,
+      },
+      recovery_admission: {
+        latest_reserve_percent: 10,
+      },
       release_summary_refresh: stageDefaults(10000, 0, { max_batches: 10 }),
       release: {
         ...stageDefaults(1000),
@@ -372,6 +386,22 @@ function normalizeSettings(input?: RuntimeSettings): RuntimeSettings {
         resume_open_headers: indexing.source_window?.resume_open_headers ?? defaults.indexing!.source_window!.resume_open_headers,
         max_blocking_yenc: indexing.source_window?.max_blocking_yenc ?? defaults.indexing!.source_window!.max_blocking_yenc,
         resume_blocking_yenc: indexing.source_window?.resume_blocking_yenc ?? defaults.indexing!.source_window!.resume_blocking_yenc,
+      },
+      partitions: {
+        precreate_days_ahead: indexing.partitions?.precreate_days_ahead ?? 2,
+        max_new_source_days_per_pass: indexing.partitions?.max_new_source_days_per_pass ?? 32,
+        ddl_lock_timeout_seconds: indexing.partitions?.ddl_lock_timeout_seconds ?? 5,
+      },
+      retention: {
+        ...indexing.retention,
+        source_settle_hours: indexing.retention?.source_settle_hours ?? 24,
+        no_yield_grace_days: indexing.retention?.no_yield_grace_days ?? 7,
+        yenc_terminal_attempts: indexing.retention?.yenc_terminal_attempts ?? 4,
+        execute_outcome_purge: indexing.retention?.execute_outcome_purge ?? false,
+      },
+      recovery_admission: {
+        ...indexing.recovery_admission,
+        latest_reserve_percent: indexing.recovery_admission?.latest_reserve_percent ?? 10,
       },
       release_summary_refresh: { ...defaults.indexing!.release_summary_refresh, ...indexing.release_summary_refresh },
       release: { ...defaults.indexing!.release, ...indexing.release },
@@ -1405,6 +1435,73 @@ export function AdminSettingsPage() {
               value={indexing.source_window?.resume_blocking_yenc ?? 10000}
               helpText="Resume scheduled scrape after blocking yEnc backlog drains below this count."
               onChange={(value) => setIndexing({ ...indexing, source_window: { ...indexing.source_window!, resume_blocking_yenc: value } })}
+            />
+          </div>
+        </SettingsSection>
+
+        <SettingsSection title="Partitions and outcome retention">
+          <div className="banner">
+            The indexer creates daily partitions only for source dates it actually sees. Unexpected old XOVER dates are admitted in bounded batches and deferred durably; article age alone never authorizes deletion.
+          </div>
+          <div className="toolbar-grid">
+            <NumberField
+              label="Precreate days ahead"
+              min={0}
+              max={14}
+              value={indexing.partitions?.precreate_days_ahead ?? 2}
+              helpText="Proactively creates the scrape bundle for the current UTC day plus this many future days. This reduces first-write latency and is not a retention horizon."
+              onChange={(value) => setIndexing({ ...indexing, partitions: { ...indexing.partitions!, precreate_days_ahead: value } })}
+            />
+            <NumberField
+              label="Max new source days per pass"
+              min={1}
+              max={366}
+              value={indexing.partitions?.max_new_source_days_per_pass ?? 32}
+              helpText="Maximum previously unseen posted-date partitions one scrape pass may introduce. Newest dates are admitted first; the rest are saved as deferred article ranges."
+              onChange={(value) => setIndexing({ ...indexing, partitions: { ...indexing.partitions!, max_new_source_days_per_pass: value } })}
+            />
+            <NumberField
+              label="Partition DDL lock timeout seconds"
+              min={1}
+              max={60}
+              value={indexing.partitions?.ddl_lock_timeout_seconds ?? 5}
+              helpText="Maximum lock wait for each individual parent/day partition transaction. A timeout defers work instead of writing into a default partition."
+              onChange={(value) => setIndexing({ ...indexing, partitions: { ...indexing.partitions!, ddl_lock_timeout_seconds: value } })}
+            />
+            <NumberField
+              label="Source settle hours"
+              min={1}
+              value={indexing.retention?.source_settle_hours ?? 24}
+              helpText="Quiet period after the last ingestion before a source-day bucket can be considered settled. New input reactivates it."
+              onChange={(value) => setIndexing({ ...indexing, retention: { ...indexing.retention!, source_settle_hours: value } })}
+            />
+            <NumberField
+              label="No-yield grace days"
+              min={1}
+              value={indexing.retention?.no_yield_grace_days ?? 7}
+              helpText="Minimum time without ingestion or useful progress before fully drained work can be classified as bounded no-yield."
+              onChange={(value) => setIndexing({ ...indexing, retention: { ...indexing.retention!, no_yield_grace_days: value } })}
+            />
+            <NumberField
+              label="Terminal yEnc attempts"
+              min={1}
+              value={indexing.retention?.yenc_terminal_attempts ?? 4}
+              helpText="Missing yEnc observations at or above this budget count as exhausted only after no ready or running work remains."
+              onChange={(value) => setIndexing({ ...indexing, retention: { ...indexing.retention!, yenc_terminal_attempts: value } })}
+            />
+            <NumberField
+              label="Latest recovery reserve %"
+              min={1}
+              max={50}
+              value={indexing.recovery_admission?.latest_reserve_percent ?? 10}
+              helpText="Reserves this share of each yEnc recovery claim for the newest available work before older fairness lanes are selected."
+              onChange={(value) => setIndexing({ ...indexing, recovery_admission: { ...indexing.recovery_admission!, latest_reserve_percent: value } })}
+            />
+            <CheckboxField
+              label="Enable destructive outcome purge"
+              checked={Boolean(indexing.retention?.execute_outcome_purge)}
+              helpText="Off by default. Enable only after outcome reconciliation is healthy and the Outcome Partition Retention dry-run shows the expected terminal days and no blockers."
+              onChange={(value) => setIndexing({ ...indexing, retention: { ...indexing.retention!, execute_outcome_purge: value } })}
             />
           </div>
         </SettingsSection>
