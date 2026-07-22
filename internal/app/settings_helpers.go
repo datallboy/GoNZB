@@ -38,6 +38,7 @@ func DefaultRuntimeSettings() *RuntimeSettings {
 			RecoverYEnc:                 defaultRecoverYEncStage(false),
 			SourceWindow:                defaultSourceWindowSettings(),
 			Retention:                   defaultRetentionSettings(),
+			Partitions:                  defaultPartitionSettings(),
 			RecoveryAdmission:           defaultRecoveryAdmissionSettings(),
 			ScrapeTiers:                 defaultScrapeTierSettings(),
 			DeferredBackfill:            defaultDeferredBackfillSettings(),
@@ -167,12 +168,21 @@ func defaultRetentionSettings() IndexingRetentionRuntimeSettings {
 		FailedProbeHours:                48,
 		ArchivedReleaseDetailGraceHours: 6,
 		MetadataIncompleteReleaseHours:  48,
-		// Keep startup provisioning aligned with the active latest-indexing
-		// window. Historical backfills must explicitly widen this horizon before
-		// their supervisor stages are enabled.
-		CreatePartitionsDaysBefore: 2,
-		CreatePartitionsDaysAhead:  2,
-		PurgeDryRunDefault:         true,
+		CreatePartitionsDaysBefore:      0,
+		CreatePartitionsDaysAhead:       2,
+		SourceSettleHours:               24,
+		NoYieldGraceDays:                7,
+		YEncTerminalAttempts:            4,
+		ExecuteOutcomePurge:             false,
+		PurgeDryRunDefault:              true,
+	}
+}
+
+func defaultPartitionSettings() IndexingPartitionRuntimeSettings {
+	return IndexingPartitionRuntimeSettings{
+		PrecreateDaysAhead:      2,
+		MaxNewSourceDaysPerPass: 32,
+		DDLLockTimeoutSeconds:   5,
 	}
 }
 
@@ -188,6 +198,7 @@ func defaultRecoveryAdmissionSettings() IndexingRecoveryAdmissionRuntimeSettings
 		Priority0OverflowCap:        25000,
 		Priority0ReservoirBatches:   5,
 		NearTimeCohortBucketMinutes: 5,
+		LatestReservePercent:        10,
 	}
 }
 
@@ -323,6 +334,7 @@ func IndexingRuntimeFromConfig(cfg config.IndexingConfig) IndexingRuntimeSetting
 	out.RecoverYEnc = indexStageRuntimeFromConfigWithConcurrency(cfg.RecoverYEnc, false, 10, 25)
 	out.SourceWindow = defaultSourceWindowSettings()
 	out.Retention = defaultRetentionSettings()
+	out.Partitions = defaultPartitionSettings()
 	out.RecoveryAdmission = defaultRecoveryAdmissionSettings()
 	out.ScrapeTiers = defaultScrapeTierSettings()
 	out.DeferredBackfill = defaultDeferredBackfillSettings()
@@ -1169,6 +1181,7 @@ func cloneIndexing(in *IndexingRuntimeSettings) *IndexingRuntimeSettings {
 		RecoverYEnc:                 mergeStageRuntimeSettings(defaultRecoverYEncStage(false), in.RecoverYEnc),
 		SourceWindow:                normalizeSourceWindowRuntimeSettings(in.SourceWindow),
 		Retention:                   mergeRetentionRuntimeSettings(defaultRetentionSettings(), in.Retention),
+		Partitions:                  mergePartitionRuntimeSettings(defaultPartitionSettings(), in.Partitions, in.Retention),
 		RecoveryAdmission:           mergeRecoveryAdmissionRuntimeSettings(defaultRecoveryAdmissionSettings(), in.RecoveryAdmission),
 		ScrapeTiers:                 mergeScrapeTierRuntimeSettings(defaultScrapeTierSettings(), in.ScrapeTiers),
 		DeferredBackfill:            mergeDeferredBackfillRuntimeSettings(defaultDeferredBackfillSettings(), in.DeferredBackfill),
@@ -1472,14 +1485,38 @@ func mergeRetentionRuntimeSettings(base, override IndexingRetentionRuntimeSettin
 	if override.MetadataIncompleteReleaseHours > 0 {
 		base.MetadataIncompleteReleaseHours = override.MetadataIncompleteReleaseHours
 	}
-	if override.CreatePartitionsDaysBefore > 0 {
-		base.CreatePartitionsDaysBefore = override.CreatePartitionsDaysBefore
-	}
 	if override.CreatePartitionsDaysAhead > 0 {
 		base.CreatePartitionsDaysAhead = override.CreatePartitionsDaysAhead
 	}
+	if override.SourceSettleHours > 0 {
+		base.SourceSettleHours = override.SourceSettleHours
+	}
+	if override.NoYieldGraceDays > 0 {
+		base.NoYieldGraceDays = override.NoYieldGraceDays
+	}
+	if override.YEncTerminalAttempts > 0 {
+		base.YEncTerminalAttempts = override.YEncTerminalAttempts
+	}
+	if override.ExecuteOutcomePurge {
+		base.ExecuteOutcomePurge = true
+	}
 	if !override.PurgeDryRunDefault {
 		base.PurgeDryRunDefault = false
+	}
+	return base
+}
+
+func mergePartitionRuntimeSettings(base, override IndexingPartitionRuntimeSettings, legacy IndexingRetentionRuntimeSettings) IndexingPartitionRuntimeSettings {
+	if override.PrecreateDaysAhead > 0 {
+		base.PrecreateDaysAhead = override.PrecreateDaysAhead
+	} else if legacy.CreatePartitionsDaysAhead > 0 {
+		base.PrecreateDaysAhead = legacy.CreatePartitionsDaysAhead
+	}
+	if override.MaxNewSourceDaysPerPass > 0 {
+		base.MaxNewSourceDaysPerPass = override.MaxNewSourceDaysPerPass
+	}
+	if override.DDLLockTimeoutSeconds > 0 {
+		base.DDLLockTimeoutSeconds = override.DDLLockTimeoutSeconds
 	}
 	return base
 }
@@ -1514,6 +1551,12 @@ func mergeRecoveryAdmissionRuntimeSettings(base, override IndexingRecoveryAdmiss
 	}
 	if override.NearTimeCohortBucketMinutes > 0 {
 		base.NearTimeCohortBucketMinutes = override.NearTimeCohortBucketMinutes
+	}
+	if override.LatestReservePercent > 0 {
+		base.LatestReservePercent = override.LatestReservePercent
+	}
+	if base.LatestReservePercent > 50 {
+		base.LatestReservePercent = 50
 	}
 	return base
 }

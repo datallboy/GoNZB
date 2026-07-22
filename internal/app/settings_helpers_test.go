@@ -144,8 +144,29 @@ func TestDefaultRuntimeSettingsAreOperationallyDisabled(t *testing.T) {
 	if runtime.Indexing.InspectPAR2.Concurrency != 4 {
 		t.Fatalf("expected inspect_par2 concurrency default, got %+v", runtime.Indexing.InspectPAR2)
 	}
-	if runtime.Indexing.Retention.CreatePartitionsDaysBefore != 2 || runtime.Indexing.Retention.CreatePartitionsDaysAhead != 2 {
-		t.Fatalf("expected a small rolling partition horizon, got %+v", runtime.Indexing.Retention)
+	if runtime.Indexing.Retention.CreatePartitionsDaysBefore != 0 || runtime.Indexing.Retention.CreatePartitionsDaysAhead != 2 {
+		t.Fatalf("expected legacy partition settings to avoid historical precreation, got %+v", runtime.Indexing.Retention)
+	}
+	if runtime.Indexing.Partitions.PrecreateDaysAhead != 2 || runtime.Indexing.Partitions.MaxNewSourceDaysPerPass != 32 || runtime.Indexing.Partitions.DDLLockTimeoutSeconds != 5 {
+		t.Fatalf("unexpected sparse partition defaults: %+v", runtime.Indexing.Partitions)
+	}
+	if runtime.Indexing.Retention.SourceSettleHours != 24 || runtime.Indexing.Retention.NoYieldGraceDays != 7 || runtime.Indexing.Retention.YEncTerminalAttempts != 4 || runtime.Indexing.Retention.ExecuteOutcomePurge {
+		t.Fatalf("unexpected outcome retention defaults: %+v", runtime.Indexing.Retention)
+	}
+	if runtime.Indexing.RecoveryAdmission.LatestReservePercent != 10 {
+		t.Fatalf("expected latest-work capacity reserve, got %+v", runtime.Indexing.RecoveryAdmission)
+	}
+}
+
+func TestWithRuntimeDefaultsMapsLegacyPartitionAheadSetting(t *testing.T) {
+	runtime := WithRuntimeDefaults(&RuntimeSettings{
+		Indexing: &IndexingRuntimeSettings{
+			Retention: IndexingRetentionRuntimeSettings{CreatePartitionsDaysAhead: 6},
+		},
+	})
+
+	if runtime.Indexing == nil || runtime.Indexing.Partitions.PrecreateDaysAhead != 6 {
+		t.Fatalf("expected legacy partition-ahead setting to populate the partition policy, got %+v", runtime.Indexing)
 	}
 }
 
