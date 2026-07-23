@@ -140,6 +140,18 @@ containers use a bounded prefix with `ffprobe`. An inconclusive prefix is
 recorded explicitly; `inspect_media` does not download a complete media file
 merely to obtain container metadata.
 
+Archive-member probing uses sparse temporary archive files. Split and single
+7z archives materialize only the archive header, encoded-header ranges, and a
+bounded leading region. RAR, ZIP, TAR, and other 7z-readable archive families
+materialize a bounded leading region across sparse volume files; ZIP also
+reserves part of that budget for its trailing directory. Standard and
+obfuscated split-RAR names are normalized inside the temporary workspace so
+the extractor can follow the volume sequence. The selected member is streamed
+from the sparse archive into the Matroska parser or a bounded `ffprobe` input.
+If the selected member or enough compressed data falls outside the populated
+ranges, inspection records an explicit inconclusive/extraction result rather
+than downloading the entire archive family.
+
 Ready-queue population is an internal part of inspection candidate selection,
 not a separately scheduled supervisor stage. Queued inspection stages perform
 bounded, advisory-locked top-ups when they need claimable work; operators only

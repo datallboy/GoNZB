@@ -31,6 +31,28 @@ hosts or pool members.
   observability reporting.
 - The inspected live database had no invalid or definition-equivalent duplicate
   indexes.
+- Synthetic RAR and ZIP media-inspection fixtures verify that sparse, bounded
+  archive ranges can expose a selected member without downloading the complete
+  archive. Matroska members are decoded with the streaming EBML parser and MP4
+  members are inspected through bounded `ffprobe` input.
+
+## Completed Audit Remediation
+
+- Reachable Go and production UI dependency vulnerabilities found during the
+  audit were upgraded; the recorded baseline reports clean `govulncheck` and
+  production `npm audit` results.
+- Local settings database files are owner-only, generated runtime stores are
+  excluded from the Docker build context, and the checked-in Compose baseline
+  publishes the application on localhost by default.
+- HTTPS session and CSRF cookies are marked Secure, the runtime `unrar` source
+  archive is checksum verified, and fresh PostgreSQL installs enable checksums
+  and diagnostic extensions.
+- Static indexer correctness findings, obsolete service helpers, Newznab
+  filtering/pagination behavior, and the original excessive partition horizon
+  were addressed in focused changes.
+- Direct and archive-backed media metadata inspection is bounded. Single/split
+  7z, RAR, ZIP, TAR, and other 7z-readable families use sparse archive probes;
+  no complete contained media file is materialized merely for metadata.
 
 ## Release Blockers
 
@@ -59,9 +81,10 @@ queue partitions.
 
 ### Indexer quality and performance
 
-- Archive-backed media probing currently returns an explicit “not implemented”
-  error. This limits metadata/category quality for the common case where media
-  is inside RAR/7z archives.
+- Validate bounded archive-member probing against representative live RAR4,
+  RAR5, multi-volume, solid, encrypted, ZIP, and 7z posts. Synthetic RAR and
+  ZIP fixtures pass, but formats whose selected member or compressed stream
+  begins beyond the bounded sparse ranges must remain explicitly inconclusive.
 - Run race-enabled tests for the supervisor, assemble, recovery, inspection,
   aggregator, and GoNZBNet paths before release.
 - Establish repeatable throughput and resource budgets for latest indexing and
@@ -72,10 +95,9 @@ queue partitions.
 
 ### Code and UI quality gates
 
-- `staticcheck ./...` currently reports 92 findings: 85 unused declarations,
-  three error-style findings, two simplifications, and two conversion/style
-  findings. Remove the obsolete query and pipeline paths in focused commits;
-  do not retain multiple unused implementations of hot database operations.
+- `staticcheck ./...` currently reports 62 unused declarations. Remove the
+  obsolete query and pipeline paths in focused commits; do not retain multiple
+  unused implementations of hot database operations.
 - UI lint currently reports 39 errors and four warnings. Most are effect/state
   and render-local component findings in admin/indexer screens. The UI build
   succeeds, but lint must be clean and added to CI.
