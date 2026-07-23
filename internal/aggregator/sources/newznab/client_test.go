@@ -62,3 +62,22 @@ func TestSearchAllowsExplicitPrivateCIDR(t *testing.T) {
 		t.Fatalf("search through explicit CIDR allowlist: %v", err)
 	}
 }
+
+func TestConnectionRequestsCapabilities(t *testing.T) {
+	var gotType, gotKey string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotType = r.URL.Query().Get("t")
+		gotKey = r.URL.Query().Get("apikey")
+		w.Header().Set("Content-Type", "application/xml")
+		_, _ = w.Write([]byte(`<caps></caps>`))
+	}))
+	defer server.Close()
+
+	client := New("test", server.URL, "/api", "token", false, OutboundPolicy{AllowPrivateAddresses: true})
+	if err := client.TestConnection(t.Context()); err != nil {
+		t.Fatalf("test connection: %v", err)
+	}
+	if gotType != "caps" || gotKey != "token" {
+		t.Fatalf("unexpected capabilities request: t=%q apikey=%q", gotType, gotKey)
+	}
+}

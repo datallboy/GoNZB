@@ -23,6 +23,7 @@ type Client struct {
 }
 
 const maxSearchResponseBytes int64 = 16 << 20
+const maxCapabilitiesResponseBytes int64 = 1 << 20
 
 func New(name, baseURL, apiPath, apiKey string, redirect bool, policies ...OutboundPolicy) *Client {
 	var policy OutboundPolicy
@@ -40,6 +41,47 @@ func New(name, baseURL, apiPath, apiKey string, redirect bool, policies ...Outbo
 }
 
 func (c *Client) Name() string { return c.name }
+
+func (c *Client) TestConnection(ctx context.Context) error {
+	base, err := url.Parse(c.BaseURL)
+	if err != nil {
+		return fmt.Errorf("invalid indexer base URL %q: %w", c.BaseURL, err)
+	}
+	if err := validateHTTPURL(base); err != nil {
+		return fmt.Errorf("invalid indexer base URL %q: %w", c.BaseURL, err)
+	}
+	capsURL := base.ResolveReference(&url.URL{Path: c.ApiPath})
+	params := capsURL.Query()
+	params.Set("t", "caps")
+	params.Set("apikey", c.APIKey)
+	params.Set("o", "xml")
+	capsURL.RawQuery = params.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, capsURL.String(), nil)
+	if err != nil {
+		return fmt.Errorf("create capabilities request: %w", err)
+	}
+	req.Header.Set("User-Agent", "GoNZB/1.0")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("indexer %s capabilities returned status: %d", c.name, resp.StatusCode)
+	}
+	if resp.ContentLength > maxCapabilitiesResponseBytes {
+		return fmt.Errorf("indexer %s capabilities response exceeds %d bytes", c.name, maxCapabilitiesResponseBytes)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxCapabilitiesResponseBytes+1))
+	if err != nil {
+		return fmt.Errorf("read capabilities response: %w", err)
+	}
+	if len(body) == 0 || int64(len(body)) > maxCapabilitiesResponseBytes {
+		return fmt.Errorf("indexer %s returned an invalid capabilities response", c.name)
+	}
+	return nil
+}
 
 func (c *Client) Search(ctx context.Context, req aggregator.SearchRequest) ([]*domain.Release, error) {
 	base, err := url.Parse(c.BaseURL)

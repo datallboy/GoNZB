@@ -71,6 +71,9 @@ hosts or pool members.
   module capabilities. The account-token page shows the exact instance
   Newznab URL, least-privilege guidance, client setup steps, and the one-time
   token secret in a dedicated connection card.
+- Authenticated runtime probes now test the configured PostgreSQL index store,
+  saved NNTP providers (including authentication), and saved external Newznab
+  capabilities from their settings sections.
 - The runtime image uses pinned Alpine 3.23 package revisions. Only the pinned
   `par2cmdline-turbo` package is sourced from edge/testing; stable packages no
   longer inherit the edge repository override.
@@ -138,8 +141,7 @@ the synthetic soak does not model hours of concurrent supervisor churn.
 1. Add a first-run deployment preset: personal all-in-one, consumer-only, or
    advanced/custom. A preset should set safe role/stage defaults without hiding
    the resulting settings.
-2. Add connection tests for PostgreSQL, each NNTP role/provider, each external
-   Newznab source, ARR callbacks, and GoNZBNet peers.
+2. Add the remaining connection tests for ARR callbacks and GoNZBNet peers.
 3. Extend the guided readiness path with observed milestones for first binary,
    first release, generated NZB, aggregator result, and client grab.
 4. Add safe indexer presets for resource budgets and a storage forecast based
