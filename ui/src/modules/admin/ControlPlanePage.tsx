@@ -11,6 +11,15 @@ type ModuleDefinition = {
   permission?: string
 }
 
+type GuideStep = {
+  label: string
+  detail: string
+  complete: boolean
+  completeLabel?: string
+  route?: string
+  action?: string
+}
+
 const managedModules: ModuleDefinition[] = [
   { key: 'usenet_indexer', label: 'Indexer', route: '/admin/indexer/dashboard', permission: 'indexer.runtime.read' },
   { key: 'gonzbnet', label: 'GoNZBNet', route: '/admin/gonzbnet', permission: 'gonzbnet.admin.read' },
@@ -70,6 +79,21 @@ function ModuleCard({
   )
 }
 
+function GuideCard({ step, index }: { step: GuideStep; index: number }) {
+  return (
+    <article className="module-card">
+      <div className="module-card__header">
+        <h3>{index + 1}. {step.label}</h3>
+        <span className={step.complete ? 'module-status module-status--ready' : 'module-status module-status--attention'}>
+          {step.complete ? (step.completeLabel ?? 'Complete') : 'Next'}
+        </span>
+      </div>
+      <p className="muted-copy">{step.detail}</p>
+      {step.route ? <Link className="module-card__action" to={step.route}>{step.action ?? 'Open'}</Link> : null}
+    </article>
+  )
+}
+
 export function ControlPlanePage() {
   const { hasPermission } = useAuth()
   const [capabilities, setCapabilities] = useState<ControlPlaneCapabilities | null>(null)
@@ -87,6 +111,41 @@ export function ControlPlanePage() {
   const modules = capabilities?.modules ?? {}
   const enabledCount = Object.values(modules).filter((module) => module.enabled).length
   const readyCount = Object.values(modules).filter((module) => module.ready).length
+  const enabledManagedModules = managedModules
+    .map((definition) => modules[definition.key])
+    .filter((module): module is ModuleCapability => Boolean(module?.enabled))
+  const enabledModulesReady = enabledManagedModules.length > 0 && enabledManagedModules.every((module) => module.ready)
+  const setupSteps: GuideStep[] = [
+    {
+      label: 'Create the administrator',
+      detail: 'The first account exists and this authenticated control plane is available.',
+      complete: true,
+    },
+    {
+      label: 'Configure providers and modules',
+      detail: 'Add NNTP providers, choose provider roles, select newsgroups, and configure aggregator sources. Settings remain visible after applying them.',
+      complete: Boolean(capabilities?.settings.runtime_configured),
+      route: '/admin/settings',
+      action: 'Open settings',
+    },
+    {
+      label: 'Resolve readiness requirements',
+      detail: enabledModulesReady
+        ? 'Every enabled managed module has the configuration it needs. Open its dashboard to confirm live work and first output.'
+        : 'Use the module cards below to resolve each concrete requirement before expecting background work.',
+      complete: enabledModulesReady,
+      route: modules.usenet_indexer?.enabled ? '/admin/indexer/dashboard' : '/admin/settings',
+      action: modules.usenet_indexer?.enabled ? 'Verify indexer activity' : 'Review modules',
+    },
+    {
+      label: 'Connect a Newznab client',
+      detail: 'Create a least-privilege account token, then use the exact URL and API-key instructions on the token page.',
+      complete: Boolean(modules.aggregator?.ready),
+      completeLabel: 'Ready',
+      route: '/account/tokens',
+      action: 'Open client connection',
+    },
+  ]
 
   return (
     <div className="page-section admin-overview">
@@ -103,6 +162,16 @@ export function ControlPlanePage() {
       </header>
 
       {error ? <div className="banner error">{error}</div> : null}
+
+      <section className="admin-overview__section">
+        <div className="section-heading">
+          <p className="eyebrow">Getting started</p>
+          <h2 className="section-title">From setup to a usable result</h2>
+        </div>
+        <div className="module-grid">
+          {setupSteps.map((step, index) => <GuideCard key={step.label} step={step} index={index} />)}
+        </div>
+      </section>
 
       <section className="admin-overview__section">
         <div className="section-heading">

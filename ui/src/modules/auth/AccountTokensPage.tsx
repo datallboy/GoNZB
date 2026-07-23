@@ -6,9 +6,11 @@ import type { Token } from '../../shared/types'
 
 export function AccountTokensPage() {
   const [tokens, setTokens] = useState<Token[]>([])
-  const [name, setName] = useState('')
+  const [name, setName] = useState('newznab-client')
+  const [createdSecret, setCreatedSecret] = useState<string | null>(null)
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const newznabURL = `${window.location.origin}/api`
 
   async function refresh() {
     try {
@@ -29,8 +31,10 @@ export function AccountTokensPage() {
     event.preventDefault()
     try {
       const response = await createCurrentUserToken({ name })
-      setMessage(`Token created. Secret: ${response.secret}`)
-      setName('')
+      setCreatedSecret(response.secret)
+      setMessage('Token created. Copy the secret now; it will not be shown again.')
+      setName('newznab-client')
+      setError(null)
       await refresh()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create token')
@@ -52,7 +56,23 @@ export function AccountTokensPage() {
       <div className="page-card stack">
         <p className="eyebrow">Account</p>
         <h1 className="page-title">API tokens</h1>
-        <p className="muted-copy">Create personal API tokens here. The secret is only shown once.</p>
+        <p className="muted-copy">Tokens inherit this account's role permissions. Use a dedicated viewer account for a least-privilege media client token.</p>
+      </div>
+      <div className="page-card stack">
+        <div>
+          <p className="eyebrow">Client connection</p>
+          <h2 className="section-title">Radarr, Sonarr, Prowlarr, and other Newznab clients</h2>
+        </div>
+        <dl className="detail-grid">
+          <div><dt>Implementation</dt><dd>Newznab</dd></div>
+          <div><dt>URL</dt><dd><code className="breakable-value">{newznabURL}</code></dd></div>
+          <div><dt>API key</dt><dd>Use a token secret created below</dd></div>
+        </dl>
+        <ol className="muted-copy">
+          <li>Create a token and copy its one-time secret.</li>
+          <li>Add a generic Newznab indexer in the client with the URL above.</li>
+          <li>Paste the token secret as the API key, test the connection, then save.</li>
+        </ol>
       </div>
       <form className="page-card stack" onSubmit={handleSubmit}>
         <label className="field">
@@ -65,6 +85,11 @@ export function AccountTokensPage() {
           </button>
         </div>
         {message ? <div className="banner">{message}</div> : null}
+        {createdSecret ? (
+          <div className="banner">
+            <strong>API key:</strong> <code className="breakable-value">{createdSecret}</code>
+          </div>
+        ) : null}
         {error ? <div className="banner error">{error}</div> : null}
       </form>
       <div className="page-card">
