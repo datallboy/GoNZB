@@ -67,6 +67,10 @@ hosts or pool members.
 - External Newznab sources enforce their private-address policy at socket dial
   time for searches, redirects, and downloads. New sources deny local/private
   destinations by default and expose narrow CIDR exceptions in runtime settings.
+- The administration overview now presents an ordered setup path based on live
+  module capabilities. The account-token page shows the exact instance
+  Newznab URL, least-privilege guidance, client setup steps, and the one-time
+  token secret in a dedicated connection card.
 - The runtime image uses pinned Alpine 3.23 package revisions. Only the pinned
   `par2cmdline-turbo` package is sourced from edge/testing; stable packages no
   longer inherit the edge repository override.
@@ -136,14 +140,11 @@ the synthetic soak does not model hours of concurrent supervisor churn.
    the resulting settings.
 2. Add connection tests for PostgreSQL, each NNTP role/provider, each external
    Newznab source, ARR callbacks, and GoNZBNet peers.
-3. Add a client-connection card that shows the exact Newznab URL, creates a
-   scoped API token, and gives Radarr/Sonarr/Prowlarr setup instructions.
-4. Replace generic readiness alerts with a guided path: configure provider,
-   select groups, test access, start latest indexing, observe first binary,
+3. Extend the guided readiness path with observed milestones for first binary,
    first release, generated NZB, aggregator result, and client grab.
-5. Add safe indexer presets for resource budgets and a storage forecast based
+4. Add safe indexer presets for resource budgets and a storage forecast based
    on selected groups, retention, and measured header volume.
-6. Keep the detailed GoNZBNet role activity views, but add a simple outcome
+5. Keep the detailed GoNZBNet role activity views, but add a simple outcome
    summary: releases received/published, manifests resolved, validations and
    health samples contributed, peer sync status, and last successful exchange.
 
