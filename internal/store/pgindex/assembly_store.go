@@ -1211,39 +1211,7 @@ func (s *Store) upsertBinaryChunkWithRetries(ctx context.Context, records []prep
 }
 
 func (s *Store) upsertBinaryChunkOnce(ctx context.Context, records []preparedBinaryRecord) ([]int64, error) {
-	if deferReleaseFamilySummaryRefreshFromContext(ctx) {
-		return s.upsertBinaryChunkOnceDeferredCopy(ctx, records)
-	}
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("begin binary upsert chunk tx: %w", err)
-	}
-	defer rollbackTx(tx)
-
-	ids, chunkSummaryKeys, err := upsertBinaryChunk(ctx, tx, records)
-	if err != nil {
-		return nil, err
-	}
-	sortReleaseFamilySummaryKeys(chunkSummaryKeys)
-	if deferReleaseFamilySummaryRefreshFromContext(ctx) {
-		if err := markReleaseFamiliesDirtyBatch(ctx, tx, chunkSummaryKeys); err != nil {
-			return nil, err
-		}
-		if telemetry := binaryUpsertTelemetryFromContext(ctx); telemetry != nil {
-			telemetry.recordDeferredSummaryRefresh(len(chunkSummaryKeys))
-		}
-	} else {
-		for _, key := range chunkSummaryKeys {
-			if err := refreshReleaseFamilySummary(ctx, tx, key); err != nil {
-				return nil, err
-			}
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit binary upsert chunk tx: %w", err)
-	}
-	return ids, nil
+	return s.upsertBinaryChunkOnceDeferredCopy(ctx, records)
 }
 
 func (s *Store) upsertBinaryChunkOnceDeferredCopy(ctx context.Context, records []preparedBinaryRecord) ([]int64, error) {
@@ -1282,12 +1250,6 @@ func (s *Store) upsertBinaryChunkOnceDeferredCopy(ctx context.Context, records [
 	}
 	committed = true
 	return ids, nil
-}
-
-func upsertBinaryChunk(ctx context.Context, tx *sql.Tx, records []preparedBinaryRecord) ([]int64, []releaseFamilySummaryKey, error) {
-	return upsertBinaryChunkWithStage(ctx, tx, records, func() error {
-		return stageUpsertBinaryChunk(ctx, tx, records)
-	})
 }
 
 func upsertBinaryChunkWithStage(ctx context.Context, runner sqlExecQueryer, records []preparedBinaryRecord, stageFn func() error) ([]int64, []releaseFamilySummaryKey, error) {
@@ -1694,133 +1656,6 @@ func upsertBinaryChunkWithStage(ctx context.Context, runner sqlExecQueryer, reco
 	}
 
 	return ids, summaryKeys, nil
-}
-
-func stageUpsertBinaryChunk(ctx context.Context, tx *sql.Tx, records []preparedBinaryRecord) error {
-	if tx == nil {
-		return fmt.Errorf("binary upsert tx is required")
-	}
-	if len(records) == 0 {
-		return nil
-	}
-	if _, err := tx.ExecContext(ctx, `
-		CREATE TEMP TABLE tmp_upsert_binaries (
-			ordinal INTEGER NOT NULL,
-			provider_id BIGINT NOT NULL,
-			newsgroup_id BIGINT NOT NULL,
-			poster_id BIGINT NULL,
-			source_release_key TEXT NOT NULL,
-			release_family_key TEXT NOT NULL,
-			file_set_key TEXT NOT NULL,
-			file_family_key TEXT NOT NULL,
-			identity_strength TEXT NOT NULL,
-			identity_reason TEXT NOT NULL,
-			subject_set_token TEXT NOT NULL,
-			subject_set_kind TEXT NOT NULL,
-			family_kind TEXT NOT NULL,
-			base_stem TEXT NOT NULL,
-			is_auxiliary BOOLEAN NOT NULL,
-			is_main_payload BOOLEAN NOT NULL,
-			release_key TEXT NOT NULL,
-			release_name TEXT NOT NULL,
-			binary_key TEXT NOT NULL,
-			binary_name TEXT NOT NULL,
-			file_name TEXT NOT NULL,
-			file_index INTEGER NOT NULL,
-			expected_file_count INTEGER NOT NULL,
-			total_parts INTEGER NOT NULL,
-			posted_at TIMESTAMPTZ NULL,
-			match_confidence DOUBLE PRECISION NOT NULL,
-			match_status TEXT NOT NULL,
-			grouping_summary_kind TEXT NOT NULL,
-			grouping_summary_status TEXT NOT NULL,
-			grouping_summary_fallback_used BOOLEAN NOT NULL,
-			grouping_evidence_payload JSONB NOT NULL
-		) ON COMMIT DROP`); err != nil {
-		return fmt.Errorf("create binary upsert temp table: %w", err)
-	}
-
-	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO tmp_upsert_binaries (
-			ordinal,
-			provider_id,
-			newsgroup_id,
-			poster_id,
-			source_release_key,
-			release_family_key,
-			file_set_key,
-			file_family_key,
-			identity_strength,
-			identity_reason,
-			subject_set_token,
-			subject_set_kind,
-			family_kind,
-			base_stem,
-			is_auxiliary,
-			is_main_payload,
-			release_key,
-			release_name,
-			binary_key,
-			binary_name,
-			file_name,
-			file_index,
-			expected_file_count,
-			total_parts,
-			posted_at,
-			match_confidence,
-			match_status,
-			grouping_summary_kind,
-			grouping_summary_status,
-			grouping_summary_fallback_used,
-			grouping_evidence_payload
-		) VALUES (
-			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
-			$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
-			$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31
-		)`)
-	if err != nil {
-		return fmt.Errorf("prepare binary upsert temp insert: %w", err)
-	}
-	defer stmt.Close()
-
-	for i, record := range records {
-		if _, err := stmt.ExecContext(ctx,
-			i,
-			record.record.ProviderID,
-			record.record.NewsgroupID,
-			record.posterID,
-			strings.TrimSpace(record.record.SourceReleaseKey),
-			strings.TrimSpace(record.record.ReleaseFamilyKey),
-			strings.TrimSpace(record.record.FileSetKey),
-			strings.TrimSpace(record.record.FileFamilyKey),
-			strings.TrimSpace(record.record.IdentityStrength),
-			strings.TrimSpace(record.record.IdentityReason),
-			strings.TrimSpace(record.record.SubjectSetToken),
-			strings.TrimSpace(record.record.SubjectSetKind),
-			strings.TrimSpace(record.record.FamilyKind),
-			strings.TrimSpace(record.record.BaseStem),
-			record.record.IsAuxiliary,
-			record.record.IsMainPayload,
-			record.record.ReleaseKey,
-			strings.TrimSpace(record.record.ReleaseName),
-			record.record.BinaryKey,
-			strings.TrimSpace(record.record.BinaryName),
-			strings.TrimSpace(record.record.FileName),
-			record.record.FileIndex,
-			record.record.ExpectedFileCount,
-			record.record.TotalParts,
-			record.postedAt,
-			record.record.MatchConfidence,
-			record.record.MatchStatus,
-			record.groupingSummaryKind,
-			record.groupingSummaryStatus,
-			record.groupingSummaryFallbackUsed,
-			record.evidenceJSON,
-		); err != nil {
-			return fmt.Errorf("insert binary upsert temp row: %w", err)
-		}
-	}
-	return nil
 }
 
 func stageUpsertBinaryChunkCopy(ctx context.Context, conn *sql.Conn, records []preparedBinaryRecord) error {
@@ -2970,18 +2805,9 @@ func (s *Store) refreshBinaryStatsChunk(ctx context.Context, binaryIDs []int64, 
 		return err
 	}
 
-	deferredSummaryRefresh := deferReleaseFamilySummaryRefreshFromContext(ctx)
 	summaryMarkStarted := time.Now()
-	if deferredSummaryRefresh {
-		if err := markReleaseFamiliesDirtyBatch(ctx, tx, summaryKeys); err != nil {
-			return err
-		}
-	} else {
-		for _, key := range summaryKeys {
-			if err := refreshReleaseFamilySummary(ctx, tx, key); err != nil {
-				return err
-			}
-		}
+	if err := markReleaseFamiliesDirtyBatch(ctx, tx, summaryKeys); err != nil {
+		return err
 	}
 	summaryMarkDuration := time.Since(summaryMarkStarted)
 
@@ -2995,7 +2821,7 @@ func (s *Store) refreshBinaryStatsChunk(ctx context.Context, binaryIDs []int64, 
 	}
 
 	if telemetry := binaryStatsRefreshTelemetryFromContext(ctx); telemetry != nil {
-		telemetry.recordBatch(len(binaryIDs), len(summaryKeys), deferredSummaryRefresh, statsUpdateDuration, summaryMarkDuration, yencSyncDuration)
+		telemetry.recordBatch(len(binaryIDs), len(summaryKeys), true, statsUpdateDuration, summaryMarkDuration, yencSyncDuration)
 	}
 
 	if err := tx.Commit(); err != nil {

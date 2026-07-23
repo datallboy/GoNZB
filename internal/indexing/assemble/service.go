@@ -538,7 +538,6 @@ func (s *Service) persistAssembleWork(ctx context.Context, started time.Time, me
 			batchRecords = append(batchRecords, work.binaryRecordsByKey[key])
 		}
 		upsertCtx := pgindex.WithBinaryUpsertChunkSize(ctx, s.opts.BinaryUpsertDBChunkSize)
-		upsertCtx = pgindex.WithDeferredReleaseFamilySummaryRefresh(upsertCtx)
 		upsertTelemetry := &pgindex.BinaryUpsertTelemetry{}
 		upsertCtx = pgindex.WithBinaryUpsertTelemetry(upsertCtx, upsertTelemetry)
 		binaryIDs, err := s.repo.UpsertBinaries(upsertCtx, batchRecords)
@@ -609,8 +608,7 @@ func (s *Service) persistAssembleWork(ctx context.Context, started time.Time, me
 	sort.Slice(refreshIDs, func(i, j int) bool { return refreshIDs[i] < refreshIDs[j] })
 	if len(refreshIDs) > 0 {
 		refreshStarted := time.Now()
-		refreshCtx := pgindex.WithDeferredReleaseFamilySummaryRefresh(ctx)
-		refreshCtx = pgindex.WithSkipYEncRecoveryWorkItemRetire(refreshCtx)
+		refreshCtx := pgindex.WithSkipYEncRecoveryWorkItemRetire(ctx)
 		refreshTelemetry := &pgindex.BinaryStatsRefreshTelemetry{}
 		refreshCtx = pgindex.WithBinaryStatsRefreshTelemetry(refreshCtx, refreshTelemetry)
 		if err := s.repo.RefreshBinaryStatsBatch(refreshCtx, refreshIDs); err != nil {

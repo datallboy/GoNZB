@@ -2246,7 +2246,7 @@ func TestUpsertBinaryDeferredSummaryRefreshMarksFamilyDirtyWithoutInlineRecomput
 		t.Fatalf("ensure newsgroup: %v", err)
 	}
 
-	deferredCtx := WithDeferredReleaseFamilySummaryRefresh(ctx)
+	deferredCtx := ctx
 	if _, err := store.UpsertBinary(deferredCtx, BinaryRecord{
 		ProviderID:        1,
 		NewsgroupID:       newsgroupID,
@@ -2371,7 +2371,7 @@ func TestUpsertBinaryDeferredSummaryRefreshMarksOldAndNewFamiliesDirtyOnIdentity
 	changed.BaseStem = "renamed-stem"
 	changed.ExpectedFileCount = 3
 
-	deferredCtx := WithDeferredReleaseFamilySummaryRefresh(ctx)
+	deferredCtx := ctx
 	if _, err := store.UpsertBinary(deferredCtx, changed); err != nil {
 		t.Fatalf("upsert binary with changed deferred identity: %v", err)
 	}
@@ -7245,7 +7245,7 @@ func TestRefreshBinaryStatsDeferredSummaryRefreshMarksFamilyDirtyWithoutInlineRe
 		}
 	}
 
-	deferredCtx := WithDeferredReleaseFamilySummaryRefresh(ctx)
+	deferredCtx := ctx
 	if err := store.RefreshBinaryStats(deferredCtx, binaryID); err != nil {
 		t.Fatalf("refresh binary stats with deferred summary refresh: %v", err)
 	}
@@ -7353,7 +7353,7 @@ func TestRefreshQueuedReleaseFamilySummariesRecomputesDeferredFamily(t *testing.
 		}
 	}
 
-	deferredCtx := WithDeferredReleaseFamilySummaryRefresh(ctx)
+	deferredCtx := ctx
 	if err := store.RefreshBinaryStats(deferredCtx, binaryID); err != nil {
 		t.Fatalf("refresh binary stats with deferred summary refresh: %v", err)
 	}
