@@ -37,14 +37,14 @@ FROM alpine:3.23
 WORKDIR /app
 # Install certs for secure Usenet connections (TLS/SSL)
 RUN apk --no-cache add \
+    ca-certificates=20260611-r0 \
+    libstdc++=15.2.0-r2 \
+    unzip=6.0-r16 \
+    7zip=25.01-r0 \
+    su-exec=0.3-r0 \
+    && apk --no-cache add \
     --repository=https://dl-cdn.alpinelinux.org/alpine/edge/testing/ \
-    --repository=https://dl-cdn.alpinelinux.org/alpine/edge/community/ \
-    ca-certificates \
-    libstdc++ \
-    par2cmdline-turbo \
-    unzip \
-    7zip \
-    su-exec
+    par2cmdline-turbo=1.4.0-r0
 RUN ln -s /usr/bin/7zz /usr/bin/7za
 
 COPY --from=unrar-builder /tmp/unrar/unrar /usr/bin/unrar
