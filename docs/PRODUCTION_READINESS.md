@@ -74,11 +74,11 @@ Performance results from a corrupt database are not release evidence.
 Older defaults provisioned 180 days behind, today, and eight days ahead. On the
 inspected database this contributed to 6,157 public tables, 27,235 public
 indexes, 33,124 table/index inheritance entries, and 6,076 table partitions;
-6,014 of those table partitions had no estimated live tuples. New installs now
-use a five-day rolling window and refresh it every six hours. Existing
-installations still need an operator-reviewed partition
-retention dry run and cleanup; do not blindly drop partitions from a database
-that contains wanted backfill data.
+6,014 of those table partitions had no estimated live tuples. Current installs
+provision source days actually observed in work and maintain only the
+configured two-day proactive look-ahead. Existing installations still need an
+operator-reviewed partition retention dry run and cleanup; do not blindly drop
+partitions from a database that contains wanted backfill data.
 
 `pg_stat_statements` was preloaded but absent from the inspected existing
 database, so representative hot-query timing could not be audited. New installs
@@ -107,6 +107,7 @@ queue partitions.
   archive-detail, assembly, release-summary, and daily-bucket store paths.
   Remove those paths in focused commits; do not retain multiple unused
   implementations of hot database operations.
+
 ### Security and Internet exposure
 
 - SQLite settings files are restricted to the owning user, but configured NNTP
@@ -124,6 +125,7 @@ queue partitions.
 - External Newznab source URLs are administrator-controlled and can reach
   internal addresses. Add an optional outbound allowlist/private-address policy
   for installations where indexer-source administrators are not fully trusted.
+
 ## Usability Work Still Needed
 
 1. Add a first-run deployment preset: personal all-in-one, consumer-only, or
