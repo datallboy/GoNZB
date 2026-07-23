@@ -19,7 +19,7 @@ const (
 	aggregatorModuleName    = "aggregator"
 	goNZBNetModuleName      = "gonzbnet"
 )
-const expectedSchemaVersion = 1
+const expectedSchemaVersion = 2
 
 type Store struct {
 	db *sql.DB
@@ -377,7 +377,8 @@ func (s *Store) readStructuredSettings(ctx context.Context) (*RuntimeSettings, b
 	}
 
 	indexerRows, err := s.db.QueryContext(ctx, `
-		SELECT id, base_url, api_path, api_key_ciphertext, redirect
+		SELECT id, base_url, api_path, api_key_ciphertext, redirect,
+		       allow_private_addresses, allowed_cidrs_json
 		FROM settings_indexers
 		ORDER BY id`)
 	if err != nil {
@@ -389,14 +390,20 @@ func (s *Store) readStructuredSettings(ctx context.Context) (*RuntimeSettings, b
 		hasState = true
 
 		var item IndexerRuntimeSettings
+		var allowedCIDRsJSON string
 		if err := indexerRows.Scan(
 			&item.ID,
 			&item.BaseURL,
 			&item.APIPath,
 			&item.APIKey,
 			&item.Redirect,
+			&item.AllowPrivateAddresses,
+			&allowedCIDRsJSON,
 		); err != nil {
 			return nil, false, err
+		}
+		if err := json.Unmarshal([]byte(allowedCIDRsJSON), &item.AllowedCIDRs); err != nil {
+			return nil, false, fmt.Errorf("decode settings_indexers.allowed_cidrs_json for %s: %w", item.ID, err)
 		}
 		out.Indexers = append(out.Indexers, item)
 	}
@@ -573,16 +580,23 @@ func (s *Store) writeIndexers(ctx context.Context, tx *sql.Tx, indexers []Indexe
 	}
 
 	for _, item := range indexers {
+		allowedCIDRsJSON, err := json.Marshal(item.AllowedCIDRs)
+		if err != nil {
+			return fmt.Errorf("encode allowed CIDRs for indexer %s: %w", item.ID, err)
+		}
 		// CHANGED: store in ciphertext-shaped columns; real encryption remains a later step.
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO settings_indexers (
-				id, base_url, api_path, api_key_ciphertext, redirect, updated_at
-			) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+				id, base_url, api_path, api_key_ciphertext, redirect,
+				allow_private_addresses, allowed_cidrs_json, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
 			item.ID,
 			item.BaseURL,
 			item.APIPath,
 			item.APIKey,
 			item.Redirect,
+			item.AllowPrivateAddresses,
+			string(allowedCIDRsJSON),
 		); err != nil {
 			return err
 		}

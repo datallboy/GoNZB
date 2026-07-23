@@ -61,6 +61,12 @@ hosts or pool members.
 - Initial administrator creation supports an environment-provided one-time
   bootstrap token. Forwarded HTTPS headers affect cookie security only when the
   immediate peer matches an explicitly configured trusted-proxy CIDR.
+- Credential storage limitations and encrypted-disk/backup requirements are
+  documented explicitly; ciphertext-shaped settings columns no longer imply
+  application-level encryption.
+- External Newznab sources enforce their private-address policy at socket dial
+  time for searches, redirects, and downloads. New sources deny local/private
+  destinations by default and expose narrow CIDR exceptions in runtime settings.
 - The runtime image uses pinned Alpine 3.23 package revisions. Only the pinned
   `par2cmdline-turbo` package is sourced from edge/testing; stable packages no
   longer inherit the edge repository override.
@@ -122,17 +128,6 @@ the synthetic soak does not model hours of concurrent supervisor churn.
   queue lag, inspection latency, and release yield.
 - Add regression plans for the documented expensive yEnc admission and release
   family-summary query shapes.
-
-### Security and Internet exposure
-
-- SQLite settings files are restricted to the owning user, but configured NNTP
-  and external-indexer credentials remain plaintext inside the settings
-  database. Document encrypted-disk/backup requirements or add an explicit
-  secret-provider/envelope-encryption design before claiming secrets-at-rest
-  protection.
-- External Newznab source URLs are administrator-controlled and can reach
-  internal addresses. Add an optional outbound allowlist/private-address policy
-  for installations where indexer-source administrators are not fully trusted.
 
 ## Usability Work Still Needed
 

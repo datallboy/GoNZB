@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"time"
 
 	"github.com/datallboy/gonzb/internal/aggregator"
 	"github.com/datallboy/gonzb/internal/domain"
@@ -25,16 +24,18 @@ type Client struct {
 
 const maxSearchResponseBytes int64 = 16 << 20
 
-func New(name, baseURL, apiPath, apiKey string, redirect bool) *Client {
+func New(name, baseURL, apiPath, apiKey string, redirect bool, policies ...OutboundPolicy) *Client {
+	var policy OutboundPolicy
+	if len(policies) > 0 {
+		policy = policies[0]
+	}
 	return &Client{
 		name:            name,
 		BaseURL:         baseURL,
 		ApiPath:         apiPath,
 		APIKey:          apiKey,
 		redirectAllowed: redirect,
-		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
-		},
+		httpClient:      newPolicyHTTPClient(policy),
 	}
 }
 
@@ -43,6 +44,9 @@ func (c *Client) Name() string { return c.name }
 func (c *Client) Search(ctx context.Context, req aggregator.SearchRequest) ([]*domain.Release, error) {
 	base, err := url.Parse(c.BaseURL)
 	if err != nil {
+		return nil, fmt.Errorf("invalid indexer base URL %q: %w", c.BaseURL, err)
+	}
+	if err := validateHTTPURL(base); err != nil {
 		return nil, fmt.Errorf("invalid indexer base URL %q: %w", c.BaseURL, err)
 	}
 
@@ -129,6 +133,9 @@ func (c *Client) GetNZB(ctx context.Context, res *domain.Release) (io.ReadCloser
 	if err != nil {
 		return nil, fmt.Errorf("invalid release download URL %q: %w", res.DownloadURL, err)
 	}
+	if err := validateHTTPURL(downloadURL); err != nil {
+		return nil, fmt.Errorf("invalid release download URL %q: %w", res.DownloadURL, err)
+	}
 	params := downloadURL.Query()
 	params.Set("apikey", c.APIKey)
 	downloadURL.RawQuery = params.Encode()
@@ -151,6 +158,19 @@ func (c *Client) GetNZB(ctx context.Context, res *domain.Release) (io.ReadCloser
 	}
 
 	return resp.Body, nil
+}
+
+func validateHTTPURL(value *url.URL) error {
+	if value == nil || (value.Scheme != "http" && value.Scheme != "https") {
+		return fmt.Errorf("scheme must be http or https")
+	}
+	if value.Hostname() == "" {
+		return fmt.Errorf("host is required")
+	}
+	if value.User != nil {
+		return fmt.Errorf("embedded credentials are not allowed")
+	}
+	return nil
 }
 
 func setIfNotEmpty(values url.Values, key, value string) {

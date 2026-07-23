@@ -1500,6 +1500,8 @@ export type IndexerRuntimeSettings = {
   api_path: string
   api_key: string
   redirect: boolean
+  allow_private_addresses: boolean
+  allowed_cidrs: string[]
 }
 
 export type DownloadRuntimeSettings = {

@@ -73,6 +73,39 @@ func TestGetRuntimeSettingsUsesBootstrapConfigForFreshStore(t *testing.T) {
 	}
 }
 
+func TestIndexerOutboundPolicyRoundTrips(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "settings.db"))
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	defer store.Close()
+
+	runtime := DefaultRuntimeSettings()
+	runtime.Indexers = []IndexerRuntimeSettings{{
+		ID:                    "private-newznab",
+		BaseURL:               "http://192.168.1.20:9696",
+		APIPath:               "/api",
+		APIKey:                "secret",
+		AllowPrivateAddresses: false,
+		AllowedCIDRs:          []string{"192.168.1.20/32"},
+	}}
+	if err := store.UpdateSettings(t.Context(), runtime); err != nil {
+		t.Fatalf("update settings: %v", err)
+	}
+
+	reloaded, err := store.GetRuntimeSettings(t.Context())
+	if err != nil {
+		t.Fatalf("reload settings: %v", err)
+	}
+	if len(reloaded.Indexers) != 1 {
+		t.Fatalf("expected one indexer, got %d", len(reloaded.Indexers))
+	}
+	got := reloaded.Indexers[0]
+	if got.AllowPrivateAddresses || len(got.AllowedCIDRs) != 1 || got.AllowedCIDRs[0] != "192.168.1.20/32" {
+		t.Fatalf("unexpected outbound policy after reload: %+v", got)
+	}
+}
+
 func TestUpdateSettingsPreservesExplicitlyEmptyScrapeGroupsAcrossReload(t *testing.T) {
 	store, err := NewStore(filepath.Join(t.TempDir(), "settings.db"))
 	if err != nil {

@@ -47,11 +47,13 @@ type ServerConfig struct {
 }
 
 type IndexerConfig struct {
-	ID       string `mapstructure:"id" yaml:"id"`
-	BaseUrl  string `mapstructure:"base_url" yaml:"base_url"`
-	ApiPath  string `mapstructure:"api_path" yaml:"api_path"`
-	ApiKey   string `mapstructure:"api_key" yaml:"api_key"`
-	Redirect bool   `mapstructure:"redirect" yaml:"redirect"`
+	ID                    string   `mapstructure:"id" yaml:"id"`
+	BaseUrl               string   `mapstructure:"base_url" yaml:"base_url"`
+	ApiPath               string   `mapstructure:"api_path" yaml:"api_path"`
+	ApiKey                string   `mapstructure:"api_key" yaml:"api_key"`
+	Redirect              bool     `mapstructure:"redirect" yaml:"redirect"`
+	AllowPrivateAddresses bool     `mapstructure:"allow_private_addresses" yaml:"allow_private_addresses"`
+	AllowedCIDRs          []string `mapstructure:"allowed_cidrs" yaml:"allowed_cidrs"`
 }
 
 type DownloadConfig struct {
@@ -708,6 +710,13 @@ func (c *Config) validate() error {
 	for _, raw := range c.API.TrustedProxyCIDRs {
 		if _, err := netip.ParsePrefix(strings.TrimSpace(raw)); err != nil {
 			return fmt.Errorf("api.trusted_proxy_cidrs contains invalid CIDR %q: %w", raw, err)
+		}
+	}
+	for i, indexer := range c.Indexers {
+		for _, raw := range indexer.AllowedCIDRs {
+			if _, err := netip.ParsePrefix(strings.TrimSpace(raw)); err != nil {
+				return fmt.Errorf("indexers[%d].allowed_cidrs contains invalid CIDR %q: %w", i, raw, err)
+			}
 		}
 	}
 	if c.GoNZBNet.SendUserContext {

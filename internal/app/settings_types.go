@@ -45,11 +45,13 @@ type ServerRuntimeSettings struct {
 }
 
 type IndexerRuntimeSettings struct {
-	ID       string `json:"id"`
-	BaseURL  string `json:"base_url"`
-	APIPath  string `json:"api_path"`
-	APIKey   string `json:"api_key"`
-	Redirect bool   `json:"redirect"`
+	ID                    string   `json:"id"`
+	BaseURL               string   `json:"base_url"`
+	APIPath               string   `json:"api_path"`
+	APIKey                string   `json:"api_key"`
+	Redirect              bool     `json:"redirect"`
+	AllowPrivateAddresses bool     `json:"allow_private_addresses"`
+	AllowedCIDRs          []string `json:"allowed_cidrs"`
 }
 
 type AggregatorRuntimeSettings struct {

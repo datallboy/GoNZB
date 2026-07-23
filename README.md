@@ -96,6 +96,23 @@ Operational settings are managed at runtime and stored in SQLite:
 - indexer newsgroups, stages, schedules, and enrichment settings
 - maintenance and retention settings
 
+### Credential storage
+
+The settings database is restricted to its owning OS user, but NNTP passwords,
+external-indexer API keys, ARR API keys, and bootstrap DSNs are not encrypted
+by GoNZB. Column names ending in `_ciphertext` are storage-schema placeholders,
+not a claim of encryption. Production operators must keep the configuration,
+SQLite volume, PostgreSQL data, snapshots, and backups on encrypted storage,
+restrict host and backup access, and avoid copying them into logs or support
+bundles. Use a deployment secret manager for environment-provided bootstrap
+values where available.
+
+External Newznab sources block loopback, private, link-local, and carrier-grade
+NAT destinations by default. A source that intentionally runs on the local
+network must be granted a narrow CIDR exception in **Admin > Settings >
+Aggregator**. The broader private-address switch is intended only for trusted
+administrators who need multiple changing local destinations.
+
 Start from the example:
 
 ```bash

@@ -128,7 +128,17 @@ func buildAggregator(appCtx *app.Context, effective *config.Config) app.IndexerA
 	}
 
 	for _, idxCfg := range effective.Indexers {
-		client := newznab.New(idxCfg.ID, idxCfg.BaseUrl, idxCfg.ApiPath, idxCfg.ApiKey, idxCfg.Redirect)
+		client := newznab.New(
+			idxCfg.ID,
+			idxCfg.BaseUrl,
+			idxCfg.ApiPath,
+			idxCfg.ApiKey,
+			idxCfg.Redirect,
+			newznab.OutboundPolicy{
+				AllowPrivateAddresses: idxCfg.AllowPrivateAddresses,
+				AllowedCIDRs:          idxCfg.AllowedCIDRs,
+			},
+		)
 		manager.AddSource(client)
 	}
 

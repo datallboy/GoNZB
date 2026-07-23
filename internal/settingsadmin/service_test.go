@@ -76,6 +76,26 @@ func TestValidateRuntimeSettingsReportsIncompleteNewznabSource(t *testing.T) {
 	}
 }
 
+func TestValidateRuntimeSettingsRejectsUnsafeNewznabConfiguration(t *testing.T) {
+	runtime := app.DefaultRuntimeSettings()
+	runtime.Indexers = []app.IndexerRuntimeSettings{{
+		ID:           "external",
+		BaseURL:      "file:///etc/passwd",
+		APIPath:      "/api",
+		AllowedCIDRs: []string{"not-a-cidr"},
+	}}
+
+	err := ValidateRuntimeSettings(&config.Config{}, runtime)
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	for _, expected := range []string{"base_url must be an http(s) URL", "allowed_cidrs contains invalid CIDR"} {
+		if !strings.Contains(err.Error(), expected) {
+			t.Fatalf("expected %q in validation error, got %v", expected, err)
+		}
+	}
+}
+
 func TestValidateRuntimeSettingsReportsLocalIndexerModuleGate(t *testing.T) {
 	runtime := app.DefaultRuntimeSettings()
 	runtime.Aggregator.Sources.UsenetIndexer.Enabled = true

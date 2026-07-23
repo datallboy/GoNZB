@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/netip"
+	"net/url"
 	"strings"
 	"time"
 
@@ -329,11 +331,22 @@ func validateIndexers(indexers []app.IndexerRuntimeSettings) []string {
 		} else {
 			seen[id] = i
 		}
-		if strings.TrimSpace(indexer.BaseURL) == "" {
+		baseURL := strings.TrimSpace(indexer.BaseURL)
+		if baseURL == "" {
 			issues = append(issues, prefix+".base_url is required")
+		} else if parsed, err := url.Parse(baseURL); err != nil ||
+			(parsed.Scheme != "http" && parsed.Scheme != "https") ||
+			parsed.Hostname() == "" ||
+			parsed.User != nil {
+			issues = append(issues, prefix+".base_url must be an http(s) URL without embedded credentials")
 		}
 		if strings.TrimSpace(indexer.APIPath) == "" {
 			issues = append(issues, prefix+".api_path is required")
+		}
+		for _, raw := range indexer.AllowedCIDRs {
+			if _, err := netip.ParsePrefix(strings.TrimSpace(raw)); err != nil {
+				issues = append(issues, fmt.Sprintf("%s.allowed_cidrs contains invalid CIDR %q", prefix, raw))
+			}
 		}
 	}
 	return issues

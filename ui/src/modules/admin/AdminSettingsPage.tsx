@@ -341,7 +341,11 @@ function normalizeSettings(input?: RuntimeSettings): RuntimeSettings {
     servers: input?.servers ?? input?.downloader_servers ?? input?.indexer_servers ?? [],
     downloader_servers: input?.downloader_servers ?? input?.servers ?? [],
     indexer_servers: input?.indexer_servers ?? input?.servers ?? [],
-    indexers: input?.indexers ?? [],
+    indexers: (input?.indexers ?? []).map((indexer) => ({
+      ...indexer,
+      allow_private_addresses: Boolean(indexer.allow_private_addresses),
+      allowed_cidrs: indexer.allowed_cidrs ?? [],
+    })),
     arr_integrations: input?.arr_integrations ?? [],
     aggregator: {
       ...defaults.aggregator,
@@ -453,7 +457,15 @@ function serverDefaults(index: number): ServerRuntimeSettings {
 }
 
 function indexerDefaults(index: number): IndexerRuntimeSettings {
-  return { id: `newznab-${index + 1}`, base_url: '', api_path: '/api', api_key: '', redirect: false }
+  return {
+    id: `newznab-${index + 1}`,
+    base_url: '',
+    api_path: '/api',
+    api_key: '',
+    redirect: false,
+    allow_private_addresses: false,
+    allowed_cidrs: [],
+  }
 }
 
 function arrDefaults(index: number): ArrIntegrationRuntimeSettings {
@@ -869,6 +881,18 @@ export function AdminSettingsPage() {
                   <TextField label="API path" value={indexer.api_path} required onChange={(value) => updateIndexer(index, { api_path: value })} />
                   <TextField label="API key" type="password" value={indexer.api_key} onChange={(value) => updateIndexer(index, { api_key: value })} />
                   <CheckboxField label="Redirect downloads" checked={indexer.redirect} onChange={(value) => updateIndexer(index, { redirect: value })} />
+                  <CheckboxField
+                    label="Allow all private/local addresses"
+                    checked={indexer.allow_private_addresses}
+                    onChange={(value) => updateIndexer(index, { allow_private_addresses: value })}
+                    helpText="Permits this source and its NZB links to reach loopback, LAN, and other non-public addresses. Leave off unless a specific CIDR allowlist is insufficient."
+                  />
+                  <TextField
+                    label="Allowed private CIDRs"
+                    value={indexer.allowed_cidrs.join(', ')}
+                    onChange={(value) => updateIndexer(index, { allowed_cidrs: parseCSV(value) })}
+                    helpText="Optional comma-separated address exceptions, such as 192.168.1.20/32. Hostnames are resolved and checked again when connecting."
+                  />
                 </div>
               </div>
             ))}
