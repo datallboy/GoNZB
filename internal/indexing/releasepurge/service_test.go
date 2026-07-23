@@ -14,7 +14,7 @@ func TestRunOnceAggregatesPurgeMetrics(t *testing.T) {
 			ReleaseID:               "rel-1",
 			SkippedSharedBinaryRows: 3,
 			DeletedRowsByTable: map[string]int64{
-				"binaries":                       2,
+				"binary_core":                    2,
 				"article_header_ingest_payloads": 5,
 			},
 		},
@@ -32,7 +32,7 @@ func TestRunOnceAggregatesPurgeMetrics(t *testing.T) {
 		t.Fatalf("skipped_shared_lineage_rows=%v want 3", got)
 	}
 	rowsDeleted := metrics["rows_deleted_by_table"].(map[string]int64)
-	if rowsDeleted["binaries"] != 2 || rowsDeleted["article_header_ingest_payloads"] != 5 {
+	if rowsDeleted["binary_core"] != 2 || rowsDeleted["article_header_ingest_payloads"] != 5 {
 		t.Fatalf("unexpected rows_deleted_by_table=%v", rowsDeleted)
 	}
 }

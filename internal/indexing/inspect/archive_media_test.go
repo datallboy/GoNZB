@@ -46,7 +46,7 @@ func TestArchiveMediaOutputLimitHonorsMaxBytesButKeepsMinimum(t *testing.T) {
 
 func TestMaterializeArchiveMediaRARUsesBoundedSparsePrefixAndParsesMatroska(t *testing.T) {
 	if _, err := exec.LookPath("7z"); err != nil {
-		t.Skip("7z is required for the archive extraction integration test")
+		t.Fatalf("7z is required for the archive extraction integration test: %v", err)
 	}
 
 	entryName := "Feature.2026.mkv"
@@ -98,7 +98,7 @@ func TestMaterializeArchiveMediaRARUsesBoundedSparsePrefixAndParsesMatroska(t *t
 func TestMaterializeArchiveMediaRARStreamsNonMatroskaPrefixToFFProbe(t *testing.T) {
 	for _, tool := range []string{"7z", "ffmpeg", "ffprobe"} {
 		if _, err := exec.LookPath(tool); err != nil {
-			t.Skipf("%s is required for the archive ffprobe integration test", tool)
+			t.Fatalf("%s is required for the archive ffprobe integration test: %v", tool, err)
 		}
 	}
 
@@ -161,7 +161,7 @@ func TestMaterializeArchiveMediaRARStreamsNonMatroskaPrefixToFFProbe(t *testing.
 
 func TestMaterializeArchiveMediaZIPUsesBoundedHeadAndDirectoryTail(t *testing.T) {
 	if _, err := exec.LookPath("7z"); err != nil {
-		t.Skip("7z is required for the ZIP extraction integration test")
+		t.Fatalf("7z is required for the ZIP extraction integration test: %v", err)
 	}
 
 	entryName := "Feature.2026.mkv"

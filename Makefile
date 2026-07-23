@@ -8,7 +8,7 @@ PKG=./cmd/gonzb
 
 LDFLAGS=-ldflags "-X main.Version=$(VERSION) -X main.BuildTime=$(BUILD_TIME)"
 
-.PHONY: all build build-release ui-build clean test vet lint install gonzbnet-e2e-test gonzbnet-e2e-start gonzbnet-e2e-bootstrap gonzbnet-e2e-verify gonzbnet-e2e-stop gonzbnet-e2e-status gonzbnet-e2e-reset
+.PHONY: all build build-release ui-build clean test test-ci test-postgres vet lint install gonzbnet-e2e-test gonzbnet-e2e-start gonzbnet-e2e-bootstrap gonzbnet-e2e-verify gonzbnet-e2e-stop gonzbnet-e2e-status gonzbnet-e2e-reset
 
 all: build
 
@@ -36,6 +36,14 @@ ui-build:
 test:
 	@echo "Running tests..."
 	GOCACHE=$${GOCACHE:-/tmp/gocache} go test ./...
+
+test-ci:
+	@echo "Running CI tests with skipped-test enforcement..."
+	GOCACHE=$${GOCACHE:-/tmp/gocache} ./scripts/test_ci.sh
+
+test-postgres:
+	@echo "Running all tests with disposable PostgreSQL..."
+	GOCACHE=$${GOCACHE:-/tmp/gocache} ./scripts/test_postgres.sh
 
 vet:
 	@echo "Running go vet..."

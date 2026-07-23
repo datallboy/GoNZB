@@ -1,3 +1,5 @@
+//go:build live
+
 package engine_test
 
 import (
@@ -24,7 +26,7 @@ func TestUsenetIndexHydrateSmoke(t *testing.T) {
 	releaseID := os.Getenv("GONZB_TEST_RELEASE_ID")
 
 	if cfgPath == "" || releaseID == "" {
-		t.Skip("set GONZB_TEST_CONFIG and GONZB_TEST_RELEASE_ID")
+		t.Fatal("GONZB_TEST_CONFIG and GONZB_TEST_RELEASE_ID are required for live tests")
 	}
 
 	cfg, err := config.Load(cfgPath)
