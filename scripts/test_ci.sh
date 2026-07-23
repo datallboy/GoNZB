@@ -22,7 +22,7 @@ go test -json "${args[@]}" |
     jq --unbuffered --join-output '
         if .Action == "skip" and .Test != null then
             "CI_TEST_SKIP\t\(.Package)\t\(.Test)\n"
-        elif .Action == "output" then
+        elif (.Action == "output" or .Action == "build-output") and .Output != null then
             .Output
         else
             empty
