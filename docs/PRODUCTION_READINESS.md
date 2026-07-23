@@ -53,6 +53,8 @@ hosts or pool members.
 - UI lint is clean and the production TypeScript/Vite build passes. Route-level
   lazy loading reduces the shared application chunk to roughly 244 KB; the
   largest route chunk is roughly 104 KB.
+- The frontend has its own Go module boundary, so root `go test ./...` and
+  `go vet ./...` no longer traverse Go sources embedded in `ui/node_modules`.
 - Direct and archive-backed media metadata inspection is bounded. Single/split
   7z, RAR, ZIP, TAR, and other 7z-readable families use sparse archive probes;
   no complete contained media file is materialized merely for metadata.
@@ -102,9 +104,6 @@ queue partitions.
   archive-detail, assembly, release-summary, and daily-bucket store paths.
   Remove those paths in focused commits; do not retain multiple unused
   implementations of hot database operations.
-- Keep Go tests from traversing `ui/node_modules` after `npm install`; the
-  current tree contains a transitive package with Go source.
-
 ### Security and Internet exposure
 
 - SQLite settings files are restricted to the owning user, but configured NNTP
