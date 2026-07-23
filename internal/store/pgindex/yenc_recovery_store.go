@@ -174,7 +174,6 @@ func (s *Store) ListYEncRecoveryCandidatesWithOptions(ctx context.Context, limit
 		if seedErr != nil {
 			return nil, seedErr
 		}
-		s.recordYEncRecoverySeedScanResult(time.Now(), priority0Ready, upserted)
 		if upserted > 0 {
 			s.clearYEncRecoverySeedScanBackoff()
 		}
