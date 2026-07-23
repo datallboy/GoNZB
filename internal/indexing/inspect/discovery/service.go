@@ -123,14 +123,13 @@ func (s *Service) inspectCandidatesConcurrently(ctx context.Context, candidates 
 		}()
 	}
 
+queueCandidates:
 	for _, candidate := range candidates {
 		select {
 		case <-ctx.Done():
-			break
+			break queueCandidates
 		case jobs <- candidate:
-			continue
 		}
-		break
 	}
 	close(jobs)
 	wg.Wait()

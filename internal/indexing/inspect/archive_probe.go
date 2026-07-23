@@ -306,62 +306,6 @@ func materializeSparseSplitArchive(ctx context.Context, repo CatalogReader, fetc
 	return totalWritten, nil
 }
 
-func materializeSparseSplitArchiveVolumes(ctx context.Context, repo CatalogReader, fetcher ArticleFetcher, groups []string, family []pgindex.CatalogReleaseFile, workspaceDir string, log logger, candidate pgindex.BinaryInspectionCandidate, opts Options) (int64, error) {
-	probeFiles, err := prepareArchiveProbeFiles(ctx, repo, fetcher, groups, family)
-	if err != nil {
-		return 0, err
-	}
-
-	totalObservedSize := int64(0)
-	for _, file := range probeFiles {
-		if err := ctx.Err(); err != nil {
-			return 0, err
-		}
-		if file.exactSize > 0 {
-			totalObservedSize += file.exactSize
-		}
-	}
-	if totalObservedSize <= 0 {
-		return 0, fmt.Errorf("archive family %s has no materializable bytes", family[0].FileName)
-	}
-
-	headBytes, headWritten, err := readArchiveRange(ctx, fetcher, groups, probeFiles, 0, 32)
-	if err != nil {
-		return headWritten, err
-	}
-	if headWritten < 32 {
-		return headWritten, fmt.Errorf("insufficient bytes for archive start header: wanted 32 got %d", headWritten)
-	}
-	nextHeaderStart, nextHeaderEnd, totalArchiveSize, _, err := parseSevenZipNextHeaderRange(headBytes)
-	if err != nil {
-		return headWritten, err
-	}
-	if totalArchiveSize > totalObservedSize {
-		return headWritten, fmt.Errorf("archive header declares archive size %d larger than observed family size %d", totalArchiveSize, totalObservedSize)
-	}
-	nextHeaderBytesToRead := nextHeaderEnd - nextHeaderStart
-	if opts.MaxBytes > 0 && 32+nextHeaderBytesToRead > opts.MaxBytes {
-		return headWritten, fmt.Errorf("archive next header materialization %d exceeds inspect max bytes %d", 32+nextHeaderBytesToRead, opts.MaxBytes)
-	}
-	if err := createSparseArchiveFamily(workspaceDir, probeFiles); err != nil {
-		return 0, err
-	}
-
-	nextHeaderBytes, nextWritten, err := readArchiveRange(ctx, fetcher, groups, probeFiles, nextHeaderStart, nextHeaderEnd)
-	if err != nil {
-		return headWritten + nextWritten, err
-	}
-	if nextWritten < nextHeaderBytesToRead {
-		return headWritten + nextWritten, fmt.Errorf("insufficient bytes for archive next header: wanted %d got %d", nextHeaderBytesToRead, nextWritten)
-	}
-	written, err := writeArchiveFamilyRange(workspaceDir, probeFiles, 0, headBytes)
-	if err != nil {
-		return written, err
-	}
-	nextWrittenBytes, err := writeArchiveFamilyRange(workspaceDir, probeFiles, nextHeaderStart, nextHeaderBytes)
-	return written + nextWrittenBytes, err
-}
-
 func overlappingArchiveFiles(family []archiveProbeFile, start, end int64) []string {
 	if end <= start {
 		return nil
@@ -484,53 +428,6 @@ func writeSparseArchiveFileRange(path string, start int64, data []byte) (int64, 
 		return 0, fmt.Errorf("close sparse archive file %s: %w", path, err)
 	}
 	return int64(len(data)), nil
-}
-
-func materializeArchiveProbeFile(ctx context.Context, fetcher ArticleFetcher, groups []string, probePath string, baseOffset int64, file archiveProbeFile) (int64, error) {
-	var written int64
-	for _, ref := range file.refs {
-		if err := ctx.Err(); err != nil {
-			return written, err
-		}
-		article, err := fetchDecodedArticle(ctx, fetcher, groups, ref.MessageID)
-		if err != nil {
-			return written, err
-		}
-		wrote, err := writeSparseArchiveFileRange(probePath, baseOffset+article.Offset, article.Body)
-		written += wrote
-		if err != nil {
-			return written, err
-		}
-	}
-	return written, nil
-}
-
-func trailingProbeStart(family []archiveProbeFile, absoluteStart int64) (int, int64) {
-	offset := int64(0)
-	for idx, file := range family {
-		fileStart := offset
-		fileEnd := fileStart + file.exactSize
-		offset = fileEnd
-		if absoluteStart < fileEnd {
-			return idx, fileStart
-		}
-	}
-	if len(family) == 0 {
-		return 0, 0
-	}
-	last := len(family) - 1
-	return last, trailingStartOffsetForIndex(family, last)
-}
-
-func trailingStartOffsetForIndex(family []archiveProbeFile, index int) int64 {
-	if index <= 0 {
-		return 0
-	}
-	offset := int64(0)
-	for idx := 0; idx < len(family) && idx < index; idx++ {
-		offset += family[idx].exactSize
-	}
-	return offset
 }
 
 func collectBoundaryArticles(ctx context.Context, repo CatalogReader, fetcher ArticleFetcher, groups []string, releaseFileID int64, fromEnd bool, count int) ([]byte, error) {
@@ -988,11 +885,6 @@ func minInt64(a, b int64) int64 {
 		return a
 	}
 	return b
-}
-
-func parseSevenZipListing(output []byte, probePath string) ([]string, bool) {
-	entries, encrypted := parseSevenZipListingDetails(output, probePath)
-	return archiveEntryNames(entries), encrypted
 }
 
 func archiveEntryNames(entries []ArchiveEntryInfo) []string {

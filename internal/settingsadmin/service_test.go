@@ -30,6 +30,36 @@ func TestValidateRuntimeSettingsAllowsEnabledIndexerStageWithoutNewsgroup(t *tes
 	}
 }
 
+func TestValidateRuntimeSettingsAcceptsMultipleTimeframesForSameGroup(t *testing.T) {
+	runtime := app.DefaultRuntimeSettings()
+	runtime.Indexing.ScrapeTimeframes = []app.IndexingScrapeTimeframeRuntimeSettings{
+		{ID: "march-week", GroupName: "alt.binaries.test", StartDate: "2026-03-01", EndDate: "2026-03-07", Enabled: true},
+		{ID: "older-week", GroupName: "alt.binaries.test", StartDate: "2025-03-01", EndDate: "2025-03-07", Enabled: true},
+	}
+
+	if err := ValidateRuntimeSettings(&config.Config{}, runtime); err != nil {
+		t.Fatalf("expected same-group timeframes with distinct IDs to validate, got %v", err)
+	}
+}
+
+func TestValidateRuntimeSettingsRejectsInvalidScrapeTimeframes(t *testing.T) {
+	runtime := app.DefaultRuntimeSettings()
+	runtime.Indexing.ScrapeTimeframes = []app.IndexingScrapeTimeframeRuntimeSettings{
+		{ID: "duplicate", GroupName: "", StartDate: "bad", EndDate: "2026-03-07", Enabled: true},
+		{ID: "DUPLICATE", GroupName: "alt.binaries.test", StartDate: "2026-04-02", EndDate: "2026-04-01", Enabled: true},
+	}
+
+	err := ValidateRuntimeSettings(&config.Config{}, runtime)
+	if err == nil {
+		t.Fatalf("expected timeframe validation error")
+	}
+	for _, expected := range []string{"duplicates", "group_name", "start_date", "end_date must be on or after"} {
+		if !strings.Contains(err.Error(), expected) {
+			t.Fatalf("expected %q in validation error, got %v", expected, err)
+		}
+	}
+}
+
 func TestValidateRuntimeSettingsReportsIncompleteNewznabSource(t *testing.T) {
 	runtime := app.DefaultRuntimeSettings()
 	runtime.Indexers = []app.IndexerRuntimeSettings{{ID: "external"}}
@@ -73,9 +103,46 @@ func TestValidateRuntimeSettingsAllowsLocalIndexerAggregatorSourceWhenModuleEnab
 	}
 }
 
+func TestValidateRuntimeSettingsReportsGoNZBNetModuleGate(t *testing.T) {
+	runtime := app.DefaultRuntimeSettings()
+	runtime.Aggregator.Sources.GoNZBNet.Enabled = true
+
+	err := ValidateRuntimeSettings(&config.Config{
+		Modules: config.ModulesConfig{Aggregator: config.ModuleToggle{Enabled: true}},
+	}, runtime)
+	if err == nil || !strings.Contains(err.Error(), "aggregator.sources.gonzbnet.enabled requires modules.gonzbnet.enabled in config.yaml") {
+		t.Fatalf("expected GoNZBNet module gate detail, got %v", err)
+	}
+}
+
+func TestValidateRuntimeSettingsRejectsInsecureGoNZBNetManualPeer(t *testing.T) {
+	runtime := app.DefaultRuntimeSettings()
+	runtime.GoNZBNet.ManualPeers = []string{"http://127.0.0.1:8081"}
+
+	err := ValidateRuntimeSettings(&config.Config{}, runtime)
+	if err == nil || !strings.Contains(err.Error(), "gonzbnet.manual_peers[0]") {
+		t.Fatalf("expected insecure peer validation error, got %v", err)
+	}
+
+	runtime.GoNZBNet.AllowInsecurePeerHTTP = true
+	if err := ValidateRuntimeSettings(&config.Config{}, runtime); err != nil {
+		t.Fatalf("expected explicitly allowed HTTP peer to validate, got %v", err)
+	}
+}
+
+func TestValidateRuntimeSettingsRejectsInvalidGoNZBNetSchedule(t *testing.T) {
+	runtime := app.DefaultRuntimeSettings()
+	runtime.GoNZBNet.HealthAttestationsBatchSize = 0
+
+	err := ValidateRuntimeSettings(&config.Config{}, runtime)
+	if err == nil || !strings.Contains(err.Error(), "gonzbnet.health_attestations_batch_size") {
+		t.Fatalf("expected GoNZBNet schedule validation error, got %v", err)
+	}
+}
+
 func TestBuildCapabilitiesReportsIndexerNeedsScrapeGroup(t *testing.T) {
 	runtime := app.DefaultRuntimeSettings()
-	runtime.IndexerServers = []app.ServerRuntimeSettings{{ID: "primary", Host: "news.example.com", Port: 563}}
+	runtime.Servers = []app.ServerRuntimeSettings{{ID: "primary", Host: "news.example.com", Port: 563}}
 
 	caps := BuildCapabilities(&config.Config{
 		Modules: config.ModulesConfig{UsenetIndexer: config.ModuleToggle{Enabled: true}},
@@ -85,8 +152,85 @@ func TestBuildCapabilitiesReportsIndexerNeedsScrapeGroup(t *testing.T) {
 	if indexer.Ready || len(indexer.Requirements) == 0 {
 		t.Fatalf("expected scrape-group requirement, got %+v", indexer)
 	}
-	if !strings.Contains(strings.Join(indexer.Requirements, " "), "scrape group") {
+	if !strings.Contains(strings.Join(indexer.Requirements, " "), "scrape group or enabled historical timeframe") {
 		t.Fatalf("expected scrape-group detail, got %+v", indexer.Requirements)
+	}
+}
+
+func TestBuildCapabilitiesAcceptsEnabledHistoricalScrapeTimeframe(t *testing.T) {
+	runtime := app.DefaultRuntimeSettings()
+	runtime.Servers = []app.ServerRuntimeSettings{{ID: "primary", Host: "news.example.com", Port: 563}}
+	runtime.Indexing.ExplicitGroups = []app.IndexingScrapeGroupRuntimeSettings{}
+	runtime.Indexing.MaterializedGroups = []app.IndexingMaterializedGroupRuntimeSettings{}
+	runtime.Indexing.Newsgroups = []string{}
+	runtime.Indexing.ScrapeTimeframes = []app.IndexingScrapeTimeframeRuntimeSettings{{
+		ID:        "historical-week",
+		GroupName: "alt.binaries.test",
+		StartDate: "2026-01-12",
+		EndDate:   "2026-01-18",
+		Enabled:   true,
+	}}
+
+	caps := BuildCapabilities(&config.Config{
+		Modules: config.ModulesConfig{UsenetIndexer: config.ModuleToggle{Enabled: true}},
+	}, runtime)
+
+	indexer := caps.Modules["usenet_indexer"]
+	if !indexer.Configured || !indexer.Ready || len(indexer.Requirements) != 0 {
+		t.Fatalf("expected enabled historical timeframe to satisfy indexer setup, got %+v", indexer)
+	}
+}
+
+func TestBuildCapabilitiesRejectsDisabledHistoricalScrapeTimeframeWithoutActiveGroups(t *testing.T) {
+	runtime := app.DefaultRuntimeSettings()
+	runtime.Servers = []app.ServerRuntimeSettings{{ID: "primary", Host: "news.example.com", Port: 563}}
+	runtime.Indexing.ExplicitGroups = []app.IndexingScrapeGroupRuntimeSettings{}
+	runtime.Indexing.MaterializedGroups = []app.IndexingMaterializedGroupRuntimeSettings{}
+	runtime.Indexing.Newsgroups = []string{}
+	runtime.Indexing.ScrapeTimeframes = []app.IndexingScrapeTimeframeRuntimeSettings{{
+		ID:        "historical-week",
+		GroupName: "alt.binaries.test",
+		StartDate: "2026-01-12",
+		EndDate:   "2026-01-18",
+		Enabled:   false,
+	}}
+
+	caps := BuildCapabilities(&config.Config{
+		Modules: config.ModulesConfig{UsenetIndexer: config.ModuleToggle{Enabled: true}},
+	}, runtime)
+
+	indexer := caps.Modules["usenet_indexer"]
+	if indexer.Ready || len(indexer.Requirements) == 0 {
+		t.Fatalf("expected disabled historical timeframe not to satisfy indexer setup, got %+v", indexer)
+	}
+}
+
+func TestBuildCapabilitiesIncludesGoNZBNetModule(t *testing.T) {
+	runtime := app.DefaultRuntimeSettings()
+	caps := BuildCapabilities(&config.Config{
+		Modules: config.ModulesConfig{GoNZBNet: config.ModuleToggle{Enabled: true}},
+		Store:   config.StoreConfig{PGDSN: "postgres://gonzb:test@localhost/gonzb"},
+	}, runtime)
+
+	gonzbnet := caps.Modules["gonzbnet"]
+	if !gonzbnet.Visible || !gonzbnet.Enabled || !gonzbnet.Configured || !gonzbnet.Ready {
+		t.Fatalf("expected ready GoNZBNet capability, got %+v", gonzbnet)
+	}
+}
+
+func TestBuildCapabilitiesCountsGoNZBNetAsAggregatorSource(t *testing.T) {
+	runtime := app.DefaultRuntimeSettings()
+	runtime.Aggregator.Sources.GoNZBNet.Enabled = true
+	caps := BuildCapabilities(&config.Config{
+		Modules: config.ModulesConfig{
+			Aggregator: config.ModuleToggle{Enabled: true},
+			GoNZBNet:   config.ModuleToggle{Enabled: true},
+		},
+		Store: config.StoreConfig{PGDSN: "postgres://gonzb:test@localhost/gonzb"},
+	}, runtime)
+
+	if aggregator := caps.Modules["aggregator"]; !aggregator.Configured || !aggregator.Ready {
+		t.Fatalf("expected GoNZBNet-backed aggregator to be ready, got %+v", aggregator)
 	}
 }
 

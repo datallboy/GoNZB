@@ -3,13 +3,17 @@ package wiring
 import (
 	"context"
 	"fmt"
+	"time"
 
 	aggregatorpkg "github.com/datallboy/gonzb/internal/aggregator"
+	gonzbnetsource "github.com/datallboy/gonzb/internal/aggregator/sources/gonzbnet"
 	"github.com/datallboy/gonzb/internal/aggregator/sources/localblob"
 	"github.com/datallboy/gonzb/internal/aggregator/sources/newznab"
 	"github.com/datallboy/gonzb/internal/aggregator/sources/usenetindex"
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/domain"
+	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
+	"github.com/datallboy/gonzb/internal/gonzbnet/manifestresolver"
 	"github.com/datallboy/gonzb/internal/infra/config"
 	"github.com/datallboy/gonzb/internal/resolver"
 	"github.com/datallboy/gonzb/internal/store/adapters"
@@ -19,6 +23,11 @@ type aggregatorCacheStore interface {
 	UpsertAggregatorReleaseCache(ctx context.Context, releases []*domain.Release) error
 	SearchAggregatorReleaseCache(ctx context.Context, query string, limit int) ([]*domain.Release, error)
 	GetAggregatorReleaseCacheByID(ctx context.Context, id string) (*domain.Release, error)
+}
+
+type gonzbnetAggregatorStore interface {
+	gonzbnetsource.Store
+	manifestresolver.Store
 }
 
 func LoadAndApplyEffectiveConfig(ctx context.Context, appCtx *app.Context) error {
@@ -97,6 +106,25 @@ func buildAggregator(appCtx *app.Context, effective *config.Config) app.IndexerA
 
 	if effective.Aggregator.Sources.UsenetIndexer.Enabled && appCtx.PGIndexStore != nil {
 		manager.AddSource(usenetindex.New(appCtx.PGIndexStore, appCtx.SettingsAdmin, appCtx.IndexerArchiveStore))
+	}
+
+	if effective.Aggregator.Sources.GoNZBNet.Enabled &&
+		effective.GoNZBNet.IndexProjectionEnabled &&
+		appCtx.PGIndexStore != nil {
+		if store, ok := appCtx.PGIndexStore.(gonzbnetAggregatorStore); ok {
+			nodeIdentity, err := identity.LoadOrCreateWithPassword(effective.GoNZBNet.KeysDir, effective.GoNZBNet.KeyPassword)
+			if err == nil {
+				manager.AddSource(gonzbnetsource.NewWithResolver(store, manifestresolver.NewWithOptions(nodeIdentity, store, manifestresolver.Options{
+					AllowInsecurePeerHTTP: effective.GoNZBNet.AllowInsecurePeerHTTP,
+					EventTimeTolerance:    time.Duration(effective.GoNZBNet.TimeToleranceSeconds) * time.Second,
+					MaxEventAge:           time.Duration(effective.GoNZBNet.MaxEventAgeHours) * time.Hour,
+					MaxManifestBytes:      int64(effective.GoNZBNet.MaxManifestBytes),
+					FetchTimeout:          time.Duration(effective.GoNZBNet.ManifestFetchTimeoutSeconds) * time.Second,
+				})))
+			} else if appCtx.Logger != nil {
+				appCtx.Logger.Warn("gonzbnet aggregator source disabled: %v", err)
+			}
+		}
 	}
 
 	for _, idxCfg := range effective.Indexers {

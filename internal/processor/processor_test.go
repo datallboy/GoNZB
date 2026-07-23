@@ -18,7 +18,7 @@ func TestCLI7zCanExtractPrimarySplitVolume(t *testing.T) {
 
 	extractor, err := NewCLI7z()
 	if err != nil {
-		t.Skipf("7z unavailable: %v", err)
+		t.Fatalf("7z is required for processor integration tests: %v", err)
 	}
 
 	dir := t.TempDir()
@@ -189,7 +189,7 @@ func TestBuildMoveTaskListDropsExtensionlessArchiveArtifacts(t *testing.T) {
 func TestPostProcessExtractsExtensionless7zAndMovesExtractedFilesOnly(t *testing.T) {
 	extractor, err := NewCLI7z()
 	if err != nil {
-		t.Skipf("7z unavailable: %v", err)
+		t.Fatalf("7z is required for processor integration tests: %v", err)
 	}
 	_ = extractor
 

@@ -4,6 +4,8 @@ bin/
 # Ignore config file
 config.yaml
 *.yaml
+!docker-compose.gonzbnet-e2e.yml
+!test/e2e/gonzbnet/*.yaml
 
 # Ignore any .nzb files used as a sample
 *.nzb
@@ -22,6 +24,14 @@ testdata
 
 # Local scratch files
 .tmp/
+.e2e/
+.env
+!.env.example
+
+# Runtime stores contain generated databases, blobs, NZBs, and node keys.
+/store/
+/store-*/
+/data/gonzbnet/keys/
 
 # Web dist
 internal/webui/dist

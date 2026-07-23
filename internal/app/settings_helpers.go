@@ -15,6 +15,7 @@ func DefaultRuntimeSettings() *RuntimeSettings {
 		IndexerServers:    []ServerRuntimeSettings{},
 		Indexers:          []IndexerRuntimeSettings{},
 		Aggregator:        &AggregatorRuntimeSettings{},
+		GoNZBNet:          defaultGoNZBNetRuntimeSettings(),
 		Download: &DownloadRuntimeSettings{
 			OutDir:            "./downloads",
 			CompletedDir:      "./downloads/completed",
@@ -22,46 +23,46 @@ func DefaultRuntimeSettings() *RuntimeSettings {
 		},
 		NNTPPool: DefaultNNTPPoolRuntimeSettings(),
 		Indexing: &IndexingRuntimeSettings{
-			Newsgroups:                   []string{},
-			BackfillUntilDateByGroup:     map[string]string{},
-			ExplicitGroups:               []IndexingScrapeGroupRuntimeSettings{},
-			WildcardRules:                []IndexingWildcardRuleRuntimeSettings{},
-			ProviderGroupInventory:       []IndexingProviderGroupInventoryRuntimeSettings{},
-			MaterializedGroups:           []IndexingMaterializedGroupRuntimeSettings{},
-			ScrapeLatest:                 defaultScrapeStage(false),
-			ScrapeBackfill:               defaultScrapeStage(false),
-			PosterMaterialize:            defaultStage(false, 2, 10000, 0),
-			CrosspostPopularityRefresh:   defaultStage(false, 2, 1000, 0),
-			ArticleCohortSchedule:        defaultStage(true, 0.25, 50000, 0),
-			Assemble:                     defaultAssembleStage(false, 2, 5000, 1),
-			RecoverYEnc:                  defaultRecoverYEncStage(false),
-			SourceWindow:                 defaultSourceWindowSettings(),
-			Retention:                    defaultRetentionSettings(),
-			RecoveryAdmission:            defaultRecoveryAdmissionSettings(),
-			ScrapeTiers:                  defaultScrapeTierSettings(),
-			DeferredBackfill:             defaultDeferredBackfillSettings(),
-			ReleaseSummaryRefresh:        defaultReleaseSummaryRefreshStage(false),
-			Release:                      defaultReleaseStage(false),
-			ReleaseGenerateNZB:           defaultStage(false, 10, 100, 0),
-			ReleaseArchiveNZB:            defaultStage(false, 10, 100, 0),
-			ReleasePurgeArchivedSources:  defaultStage(false, 10, 50, 0),
-			InspectDiscoveryReadyRefresh: defaultStage(false, 10, 10000, 0),
-			InspectPAR2ReadyRefresh:      defaultStage(false, 10, 10000, 0),
-			InspectArchiveReadyRefresh:   defaultStage(false, 10, 10000, 0),
-			InspectMediaReadyRefresh:     defaultStage(false, 10, 10000, 0),
-			MaintenanceTasks:             defaultMaintenanceTasks(),
-			Match:                        IndexingMatchRuntimeSettings{HighConfidenceThreshold: 0.85, ProbableConfidenceThreshold: 0.55, ArticleBucketSize: 5000},
-			Inspect:                      IndexingInspectRuntimeSettings{WorkDir: "/store/indexer/inspect", WorkspaceBackend: "auto", MemoryWorkDir: "/dev/shm/gonzb-inspect", MaxBytes: 2 * 1024 * 1024 * 1024, MinBinaryBytes: 0, MaxBinaryBytes: 0, RequireExpectedFileCount: false, BlockedMagicHex: []string{"52434C4F4E45"}, MaxArchiveDepth: 3, ToolTimeoutSecs: 30, FFmpegPath: "ffmpeg", FFProbePath: "ffprobe", SevenZipPath: "7z", UnrarPath: "unrar", PAR2Path: "par2"},
-			StorageGuard:                 IndexingStorageGuardRuntimeSettings{Enabled: true, MinFreeBytes: 0, MinFreePercent: 15},
-			MemoryGuard:                  IndexingMemoryGuardRuntimeSettings{Enabled: true, MinAvailableBytes: 2 * 1024 * 1024 * 1024, MinAvailablePercent: 10, MinSwapFreeBytes: 512 * 1024 * 1024},
-			InspectDiscovery:             defaultStage(false, 10, 100, 1),
-			InspectPAR2:                  defaultStage(false, 10, 100, 4),
-			InspectNFO:                   defaultStage(false, 10, 100, 0),
-			InspectArchive:               defaultStage(false, 10, 100, 1),
-			InspectPassword:              defaultStage(false, 10, 100, 0),
-			InspectMedia:                 defaultStage(false, 10, 100, 1),
-			EnrichPreDB:                  defaultPreDBStage(false),
-			EnrichTMDB:                   defaultTMDBStage(false),
+			Newsgroups:                  []string{},
+			BackfillUntilDateByGroup:    map[string]string{},
+			ExplicitGroups:              []IndexingScrapeGroupRuntimeSettings{},
+			WildcardRules:               []IndexingWildcardRuleRuntimeSettings{},
+			ProviderGroupInventory:      []IndexingProviderGroupInventoryRuntimeSettings{},
+			MaterializedGroups:          []IndexingMaterializedGroupRuntimeSettings{},
+			ScrapeTimeframes:            []IndexingScrapeTimeframeRuntimeSettings{},
+			ScrapeLatest:                defaultScrapeStage(false),
+			ScrapeBackfill:              defaultScrapeStage(false),
+			ScrapeTimeframe:             defaultScrapeStage(false),
+			ScrapeDeferred:              defaultScrapeStage(true),
+			PosterMaterialize:           defaultStage(false, 2, 10000, 0),
+			CrosspostPopularityRefresh:  defaultStage(false, 2, 1000, 0),
+			ArticleCohortSchedule:       defaultStage(true, 0.25, 50000, 0),
+			Assemble:                    defaultAssembleStage(false, 2, 5000, 1),
+			RecoverYEnc:                 defaultRecoverYEncStage(false),
+			SourceWindow:                defaultSourceWindowSettings(),
+			Retention:                   defaultRetentionSettings(),
+			Partitions:                  defaultPartitionSettings(),
+			RecoveryAdmission:           defaultRecoveryAdmissionSettings(),
+			ScrapeTiers:                 defaultScrapeTierSettings(),
+			DeferredBackfill:            defaultDeferredBackfillSettings(),
+			ReleaseSummaryRefresh:       defaultReleaseSummaryRefreshStage(false),
+			Release:                     defaultReleaseStage(false),
+			ReleaseGenerateNZB:          defaultStage(false, 10, 100, 0),
+			ReleaseArchiveNZB:           defaultStage(false, 10, 100, 0),
+			ReleasePurgeArchivedSources: defaultStage(false, 10, 50, 0),
+			MaintenanceTasks:            defaultMaintenanceTasks(),
+			Match:                       IndexingMatchRuntimeSettings{HighConfidenceThreshold: 0.85, ProbableConfidenceThreshold: 0.55, ArticleBucketSize: 5000},
+			Inspect:                     IndexingInspectRuntimeSettings{WorkDir: "/store/indexer/inspect", WorkspaceBackend: "auto", MemoryWorkDir: "/dev/shm/gonzb-inspect", MaxBytes: 2 * 1024 * 1024 * 1024, MinBinaryBytes: 0, MaxBinaryBytes: 0, RequireExpectedFileCount: false, BlockedMagicHex: []string{"52434C4F4E45"}, MaxArchiveDepth: 3, ToolTimeoutSecs: 30, FFmpegPath: "ffmpeg", FFProbePath: "ffprobe", SevenZipPath: "7z", UnrarPath: "unrar", PAR2Path: "par2"},
+			StorageGuard:                IndexingStorageGuardRuntimeSettings{Enabled: true, MinFreeBytes: 0, MinFreePercent: 15},
+			MemoryGuard:                 IndexingMemoryGuardRuntimeSettings{Enabled: true, MinAvailableBytes: 2 * 1024 * 1024 * 1024, MinAvailablePercent: 10, MinSwapFreeBytes: 512 * 1024 * 1024},
+			InspectDiscovery:            defaultStage(false, 10, 100, 1),
+			InspectPAR2:                 defaultStage(false, 10, 100, 4),
+			InspectNFO:                  defaultStage(false, 10, 100, 0),
+			InspectArchive:              defaultStage(false, 10, 100, 1),
+			InspectPassword:             defaultStage(false, 10, 100, 0),
+			InspectMedia:                defaultStage(false, 10, 100, 1),
+			EnrichPreDB:                 defaultPreDBStage(false),
+			EnrichTMDB:                  defaultTMDBStage(false),
 		},
 		ArrIntegrations: []ArrIntegrationRuntimeSettings{},
 	}
@@ -91,6 +92,9 @@ func WithRuntimeDefaults(in *RuntimeSettings) *RuntimeSettings {
 	if out.Aggregator == nil {
 		out.Aggregator = defaults.Aggregator
 	}
+	if out.GoNZBNet == nil {
+		out.GoNZBNet = defaults.GoNZBNet
+	}
 	if out.Download == nil {
 		out.Download = defaults.Download
 	}
@@ -99,6 +103,17 @@ func WithRuntimeDefaults(in *RuntimeSettings) *RuntimeSettings {
 		out.Indexing = defaults.Indexing
 	} else {
 		out.Indexing = cloneIndexing(out.Indexing)
+	}
+	return out
+}
+
+// WithRuntimeDefaultsFromConfig preserves bootstrap GoNZBNet behavior when an
+// older persisted runtime snapshot predates the GoNZBNet settings section.
+func WithRuntimeDefaultsFromConfig(in *RuntimeSettings, cfg *config.Config) *RuntimeSettings {
+	hadGoNZBNet := in != nil && in.GoNZBNet != nil
+	out := WithRuntimeDefaults(in)
+	if !hadGoNZBNet && cfg != nil {
+		out.GoNZBNet = goNZBNetRuntimeFromConfig(cfg.GoNZBNet)
 	}
 	return out
 }
@@ -156,9 +171,21 @@ func defaultRetentionSettings() IndexingRetentionRuntimeSettings {
 		FailedProbeHours:                48,
 		ArchivedReleaseDetailGraceHours: 6,
 		MetadataIncompleteReleaseHours:  48,
-		CreatePartitionsDaysBefore:      180,
-		CreatePartitionsDaysAhead:       8,
+		CreatePartitionsDaysBefore:      0,
+		CreatePartitionsDaysAhead:       2,
+		SourceSettleHours:               24,
+		NoYieldGraceDays:                7,
+		YEncTerminalAttempts:            4,
+		ExecuteOutcomePurge:             false,
 		PurgeDryRunDefault:              true,
+	}
+}
+
+func defaultPartitionSettings() IndexingPartitionRuntimeSettings {
+	return IndexingPartitionRuntimeSettings{
+		PrecreateDaysAhead:      2,
+		MaxNewSourceDaysPerPass: 32,
+		DDLLockTimeoutSeconds:   5,
 	}
 }
 
@@ -174,6 +201,7 @@ func defaultRecoveryAdmissionSettings() IndexingRecoveryAdmissionRuntimeSettings
 		Priority0OverflowCap:        25000,
 		Priority0ReservoirBatches:   5,
 		NearTimeCohortBucketMinutes: 5,
+		LatestReservePercent:        10,
 	}
 }
 
@@ -238,6 +266,7 @@ func FromConfig(cfg *config.Config) *RuntimeSettings {
 		IndexerServers:    make([]ServerRuntimeSettings, 0, len(cfg.Servers)),
 		Indexers:          make([]IndexerRuntimeSettings, 0, len(cfg.Indexers)),
 		Aggregator:        aggregatorRuntimeFromConfig(cfg.Aggregator),
+		GoNZBNet:          goNZBNetRuntimeFromConfig(cfg.GoNZBNet),
 		ArrIntegrations:   []ArrIntegrationRuntimeSettings{},
 		Download: &DownloadRuntimeSettings{
 			OutDir:            cfg.Download.OutDir,
@@ -294,10 +323,13 @@ func IndexingRuntimeFromConfig(cfg config.IndexingConfig) IndexingRuntimeSetting
 		WildcardRules:            []IndexingWildcardRuleRuntimeSettings{},
 		ProviderGroupInventory:   []IndexingProviderGroupInventoryRuntimeSettings{},
 		MaterializedGroups:       []IndexingMaterializedGroupRuntimeSettings{},
+		ScrapeTimeframes:         []IndexingScrapeTimeframeRuntimeSettings{},
 	}
 
 	out.ScrapeLatest = indexStageRuntimeFromConfigWithConcurrency(cfg.ScrapeLatest, true, 10, 5000)
 	out.ScrapeBackfill = indexStageRuntimeFromConfigWithConcurrency(cfg.ScrapeBackfill, true, 10, 5000)
+	out.ScrapeTimeframe = defaultScrapeStage(false)
+	out.ScrapeDeferred = defaultScrapeStage(true)
 	out.PosterMaterialize = indexStageRuntimeFromConfig(cfg.PosterMaterialize, true, 2, 10000)
 	out.CrosspostPopularityRefresh = indexStageRuntimeFromConfig(cfg.CrosspostPopularityRefresh, true, 2, 1000)
 	out.ArticleCohortSchedule = defaultStage(true, 0.25, 50000, 0)
@@ -308,6 +340,7 @@ func IndexingRuntimeFromConfig(cfg config.IndexingConfig) IndexingRuntimeSetting
 	out.RecoverYEnc = indexStageRuntimeFromConfigWithConcurrency(cfg.RecoverYEnc, false, 10, 25)
 	out.SourceWindow = defaultSourceWindowSettings()
 	out.Retention = defaultRetentionSettings()
+	out.Partitions = defaultPartitionSettings()
 	out.RecoveryAdmission = defaultRecoveryAdmissionSettings()
 	out.ScrapeTiers = defaultScrapeTierSettings()
 	out.DeferredBackfill = defaultDeferredBackfillSettings()
@@ -345,10 +378,6 @@ func IndexingRuntimeFromConfig(cfg config.IndexingConfig) IndexingRuntimeSetting
 	out.ReleaseGenerateNZB = indexStageRuntimeFromConfig(cfg.ReleaseGenerateNZB, false, 10, 100)
 	out.ReleaseArchiveNZB = indexStageRuntimeFromConfig(cfg.ReleaseArchiveNZB, false, 10, 100)
 	out.ReleasePurgeArchivedSources = indexStageRuntimeFromConfig(cfg.ReleasePurgeArchivedSources, false, 10, 50)
-	out.InspectDiscoveryReadyRefresh = indexStageRuntimeFromConfig(cfg.InspectDiscoveryReadyRefresh, false, 10, 10000)
-	out.InspectPAR2ReadyRefresh = indexStageRuntimeFromConfig(cfg.InspectPAR2ReadyRefresh, false, 10, 10000)
-	out.InspectArchiveReadyRefresh = indexStageRuntimeFromConfig(cfg.InspectArchiveReadyRefresh, false, 10, 10000)
-	out.InspectMediaReadyRefresh = indexStageRuntimeFromConfig(cfg.InspectMediaReadyRefresh, false, 10, 10000)
 	out.MaintenanceTasks = defaultMaintenanceTasks()
 	out.Match = IndexingMatchRuntimeSettings{
 		HighConfidenceThreshold:     float64Value(cfg.Match.HighConfidenceThreshold, 0.85),
@@ -426,8 +455,210 @@ func aggregatorRuntimeFromConfig(cfg config.AggregatorConfig) *AggregatorRuntime
 		Sources: AggregatorSourcesRuntimeSettings{
 			LocalBlob:     RuntimeToggle{Enabled: cfg.Sources.LocalBlob.Enabled},
 			UsenetIndexer: RuntimeToggle{Enabled: cfg.Sources.UsenetIndexer.Enabled},
+			GoNZBNet:      RuntimeToggle{Enabled: cfg.Sources.GoNZBNet.Enabled},
 		},
 	}
+}
+
+func defaultGoNZBNetRuntimeSettings() *GoNZBNetRuntimeSettings {
+	return &GoNZBNetRuntimeSettings{
+		Visibility:                     "unlisted",
+		AllowPoolCreation:              true,
+		AllowJoinRequests:              true,
+		AdmissionRelayEnabled:          true,
+		ConsumerEnabled:                true,
+		IndexProjectionEnabled:         true,
+		ManifestCacheEnabled:           true,
+		PublishReleaseCardsBatchSize:   50,
+		PublishReleaseCardsIntervalMin: 10,
+		HealthAttestationsBatchSize:    50,
+		HealthAttestationsIntervalMin:  30,
+		ScannerMaxGroups:               25,
+		ScannerMaxArticlesPerHour:      250000,
+		ScannerClaimTTLMinutes:         30,
+		ScannerCheckpointIntervalSecs:  300,
+		ScannerRespectRemoteClaims:     true,
+		CoverageMode:                   "manual",
+		CoverageMinTrustForClaim:       0.65,
+		CoverageValidationOverlapPct:   10,
+		CoverageStaleClaimPenalty:      true,
+		CoverageProviderScopeMode:      "hash_only",
+		ValidationBatchSize:            25,
+		ValidationIntervalMin:          15,
+		ValidationTiers:                []string{"metadata", "article_stat", "segment_stat"},
+		ValidationMaxManifestsPerHour:  500,
+		ValidationSamplePercent:        10,
+		ValidationPublishProviderScope: true,
+		ManifestCacheMaxBytes:          10 * 1024 * 1024 * 1024,
+		ManifestCacheTTLDays:           90,
+		ManifestCacheServeTrustedPools: true,
+		PullSyncIntervalMin:            10,
+		PushSyncIntervalMin:            10,
+		PushSyncBatchSize:              100,
+		GossipIntervalMin:              1,
+		GossipBatchSize:                100,
+		GossipTTL:                      4,
+		GossipFanout:                   4,
+		MaxEventBytes:                  262144,
+		MaxManifestBytes:               10485760,
+		ManifestFetchTimeoutSeconds:    20,
+		MaxBatchEvents:                 100,
+		RateLimitEventsPerMinute:       120,
+		TimeToleranceSeconds:           120,
+		MaxEventAgeHours:               720,
+		NonceTTLSeconds:                600,
+	}
+}
+
+func goNZBNetRuntimeFromConfig(cfg config.GoNZBNetConfig) *GoNZBNetRuntimeSettings {
+	return &GoNZBNetRuntimeSettings{
+		NodeAlias:                      cfg.NodeAlias,
+		AdvertiseURL:                   cfg.AdvertiseURL,
+		AllowInsecurePeerHTTP:          cfg.AllowInsecurePeerHTTP,
+		PublishPoolIDs:                 append([]string(nil), cfg.PublishPoolIDs...),
+		ManualPeers:                    append([]string(nil), cfg.ManualPeers...),
+		Visibility:                     cfg.Visibility,
+		AllowPoolCreation:              cfg.AllowPoolCreation,
+		AllowJoinRequests:              cfg.AllowJoinRequests,
+		AdmissionRelayEnabled:          cfg.AdmissionRelayEnabled,
+		ConsumerEnabled:                cfg.ConsumerEnabled,
+		ScannerEnabled:                 cfg.ScannerEnabled,
+		IndexProjectionEnabled:         cfg.IndexProjectionEnabled,
+		ManifestBuilderEnabled:         cfg.ManifestBuilderEnabled,
+		ManifestCacheEnabled:           cfg.ManifestCacheEnabled,
+		ValidatorEnabled:               cfg.ValidatorEnabled,
+		HealthCheckerEnabled:           cfg.HealthCheckerEnabled,
+		CoverageEnabled:                cfg.CoverageEnabled,
+		SchedulerEnabled:               cfg.SchedulerEnabled,
+		PublishReleaseCardsEnabled:     cfg.PublishReleaseCardsEnabled,
+		PublishReleaseCardsBatchSize:   cfg.PublishReleaseCardsBatchSize,
+		PublishReleaseCardsIntervalMin: cfg.PublishReleaseCardsIntervalMin,
+		ManifestAvailabilityEnabled:    cfg.ManifestAvailabilityEnabled,
+		HealthAttestationsEnabled:      cfg.HealthAttestationsEnabled,
+		HealthAttestationsBatchSize:    cfg.HealthAttestationsBatchSize,
+		HealthAttestationsIntervalMin:  cfg.HealthAttestationsIntervalMin,
+		ScannerMaxGroups:               cfg.ScannerMaxGroups,
+		ScannerMaxArticlesPerHour:      cfg.ScannerMaxArticlesPerHour,
+		ScannerClaimTTLMinutes:         cfg.ScannerClaimTTLMinutes,
+		ScannerCheckpointIntervalSecs:  cfg.ScannerCheckpointIntervalSecs,
+		ScannerRespectRemoteClaims:     cfg.ScannerRespectRemoteClaims,
+		ScannerAllowUnassignedWork:     cfg.ScannerAllowUnassignedWork,
+		CoverageMode:                   cfg.CoverageMode,
+		CoverageMinTrustForClaim:       cfg.CoverageMinTrustForClaim,
+		CoverageValidationOverlapPct:   cfg.CoverageValidationOverlapPct,
+		CoverageStaleClaimPenalty:      cfg.CoverageStaleClaimPenalty,
+		CoverageProviderScopeMode:      cfg.CoverageProviderScopeMode,
+		ValidationBatchSize:            cfg.ValidationBatchSize,
+		ValidationIntervalMin:          cfg.ValidationIntervalMin,
+		ValidationTiers:                append([]string(nil), cfg.ValidationTiers...),
+		ValidationMaxManifestsPerHour:  cfg.ValidationMaxManifestsPerHour,
+		ValidationSamplePercent:        cfg.ValidationSamplePercent,
+		ValidationAllowSamplePayload:   cfg.ValidationAllowSamplePayload,
+		ValidationAllowPAR2:            cfg.ValidationAllowPAR2,
+		ValidationPublishProviderScope: cfg.ValidationPublishProviderScope,
+		ChecksumValidationEnabled:      cfg.ChecksumValidationEnabled,
+		ManifestCacheMaxBytes:          cfg.ManifestCacheMaxBytes,
+		ManifestCacheTTLDays:           cfg.ManifestCacheTTLDays,
+		ManifestCacheServeTrustedPools: cfg.ManifestCacheServeTrustedPools,
+		PullSyncEnabled:                cfg.PullSyncEnabled,
+		PullSyncIntervalMin:            cfg.PullSyncIntervalMin,
+		PushSyncEnabled:                cfg.PushSyncEnabled,
+		PushSyncIntervalMin:            cfg.PushSyncIntervalMin,
+		PushSyncBatchSize:              cfg.PushSyncBatchSize,
+		WebSocketGossipEnabled:         cfg.WebSocketGossipEnabled,
+		GossipIntervalMin:              cfg.GossipIntervalMin,
+		GossipBatchSize:                cfg.GossipBatchSize,
+		GossipTTL:                      cfg.GossipTTL,
+		GossipFanout:                   cfg.GossipFanout,
+		PeerExchangeEnabled:            cfg.PeerExchangeEnabled,
+		RelayEnabled:                   cfg.RelayEnabled,
+		MaxEventBytes:                  cfg.MaxEventBytes,
+		MaxManifestBytes:               cfg.MaxManifestBytes,
+		ManifestFetchTimeoutSeconds:    cfg.ManifestFetchTimeoutSeconds,
+		MaxBatchEvents:                 cfg.MaxBatchEvents,
+		RateLimitEventsPerMinute:       cfg.RateLimitEventsPerMinute,
+		TimeToleranceSeconds:           cfg.TimeToleranceSeconds,
+		MaxEventAgeHours:               cfg.MaxEventAgeHours,
+		NonceTTLSeconds:                cfg.NonceTTLSeconds,
+		ShareProviderBackbone:          cfg.ShareProviderBackbone,
+		ShareSourceIndexer:             cfg.ShareSourceIndexer,
+	}
+}
+
+func applyGoNZBNetRuntimeToConfig(out *config.GoNZBNetConfig, in *GoNZBNetRuntimeSettings) {
+	if out == nil || in == nil {
+		return
+	}
+	out.NodeAlias = strings.TrimSpace(in.NodeAlias)
+	out.AdvertiseURL = strings.TrimSpace(in.AdvertiseURL)
+	out.AllowInsecurePeerHTTP = in.AllowInsecurePeerHTTP
+	out.PublishPoolIDs = append([]string(nil), in.PublishPoolIDs...)
+	out.ManualPeers = append([]string(nil), in.ManualPeers...)
+	out.Visibility = strings.TrimSpace(in.Visibility)
+	out.AllowPoolCreation = in.AllowPoolCreation
+	out.AllowJoinRequests = in.AllowJoinRequests
+	out.AdmissionRelayEnabled = in.AdmissionRelayEnabled
+	out.ConsumerEnabled = in.ConsumerEnabled
+	out.ScannerEnabled = in.ScannerEnabled
+	out.IndexProjectionEnabled = in.IndexProjectionEnabled
+	out.ManifestBuilderEnabled = in.ManifestBuilderEnabled
+	out.ManifestCacheEnabled = in.ManifestCacheEnabled
+	out.ValidatorEnabled = in.ValidatorEnabled
+	out.HealthCheckerEnabled = in.HealthCheckerEnabled
+	out.CoverageEnabled = in.CoverageEnabled
+	out.SchedulerEnabled = in.SchedulerEnabled
+	out.PublishReleaseCardsEnabled = in.PublishReleaseCardsEnabled
+	out.PublishReleaseCardsBatchSize = in.PublishReleaseCardsBatchSize
+	out.PublishReleaseCardsIntervalMin = in.PublishReleaseCardsIntervalMin
+	out.ManifestAvailabilityEnabled = in.ManifestAvailabilityEnabled
+	out.HealthAttestationsEnabled = in.HealthAttestationsEnabled
+	out.HealthAttestationsBatchSize = in.HealthAttestationsBatchSize
+	out.HealthAttestationsIntervalMin = in.HealthAttestationsIntervalMin
+	out.ScannerMaxGroups = in.ScannerMaxGroups
+	out.ScannerMaxArticlesPerHour = in.ScannerMaxArticlesPerHour
+	out.ScannerClaimTTLMinutes = in.ScannerClaimTTLMinutes
+	out.ScannerCheckpointIntervalSecs = in.ScannerCheckpointIntervalSecs
+	out.ScannerRespectRemoteClaims = in.ScannerRespectRemoteClaims
+	out.ScannerAllowUnassignedWork = in.ScannerAllowUnassignedWork
+	out.CoverageMode = strings.TrimSpace(in.CoverageMode)
+	out.CoverageMinTrustForClaim = in.CoverageMinTrustForClaim
+	out.CoverageValidationOverlapPct = in.CoverageValidationOverlapPct
+	out.CoverageStaleClaimPenalty = in.CoverageStaleClaimPenalty
+	out.CoverageProviderScopeMode = strings.TrimSpace(in.CoverageProviderScopeMode)
+	out.ValidationBatchSize = in.ValidationBatchSize
+	out.ValidationIntervalMin = in.ValidationIntervalMin
+	out.ValidationTiers = append([]string(nil), in.ValidationTiers...)
+	out.ValidationMaxManifestsPerHour = in.ValidationMaxManifestsPerHour
+	out.ValidationSamplePercent = in.ValidationSamplePercent
+	out.ValidationAllowSamplePayload = in.ValidationAllowSamplePayload
+	out.ValidationAllowPAR2 = in.ValidationAllowPAR2
+	out.ValidationPublishProviderScope = in.ValidationPublishProviderScope
+	out.ChecksumValidationEnabled = in.ChecksumValidationEnabled
+	out.ManifestCacheMaxBytes = in.ManifestCacheMaxBytes
+	out.ManifestCacheTTLDays = in.ManifestCacheTTLDays
+	out.ManifestCacheServeTrustedPools = in.ManifestCacheServeTrustedPools
+	out.PullSyncEnabled = in.PullSyncEnabled
+	out.PullSyncIntervalMin = in.PullSyncIntervalMin
+	out.PushSyncEnabled = in.PushSyncEnabled
+	out.PushSyncIntervalMin = in.PushSyncIntervalMin
+	out.PushSyncBatchSize = in.PushSyncBatchSize
+	out.WebSocketGossipEnabled = in.WebSocketGossipEnabled
+	out.GossipIntervalMin = in.GossipIntervalMin
+	out.GossipBatchSize = in.GossipBatchSize
+	out.GossipTTL = in.GossipTTL
+	out.GossipFanout = in.GossipFanout
+	out.PeerExchangeEnabled = in.PeerExchangeEnabled
+	out.RelayEnabled = in.RelayEnabled
+	out.MaxEventBytes = in.MaxEventBytes
+	out.MaxManifestBytes = in.MaxManifestBytes
+	out.ManifestFetchTimeoutSeconds = in.ManifestFetchTimeoutSeconds
+	out.MaxBatchEvents = in.MaxBatchEvents
+	out.RateLimitEventsPerMinute = in.RateLimitEventsPerMinute
+	out.TimeToleranceSeconds = in.TimeToleranceSeconds
+	out.MaxEventAgeHours = in.MaxEventAgeHours
+	out.NonceTTLSeconds = in.NonceTTLSeconds
+	out.ShareProviderBackbone = in.ShareProviderBackbone
+	out.ShareSourceIndexer = in.ShareSourceIndexer
 }
 
 // ApplyToConfig applies runtime-editable settings on top of bootstrap config.
@@ -441,6 +672,9 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 	effective.Servers = append([]config.ServerConfig(nil), base.Servers...)
 	effective.Indexers = append([]config.IndexerConfig(nil), base.Indexers...)
 	effective.Aggregator = base.Aggregator
+	effective.GoNZBNet.PublishPoolIDs = append([]string(nil), base.GoNZBNet.PublishPoolIDs...)
+	effective.GoNZBNet.ManualPeers = append([]string(nil), base.GoNZBNet.ManualPeers...)
+	effective.GoNZBNet.ValidationTiers = append([]string(nil), base.GoNZBNet.ValidationTiers...)
 	effective.Download.CleanupExtensions = append([]string(nil), base.Download.CleanupExtensions...)
 	effective.Indexing.Newsgroups = append([]string(nil), base.Indexing.Newsgroups...)
 
@@ -464,6 +698,11 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 	if runtime.Aggregator != nil {
 		effective.Aggregator.Sources.LocalBlob.Enabled = runtime.Aggregator.Sources.LocalBlob.Enabled
 		effective.Aggregator.Sources.UsenetIndexer.Enabled = runtime.Aggregator.Sources.UsenetIndexer.Enabled
+		effective.Aggregator.Sources.GoNZBNet.Enabled = runtime.Aggregator.Sources.GoNZBNet.Enabled
+	}
+
+	if runtime.GoNZBNet != nil {
+		applyGoNZBNetRuntimeToConfig(&effective.GoNZBNet, runtime.GoNZBNet)
 	}
 
 	if runtime.Download != nil {
@@ -520,10 +759,6 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 		effective.Indexing.ReleaseGenerateNZB = toStageConfigNoConcurrency(indexing.ReleaseGenerateNZB)
 		effective.Indexing.ReleaseArchiveNZB = toStageConfigNoConcurrency(indexing.ReleaseArchiveNZB)
 		effective.Indexing.ReleasePurgeArchivedSources = toStageConfigNoConcurrency(indexing.ReleasePurgeArchivedSources)
-		effective.Indexing.InspectDiscoveryReadyRefresh = toStageConfigNoConcurrency(indexing.InspectDiscoveryReadyRefresh)
-		effective.Indexing.InspectPAR2ReadyRefresh = toStageConfigNoConcurrency(indexing.InspectPAR2ReadyRefresh)
-		effective.Indexing.InspectArchiveReadyRefresh = toStageConfigNoConcurrency(indexing.InspectArchiveReadyRefresh)
-		effective.Indexing.InspectMediaReadyRefresh = toStageConfigNoConcurrency(indexing.InspectMediaReadyRefresh)
 		effective.Indexing.Match = config.IndexingMatchConfig{
 			HighConfidenceThreshold:     float64Ptr(indexing.Match.HighConfidenceThreshold),
 			ProbableConfidenceThreshold: float64Ptr(indexing.Match.ProbableConfidenceThreshold),
@@ -611,6 +846,7 @@ func ApplyPatch(current *RuntimeSettings, patch *RuntimeSettingsPatch) *RuntimeS
 		Indexers:          append([]IndexerRuntimeSettings(nil), current.Indexers...),
 		ArrIntegrations:   append([]ArrIntegrationRuntimeSettings(nil), current.ArrIntegrations...),
 		Aggregator:        cloneAggregator(current.Aggregator),
+		GoNZBNet:          cloneGoNZBNet(current.GoNZBNet),
 		Download:          cloneDownload(current.Download),
 		NNTPPool:          cloneNNTPPool(current.NNTPPool),
 		Indexing:          cloneIndexing(current.Indexing),
@@ -631,6 +867,9 @@ func ApplyPatch(current *RuntimeSettings, patch *RuntimeSettingsPatch) *RuntimeS
 	}
 	if patch.Aggregator != nil {
 		next.Aggregator = cloneAggregator(patch.Aggregator)
+	}
+	if patch.GoNZBNet != nil {
+		next.GoNZBNet = cloneGoNZBNet(patch.GoNZBNet)
 	}
 	if patch.Download != nil {
 		next.Download = cloneDownload(patch.Download)
@@ -662,6 +901,7 @@ func CloneRuntimeSettings(in *RuntimeSettings) *RuntimeSettings {
 		Indexers:          append([]IndexerRuntimeSettings(nil), in.Indexers...),
 		ArrIntegrations:   append([]ArrIntegrationRuntimeSettings(nil), in.ArrIntegrations...),
 		Aggregator:        cloneAggregator(in.Aggregator),
+		GoNZBNet:          cloneGoNZBNet(in.GoNZBNet),
 		Download:          cloneDownload(in.Download),
 		NNTPPool:          cloneNNTPPool(in.NNTPPool),
 		Indexing:          cloneIndexing(in.Indexing),
@@ -707,7 +947,8 @@ func RuntimeConfigured(in *RuntimeSettings) bool {
 	return len(in.Servers) > 0 ||
 		len(in.Indexers) > 0 ||
 		len(in.ArrIntegrations) > 0 ||
-		in.Aggregator != nil && (in.Aggregator.Sources.LocalBlob.Enabled || in.Aggregator.Sources.UsenetIndexer.Enabled) ||
+		in.Aggregator != nil && (in.Aggregator.Sources.LocalBlob.Enabled || in.Aggregator.Sources.UsenetIndexer.Enabled || in.Aggregator.Sources.GoNZBNet.Enabled) ||
+		goNZBNetRuntimeConfigured(in.GoNZBNet) ||
 		downloadConfigured(in.Download) ||
 		indexingConfigured(in.Indexing)
 }
@@ -796,10 +1037,6 @@ func indexingConfigured(in *IndexingRuntimeSettings) bool {
 		in.ReleaseGenerateNZB.Enabled ||
 		in.ReleaseArchiveNZB.Enabled ||
 		in.ReleasePurgeArchivedSources.Enabled ||
-		in.InspectDiscoveryReadyRefresh.Enabled ||
-		in.InspectPAR2ReadyRefresh.Enabled ||
-		in.InspectArchiveReadyRefresh.Enabled ||
-		in.InspectMediaReadyRefresh.Enabled ||
 		in.InspectDiscovery.Enabled ||
 		in.InspectPAR2.Enabled ||
 		in.InspectNFO.Enabled ||
@@ -911,51 +1148,70 @@ func cloneAggregator(in *AggregatorRuntimeSettings) *AggregatorRuntimeSettings {
 	return &cp
 }
 
+func cloneGoNZBNet(in *GoNZBNetRuntimeSettings) *GoNZBNetRuntimeSettings {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	out.PublishPoolIDs = append([]string(nil), in.PublishPoolIDs...)
+	out.ManualPeers = append([]string(nil), in.ManualPeers...)
+	out.ValidationTiers = append([]string(nil), in.ValidationTiers...)
+	return &out
+}
+
+func goNZBNetRuntimeConfigured(in *GoNZBNetRuntimeSettings) bool {
+	return in != nil && (in.ConsumerEnabled || in.ScannerEnabled || in.IndexProjectionEnabled ||
+		in.ManifestBuilderEnabled || in.ManifestCacheEnabled || in.ValidatorEnabled ||
+		in.HealthCheckerEnabled || in.CoverageEnabled || in.SchedulerEnabled ||
+		in.PullSyncEnabled || in.PushSyncEnabled || in.WebSocketGossipEnabled ||
+		in.RelayEnabled || len(in.ManualPeers) > 0 || len(in.PublishPoolIDs) > 0)
+}
+
 func cloneIndexing(in *IndexingRuntimeSettings) *IndexingRuntimeSettings {
 	if in == nil {
 		return nil
 	}
 	out := &IndexingRuntimeSettings{
-		Newsgroups:                   append([]string(nil), in.Newsgroups...),
-		BackfillUntilDateByGroup:     cloneStringMap(in.BackfillUntilDateByGroup),
-		ExplicitGroups:               cloneExplicitGroups(in.ExplicitGroups),
-		WildcardRules:                cloneWildcardRules(in.WildcardRules),
-		ProviderGroupInventory:       cloneProviderGroupInventory(in.ProviderGroupInventory),
-		MaterializedGroups:           cloneMaterializedGroups(in.MaterializedGroups),
-		ScrapeLatest:                 in.ScrapeLatest,
-		ScrapeBackfill:               in.ScrapeBackfill,
-		PosterMaterialize:            mergeStageRuntimeSettings(defaultStage(false, 2, 10000, 0), in.PosterMaterialize),
-		CrosspostPopularityRefresh:   mergeStageRuntimeSettings(defaultStage(false, 2, 1000, 0), in.CrosspostPopularityRefresh),
-		ArticleCohortSchedule:        mergeStageRuntimeSettings(defaultStage(false, 0.25, 50000, 0), in.ArticleCohortSchedule),
-		Assemble:                     mergeStageRuntimeSettings(defaultAssembleStage(false, 2, 5000, 1), in.Assemble),
-		RecoverYEnc:                  mergeStageRuntimeSettings(defaultRecoverYEncStage(false), in.RecoverYEnc),
-		SourceWindow:                 normalizeSourceWindowRuntimeSettings(in.SourceWindow),
-		Retention:                    mergeRetentionRuntimeSettings(defaultRetentionSettings(), in.Retention),
-		RecoveryAdmission:            mergeRecoveryAdmissionRuntimeSettings(defaultRecoveryAdmissionSettings(), in.RecoveryAdmission),
-		ScrapeTiers:                  mergeScrapeTierRuntimeSettings(defaultScrapeTierSettings(), in.ScrapeTiers),
-		DeferredBackfill:             mergeDeferredBackfillRuntimeSettings(defaultDeferredBackfillSettings(), in.DeferredBackfill),
-		ReleaseSummaryRefresh:        mergeStageRuntimeSettings(defaultReleaseSummaryRefreshStage(false), in.ReleaseSummaryRefresh),
-		Release:                      in.Release,
-		ReleaseGenerateNZB:           mergeStageRuntimeSettings(defaultStage(false, 10, 100, 0), in.ReleaseGenerateNZB),
-		ReleaseArchiveNZB:            mergeStageRuntimeSettings(defaultStage(false, 10, 100, 0), in.ReleaseArchiveNZB),
-		ReleasePurgeArchivedSources:  mergeStageRuntimeSettings(defaultStage(false, 10, 50, 0), in.ReleasePurgeArchivedSources),
-		InspectDiscoveryReadyRefresh: mergeStageRuntimeSettings(defaultStage(false, 10, 10000, 0), in.InspectDiscoveryReadyRefresh),
-		InspectPAR2ReadyRefresh:      mergeStageRuntimeSettings(defaultStage(false, 10, 10000, 0), in.InspectPAR2ReadyRefresh),
-		InspectArchiveReadyRefresh:   mergeStageRuntimeSettings(defaultStage(false, 10, 10000, 0), in.InspectArchiveReadyRefresh),
-		InspectMediaReadyRefresh:     mergeStageRuntimeSettings(defaultStage(false, 10, 10000, 0), in.InspectMediaReadyRefresh),
-		MaintenanceTasks:             mergeMaintenanceTaskRuntimeSettings(defaultMaintenanceTasks(), in.MaintenanceTasks),
-		Match:                        in.Match,
-		Inspect:                      cloneInspectRuntimeSettings(in.Inspect),
-		StorageGuard:                 normalizeStorageGuardRuntimeSettings(in.StorageGuard),
-		MemoryGuard:                  normalizeMemoryGuardRuntimeSettings(in.MemoryGuard),
-		InspectDiscovery:             in.InspectDiscovery,
-		InspectPAR2:                  in.InspectPAR2,
-		InspectNFO:                   in.InspectNFO,
-		InspectArchive:               in.InspectArchive,
-		InspectPassword:              in.InspectPassword,
-		InspectMedia:                 in.InspectMedia,
-		EnrichPreDB:                  in.EnrichPreDB,
-		EnrichTMDB:                   in.EnrichTMDB,
+		Newsgroups:                  append([]string(nil), in.Newsgroups...),
+		BackfillUntilDateByGroup:    cloneStringMap(in.BackfillUntilDateByGroup),
+		ExplicitGroups:              cloneExplicitGroups(in.ExplicitGroups),
+		WildcardRules:               cloneWildcardRules(in.WildcardRules),
+		ProviderGroupInventory:      cloneProviderGroupInventory(in.ProviderGroupInventory),
+		MaterializedGroups:          cloneMaterializedGroups(in.MaterializedGroups),
+		ScrapeTimeframes:            cloneScrapeTimeframes(in.ScrapeTimeframes),
+		ScrapeLatest:                in.ScrapeLatest,
+		ScrapeBackfill:              in.ScrapeBackfill,
+		ScrapeTimeframe:             mergeStageRuntimeSettings(defaultScrapeStage(false), in.ScrapeTimeframe),
+		ScrapeDeferred:              mergeStageRuntimeSettings(defaultScrapeStage(true), in.ScrapeDeferred),
+		PosterMaterialize:           mergeStageRuntimeSettings(defaultStage(false, 2, 10000, 0), in.PosterMaterialize),
+		CrosspostPopularityRefresh:  mergeStageRuntimeSettings(defaultStage(false, 2, 1000, 0), in.CrosspostPopularityRefresh),
+		ArticleCohortSchedule:       mergeStageRuntimeSettings(defaultStage(false, 0.25, 50000, 0), in.ArticleCohortSchedule),
+		Assemble:                    mergeStageRuntimeSettings(defaultAssembleStage(false, 2, 5000, 1), in.Assemble),
+		RecoverYEnc:                 mergeStageRuntimeSettings(defaultRecoverYEncStage(false), in.RecoverYEnc),
+		SourceWindow:                normalizeSourceWindowRuntimeSettings(in.SourceWindow),
+		Retention:                   mergeRetentionRuntimeSettings(defaultRetentionSettings(), in.Retention),
+		Partitions:                  mergePartitionRuntimeSettings(defaultPartitionSettings(), in.Partitions, in.Retention),
+		RecoveryAdmission:           mergeRecoveryAdmissionRuntimeSettings(defaultRecoveryAdmissionSettings(), in.RecoveryAdmission),
+		ScrapeTiers:                 mergeScrapeTierRuntimeSettings(defaultScrapeTierSettings(), in.ScrapeTiers),
+		DeferredBackfill:            mergeDeferredBackfillRuntimeSettings(defaultDeferredBackfillSettings(), in.DeferredBackfill),
+		ReleaseSummaryRefresh:       mergeStageRuntimeSettings(defaultReleaseSummaryRefreshStage(false), in.ReleaseSummaryRefresh),
+		Release:                     in.Release,
+		ReleaseGenerateNZB:          mergeStageRuntimeSettings(defaultStage(false, 10, 100, 0), in.ReleaseGenerateNZB),
+		ReleaseArchiveNZB:           mergeStageRuntimeSettings(defaultStage(false, 10, 100, 0), in.ReleaseArchiveNZB),
+		ReleasePurgeArchivedSources: mergeStageRuntimeSettings(defaultStage(false, 10, 50, 0), in.ReleasePurgeArchivedSources),
+		MaintenanceTasks:            mergeMaintenanceTaskRuntimeSettings(defaultMaintenanceTasks(), in.MaintenanceTasks),
+		Match:                       in.Match,
+		Inspect:                     cloneInspectRuntimeSettings(in.Inspect),
+		StorageGuard:                normalizeStorageGuardRuntimeSettings(in.StorageGuard),
+		MemoryGuard:                 normalizeMemoryGuardRuntimeSettings(in.MemoryGuard),
+		InspectDiscovery:            in.InspectDiscovery,
+		InspectPAR2:                 in.InspectPAR2,
+		InspectNFO:                  in.InspectNFO,
+		InspectArchive:              in.InspectArchive,
+		InspectPassword:             in.InspectPassword,
+		InspectMedia:                in.InspectMedia,
+		EnrichPreDB:                 in.EnrichPreDB,
+		EnrichTMDB:                  in.EnrichTMDB,
 	}
 	normalizeIndexingScrapeConfig(out)
 	return out
@@ -1106,6 +1362,12 @@ func normalizeIndexingScrapeConfig(indexing *IndexingRuntimeSettings) {
 		indexing.MaterializedGroups[i].ProviderIDs = slices.Compact(indexing.MaterializedGroups[i].ProviderIDs)
 		indexing.MaterializedGroups[i].RuleIDs = slices.Compact(indexing.MaterializedGroups[i].RuleIDs)
 	}
+	for i := range indexing.ScrapeTimeframes {
+		indexing.ScrapeTimeframes[i].ID = strings.TrimSpace(indexing.ScrapeTimeframes[i].ID)
+		indexing.ScrapeTimeframes[i].GroupName = strings.TrimSpace(indexing.ScrapeTimeframes[i].GroupName)
+		indexing.ScrapeTimeframes[i].StartDate = strings.TrimSpace(indexing.ScrapeTimeframes[i].StartDate)
+		indexing.ScrapeTimeframes[i].EndDate = strings.TrimSpace(indexing.ScrapeTimeframes[i].EndDate)
+	}
 	indexing.Newsgroups = EffectiveNewsgroupNames(indexing)
 	indexing.BackfillUntilDateByGroup = EffectiveBackfillUntilDateByGroup(indexing)
 }
@@ -1133,6 +1395,15 @@ func cloneExplicitGroups(in []IndexingScrapeGroupRuntimeSettings) []IndexingScra
 	}
 	out := make([]IndexingScrapeGroupRuntimeSettings, 0, len(in))
 	out = append(out, in...)
+	return out
+}
+
+func cloneScrapeTimeframes(in []IndexingScrapeTimeframeRuntimeSettings) []IndexingScrapeTimeframeRuntimeSettings {
+	if in == nil {
+		return nil
+	}
+	out := make([]IndexingScrapeTimeframeRuntimeSettings, len(in))
+	copy(out, in)
 	return out
 }
 
@@ -1238,14 +1509,38 @@ func mergeRetentionRuntimeSettings(base, override IndexingRetentionRuntimeSettin
 	if override.MetadataIncompleteReleaseHours > 0 {
 		base.MetadataIncompleteReleaseHours = override.MetadataIncompleteReleaseHours
 	}
-	if override.CreatePartitionsDaysBefore > 0 {
-		base.CreatePartitionsDaysBefore = override.CreatePartitionsDaysBefore
-	}
 	if override.CreatePartitionsDaysAhead > 0 {
 		base.CreatePartitionsDaysAhead = override.CreatePartitionsDaysAhead
 	}
+	if override.SourceSettleHours > 0 {
+		base.SourceSettleHours = override.SourceSettleHours
+	}
+	if override.NoYieldGraceDays > 0 {
+		base.NoYieldGraceDays = override.NoYieldGraceDays
+	}
+	if override.YEncTerminalAttempts > 0 {
+		base.YEncTerminalAttempts = override.YEncTerminalAttempts
+	}
+	if override.ExecuteOutcomePurge {
+		base.ExecuteOutcomePurge = true
+	}
 	if !override.PurgeDryRunDefault {
 		base.PurgeDryRunDefault = false
+	}
+	return base
+}
+
+func mergePartitionRuntimeSettings(base, override IndexingPartitionRuntimeSettings, legacy IndexingRetentionRuntimeSettings) IndexingPartitionRuntimeSettings {
+	if override.PrecreateDaysAhead > 0 {
+		base.PrecreateDaysAhead = override.PrecreateDaysAhead
+	} else if legacy.CreatePartitionsDaysAhead > 0 {
+		base.PrecreateDaysAhead = legacy.CreatePartitionsDaysAhead
+	}
+	if override.MaxNewSourceDaysPerPass > 0 {
+		base.MaxNewSourceDaysPerPass = override.MaxNewSourceDaysPerPass
+	}
+	if override.DDLLockTimeoutSeconds > 0 {
+		base.DDLLockTimeoutSeconds = override.DDLLockTimeoutSeconds
 	}
 	return base
 }
@@ -1280,6 +1575,12 @@ func mergeRecoveryAdmissionRuntimeSettings(base, override IndexingRecoveryAdmiss
 	}
 	if override.NearTimeCohortBucketMinutes > 0 {
 		base.NearTimeCohortBucketMinutes = override.NearTimeCohortBucketMinutes
+	}
+	if override.LatestReservePercent > 0 {
+		base.LatestReservePercent = override.LatestReservePercent
+	}
+	if base.LatestReservePercent > 50 {
+		base.LatestReservePercent = 50
 	}
 	return base
 }
@@ -1400,11 +1701,12 @@ func defaultMaintenanceTasks() map[string]IndexingMaintenanceTaskRuntimeSettings
 		"crosspost_group_raw_purge":     {Enabled: true, ScheduleEnabled: false, IntervalHours: 24, BatchSize: 250000},
 		"yenc_done_work_item_cleanup":   {Enabled: true, ScheduleEnabled: false, IntervalHours: 24, BatchSize: 250000},
 		"group_profile_refresh":         {Enabled: true, ScheduleEnabled: true, IntervalHours: 1, BatchSize: 1},
-		"raw_stage_retention":           {Enabled: true, ScheduleEnabled: false, IntervalHours: 24, BatchSize: 250000},
+		"outcome_reconcile":             {Enabled: true, ScheduleEnabled: true, IntervalHours: 1, BatchSize: 100},
+		"raw_stage_retention":           {Enabled: false, ScheduleEnabled: false, IntervalHours: 24, BatchSize: 250000},
 		"partition_retention_drop":      {Enabled: true, ScheduleEnabled: false, IntervalHours: 24, BatchSize: 7},
 		"partition_default_rehome":      {Enabled: true, ScheduleEnabled: false, IntervalHours: 24, BatchSize: 1},
 		"inspect_workspace_cleanup":     {Enabled: true, ScheduleEnabled: false, IntervalHours: 24, BatchSize: 1000},
-		"stale_nonrelease_source_purge": {Enabled: true, ScheduleEnabled: false, IntervalHours: 24, BatchSize: 10000},
+		"stale_nonrelease_source_purge": {Enabled: false, ScheduleEnabled: false, IntervalHours: 24, BatchSize: 10000},
 		"emergency_source_window_reset": {Enabled: true, ScheduleEnabled: false, IntervalHours: 168, BatchSize: 10000},
 		"header_payload_purge":          {Enabled: false, ScheduleEnabled: false, IntervalHours: 168, BatchSize: 250000},
 	}

@@ -383,7 +383,7 @@ export function AdminDashboardPage() {
       <div className="page-hero">
         <div>
           <p className="eyebrow">Admin Dashboard</p>
-          <h1 className="page-title">Operational health for the indexer runtime.</h1>
+          <h1 className="page-title">Indexer overview</h1>
         </div>
         <div className="button-row">
           <Link className="secondary-button" to="/admin/indexer/stages">

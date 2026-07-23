@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/datallboy/gonzb/internal/app"
@@ -36,12 +37,12 @@ import (
 )
 
 type usenetIndexerRuntime struct {
-	service                   app.UsenetIndexerService
-	supervisor                *supervisor.Supervisor
-	scrapeProvider            io.Closer
-	nntpStats                 func() app.NNTPRuntimeStats
-	partitionCreateDaysBefore int
-	partitionCreateDaysAhead  int
+	service                  app.UsenetIndexerService
+	supervisor               *supervisor.Supervisor
+	scrapeProvider           io.Closer
+	nntpStats                func() app.NNTPRuntimeStats
+	partitionCreateDaysAhead int
+	partitionDDLLockTimeout  time.Duration
 }
 
 type usenetIndexerConfig struct {
@@ -61,6 +62,9 @@ type usenetIndexerConfig struct {
 	EnrichTMDB                                      tmdb.Options
 	ScrapeLatest                                    indexerStageConfig
 	ScrapeBackfill                                  indexerStageConfig
+	ScrapeTimeframe                                 indexerStageConfig
+	ScrapeDeferred                                  indexerStageConfig
+	ScrapeTimeframes                                []scrape.Timeframe
 	PosterMaterialize                               indexerStageConfig
 	CrosspostPopularityRefresh                      indexerStageConfig
 	ArticleCohortSchedule                           indexerStageConfig
@@ -71,14 +75,13 @@ type usenetIndexerConfig struct {
 	ReleaseGenerateNZBStage                         indexerStageConfig
 	ReleaseArchiveNZBStage                          indexerStageConfig
 	ReleasePurgeArchivedSourcesStage                indexerStageConfig
-	InspectDiscoveryReadyRefresh                    indexerStageConfig
-	InspectPAR2ReadyRefresh                         indexerStageConfig
-	InspectArchiveReadyRefresh                      indexerStageConfig
-	InspectMediaReadyRefresh                        indexerStageConfig
 	ReleaseReadyPolicy                              pgindex.ReleaseReadyPolicy
 	RetentionPolicy                                 pgindex.RawStageRetentionPolicy
-	PartitionCreateDaysBefore                       int
+	OutcomePolicy                                   pgindex.SourceBucketOutcomePolicy
+	ExecuteOutcomePurge                             bool
 	PartitionCreateDaysAhead                        int
+	PartitionDDLLockTimeout                         time.Duration
+	MaxNewSourceDaysPerPass                         int
 	StorageGuard                                    pgindex.DatabaseStorageGuardConfig
 	MemoryGuard                                     IndexerMemoryGuardConfig
 	InspectDiscovery                                indexerStageConfig
@@ -130,17 +133,33 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		cfg.Servers = servers
 		indexerConfig = &cfg
 	}
-	runtimeCfg, err := deriveUsenetIndexerConfig(indexerConfig)
+	var runtimeIndexing *app.IndexingRuntimeSettings
+	if runtime := indexerRuntimeSettings(appCtx); runtime != nil {
+		runtimeIndexing = runtime.Indexing
+	}
+	runtimeCfg, err := deriveUsenetIndexerConfig(indexerConfig, runtimeIndexing)
 	if err != nil {
 		return nil, err
 	}
 	if appCtx.DisableReleasePurgeArchivedSources {
 		runtimeCfg.ReleasePurgeArchivedSourcesStage.Enabled = false
 	}
+	rangeCoordinator, err := goNZBNetScrapeRangeCoordinatorFor(appCtx)
+	if err != nil {
+		return nil, err
+	}
+	var scrapeObserver func(context.Context, map[string]any, error)
+	if observer, ok := rangeCoordinator.(interface {
+		ObserveScrapeRun(context.Context, map[string]any, error)
+	}); ok {
+		scrapeObserver = observer.ObserveScrapeRun
+	}
 
 	var (
 		scrapeLatestSvc         *scrape.Service
 		scrapeBackfillSvc       *scrape.Service
+		scrapeTimeframeSvc      *scrape.Service
+		scrapeDeferredSvc       *scrape.Service
 		scrapeProvider          io.Closer
 		nntpStats               func() app.NNTPRuntimeStats
 		assembleFetcher         inspectpkg.ArticleFetcher
@@ -164,7 +183,10 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			BatchSize:                int64(runtimeCfg.ScrapeLatest.BatchSize),
 			Concurrency:              runtimeCfg.ScrapeLatest.Concurrency,
 			MaxBatches:               runtimeCfg.ScrapeLatest.MaxBatches,
+			MaxNewSourceDaysPerPass:  runtimeCfg.MaxNewSourceDaysPerPass,
 			BackfillUntilDateByGroup: runtimeCfg.BackfillUntilDateByGroup,
+			RangeCoordinator:         rangeCoordinator,
+			RunObserver:              scrapeObserver,
 		},
 	)
 	scrapeBackfillSvc = scrape.NewService(
@@ -176,7 +198,38 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			BatchSize:                int64(runtimeCfg.ScrapeBackfill.BatchSize),
 			Concurrency:              runtimeCfg.ScrapeBackfill.Concurrency,
 			MaxBatches:               runtimeCfg.ScrapeBackfill.MaxBatches,
+			MaxNewSourceDaysPerPass:  runtimeCfg.MaxNewSourceDaysPerPass,
 			BackfillUntilDateByGroup: runtimeCfg.BackfillUntilDateByGroup,
+			RangeCoordinator:         rangeCoordinator,
+			RunObserver:              scrapeObserver,
+		},
+	)
+	scrapeTimeframeSvc = scrape.NewService(
+		appCtx.PGIndexStore,
+		nil,
+		appCtx.Logger,
+		scrape.Options{
+			BatchSize:               int64(runtimeCfg.ScrapeTimeframe.BatchSize),
+			Concurrency:             runtimeCfg.ScrapeTimeframe.Concurrency,
+			MaxBatches:              runtimeCfg.ScrapeTimeframe.MaxBatches,
+			MaxNewSourceDaysPerPass: runtimeCfg.MaxNewSourceDaysPerPass,
+			RangeCoordinator:        rangeCoordinator,
+			RunObserver:             scrapeObserver,
+			Timeframes:              runtimeCfg.ScrapeTimeframes,
+		},
+	)
+	scrapeDeferredSvc = scrape.NewService(
+		appCtx.PGIndexStore,
+		nil,
+		appCtx.Logger,
+		scrape.Options{
+			BatchSize:               int64(runtimeCfg.ScrapeDeferred.BatchSize),
+			MaxBatches:              runtimeCfg.ScrapeDeferred.MaxBatches,
+			MaxNewSourceDaysPerPass: runtimeCfg.MaxNewSourceDaysPerPass,
+			DeferredClaimOwner:      stageOwner + "-scrape-deferred",
+			DeferredClaimLease:      5 * time.Minute,
+			RangeCoordinator:        rangeCoordinator,
+			RunObserver:             scrapeObserver,
 		},
 	)
 
@@ -189,7 +242,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		assembleClient := indexerNNTPClient(manager, "assemble")
 		recoverYEncClient := indexerNNTPClient(manager, "recover_yenc")
 
-		if len(runtimeCfg.Newsgroups) > 0 {
+		if len(runtimeCfg.Newsgroups) > 0 || len(runtimeCfg.ScrapeTimeframes) > 0 || runtimeCfg.ScrapeDeferred.Enabled {
 			scrapeAdapter := scrape.NewNNTPAdapter(scrapeClient)
 			scrapeLatestSvc = scrape.NewService(
 				appCtx.PGIndexStore,
@@ -200,7 +253,10 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 					BatchSize:                int64(runtimeCfg.ScrapeLatest.BatchSize),
 					Concurrency:              runtimeCfg.ScrapeLatest.Concurrency,
 					MaxBatches:               runtimeCfg.ScrapeLatest.MaxBatches,
+					MaxNewSourceDaysPerPass:  runtimeCfg.MaxNewSourceDaysPerPass,
 					BackfillUntilDateByGroup: runtimeCfg.BackfillUntilDateByGroup,
+					RangeCoordinator:         rangeCoordinator,
+					RunObserver:              scrapeObserver,
 				},
 			)
 			scrapeBackfillSvc = scrape.NewService(
@@ -212,7 +268,38 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 					BatchSize:                int64(runtimeCfg.ScrapeBackfill.BatchSize),
 					Concurrency:              runtimeCfg.ScrapeBackfill.Concurrency,
 					MaxBatches:               runtimeCfg.ScrapeBackfill.MaxBatches,
+					MaxNewSourceDaysPerPass:  runtimeCfg.MaxNewSourceDaysPerPass,
 					BackfillUntilDateByGroup: runtimeCfg.BackfillUntilDateByGroup,
+					RangeCoordinator:         rangeCoordinator,
+					RunObserver:              scrapeObserver,
+				},
+			)
+			scrapeTimeframeSvc = scrape.NewService(
+				appCtx.PGIndexStore,
+				scrapeAdapter,
+				appCtx.Logger,
+				scrape.Options{
+					BatchSize:               int64(runtimeCfg.ScrapeTimeframe.BatchSize),
+					Concurrency:             runtimeCfg.ScrapeTimeframe.Concurrency,
+					MaxBatches:              runtimeCfg.ScrapeTimeframe.MaxBatches,
+					MaxNewSourceDaysPerPass: runtimeCfg.MaxNewSourceDaysPerPass,
+					RangeCoordinator:        rangeCoordinator,
+					RunObserver:             scrapeObserver,
+					Timeframes:              runtimeCfg.ScrapeTimeframes,
+				},
+			)
+			scrapeDeferredSvc = scrape.NewService(
+				appCtx.PGIndexStore,
+				scrapeAdapter,
+				appCtx.Logger,
+				scrape.Options{
+					BatchSize:               int64(runtimeCfg.ScrapeDeferred.BatchSize),
+					MaxBatches:              runtimeCfg.ScrapeDeferred.MaxBatches,
+					MaxNewSourceDaysPerPass: runtimeCfg.MaxNewSourceDaysPerPass,
+					DeferredClaimOwner:      stageOwner + "-scrape-deferred",
+					DeferredClaimLease:      5 * time.Minute,
+					RangeCoordinator:        rangeCoordinator,
+					RunObserver:             scrapeObserver,
 				},
 			)
 		}
@@ -321,8 +408,6 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		appCtx.PGIndexStore,
 		ingestmaterialize.Options{BatchSize: runtimeCfg.CrosspostPopularityRefresh.BatchSize},
 	)
-	readyQueueRefresher, _ := appCtx.PGIndexStore.(inspectionReadyQueueRefresher)
-
 	supervisorSvc := supervisor.New(appCtx.Logger, []supervisor.Stage{
 		{
 			Name:        supervisor.StageScrapeLatest,
@@ -344,6 +429,28 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			Backoff:     runtimeCfg.ScrapeBackfill.Backoff,
 			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
 				return marshalStageMetrics(scrapeBackfillSvc.RunBackfillOnceWithMetrics(ctx))
+			}),
+		},
+		{
+			Name:        supervisor.StageScrapeTimeframe,
+			Interval:    runtimeCfg.ScrapeTimeframe.Interval,
+			Enabled:     runtimeCfg.ScrapeTimeframe.Enabled,
+			BatchSize:   runtimeCfg.ScrapeTimeframe.BatchSize,
+			Concurrency: runtimeCfg.ScrapeTimeframe.Concurrency,
+			Backoff:     runtimeCfg.ScrapeTimeframe.Backoff,
+			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
+				return marshalStageMetrics(scrapeTimeframeSvc.RunTimeframesOnceWithMetrics(ctx))
+			}),
+		},
+		{
+			Name:        supervisor.StageScrapeDeferred,
+			Interval:    runtimeCfg.ScrapeDeferred.Interval,
+			Enabled:     runtimeCfg.ScrapeDeferred.Enabled,
+			BatchSize:   runtimeCfg.ScrapeDeferred.BatchSize,
+			Concurrency: 1,
+			Backoff:     runtimeCfg.ScrapeDeferred.Backoff,
+			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
+				return marshalStageMetrics(scrapeDeferredSvc.RunDeferredOnceWithMetrics(ctx))
 			}),
 		},
 		{
@@ -457,10 +564,6 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 				return marshalStageMetrics(releaseArchiveSvc.RunOnceWithMetrics(ctx))
 			}),
 		},
-		inspectReadyRefreshStage(runtimeCfg.InspectDiscoveryReadyRefresh, supervisor.StageInspectDiscoveryReadyRefresh, "inspect_discovery", readyQueueRefresher),
-		inspectReadyRefreshStage(runtimeCfg.InspectPAR2ReadyRefresh, supervisor.StageInspectPAR2ReadyRefresh, "inspect_par2", readyQueueRefresher),
-		inspectReadyRefreshStage(runtimeCfg.InspectArchiveReadyRefresh, supervisor.StageInspectArchiveReadyRefresh, "inspect_archive", readyQueueRefresher),
-		inspectReadyRefreshStage(runtimeCfg.InspectMediaReadyRefresh, supervisor.StageInspectMediaReadyRefresh, "inspect_media", readyQueueRefresher),
 		{
 			Name:        supervisor.StageInspectDiscovery,
 			Interval:    runtimeCfg.InspectDiscovery.Interval,
@@ -599,12 +702,25 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			updated, err := appCtx.PGIndexStore.RefreshIndexerGroupProfiles(ctx)
 			return map[string]any{"groups_scored": updated}, err
 		}),
+		maintenanceTaskStage(runtimeCfg, "outcome_reconcile", supervisor.StageName("maintenance.outcome_reconcile"), func(ctx context.Context, cfg app.IndexingMaintenanceTaskRuntimeSettings) (map[string]any, error) {
+			result, err := appCtx.PGIndexStore.ReconcileSourceBucketOutcomes(ctx, cfg.BatchSize, runtimeCfg.OutcomePolicy)
+			return maintenanceTaskMetrics(result), err
+		}),
 		maintenanceTaskStage(runtimeCfg, "raw_stage_retention", supervisor.StageName("maintenance.raw_stage_retention"), func(ctx context.Context, cfg app.IndexingMaintenanceTaskRuntimeSettings) (map[string]any, error) {
 			result, err := appCtx.PGIndexStore.RunRawStageRetentionTask(ctx, cfg.BatchSize, runtimeCfg.RetentionPolicy)
 			return maintenanceTaskMetrics(result), err
 		}),
 		maintenanceTaskStage(runtimeCfg, "partition_retention_drop", supervisor.StageName("maintenance.partition_retention_drop"), func(ctx context.Context, cfg app.IndexingMaintenanceTaskRuntimeSettings) (map[string]any, error) {
-			result, err := appCtx.PGIndexStore.RunPartitionRetentionTask(ctx, cfg.BatchSize)
+			var result *pgindex.MaintenanceTaskResult
+			var err error
+			if runtimeCfg.ExecuteOutcomePurge {
+				result, err = appCtx.PGIndexStore.RunPartitionRetentionTask(ctx, cfg.BatchSize)
+			} else {
+				result, err = appCtx.PGIndexStore.DryRunPartitionRetentionTask(ctx, cfg.BatchSize)
+				if result != nil {
+					result.Warnings = append(result.Warnings, "destructive outcome purge is disabled in runtime settings")
+				}
+			}
 			return maintenanceTaskMetrics(result), err
 		}),
 		maintenanceTaskStage(runtimeCfg, "partition_default_rehome", supervisor.StageName("maintenance.partition_default_rehome"), func(ctx context.Context, cfg app.IndexingMaintenanceTaskRuntimeSettings) (map[string]any, error) {
@@ -660,12 +776,12 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 	})
 
 	return &usenetIndexerRuntime{
-		service:                   service,
-		supervisor:                supervisorSvc,
-		scrapeProvider:            scrapeProvider,
-		nntpStats:                 nntpStats,
-		partitionCreateDaysBefore: runtimeCfg.PartitionCreateDaysBefore,
-		partitionCreateDaysAhead:  runtimeCfg.PartitionCreateDaysAhead,
+		service:                  service,
+		supervisor:               supervisorSvc,
+		scrapeProvider:           scrapeProvider,
+		nntpStats:                nntpStats,
+		partitionCreateDaysAhead: runtimeCfg.PartitionCreateDaysAhead,
+		partitionDDLLockTimeout:  runtimeCfg.PartitionDDLLockTimeout,
 	}, nil
 }
 
@@ -734,39 +850,6 @@ func marshalStageMetrics(metrics map[string]any, err error) (json.RawMessage, er
 	return payload, err
 }
 
-type inspectionReadyQueueRefresher interface {
-	RefreshInspectionReadyQueue(ctx context.Context, stageName string, limit int) (*pgindex.BinaryInspectionReadyQueueRefreshResult, error)
-}
-
-func inspectReadyRefreshStage(cfg indexerStageConfig, name supervisor.StageName, inspectStageName string, repo inspectionReadyQueueRefresher) supervisor.Stage {
-	return supervisor.Stage{
-		Name:        name,
-		Interval:    cfg.Interval,
-		Enabled:     cfg.Enabled,
-		BatchSize:   cfg.BatchSize,
-		Concurrency: 1,
-		Backoff:     cfg.Backoff,
-		Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
-			if repo == nil {
-				return marshalStageMetrics(map[string]any{}, fmt.Errorf("inspection ready queue repository is not configured"))
-			}
-			refreshed, err := repo.RefreshInspectionReadyQueue(ctx, inspectStageName, cfg.BatchSize)
-			metrics := map[string]any{
-				"inspect_stage":  inspectStageName,
-				"ready_upserted": int64(0),
-				"retired":        int64(0),
-				"requeued":       int64(0),
-			}
-			if refreshed != nil {
-				metrics["ready_upserted"] = refreshed.ReadyUpserted
-				metrics["retired"] = refreshed.Retired
-				metrics["requeued"] = refreshed.Requeued
-			}
-			return marshalStageMetrics(metrics, err)
-		}),
-	}
-}
-
 func maintenanceTaskStage(runtimeCfg usenetIndexerConfig, taskKey string, name supervisor.StageName, run func(context.Context, app.IndexingMaintenanceTaskRuntimeSettings) (map[string]any, error)) supervisor.Stage {
 	cfg := runtimeCfg.MaintenanceTasks[taskKey]
 	if cfg.IntervalHours <= 0 {
@@ -829,14 +912,17 @@ func newIndexerStageOwner() string {
 	return ksuid.New().String()
 }
 
-func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) {
+func deriveUsenetIndexerConfig(cfg *config.Config, runtimeIndexing ...*app.IndexingRuntimeSettings) (usenetIndexerConfig, error) {
 	if cfg == nil {
 		return usenetIndexerConfig{}, fmt.Errorf("app config is required")
 	}
 
 	indexingCfg := app.IndexingRuntimeFromConfig(cfg.Indexing)
+	if len(runtimeIndexing) > 0 && runtimeIndexing[0] != nil {
+		indexingCfg = *app.CloneRuntimeSettings(&app.RuntimeSettings{Indexing: runtimeIndexing[0]}).Indexing
+	}
 	backfillCutoffs := map[string]time.Time{}
-	for group, rawDate := range cfg.Indexing.BackfillUntilDateByGroup {
+	for group, rawDate := range indexingCfg.BackfillUntilDateByGroup {
 		parsed, err := time.Parse("2006-01-02", rawDate)
 		if err != nil {
 			return usenetIndexerConfig{}, fmt.Errorf("parse indexing.backfill_until_date_by_group[%s]: %w", group, err)
@@ -898,6 +984,9 @@ func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) 
 		}),
 		ScrapeLatest:               newIndexerStageConfig(indexingCfg.ScrapeLatest),
 		ScrapeBackfill:             newIndexerStageConfig(indexingCfg.ScrapeBackfill),
+		ScrapeTimeframe:            newIndexerStageConfig(indexingCfg.ScrapeTimeframe),
+		ScrapeDeferred:             newIndexerStageConfig(indexingCfg.ScrapeDeferred),
+		ScrapeTimeframes:           scrapeTimeframesFromRuntime(indexingCfg.ScrapeTimeframes),
 		PosterMaterialize:          newIndexerStageConfig(indexingCfg.PosterMaterialize),
 		CrosspostPopularityRefresh: newIndexerStageConfig(indexingCfg.CrosspostPopularityRefresh),
 		ArticleCohortSchedule:      newIndexerStageConfig(indexingCfg.ArticleCohortSchedule),
@@ -913,10 +1002,6 @@ func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) 
 		ReleaseGenerateNZBStage:          newIndexerStageConfig(indexingCfg.ReleaseGenerateNZB),
 		ReleaseArchiveNZBStage:           newIndexerStageConfig(indexingCfg.ReleaseArchiveNZB),
 		ReleasePurgeArchivedSourcesStage: newIndexerStageConfig(indexingCfg.ReleasePurgeArchivedSources),
-		InspectDiscoveryReadyRefresh:     newIndexerStageConfig(indexingCfg.InspectDiscoveryReadyRefresh),
-		InspectPAR2ReadyRefresh:          newIndexerStageConfig(indexingCfg.InspectPAR2ReadyRefresh),
-		InspectArchiveReadyRefresh:       newIndexerStageConfig(indexingCfg.InspectArchiveReadyRefresh),
-		InspectMediaReadyRefresh:         newIndexerStageConfig(indexingCfg.InspectMediaReadyRefresh),
 		ReleaseReadyPolicy: pgindex.NormalizeReleaseReadyPolicy(pgindex.ReleaseReadyPolicy{
 			MinMatchConfidence:                   indexingCfg.Release.PublicMinMatchConfidence,
 			MinCompletionPct:                     indexingCfg.Release.PublicMinCompletionPct,
@@ -941,8 +1026,15 @@ func deriveUsenetIndexerConfig(cfg *config.Config) (usenetIndexerConfig, error) 
 			FailedProbeHours: indexingCfg.Retention.FailedProbeHours,
 			DoneYEncHours:    indexingCfg.Retention.RawStageWarmHours,
 		},
-		PartitionCreateDaysBefore: indexingCfg.Retention.CreatePartitionsDaysBefore,
-		PartitionCreateDaysAhead:  indexingCfg.Retention.CreatePartitionsDaysAhead,
+		OutcomePolicy: pgindex.SourceBucketOutcomePolicy{
+			SourceSettleHours:    indexingCfg.Retention.SourceSettleHours,
+			NoYieldGraceDays:     indexingCfg.Retention.NoYieldGraceDays,
+			YEncTerminalAttempts: indexingCfg.Retention.YEncTerminalAttempts,
+		},
+		ExecuteOutcomePurge:      indexingCfg.Retention.ExecuteOutcomePurge,
+		PartitionCreateDaysAhead: indexingCfg.Partitions.PrecreateDaysAhead,
+		PartitionDDLLockTimeout:  time.Duration(indexingCfg.Partitions.DDLLockTimeoutSeconds) * time.Second,
+		MaxNewSourceDaysPerPass:  indexingCfg.Partitions.MaxNewSourceDaysPerPass,
 		StorageGuard: pgindex.DatabaseStorageGuardConfig{
 			Enabled:        indexingCfg.StorageGuard.Enabled,
 			DataDirectory:  indexingCfg.StorageGuard.DataDirectory,
@@ -1002,6 +1094,29 @@ func newIndexerStageConfig(in app.IndexingStageRuntimeSettings) indexerStageConf
 		FetchTimeoutSeconds:     in.FetchTimeoutSeconds,
 		NewestPct:               in.NewestPct,
 	}
+}
+
+func scrapeTimeframesFromRuntime(in []app.IndexingScrapeTimeframeRuntimeSettings) []scrape.Timeframe {
+	out := make([]scrape.Timeframe, 0, len(in))
+	for _, item := range in {
+		if !item.Enabled {
+			continue
+		}
+		id := strings.TrimSpace(item.ID)
+		group := strings.TrimSpace(item.GroupName)
+		start, startErr := time.ParseInLocation("2006-01-02", strings.TrimSpace(item.StartDate), time.UTC)
+		end, endErr := time.ParseInLocation("2006-01-02", strings.TrimSpace(item.EndDate), time.UTC)
+		if id == "" || group == "" || startErr != nil || endErr != nil || end.Before(start) {
+			continue
+		}
+		out = append(out, scrape.Timeframe{
+			ID:    id,
+			Group: group,
+			Start: start,
+			End:   end.AddDate(0, 0, 1),
+		})
+	}
+	return out
 }
 
 func recoverYEncFetchTimeout(in indexerStageConfig) time.Duration {

@@ -21,10 +21,6 @@ type releaseCluster struct {
 	MatchConfidence float64
 }
 
-type clusterScore struct {
-	value float64
-}
-
 type resolvedReleaseTitle struct {
 	Title             string
 	SourceTitle       string
@@ -358,17 +354,6 @@ func buildReleaseRecord(candidate pgindex.ReleaseCandidate, cluster releaseClust
 		MediaTags:                mediaTags,
 		MetadataUpdatedAt:        &now,
 	}
-}
-
-func binaryIDsForCluster(binaries []pgindex.BinarySummary) []int64 {
-	out := make([]int64, 0, len(binaries))
-	for _, binary := range binaries {
-		if binary.BinaryID <= 0 {
-			continue
-		}
-		out = append(out, binary.BinaryID)
-	}
-	return out
 }
 
 func binaryIDsForClusters(clusters []releaseCluster) []int64 {
@@ -1474,17 +1459,6 @@ func detectSubtitleLanguages(binaries []pgindex.BinarySummary) []string {
 	return uniqueSortedStrings(languages)
 }
 
-func derivePasswordState(passworded, known, unknown bool) string {
-	switch {
-	case known:
-		return "password_known"
-	case unknown || passworded:
-		return "password_unknown"
-	default:
-		return "unknown"
-	}
-}
-
 func deriveInitialReleasePasswordState(classification string, archiveCount int) string {
 	switch strings.TrimSpace(classification) {
 	case "archive", "video_archive":
@@ -1594,35 +1568,6 @@ func chooseBestLocalTitleCandidate(sourceTitle string, binaries []pgindex.Binary
 	return best
 }
 
-func normalizeInspectTitleCandidate(candidate pgindex.ReleaseTitleCandidate) (localTitleCandidate, bool) {
-	switch strings.TrimSpace(candidate.Source) {
-	case "archive_entry":
-		releaseTitle, displayTitle, ok := normalizePathTitleCandidate(candidate.Value)
-		if !ok {
-			return localTitleCandidate{}, false
-		}
-		return localTitleCandidate{
-			ReleaseTitle: releaseTitle,
-			DisplayTitle: displayTitle,
-			Source:       "archive_entry",
-			Confidence:   clamp01(candidate.Confidence),
-		}, true
-	case "nfo":
-		releaseTitle, displayTitle, ok := extractNFOTitleCandidate(candidate.Value)
-		if !ok {
-			return localTitleCandidate{}, false
-		}
-		return localTitleCandidate{
-			ReleaseTitle: releaseTitle,
-			DisplayTitle: displayTitle,
-			Source:       "nfo",
-			Confidence:   clamp01(candidate.Confidence),
-		}, true
-	default:
-		return localTitleCandidate{}, false
-	}
-}
-
 func normalizePathTitleCandidate(value string) (string, string, bool) {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -1711,26 +1656,6 @@ func mediaTitleStem(value string) string {
 	return strings.TrimSpace(base)
 }
 
-func extractNFOTitleCandidate(text string) (string, string, bool) {
-	yearRE := regexp.MustCompile(`\b(19|20)\d{2}\b`)
-	lines := strings.Split(text, "\n")
-	for _, rawLine := range lines {
-		line := strings.TrimSpace(rawLine)
-		line = strings.Trim(line, "-_=*#[]() ")
-		if line == "" || len(line) > 140 {
-			continue
-		}
-		if !looksReadableReleaseTitle(line) {
-			continue
-		}
-		if resolutionRE.MatchString(line) || sourceTagRE.MatchString(line) || videoCodecRE.MatchString(line) || strings.Contains(strings.ToLower(line), "s0") || yearRE.MatchString(line) {
-			display := displayTitleStyle(line)
-			return releaseTitleStyle(line), display, true
-		}
-	}
-	return "", "", false
-}
-
 func shouldAdoptLocalTitleCandidate(sourceTitle string, candidate localTitleCandidate) bool {
 	if candidate.ReleaseTitle == "" || candidate.DisplayTitle == "" {
 		return false
@@ -1796,16 +1721,6 @@ func deobfuscateTitle(sourceTitle string, binaries []pgindex.BinarySummary) stri
 		return ""
 	}
 
-	return ""
-}
-
-func displayReleaseTitle(sourceTitle, deobfuscatedTitle string) string {
-	if strings.TrimSpace(deobfuscatedTitle) != "" {
-		return strings.TrimSpace(deobfuscatedTitle)
-	}
-	if strings.TrimSpace(sourceTitle) != "" {
-		return humanizeTitle(sourceTitle)
-	}
 	return ""
 }
 

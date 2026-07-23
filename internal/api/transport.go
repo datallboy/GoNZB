@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/datallboy/gonzb/internal/infra/config"
 	"github.com/labstack/echo/v5"
 )
 
@@ -35,4 +36,54 @@ func bodyLimitMiddleware(jsonLimit, multipartLimit int64) echo.MiddlewareFunc {
 			return next(c)
 		}
 	}
+}
+
+func federationBodyLimitMiddleware(cfg config.GoNZBNetConfig) echo.MiddlewareFunc {
+	limit := federationBodyLimit(cfg)
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c *echo.Context) error {
+			req := c.Request()
+			if req == nil || req.Body == nil {
+				return next(c)
+			}
+			if req.ContentLength > 0 && req.ContentLength > limit {
+				return federationTransportError(c, http.StatusRequestEntityTooLarge, "payload_too_large", "request body too large")
+			}
+			req.Body = http.MaxBytesReader(c.Response(), req.Body, limit)
+			return next(c)
+		}
+	}
+}
+
+func federationBodyLimit(cfg config.GoNZBNetConfig) int64 {
+	maxEventBytes := cfg.MaxEventBytes
+	if maxEventBytes <= 0 {
+		maxEventBytes = 262144
+	}
+	maxManifestBytes := cfg.MaxManifestBytes
+	if maxManifestBytes <= 0 {
+		maxManifestBytes = 10485760
+	}
+	maxBatchEvents := cfg.MaxBatchEvents
+	if maxBatchEvents <= 0 {
+		maxBatchEvents = 100
+	}
+
+	limit := int64(maxManifestBytes)
+	batchLimit := int64(maxEventBytes) * int64(maxBatchEvents)
+	if batchLimit > limit {
+		limit = batchLimit
+	}
+	if limit < defaultJSONBodyLimit {
+		limit = defaultJSONBodyLimit
+	}
+	return limit
+}
+
+func federationTransportError(c *echo.Context, status int, code, message string) error {
+	return c.JSON(status, map[string]string{
+		"error":   code,
+		"code":    code,
+		"message": message,
+	})
 }

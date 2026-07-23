@@ -15,11 +15,14 @@ import type {
   ScrapeMaterializedGroup,
   ScrapePreviewGroup,
   ScrapeProviderInventoryItem,
+  ScrapeTimeframe,
   ScrapeWildcardRule,
 } from '../../shared/types'
 
 const emptyState: AdminScrapeConfigResponse = {
   explicit_groups: [],
+  scrape_timeframes: [],
+  timeframe_progress: [],
   wildcard_rules: [],
   provider_group_inventory: [],
   provider_inventory_count: 0,
@@ -60,6 +63,8 @@ type CrosspostSortKey = 'group_name' | 'status' | 'distinct_message_count' | 'ob
 function normalizeScrapeResponse(input?: Partial<AdminScrapeConfigResponse> | null): AdminScrapeConfigResponse {
   return {
     explicit_groups: input?.explicit_groups ?? [],
+    scrape_timeframes: input?.scrape_timeframes ?? [],
+    timeframe_progress: input?.timeframe_progress ?? [],
     wildcard_rules: input?.wildcard_rules ?? [],
     provider_group_inventory: input?.provider_group_inventory ?? [],
     provider_inventory_count: input?.provider_inventory_count ?? input?.provider_group_inventory?.length ?? 0,
@@ -70,6 +75,41 @@ function normalizeScrapeResponse(input?: Partial<AdminScrapeConfigResponse> | nu
     preview_total: input?.preview_total ?? input?.preview_groups?.length ?? 0,
     crosspost_popularity: input?.crosspost_popularity ?? [],
   }
+}
+
+function matchingTimeframeProgress(data: AdminScrapeConfigResponse, timeframe: ScrapeTimeframe) {
+  return data.timeframe_progress.filter((item) => item.timeframe_id === timeframe.id && item.group_name.toLowerCase() === timeframe.group_name.trim().toLowerCase())
+}
+
+function timeframeProgressLabel(data: AdminScrapeConfigResponse, timeframe: ScrapeTimeframe) {
+  const items = matchingTimeframeProgress(data, timeframe)
+  if (items.length === 0) {
+    return timeframe.enabled ? 'Not started' : 'Disabled'
+  }
+  return items.map((item) => `${item.provider_key}: ${item.state}`).join(', ')
+}
+
+function timeframeArticleRangeLabel(data: AdminScrapeConfigResponse, timeframe: ScrapeTimeframe) {
+  const items = matchingTimeframeProgress(data, timeframe)
+  if (items.length === 0) {
+    return 'Not resolved'
+  }
+  if (items.every((item) => item.state === 'empty')) {
+    return 'No articles in window'
+  }
+  if (items.every((item) => item.article_low <= 0)) {
+    return 'Not resolved'
+  }
+  return items.map((item) => {
+    if (item.state === 'empty') {
+      return `${item.provider_key}: no articles`
+    }
+    const current = item.state === 'completed' ? item.article_high : Math.max(item.article_low, item.next_article)
+    const total = Math.max(1, item.article_high - item.article_low + 1)
+    const completed = Math.max(0, Math.min(total, current - item.article_low))
+    const percent = item.state === 'completed' ? 100 : Math.floor((completed / total) * 100)
+    return `${item.provider_key}: ${current.toLocaleString()} / ${item.article_high.toLocaleString()} (${percent}%)`
+  }).join(', ')
 }
 
 export function AdminScrapePage() {
@@ -100,24 +140,28 @@ export function AdminScrapePage() {
   const [crosspostPage, setCrosspostPage] = useState(0)
   const [crosspostSort, setCrosspostSort] = useState<SortState<CrosspostSortKey>>({ key: 'distinct_message_count', direction: 'desc' })
 
-  async function refresh(offset = previewOffset, q = previewFilter) {
-    try {
-      const next = await getAdminScrapeConfig()
-      const normalized = normalizeScrapeResponse(next)
-      setData(normalized)
-      setPreviewOffset(offset)
-      if (offset !== 0 || q.trim() !== '') {
-        await loadPreview(offset, q, false)
-      }
-      setError(null)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load scrape config')
-    }
-  }
-
   useEffect(() => {
-    void refresh()
-    void loadProviderInventory(0, '')
+    const timer = window.setTimeout(() => {
+      void Promise.all([
+        getAdminScrapeConfig(),
+        getAdminScrapeProviderInventory({
+          q: '',
+          limit: providerInventoryPageSize,
+          offset: 0,
+          sort: 'estimated_articles',
+          direction: 'desc',
+        }),
+      ])
+        .then(([config, inventory]) => {
+          setData(normalizeScrapeResponse(config))
+          setProviderInventoryRows(inventory.items ?? [])
+          setProviderInventoryTotal(inventory.count ?? 0)
+          setProviderInventoryOffset(inventory.offset ?? 0)
+          setError(null)
+        })
+        .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load scrape config'))
+    }, 0)
+    return () => window.clearTimeout(timer)
   }, [])
 
   const activeRows = buildActiveRows(data)
@@ -135,6 +179,7 @@ export function AdminScrapePage() {
     try {
       const updated = await updateAdminScrapeConfig({
         explicit_groups: next.explicit_groups ?? data.explicit_groups,
+        scrape_timeframes: next.scrape_timeframes ?? data.scrape_timeframes,
         wildcard_rules: next.wildcard_rules ?? data.wildcard_rules,
         materialized_groups: next.materialized_groups ?? data.materialized_groups,
       })
@@ -180,6 +225,7 @@ export function AdminScrapePage() {
   async function persistCurrentConfig() {
     const updated = await updateAdminScrapeConfig({
       explicit_groups: data.explicit_groups,
+      scrape_timeframes: data.scrape_timeframes,
       wildcard_rules: data.wildcard_rules,
       materialized_groups: data.materialized_groups,
     })
@@ -251,6 +297,11 @@ export function AdminScrapePage() {
   function updateWildcard(index: number, patch: Partial<ScrapeWildcardRule>) {
     const next = data.wildcard_rules.map((item, itemIndex) => (itemIndex === index ? { ...item, ...patch } : item))
     setData((current) => ({ ...current, wildcard_rules: next }))
+  }
+
+  function updateTimeframe(index: number, patch: Partial<ScrapeTimeframe>) {
+    const next = data.scrape_timeframes.map((item, itemIndex) => (itemIndex === index ? { ...item, ...patch } : item))
+    setData((current) => ({ ...current, scrape_timeframes: next }))
   }
 
   function updateMaterialized(index: number, patch: Partial<ScrapeMaterializedGroup>) {
@@ -338,6 +389,76 @@ export function AdminScrapePage() {
           </tbody>
         </table>
       </TablePanel>
+
+      <div className="module-settings-group stack scrape-table-panel">
+        <div className="scrape-table-panel__header">
+          <div>
+            <h2 className="section-title">Historical scrape timeframes</h2>
+            <p className="muted-copy">
+              Scrape specific inclusive date ranges independently of latest and backfill. Multiple entries may target the same group; each keeps its own article bounds and progress.
+            </p>
+          </div>
+          <div className="scrape-table-panel__actions">
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={() => setData((current) => ({
+                ...current,
+                scrape_timeframes: [...current.scrape_timeframes, {
+                  id: `timeframe-${Date.now()}`,
+                  group_name: '',
+                  start_date: '',
+                  end_date: '',
+                  enabled: true,
+                }],
+              }))}
+            >
+              Add timeframe
+            </button>
+            <button className="primary-button" type="button" onClick={() => void save({ scrape_timeframes: data.scrape_timeframes }, 'Historical scrape timeframes saved.')}>
+              Save timeframes
+            </button>
+          </div>
+        </div>
+        <p className="muted-copy">
+          The indexer uses bounded XOVER probes to locate the first article on each date, then advances through that fixed article range in batches. Changing an entry's dates resets that entry's progress.
+        </p>
+        <div className="table-shell scrape-table-shell">
+          <table className="data-table data-table--compact">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Newsgroup</th>
+                <th>Start date</th>
+                <th>End date</th>
+                <th>Enabled</th>
+                <th>Progress</th>
+                <th>Article range</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.scrape_timeframes.map((timeframe, index) => (
+                <tr key={`${timeframe.id}-${index}`}>
+                  <td><InlineInput value={timeframe.id} onChange={(id) => updateTimeframe(index, { id })} /></td>
+                  <td><InlineInput value={timeframe.group_name} placeholder="alt.binaries.example" onChange={(group_name) => updateTimeframe(index, { group_name })} /></td>
+                  <td><input className="table-input" type="date" value={timeframe.start_date} onChange={(event) => updateTimeframe(index, { start_date: event.target.value })} /></td>
+                  <td><input className="table-input" type="date" value={timeframe.end_date} onChange={(event) => updateTimeframe(index, { end_date: event.target.value })} /></td>
+                  <td><InlineCheckbox checked={timeframe.enabled} onChange={(enabled) => updateTimeframe(index, { enabled })} /></td>
+                  <td>{timeframeProgressLabel(data, timeframe)}</td>
+                  <td>{timeframeArticleRangeLabel(data, timeframe)}</td>
+                  <td>
+                    <button className="secondary-button secondary-button--small" type="button" onClick={() => setData((current) => ({ ...current, scrape_timeframes: current.scrape_timeframes.filter((_, itemIndex) => itemIndex !== index) }))}>
+                      Remove
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              <EmptyRow visible={data.scrape_timeframes.length === 0} colSpan={8} message="No historical scrape timeframes configured." />
+            </tbody>
+          </table>
+        </div>
+      </div>
 
       <div className="module-settings-group stack scrape-table-panel">
         <div className="scrape-table-panel__header">

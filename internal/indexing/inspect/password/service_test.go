@@ -259,7 +259,6 @@ func TestRunOnceVerifiesLaterPasswordCandidateAfterRejectingEarlierHint(t *testi
 type fakeRepository struct {
 	binaryCandidates         []pgindex.BinaryInspectionCandidate
 	passwordCandidates       []pgindex.PasswordVerificationCandidate
-	startedInspections       []int64
 	completedInspections     []pgindex.BinaryInspectionRecord
 	failedInspections        []pgindex.BinaryInspectionRecord
 	artifactRows             []pgindex.BinaryInspectionArtifactRecord

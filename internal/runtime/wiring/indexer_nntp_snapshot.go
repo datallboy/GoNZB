@@ -77,19 +77,6 @@ func startIndexerNNTPSnapshotPublisher(parent context.Context, log interface {
 	return &runtimeSnapshotPublisher{cancel: cancel, done: done}
 }
 
-func runtimeNNTPStatsFunc(service app.UsenetIndexerService) func() app.NNTPRuntimeStats {
-	if service == nil {
-		return nil
-	}
-	return func() app.NNTPRuntimeStats {
-		stats, err := service.NNTPStats(context.Background())
-		if err != nil || stats == nil {
-			return app.NNTPRuntimeStats{Scope: "indexer"}
-		}
-		return *stats
-	}
-}
-
 type closerGroup []io.Closer
 
 func (g closerGroup) Close() error {

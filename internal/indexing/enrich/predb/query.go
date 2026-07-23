@@ -158,10 +158,7 @@ func usablePredbParsedTitle(v string) bool {
 		return true
 	}
 	condensed := strings.ReplaceAll(normalized, " ", "")
-	if predbLongOpaqueRE.MatchString(condensed) {
-		return false
-	}
-	return true
+	return !predbLongOpaqueRE.MatchString(condensed)
 }
 
 func normalizedTitle(v string) string {
@@ -386,14 +383,6 @@ func metadataWindow(query MetadataFallbackQuery) (*time.Time, *time.Time) {
 	from := query.PostedAt.Add(-10 * 24 * time.Hour).UTC()
 	to := query.PostedAt.Add(3 * 24 * time.Hour).UTC()
 	return &from, &to
-}
-
-func bestMetadataFallbackMatch(query MetadataFallbackQuery, entries []pgindex.PredbEntrySummary) (MetadataFallbackMatch, bool) {
-	matches := rankedMetadataFallbackMatches(query, entries, 1)
-	if len(matches) == 0 {
-		return MetadataFallbackMatch{}, false
-	}
-	return matches[0], true
 }
 
 func rankedMetadataFallbackMatches(query MetadataFallbackQuery, entries []pgindex.PredbEntrySummary, limit int) []MetadataFallbackMatch {

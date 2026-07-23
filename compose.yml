@@ -1,0 +1,74 @@
+services:
+  postgres:
+    image: postgres:17.10
+    restart: unless-stopped
+    shm_size: 1gb
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - max_wal_size=8GB
+      - -c
+      - checkpoint_timeout=15min
+      - -c
+      - wal_compression=on
+      - -c
+      - track_io_timing=on
+      - -c
+      - max_locks_per_transaction=512
+      - -c
+      - jit=off
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-gonzb}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_APP_USER: ${POSTGRES_APP_USER:-gonzb}
+      POSTGRES_APP_PASSWORD: ${POSTGRES_APP_PASSWORD:?set POSTGRES_APP_PASSWORD in .env}
+      POSTGRES_INITDB_ARGS: --data-checksums
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./docker/postgres/initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  gonzb:
+    build:
+      context: .
+      args:
+        VERSION: ${GONZB_VERSION:-dev}
+        BUILD_TIME: ${GONZB_BUILD_TIME:-unknown}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+      GONZB_STORE_PG_DSN: postgresql://${POSTGRES_APP_USER:-gonzb}:${POSTGRES_APP_PASSWORD}@postgres:5432/${POSTGRES_DB:-gonzb}?sslmode=disable
+      GONZB_BIND_ADDRESS: 0.0.0.0
+      GONZB_DOWNLOAD_OUT_DIR: /downloads
+      GONZB_DOWNLOAD_COMPLETED_DIR: /downloads/completed
+      GONZB_GONZBNET_KEYS_DIR: /store/gonzbnet/keys
+      GONZB_LOG_PATH: none
+    command: ["--config", "/config/config.yaml", "serve"]
+    ports:
+      - "${GONZB_BIND_ADDRESS:-127.0.0.1}:${GONZB_PORT:-8080}:8080"
+    volumes:
+      - ${GONZB_CONFIG_PATH:-./config.yaml.example}:/config/config.yaml:ro
+      - gonzb-store:/store
+      - gonzb-downloads:/downloads
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+volumes:
+  postgres-data:
+  gonzb-store:
+  gonzb-downloads:

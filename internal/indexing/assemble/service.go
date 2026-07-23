@@ -294,51 +294,6 @@ func (s *Service) claimAssemblyQueueBatch(ctx context.Context, req pgindex.Assem
 	return headers, stats, err
 }
 
-type claimedBatchRepository struct {
-	delegate repository
-	headers  []pgindex.AssemblyCandidate
-}
-
-func (r claimedBatchRepository) ListUnassembledArticleHeaders(context.Context, int) ([]pgindex.AssemblyCandidate, error) {
-	return r.headers, nil
-}
-
-func (r claimedBatchRepository) ClaimUnassembledArticleHeaders(context.Context, pgindex.AssemblyClaimRequest) ([]pgindex.AssemblyCandidate, error) {
-	return r.headers, nil
-}
-
-func (r claimedBatchRepository) ClaimAssemblyQueueBatch(context.Context, pgindex.AssemblyClaimRequest) ([]pgindex.AssemblyCandidate, error) {
-	return r.headers, nil
-}
-
-func (r claimedBatchRepository) CleanupStaleAssemblyQueueRows(context.Context, int) (int, error) {
-	return 0, nil
-}
-
-func (r claimedBatchRepository) UpsertBinary(ctx context.Context, in pgindex.BinaryRecord) (int64, error) {
-	return r.delegate.UpsertBinary(ctx, in)
-}
-
-func (r claimedBatchRepository) UpsertBinaries(ctx context.Context, records []pgindex.BinaryRecord) ([]int64, error) {
-	return r.delegate.UpsertBinaries(ctx, records)
-}
-
-func (r claimedBatchRepository) UpsertBinaryParts(ctx context.Context, records []pgindex.BinaryPartRecord) error {
-	return r.delegate.UpsertBinaryParts(ctx, records)
-}
-
-func (r claimedBatchRepository) RefreshBinaryStats(ctx context.Context, binaryID int64) error {
-	return r.delegate.RefreshBinaryStats(ctx, binaryID)
-}
-
-func (r claimedBatchRepository) RefreshBinaryStatsBatch(ctx context.Context, binaryIDs []int64) error {
-	return r.delegate.RefreshBinaryStatsBatch(ctx, binaryIDs)
-}
-
-func (r claimedBatchRepository) RecordYEncRecoveryNotFound(ctx context.Context, articleHeaderID int64) error {
-	return r.delegate.RecordYEncRecoveryNotFound(ctx, articleHeaderID)
-}
-
 func (s *Service) runOnceWithMetricsSingle(ctx context.Context, batchSize int, claimOwner string) (map[string]any, error) {
 	if s.repo == nil {
 		return nil, fmt.Errorf("assembly repo is required")
@@ -583,7 +538,6 @@ func (s *Service) persistAssembleWork(ctx context.Context, started time.Time, me
 			batchRecords = append(batchRecords, work.binaryRecordsByKey[key])
 		}
 		upsertCtx := pgindex.WithBinaryUpsertChunkSize(ctx, s.opts.BinaryUpsertDBChunkSize)
-		upsertCtx = pgindex.WithDeferredReleaseFamilySummaryRefresh(upsertCtx)
 		upsertTelemetry := &pgindex.BinaryUpsertTelemetry{}
 		upsertCtx = pgindex.WithBinaryUpsertTelemetry(upsertCtx, upsertTelemetry)
 		binaryIDs, err := s.repo.UpsertBinaries(upsertCtx, batchRecords)
@@ -654,8 +608,7 @@ func (s *Service) persistAssembleWork(ctx context.Context, started time.Time, me
 	sort.Slice(refreshIDs, func(i, j int) bool { return refreshIDs[i] < refreshIDs[j] })
 	if len(refreshIDs) > 0 {
 		refreshStarted := time.Now()
-		refreshCtx := pgindex.WithDeferredReleaseFamilySummaryRefresh(ctx)
-		refreshCtx = pgindex.WithSkipYEncRecoveryWorkItemRetire(refreshCtx)
+		refreshCtx := pgindex.WithSkipYEncRecoveryWorkItemRetire(ctx)
 		refreshTelemetry := &pgindex.BinaryStatsRefreshTelemetry{}
 		refreshCtx = pgindex.WithBinaryStatsRefreshTelemetry(refreshCtx, refreshTelemetry)
 		if err := s.repo.RefreshBinaryStatsBatch(refreshCtx, refreshIDs); err != nil {
@@ -799,70 +752,6 @@ func mergeAssembleWorks(works []assembleWork) assembleWork {
 	return merged
 }
 
-func mergeAssembleMetrics(dst map[string]any, src map[string]any) {
-	for key, value := range src {
-		switch key {
-		case "batch_size", "total_duration_ms", "headers_per_second", "refreshed_binaries_per_second":
-			continue
-		case "binary_upsert_chunk_max_ms",
-			"binary_upsert_lock_max_ms",
-			"binary_upsert_stage_max_ms",
-			"binary_upsert_existing_snapshot_max_ms",
-			"binary_upsert_update_max_ms",
-			"binary_upsert_insert_max_ms",
-			"binary_upsert_readback_max_ms",
-			"binary_upsert_query_max_ms",
-			"binary_upsert_evidence_max_ms",
-			"binary_refresh_stats_update_max_ms",
-			"binary_refresh_summary_mark_max_ms",
-			"binary_refresh_yenc_sync_max_ms",
-			"binary_refresh_yenc_admission_max_ms",
-			"binary_refresh_yenc_priority_open_max_ms",
-			"binary_refresh_yenc_sync_upsert_max_ms",
-			"binary_refresh_yenc_sync_retire_max_ms",
-			"binary_refresh_yenc_promotion_max_ms":
-			if current := numericMetricFloat64(dst, key); numericMetricFloat64(src, key) > current {
-				dst[key] = numericMetricFloat64(src, key)
-			}
-			continue
-		}
-		switch tv := value.(type) {
-		case int:
-			dst[key] = numericMetricFloat64(dst, key) + float64(tv)
-		case int64:
-			dst[key] = numericMetricFloat64(dst, key) + float64(tv)
-		case float64:
-			dst[key] = numericMetricFloat64(dst, key) + tv
-		}
-	}
-}
-
-func numericMetricFloat64(metrics map[string]any, key string) float64 {
-	switch value := metrics[key].(type) {
-	case int:
-		return float64(value)
-	case int64:
-		return float64(value)
-	case float64:
-		return value
-	default:
-		return 0
-	}
-}
-
-func numericMetricInt64(metrics map[string]any, key string) (int64, bool) {
-	switch value := metrics[key].(type) {
-	case int:
-		return int64(value), true
-	case int64:
-		return value, true
-	case float64:
-		return int64(value), true
-	default:
-		return 0, false
-	}
-}
-
 func addAssembleTimingMetrics(metrics map[string]any, started time.Time, headerMatchDuration, binaryUpsertDuration, binaryPartUpsertDuration, binaryRefreshDuration time.Duration, processedHeaders, refreshedBinaries int) {
 	totalDuration := time.Since(started)
 	metrics["header_match_duration_ms"] = durationMillis(headerMatchDuration)
@@ -874,7 +763,7 @@ func addAssembleTimingMetrics(metrics map[string]any, started time.Time, headerM
 	metrics["refreshed_binaries_per_second"] = throughputPerSecond(refreshedBinaries, totalDuration)
 }
 
-func addBinaryUpsertTelemetryMetrics(metrics map[string]any, telemetry pgindex.BinaryUpsertTelemetry) {
+func addBinaryUpsertTelemetryMetrics(metrics map[string]any, telemetry *pgindex.BinaryUpsertTelemetry) {
 	metrics["binary_upsert_chunk_count"] = telemetry.ChunkCount
 	metrics["binary_upsert_chunk_rows"] = telemetry.ChunkRows
 	metrics["binary_upsert_chunk_retries"] = telemetry.ChunkRetries
@@ -912,7 +801,7 @@ func addBinaryUpsertTelemetryMetrics(metrics map[string]any, telemetry pgindex.B
 	metrics["binary_upsert_deferred_summary_keys"] = telemetry.DeferredSummaryKeyCount
 }
 
-func addBinaryStatsRefreshTelemetryMetrics(metrics map[string]any, telemetry pgindex.BinaryStatsRefreshTelemetry) {
+func addBinaryStatsRefreshTelemetryMetrics(metrics map[string]any, telemetry *pgindex.BinaryStatsRefreshTelemetry) {
 	metrics["binary_refresh_tx_count"] = telemetry.TxCount
 	metrics["binary_refresh_batch_count"] = telemetry.BatchCount
 	metrics["binary_refresh_binary_count"] = telemetry.BinaryCount

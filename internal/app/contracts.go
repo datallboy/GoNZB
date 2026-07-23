@@ -235,8 +235,17 @@ type UsenetIndexStore interface {
 	UpsertIndexerGroupProfile(ctx context.Context, providerID, newsgroupID int64, tier, reason string) error
 	RefreshIndexerGroupProfiles(ctx context.Context) (int64, error)
 	UpsertDeferredArticleRange(ctx context.Context, in pgindex.DeferredArticleRangeRecord) error
+	ExistingScrapeSourceDays(ctx context.Context, sourcePostedAt []time.Time) (map[string]bool, error)
+	EnsureScrapeTimeframeProgress(ctx context.Context, timeframeID string, providerID, newsgroupID int64, windowStart, windowEnd time.Time) (*pgindex.ScrapeTimeframeProgress, error)
+	ResolveScrapeTimeframeProgress(ctx context.Context, timeframeID string, providerID, newsgroupID, articleLow, articleHigh int64, empty bool) error
+	AdvanceScrapeTimeframeProgress(ctx context.Context, timeframeID string, providerID, newsgroupID, nextArticle int64, completed bool) error
+	FailScrapeTimeframeProgress(ctx context.Context, timeframeID string, providerID, newsgroupID int64, cause string) error
+	ClaimDeferredArticleRange(ctx context.Context, owner string, lease time.Duration) (*pgindex.DeferredArticleRangeClaim, error)
+	CompleteDeferredArticleRange(ctx context.Context, id int64, owner string) error
+	FailDeferredArticleRange(ctx context.Context, id int64, owner, cause string, maxAttempts int) error
 	ListIndexerGroupProfiles(ctx context.Context, limit int) ([]pgindex.IndexerGroupProfileSummary, error)
 	ListDeferredArticleRanges(ctx context.Context, state string, limit int) ([]pgindex.DeferredArticleRangeSummary, error)
+	GetSourceBucketOutcomeReport(ctx context.Context, limit int) (*pgindex.SourceBucketOutcomeReport, error)
 	RunArticleCohortScheduler(ctx context.Context, req pgindex.ArticleCohortSchedulerRequest) (*pgindex.ArticleCohortSchedulerResult, error)
 
 	ListUnassembledArticleHeaders(ctx context.Context, limit int) ([]pgindex.AssemblyCandidate, error)
@@ -285,6 +294,8 @@ type UsenetIndexStore interface {
 	RunPartitionRetentionTask(ctx context.Context, batchSize int) (*pgindex.MaintenanceTaskResult, error)
 	DryRunPartitionDefaultRehomeTask(ctx context.Context, batchSize int) (*pgindex.MaintenanceTaskResult, error)
 	RunPartitionDefaultRehomeTask(ctx context.Context, batchSize int) (*pgindex.MaintenanceTaskResult, error)
+	ReconcileSourceBucketOutcomes(ctx context.Context, batchSize int, policy pgindex.SourceBucketOutcomePolicy) (*pgindex.MaintenanceTaskResult, error)
+	ConfigurePartitionProvisioning(ddlLockTimeout time.Duration)
 	ProvisionSourceWorkPartitions(ctx context.Context, daysBefore, daysAhead int) error
 	ListIndexerBinaries(ctx context.Context, params pgindex.IndexerBinaryListParams) ([]pgindex.IndexerBinarySummary, int, error)
 	PurgeArticleHeaderPayloads(ctx context.Context) (int64, error)

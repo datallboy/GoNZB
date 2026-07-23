@@ -1,0 +1,19 @@
+# TEST FIXTURE ONLY. Connects only to the deterministic loopback NNTP server.
+port: "0"
+bind_address: "127.0.0.1"
+servers:
+  - id: "e2e-fixture"
+    host: "127.0.0.1"
+    port: 11119
+    tls: false
+    max_connections: 2
+    priority: 1
+    roles: ["scrape"]
+modules:
+  downloader: { enabled: false }
+  aggregator: { enabled: false }
+  usenet_indexer: { enabled: false }
+  gonzbnet: { enabled: false }
+  web_ui: { enabled: false }
+  api: { enabled: true }
+log: { path: "none", level: "error", include_stdout: false }

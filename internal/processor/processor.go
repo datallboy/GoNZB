@@ -166,14 +166,14 @@ func (p *Processor) PostProcess(ctx context.Context, item *domain.QueueItem, tas
 	if primaryPar := findPrimaryPar(tasks); primaryPar != "" {
 		if err := p.handleRepair(ctx, primaryPar); err != nil {
 			p.ctx.Logger.Error("Post-repair health check failed: %v", err)
-			return fmt.Errorf("Post-repair health check failed: %v", err)
+			return fmt.Errorf("post-repair health check failed: %v", err)
 		}
 	}
 
 	extractedTasks, err := p.extractArchives(ctx, tasks)
 	if err != nil {
 		p.ctx.Logger.Error("Archive extraction failed: %v", err)
-		return fmt.Errorf("Archive extraction failed: %v", err)
+		return fmt.Errorf("archive extraction failed: %v", err)
 	}
 
 	// CHANGED: if extraction succeeded, do not move the original archive set forward.
@@ -414,7 +414,7 @@ func (p *Processor) cleanupWorkDir(workDir, completedDir string) error {
 
 	// Safety: never remove the completed destination.
 	if absCompletedDir != "" && (absWorkDir == absCompletedDir ||
-		strings.HasPrefix(absCompletedDir, absWorkDir+string(filepath.Separator)) == false && strings.HasPrefix(absWorkDir, absCompletedDir+string(filepath.Separator))) {
+		!strings.HasPrefix(absCompletedDir, absWorkDir+string(filepath.Separator)) && strings.HasPrefix(absWorkDir, absCompletedDir+string(filepath.Separator))) {
 		return fmt.Errorf("refusing to cleanup work dir overlapping completed dir: work=%s completed=%s", absWorkDir, absCompletedDir)
 	}
 

@@ -23,6 +23,8 @@ type Client struct {
 	httpClient      *http.Client
 }
 
+const maxSearchResponseBytes int64 = 16 << 20
+
 func New(name, baseURL, apiPath, apiKey string, redirect bool) *Client {
 	return &Client{
 		name:            name,
@@ -54,6 +56,20 @@ func (c *Client) Search(ctx context.Context, req aggregator.SearchRequest) ([]*d
 	params.Set("t", searchType)
 	params.Set("apikey", c.APIKey)
 	params.Set("o", "xml")
+	if req.Limit > 0 {
+		params.Set("limit", fmt.Sprintf("%d", req.Limit))
+	}
+	if len(req.Categories) > 0 {
+		categories := make([]string, 0, len(req.Categories))
+		for _, category := range req.Categories {
+			if category > 0 {
+				categories = append(categories, fmt.Sprintf("%d", category))
+			}
+		}
+		if len(categories) > 0 {
+			params.Set("cat", strings.Join(categories, ","))
+		}
+	}
 
 	// CHANGED: pass through real Newznab movie/tvsearch parameters.
 	switch req.Type {
@@ -91,8 +107,11 @@ func (c *Client) Search(ctx context.Context, req aggregator.SearchRequest) ([]*d
 		return nil, fmt.Errorf("indexer %s returned status: %d", c.name, resp.StatusCode)
 	}
 
+	if resp.ContentLength > maxSearchResponseBytes {
+		return nil, fmt.Errorf("indexer %s search response exceeds %d bytes", c.name, maxSearchResponseBytes)
+	}
 	var rss RSSResponse
-	if err := xml.NewDecoder(resp.Body).Decode(&rss); err != nil {
+	if err := xml.NewDecoder(io.LimitReader(resp.Body, maxSearchResponseBytes+1)).Decode(&rss); err != nil {
 		return nil, err
 	}
 

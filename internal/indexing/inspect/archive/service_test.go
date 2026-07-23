@@ -173,6 +173,65 @@ func TestRunOncePersistsPasswordUnknownWhenArchiveProbePromptsForPassword(t *tes
 	}
 }
 
+func TestRunOncePersistsNotPasswordedFromPartialArchiveListing(t *testing.T) {
+	now := time.Now().UTC()
+	repo := &fakeArchiveRepository{
+		candidates: []pgindex.BinaryInspectionCandidate{{
+			BinaryID:        41,
+			ReleaseID:       "rel-partial-archive",
+			FileName:        "release.part001.rar",
+			SourceUpdatedAt: &now,
+		}},
+		files: []pgindex.CatalogReleaseFile{{
+			ID:        501,
+			BinaryID:  41,
+			FileName:  "release.part001.rar",
+			FileIndex: 1,
+			SizeBytes: 2048,
+		}},
+		articlesByFileID: map[int64][]pgindex.CatalogArticleRef{
+			501: {{MessageID: "<part1@test>", PartNumber: 1, Bytes: 4}},
+		},
+	}
+	listing := `Path = release.part001.rar
+Type = Rar5
+ERRORS:
+Unexpected end of archive
+Encrypted = -
+
+Path = release.mkv
+Folder = -
+Size = 4096
+Packed Size = 2048
+Encrypted = -`
+	svc := NewService(
+		repo,
+		inspectpkg.NewWorkspaceManager(inspectpkg.Options{WorkDir: t.TempDir(), SevenZipPath: "7z"}),
+		fakeArchiveFetcher{},
+		fakeArchiveCommandRunner{output: listing, err: fmt.Errorf("exit status 2")},
+		nil,
+		testArchiveLogger{},
+		inspectpkg.Options{SevenZipPath: "7z"},
+	)
+
+	if err := svc.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+	if len(repo.releaseUpdates) != 1 {
+		t.Fatalf("expected one release update, got %d", len(repo.releaseUpdates))
+	}
+	update := repo.releaseUpdates[0]
+	if boolValue(update.Encrypted) || boolValue(update.Passworded) || boolValue(update.PasswordedUnknown) {
+		t.Fatalf("expected unencrypted release update, got %+v", update)
+	}
+	if update.PasswordState != "not_passworded" {
+		t.Fatalf("expected not_passworded state, got %q", update.PasswordState)
+	}
+	if len(repo.completed) != 1 || repo.completed[0].Summary["probe_skip_reason"] == nil {
+		t.Fatalf("expected completed inspection with probe warning metadata, got %+v", repo.completed)
+	}
+}
+
 type fakeArchiveRepository struct {
 	candidates         []pgindex.BinaryInspectionCandidate
 	files              []pgindex.CatalogReleaseFile

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -20,6 +21,7 @@ const (
 	minArchiveMediaOutputBytes     int64 = 8 * 1024 * 1024
 	sampleArchiveMediaPrefixBytes  int64 = 24 * 1024 * 1024
 	sampleArchiveMediaOutputBytes  int64 = 16 * 1024 * 1024
+	zipArchiveDirectoryTailBytes   int64 = 4 * 1024 * 1024
 )
 
 type ArchiveMediaMaterialization struct {
@@ -50,10 +52,12 @@ func MaterializeArchiveMediaToWorkspace(ctx context.Context, repo CatalogReader,
 	opts = DefaultOptions(opts)
 	lowerFileName := strings.ToLower(strings.TrimSpace(candidate.FileName))
 
-	var archivePath string
-	var archiveBytes int64
+	var (
+		archivePath  string
+		archiveBytes int64
+	)
 	switch {
-	case splitSevenZipRE.MatchString(lowerFileName):
+	case strings.HasSuffix(lowerFileName, ".7z"), splitSevenZipRE.MatchString(lowerFileName):
 		archivePath = filepath.Join(workspaceDir, filepath.Base(ArchiveProbePath(candidate.FileName)))
 		var err error
 		archiveBytes, err = materializeArchiveMediaSevenZip(ctx, repo, fetcher, candidate, archivePath, entryName, opts, log)
@@ -61,10 +65,14 @@ func MaterializeArchiveMediaToWorkspace(ctx context.Context, repo CatalogReader,
 			return nil, err
 		}
 	default:
-		return nil, fmt.Errorf("archive-backed media probing is not implemented for %s", candidate.FileName)
+		var err error
+		archivePath, archiveBytes, err = materializeArchiveMediaBoundedFamily(ctx, repo, fetcher, candidate, workspaceDir, entryName, opts, log)
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	extractedBytes, firstBytes, stderrText, partial, ffprobeResult, ffprobeOutput, ffprobeError, err := probeArchiveEntryStream(ctx, runner, opts.FFProbePath, opts.SevenZipPath, archivePath, entryName, opts.ToolTimeout)
+	extractedBytes, firstBytes, stderrText, partial, ffprobeResult, ffprobeOutput, ffprobeError, err := probeArchiveEntryStream(ctx, runner, opts.FFProbePath, opts.SevenZipPath, archivePath, entryName, archiveMediaOutputLimit(entryName, opts.MaxBytes), opts.ToolTimeout)
 	if err != nil {
 		return nil, err
 	}
@@ -203,12 +211,152 @@ func materializeArchiveMediaSevenZip(ctx context.Context, repo CatalogReader, fe
 	return totalWritten, nil
 }
 
-func probeArchiveEntryStream(ctx context.Context, runner CommandRunner, ffprobePath, sevenZipPath, archivePath, entryName string, timeout time.Duration) (int64, []byte, string, bool, *FFProbeResult, []byte, string, error) {
+func materializeArchiveMediaBoundedFamily(ctx context.Context, repo CatalogReader, fetcher ArticleFetcher, candidate pgindex.BinaryInspectionCandidate, workspaceDir, entryName string, opts Options, log logger) (string, int64, error) {
+	files, err := repo.ListCatalogReleaseFiles(ctx, candidate.ReleaseID)
+	if err != nil {
+		return "", 0, fmt.Errorf("list catalog release files %s: %w", candidate.ReleaseID, err)
+	}
+	family := archiveFamilyFiles(candidate.FileName, files)
+	if len(family) == 0 {
+		return "", 0, fmt.Errorf("release %s has no archive family for %s", candidate.ReleaseID, candidate.FileName)
+	}
+	groups, err := repo.ListCatalogReleaseNewsgroups(ctx, candidate.ReleaseID)
+	if err != nil {
+		return "", 0, fmt.Errorf("list catalog release newsgroups %s: %w", candidate.ReleaseID, err)
+	}
+	probeFiles, err := prepareArchiveProbeFiles(ctx, repo, fetcher, groups, family)
+	if err != nil {
+		return "", 0, err
+	}
+
+	totalObservedSize := int64(0)
+	for _, file := range probeFiles {
+		if err := ctx.Err(); err != nil {
+			return "", 0, err
+		}
+		if file.exactSize <= 0 {
+			return "", 0, fmt.Errorf("archive volume %s has no known decoded size", file.file.FileName)
+		}
+		totalObservedSize += file.exactSize
+	}
+	if totalObservedSize <= 0 {
+		return "", 0, fmt.Errorf("archive family %s has no materializable bytes", family[0].FileName)
+	}
+
+	if err := createSparseArchiveFamily(workspaceDir, probeFiles); err != nil {
+		return "", 0, err
+	}
+	if err := createRARVolumeAliases(workspaceDir, family); err != nil {
+		return "", 0, err
+	}
+	archivePath := filepath.Join(workspaceDir, filepath.Base(strings.TrimSpace(family[0].FileName)))
+
+	totalBudget := archiveMediaPrefixLimit(entryName, totalObservedSize, opts.MaxBytes)
+	headBudget := totalBudget
+	tailBudget := int64(0)
+	if isZipArchiveFamily(candidate.FileName) && totalObservedSize > totalBudget {
+		tailBudget = minInt64(zipArchiveDirectoryTailBytes, totalBudget/4)
+		headBudget -= tailBudget
+	}
+	if headBudget <= 0 {
+		return "", 0, fmt.Errorf("archive media byte budget is too small")
+	}
+
+	headBytes, headRead, err := readArchiveRange(ctx, fetcher, groups, probeFiles, 0, headBudget)
+	if err != nil {
+		return "", headRead, err
+	}
+	if headRead < headBudget {
+		return "", headRead, fmt.Errorf("insufficient leading archive bytes: wanted %d got %d", headBudget, headRead)
+	}
+	headWritten, err := writeArchiveFamilyRange(workspaceDir, probeFiles, 0, headBytes)
+	if err != nil {
+		return "", headWritten, err
+	}
+	totalWritten := headWritten
+
+	if tailBudget > 0 {
+		tailStart := totalObservedSize - tailBudget
+		tailBytes, tailRead, err := readArchiveRange(ctx, fetcher, groups, probeFiles, tailStart, totalObservedSize)
+		if err != nil {
+			return "", totalWritten + tailRead, err
+		}
+		if tailRead < tailBudget {
+			return "", totalWritten + tailRead, fmt.Errorf("insufficient trailing archive bytes: wanted %d got %d", tailBudget, tailRead)
+		}
+		tailWritten, err := writeArchiveFamilyRange(workspaceDir, probeFiles, tailStart, tailBytes)
+		totalWritten += tailWritten
+		if err != nil {
+			return "", totalWritten, err
+		}
+	}
+
+	if log != nil {
+		log.Info(
+			"inspect_media: prepared bounded archive family binary_id=%d release_id=%s entry=%q archive_type=%s archive_bytes=%d virtual_size=%d volumes=%d probe=%s",
+			candidate.BinaryID,
+			candidate.ReleaseID,
+			entryName,
+			DetectSignature(headBytes, candidate.FileName),
+			totalWritten,
+			totalObservedSize,
+			len(probeFiles),
+			archivePath,
+		)
+	}
+	return archivePath, totalWritten, nil
+}
+
+func isZipArchiveFamily(fileName string) bool {
+	lower := strings.ToLower(strings.TrimSpace(fileName))
+	return strings.HasSuffix(lower, ".zip") || splitZipRE.MatchString(lower)
+}
+
+func createRARVolumeAliases(workspaceDir string, family []pgindex.CatalogReleaseFile) error {
+	if len(family) < 2 {
+		return nil
+	}
+	firstName := filepath.Base(strings.TrimSpace(family[0].FileName))
+	match := rarPartNumRE.FindStringSubmatch(strings.ToLower(firstName))
+	if len(match) != 2 {
+		return nil
+	}
+	partToken := match[1]
+	partIndex := strings.LastIndex(strings.ToLower(firstName), ".part"+partToken+".rar")
+	if partIndex < 0 {
+		return nil
+	}
+	prefix := firstName[:partIndex]
+	width := len(partToken)
+
+	for _, file := range family[1:] {
+		part, ok := rarPartNumber(file.FileName)
+		if !ok {
+			continue
+		}
+		actualName := filepath.Base(strings.TrimSpace(file.FileName))
+		aliasName := fmt.Sprintf("%s.part%0*d.rar", prefix, width, part)
+		if strings.EqualFold(aliasName, actualName) {
+			continue
+		}
+		aliasPath := filepath.Join(workspaceDir, aliasName)
+		if err := os.Symlink(actualName, aliasPath); err != nil && !os.IsExist(err) {
+			return fmt.Errorf("create RAR volume alias %s for %s: %w", aliasPath, actualName, err)
+		}
+	}
+	return nil
+}
+
+func probeArchiveEntryStream(ctx context.Context, runner CommandRunner, ffprobePath, sevenZipPath, archivePath, entryName string, outputLimit int64, timeout time.Duration) (int64, []byte, string, bool, *FFProbeResult, []byte, string, error) {
 	if strings.TrimSpace(sevenZipPath) == "" {
 		return 0, nil, "", false, nil, nil, "", fmt.Errorf("7z path is required")
 	}
-	if runner == nil {
+	matroskaEntry := isMatroskaEntryName(entryName)
+	if runner == nil && !matroskaEntry {
 		return 0, nil, "", false, nil, nil, "", fmt.Errorf("ffprobe runner is required")
+	}
+	if outputLimit <= 0 {
+		outputLimit = defaultArchiveMediaOutputBytes
 	}
 
 	toolCtx, cancel := context.WithTimeout(ctx, timeout)
@@ -226,19 +374,58 @@ func probeArchiveEntryStream(ctx context.Context, runner CommandRunner, ffprobeP
 		return 0, nil, "", false, nil, nil, "", fmt.Errorf("start archive extraction: %w", err)
 	}
 
-	sampler := &countingPreviewReader{r: stdout}
-	ffprobeResult, ffprobeOutput, probeErr := RunFFProbeInput(toolCtx, runner, ffprobePath, sampler)
+	if matroskaEntry {
+		sampler := &countingPreviewReader{r: io.LimitReader(stdout, outputLimit)}
+		result, parseErr := ParseMatroskaHeaderReader(sampler, 0)
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		_ = cmd.Wait()
+		if parseErr != nil {
+			return sampler.n, sampler.preview(), stderr.String(), true, nil, nil, "", fmt.Errorf("parse Matroska archive entry header %q: %w", entryName, parseErr)
+		}
+		return sampler.n, sampler.preview(), stderr.String(), true, result, nil, "", nil
+	}
+
+	payload, readErr := io.ReadAll(io.LimitReader(stdout, outputLimit+1))
+	partial := int64(len(payload)) > outputLimit
+	if partial {
+		payload = payload[:outputLimit]
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+	}
 	waitErr := cmd.Wait()
-	if probeErr != nil && waitErr == nil {
-		return sampler.n, sampler.preview(), stderr.String(), false, ffprobeResult, ffprobeOutput, probeErr.Error(), nil
+	if readErr != nil {
+		return int64(len(payload)), previewBytes(payload), stderr.String(), partial, nil, nil, "", fmt.Errorf("read archive entry %q prefix: %w", entryName, readErr)
 	}
-	if waitErr != nil && sampler.n == 0 {
-		return sampler.n, sampler.preview(), stderr.String(), false, nil, ffprobeOutput, "", fmt.Errorf("extract archive entry %q from %s: %w", entryName, archivePath, waitErr)
+	if waitErr != nil {
+		partial = true
+		if len(payload) == 0 {
+			return 0, nil, stderr.String(), partial, nil, nil, "", fmt.Errorf("extract archive entry %q from %s: %w", entryName, archivePath, waitErr)
+		}
 	}
+	ffprobeResult, ffprobeOutput, probeErr := RunFFProbeInput(toolCtx, runner, ffprobePath, bytes.NewReader(payload))
 	if probeErr != nil {
-		return sampler.n, sampler.preview(), stderr.String(), false, ffprobeResult, ffprobeOutput, probeErr.Error(), nil
+		return int64(len(payload)), previewBytes(payload), stderr.String(), partial, ffprobeResult, ffprobeOutput, probeErr.Error(), nil
 	}
-	return sampler.n, sampler.preview(), stderr.String(), false, ffprobeResult, ffprobeOutput, "", nil
+	return int64(len(payload)), previewBytes(payload), stderr.String(), partial, ffprobeResult, ffprobeOutput, "", nil
+}
+
+func isMatroskaEntryName(entryName string) bool {
+	switch strings.ToLower(filepath.Ext(strings.TrimSpace(entryName))) {
+	case ".mkv", ".webm", ".mka", ".mks", ".mk3d":
+		return true
+	default:
+		return false
+	}
+}
+
+func previewBytes(payload []byte) []byte {
+	if len(payload) > 128 {
+		payload = payload[:128]
+	}
+	return append([]byte(nil), payload...)
 }
 
 type countingPreviewReader struct {

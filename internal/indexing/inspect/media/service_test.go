@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/at-wat/ebml-go"
 	inspectpkg "github.com/datallboy/gonzb/internal/indexing/inspect"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
 )
@@ -93,6 +94,122 @@ func TestRunOnceUsesFFProbeFactsAndOnlyUpdatesMediaOutputs(t *testing.T) {
 	}
 	if _, ok := repo.artifacts[0].Metadata["archive_path"]; ok {
 		t.Fatalf("expected no transient archive path in artifact metadata, got %+v", repo.artifacts[0].Metadata)
+	}
+}
+
+func TestRunOnceReadsMatroskaTracksFromPrefixWithoutFFProbe(t *testing.T) {
+	now := time.Now().UTC()
+	prefix := matroskaPrefixForMediaTest(t)
+	repo := &fakeMediaRepository{
+		candidates: []pgindex.BinaryInspectionCandidate{{
+			BinaryID:        56,
+			ReleaseID:       "rel-matroska-header",
+			ReleaseTitle:    "Opaque Feature",
+			FileName:        "opaque.mkv",
+			SourceUpdatedAt: &now,
+			TotalBytes:      976_610_572,
+		}},
+		files: []pgindex.CatalogReleaseFile{{
+			ID:        606,
+			BinaryID:  56,
+			FileName:  "opaque.mkv",
+			SizeBytes: 976_610_572,
+		}},
+	}
+	runner := &mediaRunner{err: fmt.Errorf("ffprobe must not run")}
+	svc := NewService(
+		repo,
+		inspectpkg.NewWorkspaceManager(inspectpkg.Options{WorkDir: t.TempDir()}),
+		mediaFetcher{body: prefix, fileName: "opaque.mkv", exactSize: 976_610_572},
+		runner,
+		nil,
+		testMediaLogger{},
+		inspectpkg.Options{FFProbePath: "ffprobe", MaxBytes: 8 * 1024 * 1024},
+	)
+	if err := svc.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	if runner.runCalls != 0 || runner.runInputCall != 0 {
+		t.Fatalf("expected Matroska header parser without ffprobe, run=%d runInput=%d", runner.runCalls, runner.runInputCall)
+	}
+	if len(repo.failed) != 0 || len(repo.completed) != 1 {
+		t.Fatalf("expected completed Matroska header inspection, completed=%+v failed=%+v", repo.completed, repo.failed)
+	}
+	completed := repo.completed[0]
+	if completed.Summary["probe_mode"] != "matroska_header_prefix" || completed.Summary["runtime_seconds"] != 1420 {
+		t.Fatalf("unexpected Matroska header summary: %+v", completed.Summary)
+	}
+	if completed.Summary["media_title"] != "Embedded Feature" || completed.Summary["media_title_source"] != "matroska_info_title" {
+		t.Fatalf("expected embedded Matroska title, got %+v", completed.Summary)
+	}
+	if len(repo.mediaStreams) != 2 || len(repo.releaseUpdates) != 1 {
+		t.Fatalf("expected retained Matroska streams, streams=%+v updates=%+v", repo.mediaStreams, repo.releaseUpdates)
+	}
+	update := repo.releaseUpdates[0]
+	if update.PrimaryResolution != "2160p" || update.PrimaryVideoCodec != "hevc" || update.PrimaryAudioCodec != "opus" || intValueMedia(update.AudioCount) != 1 {
+		t.Fatalf("unexpected Matroska release facts: %+v", update)
+	}
+	if len(repo.artifacts) != 1 || repo.artifacts[0].Metadata["header_parser"] != "ebml-go" {
+		t.Fatalf("expected bounded Matroska header artifact, got %+v", repo.artifacts)
+	}
+}
+
+func TestRunOnceCompletesWhenTruncatedPrefixMakesFFProbeInconclusive(t *testing.T) {
+	now := time.Now().UTC()
+	repo := &fakeMediaRepository{
+		candidates: []pgindex.BinaryInspectionCandidate{{
+			BinaryID:        54,
+			ReleaseID:       "rel-media-prefix-eof",
+			ReleaseTitle:    "Example.Feature.2026.1080p.HEVC",
+			FileName:        "example.feature.2026.mkv",
+			SourceUpdatedAt: &now,
+			TotalBytes:      1024,
+		}},
+		files: []pgindex.CatalogReleaseFile{{
+			ID:        604,
+			BinaryID:  54,
+			FileName:  "example.feature.2026.mkv",
+			SizeBytes: 1024,
+		}},
+	}
+
+	probeDetail := "[matroska,webm] File ended prematurely\npipe:0: End of file\n{\n\n}"
+	runner := &mediaRunner{output: []byte(probeDetail), err: fmt.Errorf("exit status 1")}
+	svc := NewService(
+		repo,
+		inspectpkg.NewWorkspaceManager(inspectpkg.Options{WorkDir: t.TempDir()}),
+		mediaFetcher{
+			body:      []byte{0x1A, 0x45, 0xDF, 0xA3, 0x00, 0x00, 0x00, 0x00},
+			fileName:  "example.feature.2026.mkv",
+			exactSize: 1024,
+		},
+		runner,
+		nil,
+		testMediaLogger{},
+		inspectpkg.Options{FFProbePath: "ffprobe", MaxBytes: 8},
+	)
+	if err := svc.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	if len(repo.failed) != 0 || len(repo.completed) != 1 {
+		t.Fatalf("expected inconclusive truncated prefix to complete, completed=%+v failed=%+v", repo.completed, repo.failed)
+	}
+	if got := repo.completed[0].Summary["probe_skip_reason"]; got != "prefix_inconclusive" {
+		t.Fatalf("expected prefix_inconclusive summary, got %+v", repo.completed[0].Summary)
+	}
+	if repo.completed[0].Summary["ffprobe_warning_detail"] != probeDetail {
+		t.Fatalf("expected ffprobe warning detail, got %+v", repo.completed[0].Summary)
+	}
+	if len(repo.releaseUpdates) != 1 || intValueMedia(repo.releaseUpdates[0].VideoCount) != 1 {
+		t.Fatalf("expected heuristic media update, got %+v", repo.releaseUpdates)
+	}
+	if len(repo.artifacts) != 1 || repo.artifacts[0].Metadata["ffprobe_warning_detail"] != probeDetail {
+		t.Fatalf("expected warning on prefix artifact, got %+v", repo.artifacts)
+	}
+	if _, ok := repo.artifacts[0].Metadata["ffprobe_error_detail"]; ok {
+		t.Fatalf("did not expect hard ffprobe error metadata, got %+v", repo.artifacts[0].Metadata)
 	}
 }
 
@@ -246,6 +363,60 @@ type fakeMediaRepository struct {
 	releaseUpdates []pgindex.ReleaseInspectionUpdate
 }
 
+type mediaTestMatroskaDocument struct {
+	EBML struct {
+		DocType string `ebml:"EBMLDocType"`
+	} `ebml:"EBML"`
+	Segment struct {
+		Info struct {
+			TimecodeScale uint64  `ebml:"TimecodeScale"`
+			Duration      float64 `ebml:"Duration"`
+			Title         string  `ebml:"Title"`
+		} `ebml:"Info"`
+		Tracks struct {
+			Entries []mediaTestMatroskaTrack `ebml:"TrackEntry"`
+		} `ebml:"Tracks"`
+	} `ebml:"Segment"`
+}
+
+type mediaTestMatroskaTrack struct {
+	TrackNumber uint64                  `ebml:"TrackNumber"`
+	TrackType   uint64                  `ebml:"TrackType"`
+	CodecID     string                  `ebml:"CodecID"`
+	Language    string                  `ebml:"Language"`
+	FlagDefault uint64                  `ebml:"FlagDefault"`
+	Video       *mediaTestMatroskaVideo `ebml:"Video,omitempty"`
+	Audio       *mediaTestMatroskaAudio `ebml:"Audio,omitempty"`
+}
+
+type mediaTestMatroskaVideo struct {
+	PixelWidth  uint64 `ebml:"PixelWidth"`
+	PixelHeight uint64 `ebml:"PixelHeight"`
+}
+
+type mediaTestMatroskaAudio struct {
+	SamplingFrequency float64 `ebml:"SamplingFrequency"`
+	Channels          uint64  `ebml:"Channels"`
+}
+
+func matroskaPrefixForMediaTest(t *testing.T) []byte {
+	t.Helper()
+	document := mediaTestMatroskaDocument{}
+	document.EBML.DocType = "matroska"
+	document.Segment.Info.TimecodeScale = 1_000_000
+	document.Segment.Info.Duration = 1_420_017
+	document.Segment.Info.Title = "Embedded Feature"
+	document.Segment.Tracks.Entries = []mediaTestMatroskaTrack{
+		{TrackNumber: 1, TrackType: 1, CodecID: "V_MPEGH/ISO/HEVC", Language: "jpn", FlagDefault: 1, Video: &mediaTestMatroskaVideo{PixelWidth: 3840, PixelHeight: 2160}},
+		{TrackNumber: 2, TrackType: 2, CodecID: "A_OPUS", Language: "eng", FlagDefault: 1, Audio: &mediaTestMatroskaAudio{SamplingFrequency: 48000, Channels: 2}},
+	}
+	var prefix bytes.Buffer
+	if err := ebml.Marshal(&document, &prefix); err != nil {
+		t.Fatalf("marshal Matroska prefix: %v", err)
+	}
+	return prefix.Bytes()
+}
+
 func (f *fakeMediaRepository) ListBinaryInspectionCandidates(context.Context, string, int) ([]pgindex.BinaryInspectionCandidate, error) {
 	return f.candidates, nil
 }
@@ -296,12 +467,17 @@ func (f *fakeMediaRepository) ListCatalogReleaseNewsgroups(context.Context, stri
 }
 
 type mediaFetcher struct {
-	body     []byte
-	fileName string
+	body      []byte
+	fileName  string
+	exactSize int
 }
 
 func (f mediaFetcher) Fetch(context.Context, string, []string) (io.Reader, error) {
-	payload := fmt.Sprintf("=ybegin part=1 total=1 line=128 size=%d name=%s\r\n=ypart begin=1 end=%d\r\n%s\r\n=yend size=%d pcrc32=00000000\r\n", len(f.body), f.fileName, len(f.body), encodeYEncMedia(f.body), len(f.body))
+	exactSize := f.exactSize
+	if exactSize <= 0 {
+		exactSize = len(f.body)
+	}
+	payload := fmt.Sprintf("=ybegin part=1 total=1 line=128 size=%d name=%s\r\n=ypart begin=1 end=%d\r\n%s\r\n=yend size=%d pcrc32=00000000\r\n", exactSize, f.fileName, len(f.body), encodeYEncMedia(f.body), len(f.body))
 	return bytes.NewBufferString(payload), nil
 }
 

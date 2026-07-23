@@ -1,0 +1,59 @@
+# TEST FIXTURE ONLY. Loopback endpoints, disposable credentials, and .e2e state.
+port: "18084"
+bind_address: "127.0.0.1"
+modules:
+  downloader: { enabled: false }
+  aggregator: { enabled: true }
+  usenet_indexer: { enabled: true }
+  gonzbnet: { enabled: true }
+  web_ui: { enabled: true }
+  api: { enabled: true }
+api:
+  cors_allowed_origins: ["http://127.0.0.1:18084"]
+aggregator:
+  sources:
+    gonzbnet: { enabled: true }
+gonzbnet:
+  mode: consumer
+  node_alias: "e2e-standalone-d"
+  advertise_url: "http://127.0.0.1:18084/gonzbnet/v1"
+  keys_dir: ".e2e/gonzbnet/node-d/keys"
+  http_enabled: true
+  allow_insecure_peer_http: true
+  private_network: true
+  visibility: unlisted
+  allow_pool_creation: true
+  allow_join_requests: true
+  admission_relay_enabled: true
+  network_id: "gonzbnet-e2e"
+  manual_peers: []
+  publish_pool_ids: []
+  consumer_enabled: true
+  scanner_enabled: false
+  index_projection_enabled: true
+  manifest_builder_enabled: false
+  manifest_cache_enabled: true
+  validator_enabled: false
+  health_checker_enabled: false
+  coverage_enabled: false
+  scheduler_enabled: false
+  pull_sync_enabled: true
+  pull_sync_interval_minutes: 1
+  push_sync_enabled: true
+  push_sync_interval_minutes: 1
+  websocket_gossip_enabled: false
+  relay_enabled: false
+  live_query_enabled: false
+  send_user_context: false
+log:
+  {
+    path: ".e2e/gonzbnet/node-d/gonzb.log",
+    level: "debug",
+    include_stdout: true,
+  }
+store:
+  sqlite_path: ".e2e/gonzbnet/node-d/gonzb.db"
+  blob_dir: ".e2e/gonzbnet/node-d/blobs"
+  payload_cache_enabled: true
+  search_persistence_enabled: true
+  pg_dsn: "postgres://gonzb:gonzb@127.0.0.1:55432/gonzbnet_d?sslmode=disable"

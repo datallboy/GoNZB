@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/infra/config"
 	_ "modernc.org/sqlite"
 )
@@ -16,6 +17,7 @@ import (
 const (
 	usenetIndexerModuleName = "usenet_indexer"
 	aggregatorModuleName    = "aggregator"
+	goNZBNetModuleName      = "gonzbnet"
 )
 const expectedSchemaVersion = 1
 
@@ -25,7 +27,7 @@ type Store struct {
 
 func NewStore(dbPath string) (*Store, error) {
 	dbDir := filepath.Dir(dbPath)
-	if err := os.MkdirAll(dbDir, 0755); err != nil {
+	if err := os.MkdirAll(dbDir, 0700); err != nil {
 		return nil, fmt.Errorf("failed to create settings db dir: %w", err)
 	}
 
@@ -47,8 +49,21 @@ func NewStore(dbPath string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("validate settings schema: %w", err)
 	}
+	if err := restrictSettingsFilePermissions(dbPath); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 
 	return s, nil
+}
+
+func restrictSettingsFilePermissions(dbPath string) error {
+	for _, path := range []string{dbPath, dbPath + "-wal", dbPath + "-shm"} {
+		if err := os.Chmod(path, 0600); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("restrict settings file permissions for %s: %w", path, err)
+		}
+	}
+	return nil
 }
 
 func (s *Store) Close() error {
@@ -143,7 +158,7 @@ func (s *Store) GetRuntimeSettings(ctx context.Context, base ...*config.Config) 
 		if revErr == nil {
 			runtime.Revision = revisionID
 		}
-		return WithRuntimeDefaults(runtime), nil
+		return app.WithRuntimeDefaultsFromConfig(runtime, firstBaseConfig(base)), nil
 	}
 
 	legacyRevision, err := s.readLatestRevisionSnapshot(ctx)
@@ -151,12 +166,22 @@ func (s *Store) GetRuntimeSettings(ctx context.Context, base ...*config.Config) 
 		return nil, fmt.Errorf("read latest settings revision: %w", err)
 	}
 	if err == nil && legacyRevision != nil {
-		return WithRuntimeDefaults(legacyRevision), nil
+		return app.WithRuntimeDefaultsFromConfig(legacyRevision, firstBaseConfig(base)), nil
 	}
 
 	out := DefaultRuntimeSettings()
+	if len(base) > 0 && base[0] != nil {
+		out = app.FromConfig(base[0])
+	}
 	out.Revision = 0
 	return out, nil
+}
+
+func firstBaseConfig(values []*config.Config) *config.Config {
+	if len(values) == 0 {
+		return nil
+	}
+	return values[0]
 }
 
 // patch and persist the latest runtime settings state as a new atomic revision.
@@ -189,6 +214,9 @@ func (s *Store) UpdateSettings(ctx context.Context, next *RuntimeSettings) error
 	}
 	if err := s.writeAggregatorOptions(ctx, tx, next.Aggregator); err != nil {
 		return fmt.Errorf("write aggregator module options: %w", err)
+	}
+	if err := s.writeGoNZBNetOptions(ctx, tx, next.GoNZBNet); err != nil {
+		return fmt.Errorf("write gonzbnet module options: %w", err)
 	}
 	if err := s.writeDownload(ctx, tx, next.Download); err != nil {
 		return fmt.Errorf("write settings_download: %w", err)
@@ -469,6 +497,27 @@ func (s *Store) readStructuredSettings(ctx context.Context) (*RuntimeSettings, b
 		out.Aggregator = &aggregator
 	}
 
+	var goNZBNetOptionsJSON string
+	err = s.db.QueryRowContext(ctx, `
+		SELECT options_json
+		FROM settings_module_options
+		WHERE module_name = ?`, goNZBNetModuleName).Scan(&goNZBNetOptionsJSON)
+	if err != nil && err != sql.ErrNoRows {
+		return nil, false, err
+	}
+	if err == nil {
+		hasState = true
+
+		var goNZBNet GoNZBNetRuntimeSettings
+		if goNZBNetOptionsJSON == "" {
+			goNZBNetOptionsJSON = "{}"
+		}
+		if unmarshalErr := json.Unmarshal([]byte(goNZBNetOptionsJSON), &goNZBNet); unmarshalErr != nil {
+			return nil, false, fmt.Errorf("unmarshal gonzbnet module options: %w", unmarshalErr)
+		}
+		out.GoNZBNet = &goNZBNet
+	}
+
 	return out, hasState, nil
 }
 
@@ -609,6 +658,26 @@ func (s *Store) writeUsenetIndexerOptions(ctx context.Context, tx *sql.Tx, index
 		usenetIndexerModuleName,
 		string(optionsJSON),
 	)
+	return err
+}
+
+func (s *Store) writeGoNZBNetOptions(ctx context.Context, tx *sql.Tx, goNZBNet *GoNZBNetRuntimeSettings) error {
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM settings_module_options
+		WHERE module_name = ?`, goNZBNetModuleName); err != nil {
+		return err
+	}
+	if goNZBNet == nil {
+		return nil
+	}
+
+	payload, err := json.Marshal(goNZBNet)
+	if err != nil {
+		return fmt.Errorf("marshal gonzbnet module options: %w", err)
+	}
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO settings_module_options (module_name, options_json, updated_at)
+		VALUES (?, ?, CURRENT_TIMESTAMP)`, goNZBNetModuleName, string(payload))
 	return err
 }
 

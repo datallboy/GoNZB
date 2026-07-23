@@ -3,7 +3,6 @@ package pgindex
 import (
 	"context"
 	"database/sql"
-	"os"
 	"strings"
 	"testing"
 )
@@ -24,20 +23,7 @@ func TestExpectedMigrationVersionTracksLatestEmbeddedMigration(t *testing.T) {
 }
 
 func TestFreshBaselineMigration(t *testing.T) {
-	dsn := strings.TrimSpace(os.Getenv("GONZB_TEST_PG_DSN"))
-	if dsn == "" {
-		t.Skip("set GONZB_TEST_PG_DSN to run fresh pgindex migration smoke test")
-	}
-
-	store, err := NewStore(dsn)
-	if err != nil {
-		t.Fatalf("open fresh migrated store: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := store.Close(); err != nil {
-			t.Fatalf("close fresh migrated store: %v", err)
-		}
-	})
+	store := openPostgresTestStore(t)
 
 	version, err := store.SchemaVersion(context.Background())
 	if err != nil {
@@ -62,6 +48,19 @@ func TestFreshBaselineMigration(t *testing.T) {
 	if hasLegacyBinaries {
 		t.Fatalf("fresh v0.8.0 baseline must not create retired public.binaries")
 	}
+	var hasFederationChainIssues bool
+	if err := store.DB().QueryRowContext(context.Background(), `
+		SELECT EXISTS (
+			SELECT 1
+			FROM information_schema.tables
+			WHERE table_schema = 'public'
+			  AND table_name = 'federation_event_chain_issues'
+		)`).Scan(&hasFederationChainIssues); err != nil {
+		t.Fatalf("check federation chain issue table: %v", err)
+	}
+	if !hasFederationChainIssues {
+		t.Fatalf("fresh schema must create federation_event_chain_issues")
+	}
 
 	report, err := store.CheckCriticalIndexerIntegrity(context.Background(), false)
 	if err != nil {
@@ -82,7 +81,6 @@ func TestFreshBaselineMigration(t *testing.T) {
 	}
 
 	idDefaultTables := []string{
-		"binary_projection_events",
 		"binary_inspections",
 		"binary_inspection_artifacts",
 		"binary_archive_entries",

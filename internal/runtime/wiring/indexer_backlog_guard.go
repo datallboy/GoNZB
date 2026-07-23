@@ -55,7 +55,7 @@ func newIndexerScrapeBacklogGuard(appCtx *app.Context) supervisor.StageGateFunc 
 }
 
 func (g *cachedScrapeBacklogGuard) allowStage(ctx context.Context, stage supervisor.Stage, trigger string) (supervisor.StageGateDecision, error) {
-	if stage.Name != supervisor.StageScrapeLatest && stage.Name != supervisor.StageScrapeBackfill {
+	if stage.Name != supervisor.StageScrapeLatest && stage.Name != supervisor.StageScrapeBackfill && stage.Name != supervisor.StageScrapeTimeframe && stage.Name != supervisor.StageScrapeDeferred {
 		return supervisor.StageGateDecision{Allowed: true}, nil
 	}
 	if trigger == "manual" {
@@ -112,8 +112,10 @@ func (g *cachedScrapeBacklogGuard) allowStage(ctx context.Context, stage supervi
 
 func (g *cachedScrapeBacklogGuard) evaluate(ctx context.Context, runtime *app.RuntimeSettings) (map[supervisor.StageName]supervisor.StageGateDecision, error) {
 	allowed := map[supervisor.StageName]supervisor.StageGateDecision{
-		supervisor.StageScrapeLatest:   {Allowed: true},
-		supervisor.StageScrapeBackfill: {Allowed: true},
+		supervisor.StageScrapeLatest:    {Allowed: true},
+		supervisor.StageScrapeBackfill:  {Allowed: true},
+		supervisor.StageScrapeTimeframe: {Allowed: true},
+		supervisor.StageScrapeDeferred:  {Allowed: true},
 	}
 	if runtime == nil || runtime.Indexing == nil {
 		return allowed, nil
@@ -183,6 +185,14 @@ func (g *cachedScrapeBacklogGuard) evaluate(ctx context.Context, runtime *app.Ru
 				Allowed: false,
 				Reason:  fmt.Sprintf("scrape_backfill paused for recover_yenc capacity: open_yenc=%d soft_cap=%d hard_cap=%d", snapshot.OpenTotal, snapshot.SoftCap, snapshot.HardCap),
 			}
+			allowed[supervisor.StageScrapeTimeframe] = supervisor.StageGateDecision{
+				Allowed: false,
+				Reason:  fmt.Sprintf("scrape_timeframe paused for recover_yenc capacity: open_yenc=%d soft_cap=%d hard_cap=%d", snapshot.OpenTotal, snapshot.SoftCap, snapshot.HardCap),
+			}
+			allowed[supervisor.StageScrapeDeferred] = supervisor.StageGateDecision{
+				Allowed: false,
+				Reason:  fmt.Sprintf("scrape_deferred paused for recover_yenc capacity: open_yenc=%d soft_cap=%d hard_cap=%d", snapshot.OpenTotal, snapshot.SoftCap, snapshot.HardCap),
+			}
 		}
 	} else {
 		g.mu.Lock()
@@ -203,14 +213,17 @@ func yencAdmissionConfigFromRuntime(in app.IndexingRecoveryAdmissionRuntimeSetti
 		Priority0OverflowCap:        int64(in.Priority0OverflowCap),
 		Priority0ReservoirBatches:   in.Priority0ReservoirBatches,
 		NearTimeCohortBucketMinutes: in.NearTimeCohortBucketMinutes,
+		LatestReservePercent:        in.LatestReservePercent,
 	}
 }
 
 func (g *cachedScrapeBacklogGuard) scrapeBlockedDecisions(backlog, threshold int64, thresholdLabel string) map[supervisor.StageName]supervisor.StageGateDecision {
 	reason := fmt.Sprintf("scrape paused for assemble catch-up: unassembled_headers=%d %s=%d", backlog, thresholdLabel, threshold)
 	return map[supervisor.StageName]supervisor.StageGateDecision{
-		supervisor.StageScrapeLatest:   {Allowed: false, Reason: reason},
-		supervisor.StageScrapeBackfill: {Allowed: false, Reason: reason},
+		supervisor.StageScrapeLatest:    {Allowed: false, Reason: reason},
+		supervisor.StageScrapeBackfill:  {Allowed: false, Reason: reason},
+		supervisor.StageScrapeTimeframe: {Allowed: false, Reason: reason},
+		supervisor.StageScrapeDeferred:  {Allowed: false, Reason: reason},
 	}
 }
 
@@ -223,8 +236,10 @@ func yencHardCapBlockedDecisions(snapshot *pgindex.YEncRecoveryAdmissionSnapshot
 	}
 	reason := fmt.Sprintf("scrape paused for recover_yenc hard cap: open_yenc=%d soft_cap=%d hard_cap=%d", openTotal, softCap, hardCap)
 	return map[supervisor.StageName]supervisor.StageGateDecision{
-		supervisor.StageScrapeLatest:   {Allowed: false, Reason: reason},
-		supervisor.StageScrapeBackfill: {Allowed: false, Reason: reason},
+		supervisor.StageScrapeLatest:    {Allowed: false, Reason: reason},
+		supervisor.StageScrapeBackfill:  {Allowed: false, Reason: reason},
+		supervisor.StageScrapeTimeframe: {Allowed: false, Reason: reason},
+		supervisor.StageScrapeDeferred:  {Allowed: false, Reason: reason},
 	}
 }
 

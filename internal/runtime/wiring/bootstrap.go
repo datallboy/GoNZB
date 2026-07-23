@@ -47,7 +47,7 @@ func BootstrapStores(appCtx *app.Context) error {
 	modules := cfg.Modules
 
 	needsJobStore := modules.Downloader.Enabled || (modules.Aggregator.Enabled && cfg.Store.SearchPersistenceEnabled)
-	needsSettingsStore := modules.Downloader.Enabled || modules.Aggregator.Enabled || modules.UsenetIndexer.Enabled || modules.API.Enabled || modules.WebUI.Enabled
+	needsSettingsStore := modules.Downloader.Enabled || modules.Aggregator.Enabled || modules.UsenetIndexer.Enabled || modules.GoNZBNet.Enabled || modules.API.Enabled || modules.WebUI.Enabled
 
 	closers := make([]io.Closer, 0, 3)
 	closeCreated := func() {
@@ -91,7 +91,7 @@ func BootstrapStores(appCtx *app.Context) error {
 	}
 	appCtx.IndexerArchiveStore = indexerArchiveStore
 
-	if modules.UsenetIndexer.Enabled && cfg.Store.PGDSN != "" {
+	if (modules.UsenetIndexer.Enabled || modules.GoNZBNet.Enabled) && cfg.Store.PGDSN != "" {
 		pgStore, err := pgindex.NewStore(cfg.Store.PGDSN)
 		if err != nil {
 			closeCreated()

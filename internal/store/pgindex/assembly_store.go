@@ -29,7 +29,7 @@ const (
 	assembleClaimStatementTimeout          = 30 * time.Second
 	assembleClaimMinQueueAge               = 15 * time.Second
 	assembleDefaultLaneATimeWindowMinutes  = 15
-	refreshBinaryStatsBatchSize            = 8000
+	refreshBinaryStatsBatchSize            = 500
 	binaryCompletionKeySyncChunkSize       = 8000
 	binaryPartUpsertBatchRecords           = 5000
 )
@@ -695,523 +695,10 @@ func (s *Store) ClaimAssemblyQueueBatchWithStats(ctx context.Context, req Assemb
 	return out, stats, nil
 }
 
-func (s *Store) listUnassembledArticleHeaders(ctx context.Context, q assemblyQueryer, limit int) ([]AssemblyCandidate, error) {
-	return s.listUnassembledArticleHeadersForLane(ctx, q, limit, AssemblyClaimLaneCombined)
-}
-
-func (s *Store) listUnassembledArticleHeadersForLane(ctx context.Context, q assemblyQueryer, limit int, lane string) ([]AssemblyCandidate, error) {
-	if limit <= 0 {
-		limit = 1000
-	}
-
-	lane = strings.TrimSpace(strings.ToLower(lane))
-	laneALimit := limit
-	switch lane {
-	case AssemblyClaimLaneCombined:
-		laneALimit = 1
-		if limit > 1 {
-			laneALimit = (limit * assembleLaneARatioNumerator) / assembleLaneARatioDenominator
-			if laneALimit <= 0 {
-				laneALimit = 1
-			}
-		}
-	case AssemblyClaimLaneA:
-	case AssemblyClaimLaneB:
-		laneALimit = 0
-	default:
-		return nil, fmt.Errorf("unknown assembly claim lane %q", lane)
-	}
-
-	priorityHeaderWindow := assemblePriorityHeaderMinScan
-	if laneALimit > 0 {
-		priorityHeaderWindow = laneALimit * assemblePriorityHeaderWindowMultiplier
-		if priorityHeaderWindow < assemblePriorityHeaderMinScan {
-			priorityHeaderWindow = assemblePriorityHeaderMinScan
-		}
-		if priorityHeaderWindow > assemblePriorityHeaderMaxScan {
-			priorityHeaderWindow = assemblePriorityHeaderMaxScan
-		}
-	}
-	recentHeaderWindow := limit * assemblePriorityHeaderWindowMultiplier
-	if recentHeaderWindow < assemblePriorityHeaderMinScan {
-		recentHeaderWindow = assemblePriorityHeaderMinScan
-	}
-	if recentHeaderWindow > assemblePriorityHeaderMaxScan {
-		recentHeaderWindow = assemblePriorityHeaderMaxScan
-	}
-
-	selected := make([]assemblyCandidateSelection, 0, limit)
-	selectedIDs := make(map[int64]struct{}, limit)
-
-	if laneALimit > 0 {
-		priorityIDs, err := s.listPriorityAssemblyHeaderIDsWithFallback(ctx, q, laneALimit, priorityHeaderWindow)
-		if err != nil {
-			priorityIDs = nil
-		} else {
-			for _, id := range priorityIDs {
-				if len(selected) >= laneALimit {
-					break
-				}
-				if _, exists := selectedIDs[id]; exists {
-					continue
-				}
-				selectedIDs[id] = struct{}{}
-				selected = append(selected, assemblyCandidateSelection{
-					ID:                              id,
-					StructuredIdentityBinaryMatched: true,
-				})
-			}
-		}
-	}
-
-	remaining := limit - len(selected)
-	if remaining <= 0 {
-		return s.hydrateAssemblyCandidates(ctx, q, selected)
-	}
-
-	recentIDs, err := s.listRecentUnassembledHeaderIDs(ctx, q, remaining, recentHeaderWindow, selectedIDs, false)
-	if err != nil {
-		return nil, err
-	}
-	for _, id := range recentIDs {
-		if len(selected) >= limit {
-			break
-		}
-		if _, exists := selectedIDs[id]; exists {
-			continue
-		}
-		selectedIDs[id] = struct{}{}
-		selected = append(selected, assemblyCandidateSelection{ID: id})
-	}
-
-	return s.hydrateAssemblyCandidates(ctx, q, selected)
-}
-
 type assemblyCandidateSelection struct {
 	SourcePostedAt                  time.Time
 	ID                              int64
 	StructuredIdentityBinaryMatched bool
-}
-
-func (s *Store) listPriorityAssemblyHeaderIDsWithFallback(ctx context.Context, q assemblyQueryer, limit, pendingWindow int) ([]int64, error) {
-	tx, inTx := q.(*sql.Tx)
-	if !inTx {
-		return s.listPriorityAssemblyHeaderIDs(ctx, q, limit, pendingWindow)
-	}
-
-	if _, err := tx.ExecContext(ctx, `SAVEPOINT assembly_priority_selector`); err != nil {
-		return nil, err
-	}
-	out, err := s.listPriorityAssemblyHeaderIDs(ctx, q, limit, pendingWindow)
-	if err != nil {
-		_, _ = tx.ExecContext(ctx, `ROLLBACK TO SAVEPOINT assembly_priority_selector`)
-		_, _ = tx.ExecContext(ctx, `RELEASE SAVEPOINT assembly_priority_selector`)
-		return nil, err
-	}
-	if _, err := tx.ExecContext(ctx, `RELEASE SAVEPOINT assembly_priority_selector`); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (s *Store) listPriorityAssemblyHeaderIDs(ctx context.Context, q assemblyQueryer, limit, pendingWindow int) ([]int64, error) {
-	if limit <= 0 {
-		return nil, nil
-	}
-	if pendingWindow < limit {
-		pendingWindow = limit
-	}
-
-	rows, err := q.QueryContext(ctx, `
-		WITH candidate_binaries AS (
-			SELECT
-				binary_id,
-				provider_id,
-				newsgroup_id,
-				normalized_file_name,
-				is_main_payload,
-				observed_parts,
-				completion_ratio,
-				ROW_NUMBER() OVER () AS binary_rank
-			FROM binary_completion_keys
-			ORDER BY
-				is_main_payload DESC,
-				completion_ratio DESC,
-				observed_parts DESC,
-				binary_id DESC
-			LIMIT $2
-		),
-		selected AS (
-			SELECT
-				matches.id,
-				cb.binary_id,
-				cb.is_main_payload,
-				cb.observed_parts,
-				cb.completion_ratio,
-				cb.binary_rank
-			FROM candidate_binaries cb
-			JOIN LATERAL (
-				SELECT q.article_header_id AS id
-				FROM article_header_assembly_queue q
-				WHERE q.provider_id = cb.provider_id
-				  AND q.newsgroup_id = cb.newsgroup_id
-				  AND q.normalized_file_name = cb.normalized_file_name
-				  AND (q.claim_until IS NULL OR q.claim_until < NOW())
-				ORDER BY q.article_header_id DESC
-				LIMIT 1
-			) matches ON true
-			ORDER BY
-				CASE
-					WHEN is_main_payload THEN 0
-					ELSE 1
-				END ASC,
-				completion_ratio DESC,
-				observed_parts DESC,
-				binary_id DESC,
-				id DESC
-			LIMIT $1
-		)
-		SELECT
-			s.id
-		FROM selected s
-		ORDER BY
-			CASE
-				WHEN s.is_main_payload THEN 0
-				ELSE 1
-			END ASC,
-			s.completion_ratio DESC,
-			s.observed_parts DESC,
-			s.binary_id DESC,
-			s.id DESC`,
-		limit,
-		pendingWindow,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("list priority assembly header ids: %w", err)
-	}
-	defer rows.Close()
-
-	out := make([]int64, 0, limit)
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("scan priority assembly header id: %w", err)
-		}
-		out = append(out, id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate priority assembly header ids: %w", err)
-	}
-
-	return out, nil
-}
-
-type assemblyProgressBinary struct {
-	BinaryID           int64
-	ProviderID         int64
-	NewsgroupID        int64
-	NormalizedFileName string
-	MissingParts       int
-}
-
-func (s *Store) listPriorityAssemblyBinaries(ctx context.Context, limit int) ([]assemblyProgressBinary, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		WITH ranked AS (
-			SELECT
-				binary_id,
-				provider_id,
-				newsgroup_id,
-				normalized_file_name,
-				is_main_payload,
-				observed_parts,
-				completion_ratio,
-				GREATEST(total_parts - observed_parts, 0) AS missing_parts,
-				ROW_NUMBER() OVER (
-					PARTITION BY provider_id, newsgroup_id, normalized_file_name
-					ORDER BY
-						is_main_payload DESC,
-						completion_ratio DESC,
-						observed_parts DESC,
-						binary_id DESC
-				) AS file_rank
-			FROM binary_completion_keys
-		)
-		SELECT
-			binary_id,
-			provider_id,
-			newsgroup_id,
-			normalized_file_name,
-			missing_parts
-		FROM ranked
-		WHERE file_rank = 1
-		ORDER BY
-			is_main_payload DESC,
-			completion_ratio DESC,
-			observed_parts DESC,
-			binary_id DESC
-		LIMIT $1`, limit)
-	if err != nil {
-		return nil, fmt.Errorf("list priority assembly binaries: %w", err)
-	}
-	defer rows.Close()
-
-	out := make([]assemblyProgressBinary, 0, limit)
-	for rows.Next() {
-		var item assemblyProgressBinary
-		if err := rows.Scan(
-			&item.BinaryID,
-			&item.ProviderID,
-			&item.NewsgroupID,
-			&item.NormalizedFileName,
-			&item.MissingParts,
-		); err != nil {
-			return nil, fmt.Errorf("scan priority assembly binary: %w", err)
-		}
-		out = append(out, item)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate priority assembly binaries: %w", err)
-	}
-
-	return out, nil
-}
-
-func (s *Store) listPendingHeadersForProgressBinaries(ctx context.Context, binaries []assemblyProgressBinary) ([][]AssemblyCandidate, error) {
-	if len(binaries) == 0 {
-		return nil, nil
-	}
-
-	args := make([]any, 0, len(binaries)*6)
-	values := make([]string, 0, len(binaries))
-	for i, binary := range binaries {
-		perBinaryLimit := binary.MissingParts
-		switch {
-		case perBinaryLimit <= 0:
-			perBinaryLimit = 1
-		case perBinaryLimit > 1:
-			perBinaryLimit = 1
-		}
-
-		base := (i * 6) + 1
-		values = append(values, fmt.Sprintf("($%d::bigint,$%d::bigint,$%d::bigint,$%d::text,$%d::integer,$%d::integer)", base, base+1, base+2, base+3, base+4, base+5))
-		args = append(
-			args,
-			binary.BinaryID,
-			binary.ProviderID,
-			binary.NewsgroupID,
-			binary.NormalizedFileName,
-			perBinaryLimit,
-			i,
-		)
-	}
-
-	query := fmt.Sprintf(`
-		WITH requested_binaries (
-			binary_id,
-			provider_id,
-			newsgroup_id,
-			normalized_file_name,
-			per_binary_limit,
-			binary_rank
-		) AS (
-			VALUES %s
-		)
-		SELECT
-			rb.binary_id,
-			matches.id,
-			matches.source_posted_at,
-			matches.provider_id,
-			matches.newsgroup_id,
-			matches.group_name,
-			matches.article_number,
-			matches.message_id,
-			matches.subject,
-			matches.poster,
-			matches.date_utc,
-			matches.bytes,
-			matches.lines,
-			matches.xref,
-			matches.poster_id,
-			matches.subject_file_name,
-			matches.subject_file_index,
-			matches.subject_file_total,
-			matches.yenc_part_number,
-			matches.yenc_total_parts,
-			matches.yenc_file_size,
-			matches.structured_identity_binary_matched,
-			matches.raw_overview
-		FROM requested_binaries rb
-		JOIN LATERAL (
-			SELECT
-				ah.id,
-				ah.source_posted_at,
-				ah.provider_id,
-				ah.newsgroup_id,
-				ng.group_name,
-				ah.article_number,
-				ah.message_id,
-				p.subject,
-				COALESCE(po.poster_name, apr.poster_name, p.poster, '') AS poster,
-				ah.date_utc,
-				ah.bytes,
-				ah.lines,
-				p.xref,
-				COALESCE(apr.poster_id, p.poster_id, 0) AS poster_id,
-				COALESCE(p.subject_file_name, '') AS subject_file_name,
-				COALESCE(p.subject_file_index, 0) AS subject_file_index,
-				COALESCE(p.subject_file_total, 0) AS subject_file_total,
-				COALESCE(p.yenc_part_number, 0) AS yenc_part_number,
-				COALESCE(p.yenc_total_parts, 0) AS yenc_total_parts,
-				COALESCE(p.yenc_file_size, 0) AS yenc_file_size,
-				TRUE AS structured_identity_binary_matched,
-				'' AS raw_overview
-			FROM article_header_ingest_payloads p
-			JOIN article_headers ah
-			  ON ah.source_posted_at = p.source_posted_at
-			 AND ah.id = p.article_header_id
-			 AND ah.provider_id = rb.provider_id
-			 AND ah.newsgroup_id = rb.newsgroup_id
-			JOIN newsgroups ng ON ng.id = ah.newsgroup_id
-			LEFT JOIN article_header_poster_refs apr
-			  ON apr.source_posted_at = p.source_posted_at
-			 AND apr.article_header_id = p.article_header_id
-			LEFT JOIN posters po ON po.id = apr.poster_id
-			WHERE BTRIM(p.subject_file_name) <> ''
-			  AND LOWER(BTRIM(p.subject_file_name)) = rb.normalized_file_name
-			ORDER BY p.article_header_id DESC
-			LIMIT rb.per_binary_limit
-		) matches ON TRUE
-		ORDER BY rb.binary_rank ASC, matches.id DESC`, strings.Join(values, ","))
-
-	rows, err := s.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("list pending headers for progress binaries: %w", err)
-	}
-	defer rows.Close()
-
-	grouped := make(map[int64][]AssemblyCandidate, len(binaries))
-	for rows.Next() {
-		var binaryID int64
-		item, err := scanAssemblyCandidateWithBinaryID(rows, &binaryID)
-		if err != nil {
-			return nil, err
-		}
-		grouped[binaryID] = append(grouped[binaryID], item)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate pending headers for progress binaries: %w", err)
-	}
-
-	out := make([][]AssemblyCandidate, 0, len(binaries))
-	for _, binary := range binaries {
-		out = append(out, grouped[binary.BinaryID])
-	}
-	return out, nil
-}
-
-func (s *Store) listRecentUnassembledHeaderIDs(ctx context.Context, q assemblyQueryer, limit, pendingWindow int, excludeIDs map[int64]struct{}, excludeStructuredMatches bool) ([]int64, error) {
-	if limit <= 0 {
-		return nil, nil
-	}
-	if pendingWindow < limit {
-		pendingWindow = limit
-	}
-
-	if len(excludeIDs) == 0 && !excludeStructuredMatches {
-		rows, err := q.QueryContext(ctx, `
-			SELECT q.article_header_id
-			FROM article_header_assembly_queue q
-			WHERE q.claim_until IS NULL OR q.claim_until < NOW()
-			ORDER BY q.article_header_id DESC
-			LIMIT $1`, limit)
-		if err != nil {
-			return nil, fmt.Errorf("list recent unassembled header ids: %w", err)
-		}
-		defer rows.Close()
-
-		out := make([]int64, 0, limit)
-		for rows.Next() {
-			var id int64
-			if err := rows.Scan(&id); err != nil {
-				return nil, fmt.Errorf("scan recent unassembled header id: %w", err)
-			}
-			out = append(out, id)
-		}
-		if err := rows.Err(); err != nil {
-			return nil, fmt.Errorf("iterate recent unassembled header ids: %w", err)
-		}
-
-		return out, nil
-	}
-
-	args := []any{limit, pendingWindow}
-	query := `
-		WITH recent_pending AS (
-			SELECT
-				q.article_header_id AS id,
-				q.provider_id,
-				q.newsgroup_id
-			FROM article_header_assembly_queue q
-			WHERE q.claim_until IS NULL OR q.claim_until < NOW()
-			ORDER BY q.article_header_id DESC
-			LIMIT $2
-		)
-		SELECT rp.id
-		FROM recent_pending rp
-		WHERE TRUE`
-	if len(excludeIDs) > 0 {
-		ids := make([]int64, 0, len(excludeIDs))
-		for id := range excludeIDs {
-			ids = append(ids, id)
-		}
-		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
-		args = append(args, ids)
-		query += fmt.Sprintf(`
-		  AND NOT (rp.id = ANY($%d::bigint[]))`, len(args))
-	}
-	if excludeStructuredMatches {
-		query += `
-		  AND NOT EXISTS (
-			SELECT 1
-		  	FROM article_header_ingest_payloads p
-		  	JOIN binary_core bc
-		  	  ON bc.provider_id = rp.provider_id
-		  	 AND bc.newsgroup_id = rp.newsgroup_id
-		  	JOIN binary_identity_current bic
-		  	  ON bic.binary_id = bc.binary_id
-		  	 AND LOWER(BTRIM(COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, '')))) = LOWER(BTRIM(p.subject_file_name))
-		  	JOIN binary_observation_stats bos
-		  	  ON bos.binary_id = bc.binary_id
-		  	 AND bos.total_parts > 0
-		  	 AND bos.observed_parts < bos.total_parts
-		  	 AND BTRIM(COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''))) <> ''
-		  	WHERE p.article_header_id = rp.id
-		  	  AND BTRIM(p.subject_file_name) <> ''
-		  )`
-	}
-	query += `
-		ORDER BY rp.id DESC
-		LIMIT $1`
-
-	rows, err := q.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("list recent unassembled header ids: %w", err)
-	}
-	defer rows.Close()
-
-	out := make([]int64, 0, limit)
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("scan recent unassembled header id: %w", err)
-		}
-		out = append(out, id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate recent unassembled header ids: %w", err)
-	}
-
-	return out, nil
 }
 
 func (s *Store) hydrateAssemblyCandidates(ctx context.Context, q assemblyQueryer, selected []assemblyCandidateSelection) ([]AssemblyCandidate, error) {
@@ -1627,6 +1114,9 @@ func (s *Store) UpsertBinaries(ctx context.Context, records []BinaryRecord) ([]i
 	if len(records) == 0 {
 		return nil, nil
 	}
+	if err := s.provisionAssemblyPartitionsForBinaryRecords(ctx, records); err != nil {
+		return nil, fmt.Errorf("provision assemble partitions before binary upsert: %w", err)
+	}
 
 	prepared := make([]preparedBinaryRecord, 0, len(records))
 	for _, record := range records {
@@ -1721,39 +1211,7 @@ func (s *Store) upsertBinaryChunkWithRetries(ctx context.Context, records []prep
 }
 
 func (s *Store) upsertBinaryChunkOnce(ctx context.Context, records []preparedBinaryRecord) ([]int64, error) {
-	if deferReleaseFamilySummaryRefreshFromContext(ctx) {
-		return s.upsertBinaryChunkOnceDeferredCopy(ctx, records)
-	}
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("begin binary upsert chunk tx: %w", err)
-	}
-	defer rollbackTx(tx)
-
-	ids, chunkSummaryKeys, err := upsertBinaryChunk(ctx, tx, records)
-	if err != nil {
-		return nil, err
-	}
-	sortReleaseFamilySummaryKeys(chunkSummaryKeys)
-	if deferReleaseFamilySummaryRefreshFromContext(ctx) {
-		if err := markReleaseFamiliesDirtyBatch(ctx, tx, chunkSummaryKeys); err != nil {
-			return nil, err
-		}
-		if telemetry := binaryUpsertTelemetryFromContext(ctx); telemetry != nil {
-			telemetry.recordDeferredSummaryRefresh(len(chunkSummaryKeys))
-		}
-	} else {
-		for _, key := range chunkSummaryKeys {
-			if err := refreshReleaseFamilySummary(ctx, tx, key); err != nil {
-				return nil, err
-			}
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit binary upsert chunk tx: %w", err)
-	}
-	return ids, nil
+	return s.upsertBinaryChunkOnceDeferredCopy(ctx, records)
 }
 
 func (s *Store) upsertBinaryChunkOnceDeferredCopy(ctx context.Context, records []preparedBinaryRecord) ([]int64, error) {
@@ -1792,12 +1250,6 @@ func (s *Store) upsertBinaryChunkOnceDeferredCopy(ctx context.Context, records [
 	}
 	committed = true
 	return ids, nil
-}
-
-func upsertBinaryChunk(ctx context.Context, tx *sql.Tx, records []preparedBinaryRecord) ([]int64, []releaseFamilySummaryKey, error) {
-	return upsertBinaryChunkWithStage(ctx, tx, records, func() error {
-		return stageUpsertBinaryChunk(ctx, tx, records)
-	})
 }
 
 func upsertBinaryChunkWithStage(ctx context.Context, runner sqlExecQueryer, records []preparedBinaryRecord, stageFn func() error) ([]int64, []releaseFamilySummaryKey, error) {
@@ -1894,7 +1346,7 @@ func upsertBinaryChunkWithStage(ctx context.Context, runner sqlExecQueryer, reco
 	if telemetry := binaryUpsertTelemetryFromContext(ctx); telemetry != nil {
 		telemetry.recordInsertDuration(time.Since(insertStarted))
 	}
-	if err := stageExistingBinaryChunk(ctx, runner); err != nil {
+	if err := completeStagedBinaryChunkAfterInsert(ctx, runner); err != nil {
 		return nil, nil, err
 	}
 	observationStarted := time.Now()
@@ -2033,7 +1485,57 @@ func upsertBinaryChunkWithStage(ctx context.Context, runner sqlExecQueryer, reco
 		    grouping_summary_kind = CASE WHEN EXCLUDED.match_confidence >= binary_identity_current.match_confidence THEN EXCLUDED.grouping_summary_kind ELSE binary_identity_current.grouping_summary_kind END,
 		    grouping_summary_status = CASE WHEN EXCLUDED.match_confidence >= binary_identity_current.match_confidence THEN EXCLUDED.grouping_summary_status ELSE binary_identity_current.grouping_summary_status END,
 		    grouping_summary_fallback_used = CASE WHEN EXCLUDED.match_confidence >= binary_identity_current.match_confidence THEN EXCLUDED.grouping_summary_fallback_used ELSE binary_identity_current.grouping_summary_fallback_used END,
-		    updated_at = NOW()`); err != nil {
+		    updated_at = NOW()
+		WHERE EXCLUDED.expected_file_count > binary_identity_current.expected_file_count
+		   OR EXCLUDED.match_confidence > binary_identity_current.match_confidence
+		   OR (
+			EXCLUDED.match_confidence = binary_identity_current.match_confidence
+			AND ROW(
+				binary_identity_current.source_release_key,
+				binary_identity_current.release_family_key,
+				binary_identity_current.file_set_key,
+				binary_identity_current.file_family_key,
+				binary_identity_current.identity_strength,
+				binary_identity_current.identity_reason,
+				binary_identity_current.subject_set_token,
+				binary_identity_current.subject_set_kind,
+				binary_identity_current.family_kind,
+				binary_identity_current.base_stem,
+				binary_identity_current.release_key,
+				binary_identity_current.release_name,
+				binary_identity_current.binary_name,
+				binary_identity_current.file_name,
+				binary_identity_current.file_index,
+				binary_identity_current.is_auxiliary,
+				binary_identity_current.is_main_payload,
+				binary_identity_current.match_status,
+				binary_identity_current.grouping_summary_kind,
+				binary_identity_current.grouping_summary_status,
+				binary_identity_current.grouping_summary_fallback_used
+			) IS DISTINCT FROM ROW(
+				EXCLUDED.source_release_key,
+				EXCLUDED.release_family_key,
+				EXCLUDED.file_set_key,
+				EXCLUDED.file_family_key,
+				EXCLUDED.identity_strength,
+				EXCLUDED.identity_reason,
+				EXCLUDED.subject_set_token,
+				EXCLUDED.subject_set_kind,
+				EXCLUDED.family_kind,
+				EXCLUDED.base_stem,
+				EXCLUDED.release_key,
+				EXCLUDED.release_name,
+				EXCLUDED.binary_name,
+				EXCLUDED.file_name,
+				CASE WHEN EXCLUDED.file_index > 0 THEN EXCLUDED.file_index ELSE binary_identity_current.file_index END,
+				EXCLUDED.is_auxiliary,
+				EXCLUDED.is_main_payload,
+				EXCLUDED.match_status,
+				EXCLUDED.grouping_summary_kind,
+				EXCLUDED.grouping_summary_status,
+				EXCLUDED.grouping_summary_fallback_used
+			)
+		   )`); err != nil {
 		return nil, nil, fmt.Errorf("upsert binary_identity_current batch: %w", err)
 	}
 	if telemetry := binaryUpsertTelemetryFromContext(ctx); telemetry != nil {
@@ -2163,27 +1665,22 @@ func upsertBinaryChunkWithStage(ctx context.Context, runner sqlExecQueryer, reco
 			KeepDetailed: records[ordinal].keepDetailed,
 		})
 
-		if existingExpectedFileCount > 0 || existingReleaseFamilyKey != "" || existingBaseStem != "" {
-			identityChanged := strings.TrimSpace(existingReleaseFamilyKey) != strings.TrimSpace(releaseFamilyKey)
-			existingBaseStemKey := ""
-			if existingExpectedFileCount > 1 {
-				existingBaseStemKey = strings.ToLower(strings.TrimSpace(existingBaseStem))
-			}
-			newBaseStemKey := ""
-			if expectedFileCount > 1 {
-				newBaseStemKey = strings.ToLower(strings.TrimSpace(baseStem))
-			}
-			identityChanged = identityChanged || existingBaseStemKey != newBaseStemKey
-			if identityChanged {
-				summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, providerID, newsgroupID, "release_family", existingReleaseFamilyKey)
-				if existingExpectedFileCount > 1 {
-					summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, providerID, newsgroupID, "base_stem", existingBaseStem)
-				}
-				summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, providerID, newsgroupID, "release_family", releaseFamilyKey)
-				if expectedFileCount > 1 {
-					summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, providerID, newsgroupID, "base_stem", baseStem)
-				}
-			}
+		identityChanged := strings.TrimSpace(existingReleaseFamilyKey) != strings.TrimSpace(releaseFamilyKey)
+		existingBaseStemKey := strings.ToLower(strings.TrimSpace(existingBaseStem))
+		newBaseStemKey := ""
+		if expectedFileCount > 1 {
+			newBaseStemKey = strings.ToLower(strings.TrimSpace(baseStem))
+		}
+		identityChanged = identityChanged || existingBaseStemKey != newBaseStemKey
+		if identityChanged {
+			summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, providerID, newsgroupID, "release_family", existingReleaseFamilyKey)
+			summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, providerID, newsgroupID, "base_stem", existingBaseStem)
+		}
+		// A newly inserted identity has no prior projection to compare against,
+		// but its current family still needs its first readiness refresh.
+		summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, providerID, newsgroupID, "release_family", releaseFamilyKey)
+		if expectedFileCount > 1 {
+			summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, providerID, newsgroupID, "base_stem", baseStem)
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -2204,133 +1701,6 @@ func upsertBinaryChunkWithStage(ctx context.Context, runner sqlExecQueryer, reco
 	}
 
 	return ids, summaryKeys, nil
-}
-
-func stageUpsertBinaryChunk(ctx context.Context, tx *sql.Tx, records []preparedBinaryRecord) error {
-	if tx == nil {
-		return fmt.Errorf("binary upsert tx is required")
-	}
-	if len(records) == 0 {
-		return nil
-	}
-	if _, err := tx.ExecContext(ctx, `
-		CREATE TEMP TABLE tmp_upsert_binaries (
-			ordinal INTEGER NOT NULL,
-			provider_id BIGINT NOT NULL,
-			newsgroup_id BIGINT NOT NULL,
-			poster_id BIGINT NULL,
-			source_release_key TEXT NOT NULL,
-			release_family_key TEXT NOT NULL,
-			file_set_key TEXT NOT NULL,
-			file_family_key TEXT NOT NULL,
-			identity_strength TEXT NOT NULL,
-			identity_reason TEXT NOT NULL,
-			subject_set_token TEXT NOT NULL,
-			subject_set_kind TEXT NOT NULL,
-			family_kind TEXT NOT NULL,
-			base_stem TEXT NOT NULL,
-			is_auxiliary BOOLEAN NOT NULL,
-			is_main_payload BOOLEAN NOT NULL,
-			release_key TEXT NOT NULL,
-			release_name TEXT NOT NULL,
-			binary_key TEXT NOT NULL,
-			binary_name TEXT NOT NULL,
-			file_name TEXT NOT NULL,
-			file_index INTEGER NOT NULL,
-			expected_file_count INTEGER NOT NULL,
-			total_parts INTEGER NOT NULL,
-			posted_at TIMESTAMPTZ NULL,
-			match_confidence DOUBLE PRECISION NOT NULL,
-			match_status TEXT NOT NULL,
-			grouping_summary_kind TEXT NOT NULL,
-			grouping_summary_status TEXT NOT NULL,
-			grouping_summary_fallback_used BOOLEAN NOT NULL,
-			grouping_evidence_payload JSONB NOT NULL
-		) ON COMMIT DROP`); err != nil {
-		return fmt.Errorf("create binary upsert temp table: %w", err)
-	}
-
-	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO tmp_upsert_binaries (
-			ordinal,
-			provider_id,
-			newsgroup_id,
-			poster_id,
-			source_release_key,
-			release_family_key,
-			file_set_key,
-			file_family_key,
-			identity_strength,
-			identity_reason,
-			subject_set_token,
-			subject_set_kind,
-			family_kind,
-			base_stem,
-			is_auxiliary,
-			is_main_payload,
-			release_key,
-			release_name,
-			binary_key,
-			binary_name,
-			file_name,
-			file_index,
-			expected_file_count,
-			total_parts,
-			posted_at,
-			match_confidence,
-			match_status,
-			grouping_summary_kind,
-			grouping_summary_status,
-			grouping_summary_fallback_used,
-			grouping_evidence_payload
-		) VALUES (
-			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
-			$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
-			$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31
-		)`)
-	if err != nil {
-		return fmt.Errorf("prepare binary upsert temp insert: %w", err)
-	}
-	defer stmt.Close()
-
-	for i, record := range records {
-		if _, err := stmt.ExecContext(ctx,
-			i,
-			record.record.ProviderID,
-			record.record.NewsgroupID,
-			record.posterID,
-			strings.TrimSpace(record.record.SourceReleaseKey),
-			strings.TrimSpace(record.record.ReleaseFamilyKey),
-			strings.TrimSpace(record.record.FileSetKey),
-			strings.TrimSpace(record.record.FileFamilyKey),
-			strings.TrimSpace(record.record.IdentityStrength),
-			strings.TrimSpace(record.record.IdentityReason),
-			strings.TrimSpace(record.record.SubjectSetToken),
-			strings.TrimSpace(record.record.SubjectSetKind),
-			strings.TrimSpace(record.record.FamilyKind),
-			strings.TrimSpace(record.record.BaseStem),
-			record.record.IsAuxiliary,
-			record.record.IsMainPayload,
-			record.record.ReleaseKey,
-			strings.TrimSpace(record.record.ReleaseName),
-			record.record.BinaryKey,
-			strings.TrimSpace(record.record.BinaryName),
-			strings.TrimSpace(record.record.FileName),
-			record.record.FileIndex,
-			record.record.ExpectedFileCount,
-			record.record.TotalParts,
-			record.postedAt,
-			record.record.MatchConfidence,
-			record.record.MatchStatus,
-			record.groupingSummaryKind,
-			record.groupingSummaryStatus,
-			record.groupingSummaryFallbackUsed,
-			record.evidenceJSON,
-		); err != nil {
-			return fmt.Errorf("insert binary upsert temp row: %w", err)
-		}
-	}
-	return nil
 }
 
 func stageUpsertBinaryChunkCopy(ctx context.Context, conn *sql.Conn, records []preparedBinaryRecord) error {
@@ -2496,6 +1866,46 @@ func stageExistingBinaryChunk(ctx context.Context, runner sqlExecQueryer) error 
 		CREATE INDEX tmp_existing_binaries_key_idx
 		ON tmp_existing_binaries (source_posted_at, binary_id)`); err != nil {
 		return fmt.Errorf("index existing binary upsert keys: %w", err)
+	}
+	return nil
+}
+
+// completeStagedBinaryChunkAfterInsert resolves ids for newly inserted cores while
+// preserving the pre-upsert identity snapshot for rows that already existed.
+// Rebuilding the table here would replace the old family/base-stem values with
+// the just-written values and prevent stale summary keys from being refreshed.
+func completeStagedBinaryChunkAfterInsert(ctx context.Context, runner sqlExecQueryer) error {
+	if runner == nil {
+		return fmt.Errorf("binary upsert tx is required")
+	}
+	if _, err := runner.ExecContext(ctx, `
+		INSERT INTO tmp_existing_binaries (
+			ordinal,
+			binary_id,
+			source_posted_at,
+			existing_release_family_key,
+			existing_base_stem,
+			existing_expected_file_count
+		)
+		SELECT
+			r.ordinal,
+			bc.binary_id,
+			COALESCE(bc.source_posted_at, r.posted_at, NOW()),
+			'',
+			'',
+			0
+		FROM tmp_upsert_binaries r
+		JOIN binary_core bc
+		  ON bc.provider_id = r.provider_id
+		 AND bc.newsgroup_id = r.newsgroup_id
+		 AND bc.binary_key = r.binary_key
+		WHERE NOT EXISTS (
+			SELECT 1
+			FROM tmp_existing_binaries e
+			WHERE e.ordinal = r.ordinal
+		)
+		ON CONFLICT (ordinal) DO NOTHING`); err != nil {
+		return fmt.Errorf("complete staged binary upsert rows after insert: %w", err)
 	}
 	return nil
 }
@@ -2849,52 +2259,6 @@ func upsertBinaryGroupingEvidenceBatch(ctx context.Context, runner sqlExecQuerye
 	return nil
 }
 
-func upsertBinaryGroupingEvidence(ctx context.Context, tx *sql.Tx, binaryID int64, payload []byte, keepDetailed bool) error {
-	if tx == nil {
-		return fmt.Errorf("binary grouping evidence tx is required")
-	}
-	if binaryID <= 0 {
-		return fmt.Errorf("binary id is required")
-	}
-	if !keepDetailed || len(bytes.TrimSpace(payload)) == 0 || bytes.Equal(bytes.TrimSpace(payload), []byte(`{}`)) {
-		if _, err := tx.ExecContext(ctx, `
-			DELETE FROM binary_grouping_evidence
-			WHERE binary_id = $1`, binaryID); err != nil {
-			return fmt.Errorf("delete binary grouping evidence %d: %w", binaryID, err)
-		}
-		return nil
-	}
-
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO binary_grouping_evidence (
-			binary_id,
-			source_posted_at,
-			evidence_source,
-			evidence_version,
-			payload_json,
-			updated_at
-		)
-		SELECT
-			bc.binary_id,
-			COALESCE(bc.source_posted_at, NOW()),
-			'matcher',
-			'v1',
-			$2,
-			NOW()
-		FROM binary_core bc
-		WHERE bc.binary_id = $1
-		ON CONFLICT (source_posted_at, binary_id) DO UPDATE
-		SET payload_json = EXCLUDED.payload_json,
-		    updated_at = NOW()
-		WHERE binary_grouping_evidence.payload_json IS DISTINCT FROM EXCLUDED.payload_json`,
-		binaryID,
-		payload,
-	); err != nil {
-		return fmt.Errorf("upsert binary grouping evidence %d: %w", binaryID, err)
-	}
-	return nil
-}
-
 // CHANGED: add/update one binary part row.
 func (s *Store) UpsertBinaryPart(ctx context.Context, in BinaryPartRecord) error {
 	return s.UpsertBinaryParts(ctx, []BinaryPartRecord{in})
@@ -2905,6 +2269,9 @@ func (s *Store) UpsertBinaryPart(ctx context.Context, in BinaryPartRecord) error
 func (s *Store) UpsertBinaryParts(ctx context.Context, records []BinaryPartRecord) error {
 	if len(records) == 0 {
 		return nil
+	}
+	if err := s.provisionAssemblyPartitionsForBinaryPartRecords(ctx, records); err != nil {
+		return fmt.Errorf("provision assemble partitions before binary part upsert: %w", err)
 	}
 
 	return retryRetryablePostgresTx(ctx, defaultRetryableTxAttempts, func() error {
@@ -2929,6 +2296,30 @@ func (s *Store) UpsertBinaryParts(ctx context.Context, records []BinaryPartRecor
 		}
 		return nil
 	})
+}
+
+func (s *Store) provisionAssemblyPartitionsForBinaryRecords(ctx context.Context, records []BinaryRecord) error {
+	days := make([]time.Time, 0, len(records))
+	now := time.Now().UTC()
+	for _, record := range records {
+		if record.PostedAt == nil || record.PostedAt.IsZero() {
+			days = append(days, now)
+			continue
+		}
+		days = append(days, record.PostedAt.UTC())
+	}
+	return s.provisionPartitionBundleForDays(ctx, partitionBundleAssemble, days)
+}
+
+func (s *Store) provisionAssemblyPartitionsForBinaryPartRecords(ctx context.Context, records []BinaryPartRecord) error {
+	days := make([]time.Time, 0, len(records))
+	for _, record := range records {
+		if record.SourcePostedAt.IsZero() {
+			return fmt.Errorf("source posted at is required for article header %d", record.ArticleHeaderID)
+		}
+		days = append(days, record.SourcePostedAt.UTC())
+	}
+	return s.provisionPartitionBundleForDays(ctx, partitionBundleAssemble, days)
 }
 
 func upsertBinaryPartsChunk(ctx context.Context, tx *sql.Tx, records []BinaryPartRecord) error {
@@ -3397,7 +2788,10 @@ func (s *Store) RefreshBinaryStatsBatch(ctx context.Context, binaryIDs []int64) 
 	sort.Slice(uniqueBinaryIDs, func(i, j int) bool {
 		return uniqueBinaryIDs[i] < uniqueBinaryIDs[j]
 	})
-	if err := s.ensureSourceWorkPartitionsForBinaryIDs(ctx, uniqueBinaryIDs); err != nil {
+	if err := s.ensurePartitionBundleForBinaryIDs(ctx, partitionBundleAssemble, uniqueBinaryIDs); err != nil {
+		return err
+	}
+	if err := s.ensurePartitionBundleForBinaryIDs(ctx, partitionBundleYEnc, uniqueBinaryIDs); err != nil {
 		return err
 	}
 
@@ -3496,18 +2890,9 @@ func (s *Store) refreshBinaryStatsChunk(ctx context.Context, binaryIDs []int64, 
 		return err
 	}
 
-	deferredSummaryRefresh := deferReleaseFamilySummaryRefreshFromContext(ctx)
 	summaryMarkStarted := time.Now()
-	if deferredSummaryRefresh {
-		if err := markReleaseFamiliesDirtyBatch(ctx, tx, summaryKeys); err != nil {
-			return err
-		}
-	} else {
-		for _, key := range summaryKeys {
-			if err := refreshReleaseFamilySummary(ctx, tx, key); err != nil {
-				return err
-			}
-		}
+	if err := markReleaseFamiliesDirtyBatch(ctx, tx, summaryKeys); err != nil {
+		return err
 	}
 	summaryMarkDuration := time.Since(summaryMarkStarted)
 
@@ -3521,7 +2906,7 @@ func (s *Store) refreshBinaryStatsChunk(ctx context.Context, binaryIDs []int64, 
 	}
 
 	if telemetry := binaryStatsRefreshTelemetryFromContext(ctx); telemetry != nil {
-		telemetry.recordBatch(len(binaryIDs), len(summaryKeys), deferredSummaryRefresh, statsUpdateDuration, summaryMarkDuration, yencSyncDuration)
+		telemetry.recordBatch(len(binaryIDs), len(summaryKeys), true, statsUpdateDuration, summaryMarkDuration, yencSyncDuration)
 	}
 
 	if err := tx.Commit(); err != nil {

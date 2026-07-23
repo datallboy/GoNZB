@@ -25,7 +25,6 @@ func TestBinaryStorageV2WritesStayInExplicitOwners(t *testing.T) {
 		"binary_recovery_current",
 		"binary_lifecycle",
 		"binary_superseded_sources",
-		"binary_projection_events",
 	}
 
 	patterns := make([]*regexp.Regexp, 0, len(tables))

@@ -2,6 +2,10 @@
 
 # The port the HTTP server will listen on
 port: "8080"
+# Safe local default. Use 0.0.0.0 only behind a trusted firewall, private
+# network, or TLS reverse proxy. The included Compose stack overrides this
+# inside its private container network while publishing localhost on the host.
+bind_address: "127.0.0.1"
 
 # Hard module gates. These decide which backend/UI surfaces are loaded.
 modules:
@@ -11,6 +15,8 @@ modules:
     enabled: true
   usenet_indexer:
     enabled: true
+  gonzbnet:
+    enabled: false
   web_ui:
     enabled: true
   api:
@@ -23,11 +29,67 @@ api:
     - "http://localhost:5173"
     - "http://127.0.0.1:5173"
 
+# GoNZBNet federation is disabled by default. Enable only the capabilities this
+# node will operate; see docs/wiki/gonzbnet/ for the current configuration guide.
+gonzbnet:
+  mode: "integrated"
+  node_alias: ""
+  advertise_url: ""
+  keys_dir: "data/gonzbnet/keys"
+  spec_version: "gonzbnet/1.0"
+  http_enabled: true
+  http_base_path: "/gonzbnet/v1"
+  allow_insecure_peer_http: false
+  private_network: true
+  network_id: "default"
+  local_pool_id: "pool.local"
+  manual_peers: []
+  consumer_enabled: true
+  scanner_enabled: false
+  index_projection_enabled: true
+  manifest_builder_enabled: false
+  manifest_cache_enabled: true
+  validator_enabled: false
+  health_checker_enabled: false
+  coverage_enabled: false
+  scheduler_enabled: false
+  publish_release_cards_enabled: false
+  publish_release_cards_batch_size: 50
+  publish_release_cards_interval_minutes: 10
+  manifest_availability_enabled: false
+  health_attestations_enabled: false
+  health_attestations_batch_size: 50
+  health_attestations_interval_minutes: 30
+  validation_batch_size: 25
+  validation_interval_minutes: 15
+  checksum_validation_enabled: false
+  pull_sync_enabled: false
+  pull_sync_interval_minutes: 10
+  push_sync_enabled: false
+  push_sync_interval_minutes: 10
+  push_sync_batch_size: 100
+  websocket_gossip_enabled: false
+  gossip_interval_minutes: 1
+  gossip_batch_size: 100
+  gossip_ttl: 4
+  gossip_fanout: 4
+  peer_exchange_enabled: false
+  relay_enabled: false
+  relay_api_key: ""
+  max_event_bytes: 262144
+  max_manifest_bytes: 10485760
+  max_batch_events: 100
+  rate_limit_events_per_minute: 120
+  time_tolerance_seconds: 120
+  nonce_ttl_seconds: 600
+  live_query_enabled: false
+  send_user_context: false
+
 # Operational settings are managed in the Admin UI and persisted to SQLite runtime settings.
 # The legacy YAML keys below are intentionally omitted from the normal bootstrap example:
 # - servers
 # - indexers
-# - aggregator.sources
+# - aggregator.sources, including optional GoNZBNet federated cache search
 # - download paths/options
 # - indexing stage schedules/newsgroups/enrichment settings
 # - release public-ready policy thresholds and release_generate_nzb/archive/purge stage controls
@@ -48,9 +110,11 @@ store:
   blob_dir: "/store/nzbs"                # Cache root; archives live under /store/nzbs/indexer-archive
   payload_cache_enabled: true # false = ephemeral (non-persistent) payload mode
   search_persistence_enabled: true # false = ephemeral (non-persistent) aggregator results
-  
+
   # PostgreSQL DSN for the Usenet/NZB Indexer module when modules.usenet_indexer.enabled is true.
-  pg_dsn: "postgres://gonzb:gonzb@localhost:5432/gonzb?sslmode=disable"
+  # The included compose.yml overrides this with its private PostgreSQL address.
+  # Change the host and credentials when running the binary directly.
+  pg_dsn: "postgres://gonzb:change-me@localhost:5432/gonzb?sslmode=disable"
   # Optional privileged PostgreSQL DSN for explicit offline maintenance commands only.
   # Do not use this DSN for serve/supervisor runtime.
   pg_maintenance_dsn: ""
