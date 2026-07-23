@@ -21,7 +21,8 @@ export function AccountTokensPage() {
   }
 
   useEffect(() => {
-    void refresh()
+    const timer = window.setTimeout(() => void refresh(), 0)
+    return () => window.clearTimeout(timer)
   }, [])
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {

@@ -53,15 +53,18 @@ export function AdminBinaryDetailPage() {
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!Number.isFinite(binaryID) || binaryID <= 0) {
-      setError('Invalid binary id.')
-      return
-    }
-    setDetail(null)
-    setError(null)
-    void getIndexerBinary(binaryID)
-      .then(setDetail)
-      .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load binary detail'))
+    const timer = window.setTimeout(() => {
+      if (!Number.isFinite(binaryID) || binaryID <= 0) {
+        setError('Invalid binary id.')
+        return
+      }
+      setDetail(null)
+      setError(null)
+      void getIndexerBinary(binaryID)
+        .then(setDetail)
+        .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load binary detail'))
+    }, 0)
+    return () => window.clearTimeout(timer)
   }, [binaryID])
 
   if (error) {

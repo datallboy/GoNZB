@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, NavLink, Outlet, useLocation } from 'react-router-dom'
-import { useAuth } from '../auth/AuthContext'
+import { useAuth } from '../auth/useAuth'
 import { browseCategories } from '../../modules/indexer/browse'
 import { getCapabilities } from '../api/settings'
 import type { ControlPlaneCapabilities } from '../types'
