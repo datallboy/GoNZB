@@ -14,6 +14,9 @@ import (
 // creates and removes a five-part, 10,000-header source cohort.
 func TestIndexerQuerySoak(t *testing.T) {
 	if strings.TrimSpace(os.Getenv("GONZB_QUERY_SOAK")) != "1" {
+		if strings.TrimSpace(os.Getenv("CI")) != "" {
+			t.Fatal("GONZB_QUERY_SOAK=1 is required in CI")
+		}
 		t.Skip("set GONZB_QUERY_SOAK=1 and GONZB_TEST_PG_DSN to run the indexer query soak")
 	}
 	dsn := strings.TrimSpace(os.Getenv("GONZB_TEST_PG_DSN"))
@@ -28,7 +31,7 @@ func TestIndexerQuerySoak(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open query soak store: %v", err)
 	}
-	requireDisposableQuerySoakDatabase(t, store)
+	requireDisposableTestDatabase(t, store)
 
 	token := time.Now().UTC().UnixNano()
 	providerID, err := store.EnsureProvider(ctx, fmt.Sprintf("query-soak-%d", token), "Query Soak")
@@ -278,62 +281,4 @@ func TestIndexerQuerySoak(t *testing.T) {
 		t.Fatalf("refresh query soak dashboard stats: %v", err)
 	}
 	t.Logf("selected %d inspection candidates and refreshed dashboard in %s", len(inspectionCandidates), time.Since(started))
-}
-
-func TestIndexerQuerySoakRefreshExisting(t *testing.T) {
-	if strings.TrimSpace(os.Getenv("GONZB_QUERY_SOAK_REFRESH_EXISTING")) != "1" {
-		t.Skip("set GONZB_QUERY_SOAK_REFRESH_EXISTING=1 and GONZB_TEST_PG_DSN to refresh an existing soak cohort")
-	}
-	dsn := strings.TrimSpace(os.Getenv("GONZB_TEST_PG_DSN"))
-	if dsn == "" {
-		t.Fatal("GONZB_TEST_PG_DSN is required for the indexer query soak")
-	}
-	store, err := NewStore(dsn)
-	if err != nil {
-		t.Fatalf("open query soak store: %v", err)
-	}
-	defer store.Close()
-	requireDisposableQuerySoakDatabase(t, store)
-
-	rows, err := store.DB().Query(`
-		SELECT binary_id
-		FROM binary_core
-		ORDER BY binary_id
-		LIMIT 2000`)
-	if err != nil {
-		t.Fatalf("list existing query soak binaries: %v", err)
-	}
-	var binaryIDs []int64
-	for rows.Next() {
-		var binaryID int64
-		if err := rows.Scan(&binaryID); err != nil {
-			rows.Close()
-			t.Fatalf("scan existing query soak binary: %v", err)
-		}
-		binaryIDs = append(binaryIDs, binaryID)
-	}
-	if err := rows.Close(); err != nil {
-		t.Fatalf("close existing query soak binary rows: %v", err)
-	}
-	if len(binaryIDs) == 0 {
-		t.Fatal("existing query soak cohort is empty")
-	}
-
-	started := time.Now()
-	if err := store.RefreshBinaryStatsBatch(context.Background(), binaryIDs); err != nil {
-		t.Fatalf("refresh existing query soak binaries: %v", err)
-	}
-	t.Logf("refreshed %d existing binaries in %s", len(binaryIDs), time.Since(started))
-}
-
-func requireDisposableQuerySoakDatabase(t *testing.T, store *Store) {
-	t.Helper()
-	var databaseName string
-	if err := store.DB().QueryRow(`SELECT current_database()`).Scan(&databaseName); err != nil {
-		t.Fatalf("read query soak database name: %v", err)
-	}
-	normalized := strings.ToLower(strings.TrimSpace(databaseName))
-	if !strings.Contains(normalized, "soak") && !strings.Contains(normalized, "test") {
-		t.Fatalf("query soak refuses database %q; use a disposable database whose name contains test or soak", databaseName)
-	}
 }
