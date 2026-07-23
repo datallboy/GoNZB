@@ -262,7 +262,7 @@ export function AdminReleasesPage() {
     return `${count} selected`
   }
 
-  function MultiChoiceFilter({ field, label, options }: { field: keyof AdminReleaseListParams; label: string; options: FilterOption[] }) {
+  function multiChoiceFilter(field: keyof AdminReleaseListParams, label: string, options: FilterOption[]) {
     const raw = String(filters[field] ?? '')
     const isOpen = openFilter === field
     return (
@@ -291,7 +291,7 @@ export function AdminReleasesPage() {
     )
   }
 
-  function SortableHeader({ column, label }: { column: ReleaseSortColumn; label: string }) {
+  function sortableHeader(column: ReleaseSortColumn, label: string) {
     const current = sortColumnFor(submittedFilters.sort)
     const active = current.column === column
     return (
@@ -360,70 +360,66 @@ export function AdminReleasesPage() {
             <span>Category ID</span>
             <input value={filters.category_id ?? ''} onChange={(event) => setFilters((current) => ({ ...current, category_id: event.target.value }))} placeholder="2040" />
           </label>
-          <MultiChoiceFilter field="classification" label="Classification" options={classificationOptions} />
-          <MultiChoiceFilter field="external_media_type" label="Media Type" options={mediaTypeOptions} />
-          <MultiChoiceFilter
-            field="identity_status"
-            label="Identity"
-            options={[
+          {multiChoiceFilter('classification', 'Classification', classificationOptions)}
+          {multiChoiceFilter('external_media_type', 'Media Type', mediaTypeOptions)}
+          {multiChoiceFilter(
+            'identity_status',
+            'Identity',
+            [
               { value: 'identified', label: 'identified' },
               { value: 'probable', label: 'probable' },
               { value: 'unknown', label: 'unknown' },
-            ]}
-          />
-          <MultiChoiceFilter
-            field="password_state"
-            label="Password"
-            options={passwordStateOptions}
-          />
-          <MultiChoiceFilter
-            field="media_quality_tier"
-            label="Quality"
-            options={[
+            ],
+          )}
+          {multiChoiceFilter('password_state', 'Password', passwordStateOptions)}
+          {multiChoiceFilter(
+            'media_quality_tier',
+            'Quality',
+            [
               { value: 'premium', label: 'premium' },
               { value: 'good', label: 'good' },
               { value: 'fair', label: 'fair' },
               { value: 'unknown', label: 'unknown' },
-            ]}
-          />
-          <MultiChoiceFilter
-            field="hidden"
-            label="Override"
-            options={[
+            ],
+          )}
+          {multiChoiceFilter(
+            'hidden',
+            'Override',
+            [
               { value: 'visible', label: 'visible' },
               { value: 'hidden', label: 'hidden' },
-            ]}
-          />
-          <MultiChoiceFilter
-            field="public_state"
-            label="Public State"
-            options={[
+            ],
+          )}
+          {multiChoiceFilter(
+            'public_state',
+            'Public State',
+            [
               { value: 'public', label: 'public' },
               { value: 'internal_only', label: 'internal only' },
               { value: 'hidden', label: 'hidden override' },
-            ]}
-          />
-          <MultiChoiceFilter field="inspected" label="Inspected" options={yesNoOptions} />
-          <MultiChoiceFilter field="enriched" label="Enriched" options={yesNoOptions} />
-          <MultiChoiceFilter field="uncategorized" label="Uncategorized" options={yesNoOptions} />
-          <MultiChoiceFilter field="password_candidates" label="Password Candidates" options={yesNoOptions} />
-          <MultiChoiceFilter field="metadata_mismatch" label="Metadata Mismatch" options={yesNoOptions} />
-          <MultiChoiceFilter field="low_confidence" label="Low Confidence" options={yesNoOptions} />
-          <MultiChoiceFilter
-            field="completion_state"
-            label="Known Completion"
-            options={[
+            ],
+          )}
+          {multiChoiceFilter('inspected', 'Inspected', yesNoOptions)}
+          {multiChoiceFilter('enriched', 'Enriched', yesNoOptions)}
+          {multiChoiceFilter('uncategorized', 'Uncategorized', yesNoOptions)}
+          {multiChoiceFilter('password_candidates', 'Password Candidates', yesNoOptions)}
+          {multiChoiceFilter('metadata_mismatch', 'Metadata Mismatch', yesNoOptions)}
+          {multiChoiceFilter('low_confidence', 'Low Confidence', yesNoOptions)}
+          {multiChoiceFilter(
+            'completion_state',
+            'Known Completion',
+            [
               { value: 'exact_100', label: '100% known' },
               { value: 'below_100', label: 'Below 100%' },
-            ]}
-          />
-          <MultiChoiceFilter
-            field="payload_completion_include"
-            label="Payload Completion"
-            options={payloadStates.map((state) => ({ value: state.key, label: state.label }))}
-          />
-          <MultiChoiceFilter field="has_nfo" label="Has NFO" options={booleanOptions} />
-          <MultiChoiceFilter field="has_par2" label="Has PAR2" options={booleanOptions} />
+            ],
+          )}
+          {multiChoiceFilter(
+            'payload_completion_include',
+            'Payload Completion',
+            payloadStates.map((state) => ({ value: state.key, label: state.label })),
+          )}
+          {multiChoiceFilter('has_nfo', 'Has NFO', booleanOptions)}
+          {multiChoiceFilter('has_par2', 'Has PAR2', booleanOptions)}
           <button className="primary-button align-end" type="submit">
             Apply Filters
           </button>
@@ -472,14 +468,14 @@ export function AdminReleasesPage() {
           <table className="data-table">
             <thead>
               <tr>
-                <SortableHeader column="title" label="Release" />
-                <SortableHeader column="category" label="Category" />
-                <SortableHeader column="posted" label="Posted" />
-                <SortableHeader column="size" label="Size" />
-                <SortableHeader column="files" label="Files" />
-                <SortableHeader column="password" label="Password" />
-                <SortableHeader column="quality" label="Quality" />
-                <SortableHeader column="state" label="State" />
+                {sortableHeader('title', 'Release')}
+                {sortableHeader('category', 'Category')}
+                {sortableHeader('posted', 'Posted')}
+                {sortableHeader('size', 'Size')}
+                {sortableHeader('files', 'Files')}
+                {sortableHeader('password', 'Password')}
+                {sortableHeader('quality', 'Quality')}
+                {sortableHeader('state', 'State')}
               </tr>
             </thead>
             <tbody>

@@ -50,6 +50,7 @@ hosts or pool members.
 - Static indexer correctness findings, obsolete service helpers, Newznab
   filtering/pagination behavior, and the original excessive partition horizon
   were addressed in focused changes.
+- UI lint is clean and the production TypeScript/Vite build passes.
 - Direct and archive-backed media metadata inspection is bounded. Single/split
   7z, RAR, ZIP, TAR, and other 7z-readable families use sparse archive probes;
   no complete contained media file is materialized merely for metadata.
@@ -99,10 +100,7 @@ queue partitions.
   archive-detail, assembly, release-summary, and daily-bucket store paths.
   Remove those paths in focused commits; do not retain multiple unused
   implementations of hot database operations.
-- UI lint currently reports 39 errors and four warnings. Most are effect/state
-  and render-local component findings in admin/indexer screens. The UI build
-  succeeds, but lint must be clean and added to CI.
-- The UI ships a roughly 587 KB minified single JavaScript chunk. Route-level
+- The UI ships a roughly 601 KB minified single JavaScript chunk. Route-level
   lazy loading should separate admin, indexer, and GoNZBNet screens.
 - Keep Go tests from traversing `ui/node_modules` after `npm install`; the
   current tree contains a transitive package with Go source.

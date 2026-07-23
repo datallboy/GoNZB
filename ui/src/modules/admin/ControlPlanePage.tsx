@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { getCapabilities } from '../../shared/api/settings'
-import { useAuth } from '../../shared/auth/AuthContext'
+import { useAuth } from '../../shared/auth/useAuth'
 import type { ControlPlaneCapabilities, ModuleCapability } from '../../shared/types'
 
 type ModuleDefinition = {

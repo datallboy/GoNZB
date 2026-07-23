@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { Navigate, useNavigate } from 'react-router-dom'
 import { createInitialUser, getSetupStatus } from '../../shared/api/auth'
-import { useAuth } from '../../shared/auth/AuthContext'
+import { useAuth } from '../../shared/auth/useAuth'
 
 export function SetupPage() {
   const { session, refreshSession } = useAuth()

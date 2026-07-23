@@ -140,24 +140,28 @@ export function AdminScrapePage() {
   const [crosspostPage, setCrosspostPage] = useState(0)
   const [crosspostSort, setCrosspostSort] = useState<SortState<CrosspostSortKey>>({ key: 'distinct_message_count', direction: 'desc' })
 
-  async function refresh(offset = previewOffset, q = previewFilter) {
-    try {
-      const next = await getAdminScrapeConfig()
-      const normalized = normalizeScrapeResponse(next)
-      setData(normalized)
-      setPreviewOffset(offset)
-      if (offset !== 0 || q.trim() !== '') {
-        await loadPreview(offset, q, false)
-      }
-      setError(null)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load scrape config')
-    }
-  }
-
   useEffect(() => {
-    void refresh()
-    void loadProviderInventory(0, '')
+    const timer = window.setTimeout(() => {
+      void Promise.all([
+        getAdminScrapeConfig(),
+        getAdminScrapeProviderInventory({
+          q: '',
+          limit: providerInventoryPageSize,
+          offset: 0,
+          sort: 'estimated_articles',
+          direction: 'desc',
+        }),
+      ])
+        .then(([config, inventory]) => {
+          setData(normalizeScrapeResponse(config))
+          setProviderInventoryRows(inventory.items ?? [])
+          setProviderInventoryTotal(inventory.count ?? 0)
+          setProviderInventoryOffset(inventory.offset ?? 0)
+          setError(null)
+        })
+        .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load scrape config'))
+    }, 0)
+    return () => window.clearTimeout(timer)
   }, [])
 
   const activeRows = buildActiveRows(data)

@@ -32,33 +32,36 @@ export function IndexerReleaseListPage() {
 
   useEffect(() => {
     let cancelled = false
-    setLoading(true)
-    setError(null)
-    void listPublicReleases({
-      q: searchParams.get('q') ?? '',
-      browse_category: category,
-      browse_subcategory: category ? currentSubcategory : '',
-      sort: 'posted_at_desc',
-      limit,
-      offset,
-    })
-      .then((response) => {
-        if (!cancelled) {
-          setData(response)
-        }
+    const timer = window.setTimeout(() => {
+      setLoading(true)
+      setError(null)
+      void listPublicReleases({
+        q: searchParams.get('q') ?? '',
+        browse_category: category,
+        browse_subcategory: category ? currentSubcategory : '',
+        sort: 'posted_at_desc',
+        limit,
+        offset,
       })
-      .catch((err) => {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : 'Failed to load releases')
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setLoading(false)
-        }
-      })
+        .then((response) => {
+          if (!cancelled) {
+            setData(response)
+          }
+        })
+        .catch((err) => {
+          if (!cancelled) {
+            setError(err instanceof Error ? err.message : 'Failed to load releases')
+          }
+        })
+        .finally(() => {
+          if (!cancelled) {
+            setLoading(false)
+          }
+        })
+    }, 0)
     return () => {
       cancelled = true
+      window.clearTimeout(timer)
     }
   }, [category, currentSubcategory, limit, offset, searchParams])
 

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
@@ -641,7 +641,7 @@ export function AdminGoNZBNetPage() {
     }, { replace: true })
   }
 
-  async function refresh() {
+  const refresh = useCallback(async () => {
     setLoading(true)
     try {
       const [
@@ -742,11 +742,11 @@ export function AdminGoNZBNetPage() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [activityWindow, effectivePoolID])
 
   useEffect(() => {
     void refresh()
-  }, [effectivePoolID, activityWindow])
+  }, [refresh])
 
   useEffect(() => {
     if (!trustPools.length || trustPools.some((pool) => pool.pool_id === effectivePoolID)) {

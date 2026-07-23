@@ -2,7 +2,7 @@ import { useState } from 'react'
 import type { FormEvent } from 'react'
 import { Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { createSession } from '../../shared/api/auth'
-import { useAuth } from '../../shared/auth/AuthContext'
+import { useAuth } from '../../shared/auth/useAuth'
 
 export function LoginPage() {
   const { session, refreshSession } = useAuth()
