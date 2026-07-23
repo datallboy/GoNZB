@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"strings"
 	"time"
@@ -79,6 +80,8 @@ type StoreConfig struct {
 }
 type APIConfig struct {
 	CORSAllowedOrigins []string `mapstructure:"cors_allowed_origins" yaml:"cors_allowed_origins"`
+	BootstrapToken     string   `mapstructure:"bootstrap_token" yaml:"bootstrap_token"`
+	TrustedProxyCIDRs  []string `mapstructure:"trusted_proxy_cidrs" yaml:"trusted_proxy_cidrs"`
 }
 
 type AggregatorConfig struct {
@@ -610,6 +613,8 @@ func Load(path string) (*Config, error) {
 		"http://localhost:5173",
 		"http://127.0.0.1:5173",
 	})
+	v.SetDefault("api.bootstrap_token", "")
+	v.SetDefault("api.trusted_proxy_cidrs", []string{})
 
 	// Read config File
 	v.SetConfigFile(path)
@@ -699,6 +704,11 @@ func (c *Config) validate() error {
 
 	if c.Download.OutDir == "" {
 		c.Download.OutDir = "./downloads"
+	}
+	for _, raw := range c.API.TrustedProxyCIDRs {
+		if _, err := netip.ParsePrefix(strings.TrimSpace(raw)); err != nil {
+			return fmt.Errorf("api.trusted_proxy_cidrs contains invalid CIDR %q: %w", raw, err)
+		}
 	}
 	if c.GoNZBNet.SendUserContext {
 		return errors.New("gonzbnet.send_user_context must remain false; federation must not send local user context")

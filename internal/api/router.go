@@ -79,7 +79,11 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		authSvc = auth.NewService(store)
 		_ = authSvc.Bootstrap(context.Background())
 	}
-	authCtrl := &controllers.AuthController{Service: authSvc}
+	authCtrl := controllers.NewAuthController(
+		authSvc,
+		appCtx.Config.API.BootstrapToken,
+		appCtx.Config.API.TrustedProxyCIDRs,
+	)
 	authRateLimit := middleware.RateLimiterWithConfig(middleware.RateLimiterConfig{
 		Store: middleware.NewRateLimiterMemoryStoreWithConfig(middleware.RateLimiterMemoryStoreConfig{
 			Rate:      0.2,

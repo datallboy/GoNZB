@@ -28,6 +28,12 @@ api:
   cors_allowed_origins:
     - "http://localhost:5173"
     - "http://127.0.0.1:5173"
+  # Prefer GONZB_API_BOOTSTRAP_TOKEN so this one-time setup credential is not
+  # committed to YAML. Leave empty only while the listener is localhost-only.
+  bootstrap_token: ""
+  # Only requests arriving directly from these proxies may use
+  # X-Forwarded-Proto to mark session and CSRF cookies Secure.
+  trusted_proxy_cidrs: []
 
 # GoNZBNet federation is disabled by default. Enable only the capabilities this
 # node will operate; see docs/wiki/gonzbnet/ for the current configuration guide.

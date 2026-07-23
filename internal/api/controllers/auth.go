@@ -1,8 +1,11 @@
 package controllers
 
 import (
+	"crypto/subtle"
 	"errors"
+	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -23,7 +26,22 @@ func CSRFCookieName() string {
 }
 
 type AuthController struct {
-	Service *auth.Service
+	Service              *auth.Service
+	bootstrapToken       string
+	trustedProxyPrefixes []netip.Prefix
+}
+
+func NewAuthController(service *auth.Service, bootstrapToken string, trustedProxyCIDRs []string) *AuthController {
+	ctrl := &AuthController{
+		Service:        service,
+		bootstrapToken: strings.TrimSpace(bootstrapToken),
+	}
+	for _, raw := range trustedProxyCIDRs {
+		if prefix, err := netip.ParsePrefix(strings.TrimSpace(raw)); err == nil {
+			ctrl.trustedProxyPrefixes = append(ctrl.trustedProxyPrefixes, prefix)
+		}
+	}
+	return ctrl
 }
 
 type loginRequest struct {
@@ -32,8 +50,9 @@ type loginRequest struct {
 }
 
 type setupRequest struct {
-	Username string `json:"username"`
-	Password string `json:"password"`
+	Username       string `json:"username"`
+	Password       string `json:"password"`
+	BootstrapToken string `json:"bootstrap_token,omitempty"`
 }
 
 type upsertUserRequest struct {
@@ -65,13 +84,27 @@ func (ctrl *AuthController) GetSetupStatus(c *echo.Context) error {
 	if err != nil {
 		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}
-	return c.JSON(http.StatusOK, map[string]any{"setup_required": required})
+	return c.JSON(http.StatusOK, map[string]any{
+		"setup_required":           required,
+		"bootstrap_token_required": required && ctrl.bootstrapToken != "",
+	})
 }
 
 func (ctrl *AuthController) CreateInitialUser(c *echo.Context) error {
 	var req setupRequest
 	if err := decodeJSONBody(c, &req); err != nil {
 		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	required, err := ctrl.Service.SetupRequired(c.Request().Context())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if !required {
+		return jsonError(c, http.StatusConflict, "initial setup already completed")
+	}
+	if ctrl.bootstrapToken != "" &&
+		subtle.ConstantTimeCompare([]byte(req.BootstrapToken), []byte(ctrl.bootstrapToken)) != 1 {
+		return jsonError(c, http.StatusUnauthorized, "invalid bootstrap token")
 	}
 	session, principal, err := ctrl.Service.SetupInitialUser(c.Request().Context(), req.Username, req.Password)
 	if err != nil {
@@ -87,11 +120,11 @@ func (ctrl *AuthController) CreateInitialUser(c *echo.Context) error {
 		Value:    session.ID,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   requestUsesHTTPS(c),
+		Secure:   ctrl.requestUsesHTTPS(c),
 		SameSite: http.SameSiteLaxMode,
 		Expires:  session.ExpiresAt,
 	})
-	csrfToken := ensureCSRFCookie(c, session.ExpiresAt)
+	csrfToken := ctrl.ensureCSRFCookie(c, session.ExpiresAt)
 	return c.JSON(http.StatusCreated, map[string]any{
 		"session": sessionPayload(principal, csrfToken, false),
 	})
@@ -121,11 +154,11 @@ func (ctrl *AuthController) CreateSession(c *echo.Context) error {
 		Value:    session.ID,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   requestUsesHTTPS(c),
+		Secure:   ctrl.requestUsesHTTPS(c),
 		SameSite: http.SameSiteLaxMode,
 		Expires:  session.ExpiresAt,
 	})
-	csrfToken := ensureCSRFCookie(c, session.ExpiresAt)
+	csrfToken := ctrl.ensureCSRFCookie(c, session.ExpiresAt)
 	return c.JSON(http.StatusOK, map[string]any{"session": sessionPayload(principal, csrfToken, false)})
 }
 
@@ -138,7 +171,7 @@ func (ctrl *AuthController) GetSession(c *echo.Context) error {
 	if !ok {
 		return c.JSON(http.StatusOK, map[string]any{"session": map[string]any{"authenticated": false, "setup_required": required, "permissions": []string{}}})
 	}
-	csrfToken := ensureCSRFCookie(c, time.Now().UTC().Add(7*24*time.Hour))
+	csrfToken := ctrl.ensureCSRFCookie(c, time.Now().UTC().Add(7*24*time.Hour))
 	return c.JSON(http.StatusOK, map[string]any{"session": sessionPayload(principal, csrfToken, false)})
 }
 
@@ -152,7 +185,7 @@ func (ctrl *AuthController) DeleteSession(c *echo.Context) error {
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   requestUsesHTTPS(c),
+		Secure:   ctrl.requestUsesHTTPS(c),
 		SameSite: http.SameSiteLaxMode,
 		Expires:  time.Unix(0, 0),
 		MaxAge:   -1,
@@ -161,7 +194,7 @@ func (ctrl *AuthController) DeleteSession(c *echo.Context) error {
 		Name:     csrfCookieName,
 		Value:    "",
 		Path:     "/",
-		Secure:   requestUsesHTTPS(c),
+		Secure:   ctrl.requestUsesHTTPS(c),
 		SameSite: http.SameSiteLaxMode,
 		Expires:  time.Unix(0, 0),
 		MaxAge:   -1,
@@ -379,7 +412,7 @@ func sanitizeStoredUser(user auth.StoredUser) auth.User {
 	}
 }
 
-func ensureCSRFCookie(c *echo.Context, expiresAt time.Time) string {
+func (ctrl *AuthController) ensureCSRFCookie(c *echo.Context, expiresAt time.Time) string {
 	if c == nil || c.Response() == nil {
 		return ""
 	}
@@ -392,13 +425,42 @@ func ensureCSRFCookie(c *echo.Context, expiresAt time.Time) string {
 		Value:    token,
 		Path:     "/",
 		HttpOnly: false,
-		Secure:   requestUsesHTTPS(c),
+		Secure:   ctrl.requestUsesHTTPS(c),
 		SameSite: http.SameSiteLaxMode,
 		Expires:  expiresAt,
 	})
 	return token
 }
 
-func requestUsesHTTPS(c *echo.Context) bool {
-	return c != nil && strings.EqualFold(strings.TrimSpace(c.Scheme()), "https")
+func (ctrl *AuthController) requestUsesHTTPS(c *echo.Context) bool {
+	if c == nil || c.Request() == nil {
+		return false
+	}
+	req := c.Request()
+	if req.TLS != nil {
+		return true
+	}
+	if !ctrl.isTrustedProxy(req.RemoteAddr) {
+		return false
+	}
+	proto := strings.TrimSpace(strings.Split(req.Header.Get("X-Forwarded-Proto"), ",")[0])
+	return strings.EqualFold(proto, "https")
+}
+
+func (ctrl *AuthController) isTrustedProxy(remoteAddr string) bool {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(remoteAddr))
+	if err != nil {
+		host = strings.TrimSpace(remoteAddr)
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return false
+	}
+	addr = addr.Unmap()
+	for _, prefix := range ctrl.trustedProxyPrefixes {
+		if prefix.Contains(addr) {
+			return true
+		}
+	}
+	return false
 }

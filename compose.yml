@@ -50,6 +50,7 @@ services:
       PGID: ${PGID:-1000}
       GONZB_STORE_PG_DSN: postgresql://${POSTGRES_APP_USER:-gonzb}:${POSTGRES_APP_PASSWORD}@postgres:5432/${POSTGRES_DB:-gonzb}?sslmode=disable
       GONZB_BIND_ADDRESS: 0.0.0.0
+      GONZB_API_BOOTSTRAP_TOKEN: ${GONZB_API_BOOTSTRAP_TOKEN:-}
       GONZB_DOWNLOAD_OUT_DIR: /downloads
       GONZB_DOWNLOAD_COMPLETED_DIR: /downloads/completed
       GONZB_GONZBNET_KEYS_DIR: /store/gonzbnet/keys
