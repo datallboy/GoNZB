@@ -136,7 +136,8 @@ UI on localhost by default.
 
 ```bash
 cp .env.example .env
-# Set two independently generated passwords in .env.
+# Set two independently generated database passwords in .env. Set the
+# bootstrap token too if setup will be reachable from another machine.
 docker compose up -d --build
 ```
 
@@ -148,7 +149,10 @@ or GoNZBNet bootstrap settings.
 
 Do not publish port 8080 directly to the Internet. Put an authenticated TLS
 reverse proxy in front of it and change `GONZB_BIND_ADDRESS` only after that
-protection is in place.
+protection is in place. Set `GONZB_API_BOOTSTRAP_TOKEN` before exposing an
+instance that has not created its first administrator. Configure
+`api.trusted_proxy_cidrs` with only the reverse proxy's network so forwarded
+HTTPS is trusted only from that proxy.
 
 ### Standalone Docker image
 

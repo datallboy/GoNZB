@@ -23,6 +23,40 @@ func TestDownloaderBootstrapDoesNotRequireNNTPServer(t *testing.T) {
 	}
 }
 
+func TestAPITrustedProxyCIDRValidation(t *testing.T) {
+	cfg := minimalAggregatorConfig()
+	cfg.API.TrustedProxyCIDRs = []string{"not-a-cidr"}
+
+	if err := cfg.ValidateEffective(); err == nil {
+		t.Fatal("expected invalid trusted proxy CIDR validation error")
+	}
+}
+
+func TestAPIBootstrapTokenEnvironmentOverride(t *testing.T) {
+	cfgPath := writeMinimalConfig(t, `
+modules:
+  downloader:
+    enabled: false
+  aggregator:
+    enabled: true
+  usenet_indexer:
+    enabled: false
+  api:
+    enabled: true
+  web_ui:
+    enabled: false
+`)
+	t.Setenv("GONZB_API_BOOTSTRAP_TOKEN", "environment-bootstrap-token")
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.API.BootstrapToken != "environment-bootstrap-token" {
+		t.Fatalf("unexpected bootstrap token %q", cfg.API.BootstrapToken)
+	}
+}
+
 func TestReleaseExpectedFileCoverageValidation(t *testing.T) {
 	cfg := minimalAggregatorConfig()
 	cfg.Modules.UsenetIndexer.Enabled = true

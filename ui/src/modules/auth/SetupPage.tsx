@@ -10,15 +10,18 @@ export function SetupPage() {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
+  const [bootstrapToken, setBootstrapToken] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [loading, setLoading] = useState(true)
   const [setupRequired, setSetupRequired] = useState(false)
+  const [bootstrapTokenRequired, setBootstrapTokenRequired] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     void getSetupStatus()
       .then((response) => {
         setSetupRequired(response.setup_required)
+        setBootstrapTokenRequired(response.bootstrap_token_required)
         setError(null)
       })
       .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load setup status'))
@@ -41,7 +44,11 @@ export function SetupPage() {
     setSubmitting(true)
     setError(null)
     try {
-      await createInitialUser({ username, password })
+      await createInitialUser({
+        username,
+        password,
+        ...(bootstrapTokenRequired ? { bootstrap_token: bootstrapToken } : {}),
+      })
       await refreshSession()
       navigate('/admin', { replace: true })
     } catch (err) {
@@ -60,6 +67,18 @@ export function SetupPage() {
           No default admin exists. This step is available only while the auth database has no users.
         </p>
         <form className="stack" onSubmit={handleSubmit}>
+          {bootstrapTokenRequired ? (
+            <label className="field">
+              <span>Bootstrap token</span>
+              <input
+                type="password"
+                value={bootstrapToken}
+                onChange={(event) => setBootstrapToken(event.target.value)}
+                autoComplete="one-time-code"
+                required
+              />
+            </label>
+          ) : null}
           <label className="field">
             <span>Username</span>
             <input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" />

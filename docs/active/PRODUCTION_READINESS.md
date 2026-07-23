@@ -58,6 +58,9 @@ hosts or pool members.
 - HTTPS session and CSRF cookies are marked Secure, the runtime `unrar` source
   archive is checksum verified, and fresh PostgreSQL installs enable checksums
   and diagnostic extensions.
+- Initial administrator creation supports an environment-provided one-time
+  bootstrap token. Forwarded HTTPS headers affect cookie security only when the
+  immediate peer matches an explicitly configured trusted-proxy CIDR.
 - The runtime image uses pinned Alpine 3.23 package revisions. Only the pinned
   `par2cmdline-turbo` package is sourced from edge/testing; stable packages no
   longer inherit the edge repository override.
@@ -127,13 +130,6 @@ the synthetic soak does not model hours of concurrent supervisor churn.
   database. Document encrypted-disk/backup requirements or add an explicit
   secret-provider/envelope-encryption design before claiming secrets-at-rest
   protection.
-- A brand-new instance can create its initial administrator without prior
-  authentication. The safe Compose default binds the published port to
-  localhost; direct deployments must preserve that protection or add a
-  one-time bootstrap secret before binding publicly.
-- Session and CSRF cookies are now marked Secure for HTTPS requests. Production
-  still requires a trusted TLS reverse proxy and an explicit forwarded-header
-  trust policy.
 - External Newznab source URLs are administrator-controlled and can reach
   internal addresses. Add an optional outbound allowlist/private-address policy
   for installations where indexer-source administrators are not fully trusted.

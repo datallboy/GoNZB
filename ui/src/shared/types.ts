@@ -13,6 +13,7 @@ export type SessionResponse = {
 
 export type SetupStatusResponse = {
   setup_required: boolean
+  bootstrap_token_required: boolean
 }
 
 export type PublicReleaseSummary = {

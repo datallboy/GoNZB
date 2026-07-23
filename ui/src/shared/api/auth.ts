@@ -20,7 +20,7 @@ export function getSetupStatus() {
   return apiRequest<SetupStatusResponse>('/api/v1/auth/setup')
 }
 
-export function createInitialUser(body: { username: string; password: string }) {
+export function createInitialUser(body: { username: string; password: string; bootstrap_token?: string }) {
   return apiRequest<SessionResponse>('/api/v1/auth/setup', { method: 'POST', body })
 }
 
