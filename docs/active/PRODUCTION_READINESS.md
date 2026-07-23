@@ -1,5 +1,7 @@
 # Production Readiness
 
+Status: active
+
 ## Current Assessment
 
 GoNZB is suitable for a controlled personal/private beta after it is installed
@@ -117,12 +119,6 @@ the synthetic soak does not model hours of concurrent supervisor churn.
   queue lag, inspection latency, and release yield.
 - Add regression plans for the documented expensive yEnc admission and release
   family-summary query shapes.
-- Modernize the opt-in `repository_test.go` PostgreSQL fixtures. The general
-  package test passes with database tests skipped, and the new focused soak
-  passes on the v29 schema, but many older opt-in fixtures still issue test SQL
-  against the retired `binaries` table or omit required partition keys. They
-  are not valid fresh-schema release evidence until converted to the v2 binary
-  projections.
 
 ### Security and Internet exposure
 
@@ -169,11 +165,8 @@ compatibility, add black-box fixtures for current Radarr, Sonarr, Prowlarr, and
 AIOStreams behavior, including empty searches, category roots, pagination,
 token failures, duplicate releases, unavailable manifests, and retry behavior.
 
-## Branch and Release Strategy
+## Release Policy
 
-Treat GoNZBNet observability and production hardening as separate review units.
-The observability branch can be reviewed as the feature PR after its E2E result
-is attached. Production-readiness work should remain on a follow-up branch and
-land through focused commits for dependencies, local-secret handling,
-correctness, deployment, partition lifecycle, Newznab compatibility, dead-code
-removal, UI lint/code splitting, and measured query tuning.
+Production-hardening work lands on `dev` first and remains out of `main` until
+the open release blockers have been validated on a sustained staging workload.
+Promoting `dev` to `main` is the release boundary.

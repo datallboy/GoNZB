@@ -32,9 +32,10 @@ corresponding capabilities.
 - [Four-Node E2E Testing](./e2e-testing.md) documents the disposable local
   federation test and the guarantees it verifies.
 
-The [implementation specification](../../GoNZBNet_Codex_Implementation_Spec.md)
-is retained as design background. It inspired the module, but this wiki and
-the code describe current behavior when the specification differs.
+The archived
+[implementation specification](../../archive/completed/gonzbnet/GoNZBNet_Codex_Implementation_Spec.md)
+is retained as design background. It inspired the module, but this wiki and the
+code describe current behavior when the specification differs.
 
 ## What The Module Does
 

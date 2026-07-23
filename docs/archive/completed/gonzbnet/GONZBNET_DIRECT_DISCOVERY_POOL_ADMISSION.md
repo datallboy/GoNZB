@@ -2,7 +2,8 @@
 
 Status: completed and verified on 2026-07-13
 
-Primary protocol reference: `docs/GoNZBNet_Codex_Implementation_Spec.md`
+Historical protocol reference:
+`docs/archive/completed/gonzbnet/GoNZBNet_Codex_Implementation_Spec.md`
 
 This document defines the next focused GoNZBNet work. It replaces completed
 phase and hardening instructions that previously lived in `docs/active`.

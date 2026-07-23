@@ -1,5 +1,8 @@
 # GoNZBNet Federation Implementation Specification
 
+> Archived design reference. The maintained GoNZBNet wiki and current code
+> define implemented behavior.
+
 **Status:** Codex-ready architecture and implementation brief
 **Target project:** GoNZB
 **Target runtime shape:** modular monolith first, optional relay extraction later
