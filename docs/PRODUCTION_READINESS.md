@@ -38,6 +38,8 @@ hosts or pool members.
   selection, yEnc selection, discovery claims, and dashboard refresh completed
   without deadlocks, temporary files, or default-partition writes. Five
   repeated 2,000-binary stats refreshes completed in 0.56-1.15 seconds each.
+- Race-enabled supervisor, assemble, yEnc recovery, inspection, aggregator, and
+  GoNZBNet package tests pass.
 - Synthetic RAR and ZIP media-inspection fixtures verify that sparse, bounded
   archive ranges can expose a selected member without downloading the complete
   archive. Matroska members are decoded with the streaming EBML parser and MP4
@@ -110,8 +112,6 @@ the synthetic soak does not model hours of concurrent supervisor churn.
   RAR5, multi-volume, solid, encrypted, ZIP, and 7z posts. Synthetic RAR and
   ZIP fixtures pass, but formats whose selected member or compressed stream
   begins beyond the bounded sparse ranges must remain explicitly inconclusive.
-- Run race-enabled tests for the supervisor, assemble, recovery, inspection,
-  aggregator, and GoNZBNet paths before release.
 - Establish repeatable throughput and resource budgets for latest indexing and
   backfill: headers/second, database growth/day, WAL/day, NNTP bandwidth,
   queue lag, inspection latency, and release yield.
