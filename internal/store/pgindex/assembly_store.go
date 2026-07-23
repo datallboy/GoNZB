@@ -1346,7 +1346,7 @@ func upsertBinaryChunkWithStage(ctx context.Context, runner sqlExecQueryer, reco
 	if telemetry := binaryUpsertTelemetryFromContext(ctx); telemetry != nil {
 		telemetry.recordInsertDuration(time.Since(insertStarted))
 	}
-	if err := stageExistingBinaryChunk(ctx, runner); err != nil {
+	if err := completeStagedBinaryChunkAfterInsert(ctx, runner); err != nil {
 		return nil, nil, err
 	}
 	observationStarted := time.Now()
@@ -1485,7 +1485,57 @@ func upsertBinaryChunkWithStage(ctx context.Context, runner sqlExecQueryer, reco
 		    grouping_summary_kind = CASE WHEN EXCLUDED.match_confidence >= binary_identity_current.match_confidence THEN EXCLUDED.grouping_summary_kind ELSE binary_identity_current.grouping_summary_kind END,
 		    grouping_summary_status = CASE WHEN EXCLUDED.match_confidence >= binary_identity_current.match_confidence THEN EXCLUDED.grouping_summary_status ELSE binary_identity_current.grouping_summary_status END,
 		    grouping_summary_fallback_used = CASE WHEN EXCLUDED.match_confidence >= binary_identity_current.match_confidence THEN EXCLUDED.grouping_summary_fallback_used ELSE binary_identity_current.grouping_summary_fallback_used END,
-		    updated_at = NOW()`); err != nil {
+		    updated_at = NOW()
+		WHERE EXCLUDED.expected_file_count > binary_identity_current.expected_file_count
+		   OR EXCLUDED.match_confidence > binary_identity_current.match_confidence
+		   OR (
+			EXCLUDED.match_confidence = binary_identity_current.match_confidence
+			AND ROW(
+				binary_identity_current.source_release_key,
+				binary_identity_current.release_family_key,
+				binary_identity_current.file_set_key,
+				binary_identity_current.file_family_key,
+				binary_identity_current.identity_strength,
+				binary_identity_current.identity_reason,
+				binary_identity_current.subject_set_token,
+				binary_identity_current.subject_set_kind,
+				binary_identity_current.family_kind,
+				binary_identity_current.base_stem,
+				binary_identity_current.release_key,
+				binary_identity_current.release_name,
+				binary_identity_current.binary_name,
+				binary_identity_current.file_name,
+				binary_identity_current.file_index,
+				binary_identity_current.is_auxiliary,
+				binary_identity_current.is_main_payload,
+				binary_identity_current.match_status,
+				binary_identity_current.grouping_summary_kind,
+				binary_identity_current.grouping_summary_status,
+				binary_identity_current.grouping_summary_fallback_used
+			) IS DISTINCT FROM ROW(
+				EXCLUDED.source_release_key,
+				EXCLUDED.release_family_key,
+				EXCLUDED.file_set_key,
+				EXCLUDED.file_family_key,
+				EXCLUDED.identity_strength,
+				EXCLUDED.identity_reason,
+				EXCLUDED.subject_set_token,
+				EXCLUDED.subject_set_kind,
+				EXCLUDED.family_kind,
+				EXCLUDED.base_stem,
+				EXCLUDED.release_key,
+				EXCLUDED.release_name,
+				EXCLUDED.binary_name,
+				EXCLUDED.file_name,
+				CASE WHEN EXCLUDED.file_index > 0 THEN EXCLUDED.file_index ELSE binary_identity_current.file_index END,
+				EXCLUDED.is_auxiliary,
+				EXCLUDED.is_main_payload,
+				EXCLUDED.match_status,
+				EXCLUDED.grouping_summary_kind,
+				EXCLUDED.grouping_summary_status,
+				EXCLUDED.grouping_summary_fallback_used
+			)
+		   )`); err != nil {
 		return nil, nil, fmt.Errorf("upsert binary_identity_current batch: %w", err)
 	}
 	if telemetry := binaryUpsertTelemetryFromContext(ctx); telemetry != nil {
@@ -1615,27 +1665,22 @@ func upsertBinaryChunkWithStage(ctx context.Context, runner sqlExecQueryer, reco
 			KeepDetailed: records[ordinal].keepDetailed,
 		})
 
-		if existingExpectedFileCount > 0 || existingReleaseFamilyKey != "" || existingBaseStem != "" {
-			identityChanged := strings.TrimSpace(existingReleaseFamilyKey) != strings.TrimSpace(releaseFamilyKey)
-			existingBaseStemKey := ""
-			if existingExpectedFileCount > 1 {
-				existingBaseStemKey = strings.ToLower(strings.TrimSpace(existingBaseStem))
-			}
-			newBaseStemKey := ""
-			if expectedFileCount > 1 {
-				newBaseStemKey = strings.ToLower(strings.TrimSpace(baseStem))
-			}
-			identityChanged = identityChanged || existingBaseStemKey != newBaseStemKey
-			if identityChanged {
-				summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, providerID, newsgroupID, "release_family", existingReleaseFamilyKey)
-				if existingExpectedFileCount > 1 {
-					summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, providerID, newsgroupID, "base_stem", existingBaseStem)
-				}
-				summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, providerID, newsgroupID, "release_family", releaseFamilyKey)
-				if expectedFileCount > 1 {
-					summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, providerID, newsgroupID, "base_stem", baseStem)
-				}
-			}
+		identityChanged := strings.TrimSpace(existingReleaseFamilyKey) != strings.TrimSpace(releaseFamilyKey)
+		existingBaseStemKey := strings.ToLower(strings.TrimSpace(existingBaseStem))
+		newBaseStemKey := ""
+		if expectedFileCount > 1 {
+			newBaseStemKey = strings.ToLower(strings.TrimSpace(baseStem))
+		}
+		identityChanged = identityChanged || existingBaseStemKey != newBaseStemKey
+		if identityChanged {
+			summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, providerID, newsgroupID, "release_family", existingReleaseFamilyKey)
+			summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, providerID, newsgroupID, "base_stem", existingBaseStem)
+		}
+		// A newly inserted identity has no prior projection to compare against,
+		// but its current family still needs its first readiness refresh.
+		summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, providerID, newsgroupID, "release_family", releaseFamilyKey)
+		if expectedFileCount > 1 {
+			summaryKeys = appendReleaseFamilySummaryKey(summaryKeys, seenSummaryKeys, providerID, newsgroupID, "base_stem", baseStem)
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -1821,6 +1866,46 @@ func stageExistingBinaryChunk(ctx context.Context, runner sqlExecQueryer) error 
 		CREATE INDEX tmp_existing_binaries_key_idx
 		ON tmp_existing_binaries (source_posted_at, binary_id)`); err != nil {
 		return fmt.Errorf("index existing binary upsert keys: %w", err)
+	}
+	return nil
+}
+
+// completeStagedBinaryChunkAfterInsert resolves ids for newly inserted cores while
+// preserving the pre-upsert identity snapshot for rows that already existed.
+// Rebuilding the table here would replace the old family/base-stem values with
+// the just-written values and prevent stale summary keys from being refreshed.
+func completeStagedBinaryChunkAfterInsert(ctx context.Context, runner sqlExecQueryer) error {
+	if runner == nil {
+		return fmt.Errorf("binary upsert tx is required")
+	}
+	if _, err := runner.ExecContext(ctx, `
+		INSERT INTO tmp_existing_binaries (
+			ordinal,
+			binary_id,
+			source_posted_at,
+			existing_release_family_key,
+			existing_base_stem,
+			existing_expected_file_count
+		)
+		SELECT
+			r.ordinal,
+			bc.binary_id,
+			COALESCE(bc.source_posted_at, r.posted_at, NOW()),
+			'',
+			'',
+			0
+		FROM tmp_upsert_binaries r
+		JOIN binary_core bc
+		  ON bc.provider_id = r.provider_id
+		 AND bc.newsgroup_id = r.newsgroup_id
+		 AND bc.binary_key = r.binary_key
+		WHERE NOT EXISTS (
+			SELECT 1
+			FROM tmp_existing_binaries e
+			WHERE e.ordinal = r.ordinal
+		)
+		ON CONFLICT (ordinal) DO NOTHING`); err != nil {
+		return fmt.Errorf("complete staged binary upsert rows after insert: %w", err)
 	}
 	return nil
 }

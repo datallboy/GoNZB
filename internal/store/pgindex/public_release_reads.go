@@ -112,6 +112,9 @@ type PublicIndexerReleaseCapabilities struct {
 }
 
 func publicIndexerReleaseVisibilityClause(alias string, policy ReleaseReadyPolicy) string {
+	if policy == (ReleaseReadyPolicy{}) {
+		policy = DefaultReleaseReadyPolicy()
+	}
 	return releaseReadyVisibilityClause(alias, policy)
 }
 

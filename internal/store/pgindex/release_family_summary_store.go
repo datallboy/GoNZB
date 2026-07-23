@@ -38,6 +38,7 @@ const (
 )
 
 var summaryOpaqueTokenRE = regexp.MustCompile(`(?i)^[a-z0-9]{12,}$`)
+var summaryNumericOpaqueFamilyRE = regexp.MustCompile(`^[0-9]{5,}\s+[a-z](?:\s+[a-z]{2,4})?$`)
 
 type releaseFamilySummaryKey struct {
 	ProviderID  int64
@@ -76,7 +77,7 @@ func summaryIsOpaqueBaseStemKey(familyKey string) bool {
 	if familyKey == "" {
 		return false
 	}
-	return summaryOpaqueTokenRE.MatchString(strings.ReplaceAll(familyKey, " ", ""))
+	return summaryOpaqueTokenRE.MatchString(familyKey)
 }
 
 type releaseFamilySummaryRow struct {
@@ -99,6 +100,11 @@ type releaseFamilySummaryRow struct {
 	DominantFamilyKind             string
 	DominantFileName               string
 	DominantMatchConfidence        float64
+	AllContextual                  bool
+	IndexedFileCount               int
+	BaseStemFileCount              int
+	DistinctBaseStemCount          int
+	HasUsableFileIdentity          bool
 	RecoverPending                 bool
 }
 
@@ -199,6 +205,31 @@ func buildReleaseFamilySummaryRefreshRecord(row releaseFamilySummaryRow) []any {
 	}
 	if readinessBucket == releaseReadinessActionable && summaryIsWeakObfuscatedFamily(row.DominantFamilyKind) {
 		readinessBucket = releaseReadinessWeakObfuscated
+	}
+	if readinessBucket == releaseReadinessActionable &&
+		row.KeyKind == ReleaseCandidateKeyKindReleaseFamily &&
+		summaryNumericOpaqueFamilyRE.MatchString(normalizeBinaryIdentityKey(firstNonBlank(row.ReleaseName, row.FamilyKey))) &&
+		!row.HasUsableFileIdentity {
+		readinessBucket = releaseReadinessFragmentOnly
+	}
+	if readinessBucket == releaseReadinessActionable &&
+		row.KeyKind == ReleaseCandidateKeyKindReleaseFamily &&
+		row.AllContextual &&
+		row.ExpectedFileCount > 1 &&
+		row.IndexedFileCount >= 2 &&
+		row.BaseStemFileCount == row.DistinctBaseStemCount &&
+		row.DistinctBaseStemCount >= max(row.ExpectedFileCount, 8) &&
+		row.BinaryCount >= max(row.ExpectedFileCount*3, 24) {
+		readinessBucket = releaseReadinessOvergrouped
+	}
+	if readinessBucket == releaseReadinessActionable &&
+		row.KeyKind == ReleaseCandidateKeyKindReleaseFamily &&
+		row.AllContextual &&
+		row.ExpectedFileCount > 1 &&
+		row.IndexedFileCount >= 2 &&
+		row.BaseStemFileCount >= 2 &&
+		row.DistinctBaseStemCount < row.BaseStemFileCount {
+		readinessBucket = releaseReadinessPreferBaseStem
 	}
 	expectedFileCoveragePct := 0.0
 	if row.ExpectedFileCount > 0 {
@@ -306,6 +337,8 @@ func refreshReleaseFamilySummariesBatchCopyChunkWithMetrics(ctx context.Context,
 				bic.is_main_payload,
 				bic.is_auxiliary,
 				bic.family_kind,
+				bic.file_index,
+				bic.base_stem,
 				bic.file_name,
 				bic.binary_name,
 				bic.match_confidence,
@@ -364,7 +397,15 @@ func refreshReleaseFamilySummariesBatchCopyChunkWithMetrics(ctx context.Context,
 			COALESCE(BOOL_OR(m.expected_file_count > 0), FALSE) AS has_expected_file_count,
 			COALESCE(BOOL_OR(m.expected_archive_file_count > 0), FALSE) AS has_expected_archive_file_count,
 			COALESCE(SUM(m.total_bytes), 0)::BIGINT AS total_bytes,
-			MIN(m.posted_at) AS earliest_posted_at
+			MIN(m.posted_at) AS earliest_posted_at,
+			COALESCE(BOOL_AND(LOWER(COALESCE(m.family_kind, '')) = 'contextual_obfuscated'), FALSE) AS all_contextual,
+			COUNT(*) FILTER (WHERE m.file_index > 0)::INTEGER AS indexed_file_count,
+			COUNT(*) FILTER (WHERE BTRIM(COALESCE(m.base_stem, '')) <> '')::INTEGER AS base_stem_file_count,
+			COUNT(DISTINCT LOWER(BTRIM(COALESCE(m.base_stem, '')))) FILTER (WHERE BTRIM(COALESCE(m.base_stem, '')) <> '')::INTEGER AS distinct_base_stem_count,
+			COALESCE(BOOL_OR(
+				LOWER(COALESCE(NULLIF(m.file_name, ''), NULLIF(m.binary_name, ''), '')) ~
+				'\.(rar|zip|7z|7z\.[0-9]{3}|zip\.[0-9]{3}|r[0-9]{2,3}|part[0-9]+\.rar|mkv|mp4|avi|ts|mp3|flac|m4a|par2)$'
+			), FALSE) AS has_usable_file_identity
 		FROM requested r
 		LEFT JOIN matched m
 		  ON m.provider_id = r.provider_id
@@ -399,6 +440,11 @@ func refreshReleaseFamilySummariesBatchCopyChunkWithMetrics(ctx context.Context,
 			&row.HasExpectedArchiveFileCount,
 			&row.TotalBytes,
 			&row.EarliestPostedAt,
+			&row.AllContextual,
+			&row.IndexedFileCount,
+			&row.BaseStemFileCount,
+			&row.DistinctBaseStemCount,
+			&row.HasUsableFileIdentity,
 		); err != nil {
 			return metrics, fmt.Errorf("scan release family aggregate batch row: %w", err)
 		}
