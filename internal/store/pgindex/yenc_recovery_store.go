@@ -1119,10 +1119,6 @@ func (s *Store) RecordYEncRecoveryTransientFailureBatch(ctx context.Context, art
 	return nil
 }
 
-func scanYEncRecoveryCandidate(scanner interface{ Scan(dest ...any) error }) (YEncRecoveryCandidate, error) {
-	return scanYEncRecoveryCandidateDest(scanner, nil)
-}
-
 func scanYEncRecoveryCandidateWithRank(scanner interface{ Scan(dest ...any) error }) (YEncRecoveryCandidate, error) {
 	var groupRank int
 	return scanYEncRecoveryCandidateDest(scanner, &groupRank)

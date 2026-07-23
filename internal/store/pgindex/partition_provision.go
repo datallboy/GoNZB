@@ -116,33 +116,6 @@ func (s *Store) ProvisionSourceWorkPartitions(ctx context.Context, _ int, daysAh
 	return s.provisionPartitionBundleForDays(ctx, partitionBundleScrape, sourcePostedAt)
 }
 
-func (s *Store) verifyPartitionBundleForDays(ctx context.Context, bundle partitionBundle, sourcePostedAt []time.Time) error {
-	if s == nil || s.db == nil || len(sourcePostedAt) == 0 {
-		return nil
-	}
-	days := make(map[string]time.Time, len(sourcePostedAt))
-	for _, postedAt := range sourcePostedAt {
-		dayKey, _ := nativePartitionDayKeys(postedAt)
-		dayStart, err := time.ParseInLocation("2006-01-02", dayKey, time.UTC)
-		if err != nil {
-			return fmt.Errorf("parse partition day %s: %w", dayKey, err)
-		}
-		days[dayKey] = dayStart
-	}
-	dayKeys := make([]string, 0, len(days))
-	for dayKey := range days {
-		dayKeys = append(dayKeys, dayKey)
-	}
-	sort.Strings(dayKeys)
-
-	for _, dayKey := range dayKeys {
-		if err := s.verifyPartitionBundleForDay(ctx, bundle, days[dayKey]); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func (s *Store) provisionPartitionBundleForDays(ctx context.Context, bundle partitionBundle, sourcePostedAt []time.Time) error {
 	if s == nil || s.db == nil || len(sourcePostedAt) == 0 {
 		return nil
@@ -171,18 +144,6 @@ func (s *Store) provisionPartitionBundleForDays(ctx context.Context, bundle part
 		}
 	}
 	return nil
-}
-
-func (s *Store) verifyPartitionBundleForDay(ctx context.Context, bundle partitionBundle, dayStart time.Time) error {
-	dayKey, childSuffix := nativePartitionDayKeys(dayStart)
-	missing, err := s.missingPartitionBundleChildren(ctx, bundle, childSuffix)
-	if err != nil {
-		return fmt.Errorf("check %s daily partitions for source day %s: %w", bundle, dayKey, err)
-	}
-	if len(missing) == 0 {
-		return nil
-	}
-	return fmt.Errorf("missing %s daily partitions for source day %s: %s; refusing to route rows into default partitions", bundle, dayKey, strings.Join(missing, ", "))
 }
 
 func (s *Store) provisionPartitionBundleForDay(ctx context.Context, bundle partitionBundle, dayStart time.Time) error {

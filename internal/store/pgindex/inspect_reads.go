@@ -1324,18 +1324,6 @@ func (s *Store) countBlobArchivedReleases(ctx context.Context) (int64, error) {
 	return count, nil
 }
 
-func (s *Store) countTableRows(ctx context.Context, table string) (int64, error) {
-	query, err := dashboardTableCountQuery(table)
-	if err != nil {
-		return 0, err
-	}
-	var count int64
-	if err := s.db.QueryRowContext(ctx, query).Scan(&count); err != nil {
-		return 0, fmt.Errorf("count rows for %s: %w", table, err)
-	}
-	return count, nil
-}
-
 func (s *Store) tableTotalBytes(ctx context.Context, table string) (int64, error) {
 	if _, err := dashboardTableCountQuery(table); err != nil {
 		return 0, err
@@ -1347,21 +1335,6 @@ func (s *Store) tableTotalBytes(ctx context.Context, table string) (int64, error
 		return 0, fmt.Errorf("table bytes for %s: %w", table, err)
 	}
 	return bytes, nil
-}
-
-func (s *Store) tableDeadTuples(ctx context.Context, table string) (int64, error) {
-	if _, err := dashboardTableCountQuery(table); err != nil {
-		return 0, err
-	}
-	var dead int64
-	if err := s.db.QueryRowContext(ctx, `
-		SELECT COALESCE(n_dead_tup, 0)
-		FROM pg_stat_user_tables
-		WHERE relname = $1`, table,
-	).Scan(&dead); err != nil {
-		return 0, fmt.Errorf("dead tuples for %s: %w", table, err)
-	}
-	return dead, nil
 }
 
 func dashboardTableCountQuery(table string) (string, error) {

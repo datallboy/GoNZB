@@ -97,22 +97,6 @@ func firstNonBlank(values ...string) string {
 	return ""
 }
 
-func stringMapValue(values map[string]any, key string) string {
-	if len(values) == 0 {
-		return ""
-	}
-	raw, ok := values[key]
-	if !ok || raw == nil {
-		return ""
-	}
-	switch v := raw.(type) {
-	case string:
-		return strings.TrimSpace(v)
-	default:
-		return strings.TrimSpace(fmt.Sprintf("%v", v))
-	}
-}
-
 type BinaryInspectionCandidate struct {
 	StageName          string
 	BinaryID           int64
@@ -1163,15 +1147,6 @@ func (s *Store) defaultPartitionHasRowsForDay(ctx context.Context, parentTable, 
 		return false, err
 	}
 	return exists, nil
-}
-
-func isDefaultPartitionOverlapError(err error) bool {
-	if err == nil {
-		return false
-	}
-	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "updated partition constraint for default partition") &&
-		strings.Contains(message, "would be violated by some row")
 }
 
 func isUndefinedTableError(err error) bool {
