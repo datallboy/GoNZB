@@ -543,6 +543,7 @@ func TestRunOnceRejectsInvalidTargetWindowSplit(t *testing.T) {
 }
 
 type fakeRepo struct {
+	mu                 sync.Mutex
 	candidates         []pgindex.YEncRecoveryCandidate
 	selectionOpts      pgindex.YEncRecoverySelectionOptions
 	selectionStats     pgindex.YEncRecoverySelectionStats
@@ -578,6 +579,8 @@ func (f *fakeRepo) LastYEncRecoverySelectionStats() pgindex.YEncRecoverySelectio
 }
 
 func (f *fakeRepo) ApplyYEncHeaderRecovery(_ context.Context, in pgindex.YEncHeaderRecoveryRecord) (*pgindex.YEncHeaderRecoveryResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.applied = in
 	if f.applyErr != nil {
 		return nil, f.applyErr
@@ -608,16 +611,22 @@ func (f *fakeBatchRepo) BackfillPriorityYEncRecoveryWorkItemsForBinaries(_ conte
 }
 
 func (f *fakeRepo) RecordYEncRecoveryNotFound(_ context.Context, articleHeaderID int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.notFoundArticleID = articleHeaderID
 	return nil
 }
 
 func (f *fakeRepo) RecordYEncRecoveryNoop(_ context.Context, articleHeaderID int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.noopArticleID = articleHeaderID
 	return nil
 }
 
 func (f *fakeRepo) RecordYEncRecoveryTransientFailure(_ context.Context, articleHeaderID int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.transientArticleID = articleHeaderID
 	return nil
 }
