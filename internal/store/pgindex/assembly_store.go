@@ -29,7 +29,7 @@ const (
 	assembleClaimStatementTimeout          = 30 * time.Second
 	assembleClaimMinQueueAge               = 15 * time.Second
 	assembleDefaultLaneATimeWindowMinutes  = 15
-	refreshBinaryStatsBatchSize            = 8000
+	refreshBinaryStatsBatchSize            = 500
 	binaryCompletionKeySyncChunkSize       = 8000
 	binaryPartUpsertBatchRecords           = 5000
 )
