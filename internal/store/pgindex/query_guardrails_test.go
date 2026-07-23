@@ -83,7 +83,6 @@ func TestNativeSourceWorkPartitionTargetsMatchSprintScope(t *testing.T) {
 		"binary_lifecycle",
 		"binary_completion_keys",
 		"binary_grouping_evidence",
-		"binary_projection_events",
 		"binary_superseded_sources",
 		"yenc_recovery_work_items",
 		"article_cohort_candidates",
