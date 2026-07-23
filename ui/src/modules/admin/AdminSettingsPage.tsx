@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { getCapabilities, getSettings, updateSettings } from '../../shared/api/settings'
+import { getCapabilities, getSettings, testSettingsConnection, updateSettings } from '../../shared/api/settings'
 import type {
   AdminStageConfigPatch,
   ArrIntegrationRuntimeSettings,
@@ -646,6 +646,8 @@ export function AdminSettingsPage() {
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [connectionResults, setConnectionResults] = useState<Record<string, { ok: boolean; message: string; latency_ms: number }>>({})
+  const [testingConnection, setTestingConnection] = useState<string | null>(null)
 
   async function refresh() {
     try {
@@ -708,6 +710,31 @@ export function AdminSettingsPage() {
 
   function updateStage(key: StageKey, patch: AdminStageConfigPatch) {
     setIndexing({ ...indexing, [key]: { ...indexing[key], ...patch } })
+  }
+
+  async function runConnectionTest(kind: 'postgres' | 'nntp' | 'newznab', id = '') {
+    const key = `${kind}:${id}`
+    setTestingConnection(key)
+    try {
+      const result = await testSettingsConnection({ kind, ...(id ? { id } : {}) })
+      setConnectionResults((current) => ({ ...current, [key]: result }))
+    } catch (err) {
+      setConnectionResults((current) => ({
+        ...current,
+        [key]: { ok: false, latency_ms: 0, message: err instanceof Error ? err.message : 'Connection test failed' },
+      }))
+    } finally {
+      setTestingConnection(null)
+    }
+  }
+
+  function connectionResult(kind: 'postgres' | 'nntp' | 'newznab', id = '') {
+    const result = connectionResults[`${kind}:${id}`]
+    return result ? (
+      <div className={result.ok ? 'banner' : 'banner error'}>
+        {result.message} ({result.latency_ms} ms)
+      </div>
+    ) : null
   }
 
   function stageDefinition(key: StageKey) {
@@ -798,14 +825,21 @@ export function AdminSettingsPage() {
             onAdd={() => setSettings((current) => ({ ...current, servers: [...servers, serverDefaults(servers.length)] }))}
           >
             {servers.map((server, index) => (
-              <ServerFields
-                key={index}
-                title={serverTitle(server, index)}
-                server={server}
-                locked={lockNNTPServers}
-                onRemove={() => setSettings((current) => ({ ...current, servers: servers.filter((_, i) => i !== index) }))}
-                onChange={(patch) => updateServer(index, patch)}
-              />
+              <div className="stack" key={`${server.id}-${index}`}>
+                <ServerFields
+                  title={serverTitle(server, index)}
+                  server={server}
+                  locked={lockNNTPServers}
+                  onRemove={() => setSettings((current) => ({ ...current, servers: servers.filter((_, i) => i !== index) }))}
+                  onChange={(patch) => updateServer(index, patch)}
+                />
+                <div className="button-row">
+                  <button className="secondary-button" type="button" disabled={!server.id || testingConnection === `nntp:${server.id}`} onClick={() => void runConnectionTest('nntp', server.id)}>
+                    {testingConnection === `nntp:${server.id}` ? 'Testing...' : 'Test saved provider'}
+                  </button>
+                </div>
+                {connectionResult('nntp', server.id)}
+              </div>
             ))}
           </SettingsSection>
 
@@ -894,6 +928,12 @@ export function AdminSettingsPage() {
                     helpText="Optional comma-separated address exceptions, such as 192.168.1.20/32. Hostnames are resolved and checked again when connecting."
                   />
                 </div>
+                <div className="button-row">
+                  <button className="secondary-button" type="button" disabled={!indexer.id || testingConnection === `newznab:${indexer.id}`} onClick={() => void runConnectionTest('newznab', indexer.id)}>
+                    {testingConnection === `newznab:${indexer.id}` ? 'Testing...' : 'Test saved source'}
+                  </button>
+                </div>
+                {connectionResult('newznab', indexer.id)}
               </div>
             ))}
           </SettingsSection>
@@ -1064,6 +1104,14 @@ export function AdminSettingsPage() {
 
         {activeTab === 'indexer' ? (
         <ModuleGroup title="Indexer settings">
+          <SettingsSection title="PostgreSQL connection">
+            <div className="button-row">
+              <button className="secondary-button" type="button" disabled={testingConnection === 'postgres:'} onClick={() => void runConnectionTest('postgres')}>
+                {testingConnection === 'postgres:' ? 'Testing...' : 'Test PostgreSQL'}
+              </button>
+            </div>
+            {connectionResult('postgres')}
+          </SettingsSection>
           <SettingsSection title="Scrape workflow">
             <div className="banner">
               Newsgroup lists, wildcard rules, provider scans, and per-group cutoffs now live on the dedicated scrape admin page.

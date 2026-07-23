@@ -69,6 +69,7 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 	// route registration is now module-aware per Milestone 8.
 	modules := appCtx.Config.Modules
 	settingsCtrl := controllers.NewSettingsController(appCtx.SettingsAdmin)
+	settingsConnectionCtrl := controllers.NewSettingsConnectionController(appCtx)
 	indexerCtrl := controllers.NewIndexerController(appCtx)
 	indexerAdminCtrl := controllers.NewIndexerAdminController(indexerCtrl.Service)
 	indexerScrapeAdminCtrl := controllers.NewIndexerScrapeAdminController(appCtx)
@@ -101,6 +102,7 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		v1Admin.GET("/settings", settingsCtrl.GetSettings, authMiddleware(authSvc, false, auth.PermissionAdminSettingsRead))
 		v1Admin.GET("/capabilities", settingsCtrl.GetCapabilities, authMiddleware(authSvc, false, auth.PermissionAdminSettingsRead))
 		v1Admin.PUT("/settings", settingsCtrl.UpdateSettings, authMiddleware(authSvc, false, auth.PermissionAdminSettingsWrite))
+		v1Admin.POST("/connections/test", settingsConnectionCtrl.Test, authMiddleware(authSvc, false, auth.PermissionAdminSettingsRead), authRateLimit)
 	}
 
 	if modules.API.Enabled && authSvc != nil {
