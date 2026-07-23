@@ -1,30 +1,28 @@
-# Build items
-bin/
-
-# Local config and logs
-config.yaml
-*.log
-
-# Downloaded data and NZBs
-downloads/
-*.part
-*.NZBs
-testdata/
-
-# Git and IDE stuff
 .git
-.gitignore
-.vscode
 .github
+.codex
+.e2e
+.tmp
 
-# Docker specific
-.dockerignore
+bin
+downloads
+testdata
+store
+store-*
+data/gonzbnet/keys
 
-# Database
-*.db*
+config.yaml
+*.db
+*.db-*
+*.db.*
+*.log
+*.log.*
+*.nzb
 
-# UI dependencies/build cache
 ui/node_modules
-ui/.vite
-ui/*.tsbuildinfo
 ui/dist
+internal/webui/dist
+
+docs/archive
+internal/store/pgindex/migrations_archive
+internal/store/settings/migrations_archive

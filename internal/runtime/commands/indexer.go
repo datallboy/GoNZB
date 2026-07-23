@@ -57,6 +57,23 @@ func (r *Runner) ExecuteIndexerScrapeBackfill(once bool) {
 	}
 }
 
+func (r *Runner) ExecuteIndexerScrapeTimeframe(once bool) {
+	appCtx, ctx, cleanup := r.setupIndexerCommand("Usenet/NZB Indexer is not configured. Set store.pg_dsn and at least one historical scrape timeframe.")
+	defer cleanup()
+
+	if once {
+		if err := appCtx.UsenetIndexer.RunStageOnce(ctx, "scrape_timeframe"); err != nil {
+			appCtx.Logger.Fatal("indexer scrape timeframe --once failed: %v", err)
+		}
+		appCtx.Logger.Info("indexer scrape timeframe --once completed")
+		return
+	}
+
+	if err := wiring.RunIndexerScrapeTimeframeScheduler(ctx, appCtx); err != nil {
+		appCtx.Logger.Fatal("indexer timeframe scheduler failed: %v", err)
+	}
+}
+
 func (r *Runner) ExecuteIndexerAssemble(once bool) {
 	appCtx, ctx, cleanup := r.setupIndexerCommand("Usenet/NZB Indexer is not configured. Set store.pg_dsn.")
 	defer cleanup()
@@ -472,25 +489,13 @@ func (r *Runner) ExecuteIndexerMaintenance() {
 	}
 	if out != nil {
 		appCtx.Logger.Info(
-			"indexer maintenance: abandoned_stage_runs=%d cleared_stage_leases=%d abandoned_scrape_runs=%d abandoned_binary_inspections=%d yenc_work_items_upserted=%d yenc_work_items_retired=%d inspect_discovery_ready_upserted=%d inspect_discovery_ready_retired=%d inspect_discovery_ready_requeued=%d inspect_par2_ready_upserted=%d inspect_par2_ready_retired=%d inspect_par2_ready_requeued=%d inspect_archive_ready_upserted=%d inspect_archive_ready_retired=%d inspect_archive_ready_requeued=%d inspect_media_ready_upserted=%d inspect_media_ready_retired=%d inspect_media_ready_requeued=%d backfilled_catalog_files=%d purged_stage_runs=%d purged_scrape_runs=%d purged_binary_inspections=%d purged_header_payloads=%d purged_grouping_evidence=%d purged_readiness_summaries=%d purged_orphan_releases=%d skipped_readiness_cleanup=%t refresh_queue_backlog=%d",
+			"indexer maintenance: abandoned_stage_runs=%d cleared_stage_leases=%d abandoned_scrape_runs=%d abandoned_binary_inspections=%d yenc_work_items_upserted=%d yenc_work_items_retired=%d backfilled_catalog_files=%d purged_stage_runs=%d purged_scrape_runs=%d purged_binary_inspections=%d purged_header_payloads=%d purged_grouping_evidence=%d purged_readiness_summaries=%d purged_orphan_releases=%d skipped_readiness_cleanup=%t refresh_queue_backlog=%d",
 			out.AbandonedStageRuns,
 			out.ClearedStageLeases,
 			out.AbandonedScrapeRuns,
 			out.AbandonedBinaryInspections,
 			out.YEncWorkItemsUpserted,
 			out.YEncWorkItemsRetired,
-			out.InspectDiscoveryReadyRows,
-			out.InspectDiscoveryRetired,
-			out.InspectDiscoveryRequeued,
-			out.InspectPAR2ReadyRows,
-			out.InspectPAR2Retired,
-			out.InspectPAR2Requeued,
-			out.InspectArchiveReadyRows,
-			out.InspectArchiveRetired,
-			out.InspectArchiveRequeued,
-			out.InspectMediaReadyRows,
-			out.InspectMediaRetired,
-			out.InspectMediaRequeued,
 			out.BackfilledCatalogFiles,
 			out.PurgedStageRuns,
 			out.PurgedScrapeRuns,

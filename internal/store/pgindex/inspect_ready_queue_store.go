@@ -33,6 +33,13 @@ func (s *Store) RefreshInspectDiscoveryReadyQueue(ctx context.Context, limit int
 	if limit <= 0 {
 		limit = inspectDiscoveryReadyQueueSeedLimit
 	}
+	preview, err := s.listBinaryInspectionCandidatesRaw(ctx, s.db, "inspect_discovery", limit, BinaryInspectionCandidateOptions{})
+	if err != nil {
+		return nil, err
+	}
+	if err := s.ensurePartitionBundleForBinaryIDs(ctx, partitionBundleInspect, inspectionCandidateBinaryIDs(preview)); err != nil {
+		return nil, err
+	}
 
 	out := &BinaryInspectionReadyQueueRefreshResult{}
 	if err := retryRetryablePostgresTx(ctx, defaultRetryableTxAttempts, func() error {
@@ -88,6 +95,13 @@ func (s *Store) RefreshInspectionReadyQueue(ctx context.Context, stageName strin
 	}
 	if limit <= 0 {
 		limit = inspectReadyQueueSeedLimit
+	}
+	preview, err := s.listBinaryInspectionCandidatesRaw(ctx, s.db, stageName, limit, BinaryInspectionCandidateOptions{})
+	if err != nil {
+		return nil, err
+	}
+	if err := s.ensurePartitionBundleForBinaryIDs(ctx, partitionBundleInspect, inspectionCandidateBinaryIDs(preview)); err != nil {
+		return nil, err
 	}
 
 	out := &BinaryInspectionReadyQueueRefreshResult{}
@@ -314,6 +328,7 @@ func upsertInspectDiscoveryReadyRows(ctx context.Context, tx *sql.Tx, limit int)
 			'',
 			NOW()
 		FROM eligible e
+		WHERE to_regclass('public.binary_inspection_ready_queue_' || to_char(e.source_posted_at AT TIME ZONE 'UTC', 'YYYYMMDD')) IS NOT NULL
 			ON CONFLICT (source_posted_at, stage_name, binary_id) DO UPDATE
 			SET release_id = EXCLUDED.release_id,
 			    source_updated_at = EXCLUDED.source_updated_at,
@@ -420,6 +435,7 @@ func upsertInspectionReadyQueueCandidates(ctx context.Context, tx *sql.Tx, stage
 			LEFT JOIN binary_observation_stats bos
 			  ON bos.binary_id = s.binary_id
 			 AND bos.source_posted_at = COALESCE(bc.source_posted_at, bos.source_posted_at)
+		WHERE to_regclass('public.binary_inspection_ready_queue_' || to_char(COALESCE(bc.source_posted_at, bos.source_posted_at, bos.posted_at) AT TIME ZONE 'UTC', 'YYYYMMDD')) IS NOT NULL
 			ON CONFLICT (source_posted_at, stage_name, binary_id) DO UPDATE
 			SET release_id = EXCLUDED.release_id,
 			    source_updated_at = EXCLUDED.source_updated_at,

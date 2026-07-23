@@ -145,12 +145,21 @@ function MaintenanceTaskCard({
   const [scheduleEnabled, setScheduleEnabled] = useState(task.schedule_enabled)
   const [intervalHours, setIntervalHours] = useState(task.interval_hours || 24)
   const [batchSize, setBatchSize] = useState(task.batch_size || 100)
+  const [now, setNow] = useState(() => Date.now())
 
   useEffect(() => {
-    setScheduleEnabled(task.schedule_enabled)
-    setIntervalHours(task.interval_hours || 24)
-    setBatchSize(task.batch_size || 100)
+    const timer = window.setTimeout(() => {
+      setScheduleEnabled(task.schedule_enabled)
+      setIntervalHours(task.interval_hours || 24)
+      setBatchSize(task.batch_size || 100)
+    }, 0)
+    return () => window.clearTimeout(timer)
   }, [task])
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 60_000)
+    return () => window.clearInterval(timer)
+  }, [])
 
   async function dryRun() {
     setMessage(null)
@@ -195,7 +204,7 @@ function MaintenanceTaskCard({
 
   const hasFreshDryRun =
     task.last_dry_run_at &&
-    Date.now() - Date.parse(task.last_dry_run_at) < 30 * 60 * 1000
+    now - Date.parse(task.last_dry_run_at) < 30 * 60 * 1000
   const rows = result?.estimated_rows_by_table || result?.deleted_rows_by_table
 
   return (

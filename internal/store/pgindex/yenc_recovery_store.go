@@ -174,7 +174,6 @@ func (s *Store) ListYEncRecoveryCandidatesWithOptions(ctx context.Context, limit
 		if seedErr != nil {
 			return nil, seedErr
 		}
-		s.recordYEncRecoverySeedScanResult(time.Now(), priority0Ready, upserted)
 		if upserted > 0 {
 			s.clearYEncRecoverySeedScanBackoff()
 		}
@@ -394,7 +393,17 @@ func (s *Store) listReadyYEncRecoveryCandidates(ctx context.Context, limit int, 
 		}
 
 		out = make([]YEncRecoveryCandidate, 0, limit)
-		priority, err := claimPriority0YEncRecoveryCandidates(ctx, tx, limit)
+		latestReserve := yencRecoveryPercentLimit(limit, yEncLatestReservePercent(ctx, tx))
+		stats.NewestRequested = latestReserve
+		if latestReserve > 0 {
+			newest, err := claimNewestYEncRecoveryCandidates(ctx, tx, latestReserve)
+			if err != nil {
+				return err
+			}
+			stats.SelectedNewest += len(newest)
+			out = append(out, newest...)
+		}
+		priority, err := claimPriority0YEncRecoveryCandidates(ctx, tx, limit-len(out))
 		if err != nil {
 			return err
 		}
@@ -424,7 +433,7 @@ func (s *Store) listReadyYEncRecoveryCandidates(ctx context.Context, limit int, 
 			if newestLimit <= 0 && len(out) == 0 && targetLimit > 0 {
 				newestLimit = limit
 			}
-			stats.NewestRequested = newestLimit
+			stats.NewestRequested += newestLimit
 			if newestLimit > 0 {
 				newest, err := claimNewestYEncRecoveryCandidates(ctx, tx, newestLimit)
 				if err != nil {
@@ -461,7 +470,7 @@ func (s *Store) listReadyYEncRecoveryCandidates(ctx context.Context, limit int, 
 				newestLimit = limit - len(out)
 			}
 		}
-		stats.NewestRequested = newestLimit
+		stats.NewestRequested += newestLimit
 		if newestLimit > 0 {
 			newest, err := claimNewestYEncRecoveryCandidates(ctx, tx, newestLimit)
 			if err != nil {
@@ -1107,10 +1116,6 @@ func (s *Store) RecordYEncRecoveryTransientFailureBatch(ctx context.Context, art
 		return fmt.Errorf("record yenc recovery transient failure batch count=%d: %w", len(articleHeaderIDs), err)
 	}
 	return nil
-}
-
-func scanYEncRecoveryCandidate(scanner interface{ Scan(dest ...any) error }) (YEncRecoveryCandidate, error) {
-	return scanYEncRecoveryCandidateDest(scanner, nil)
 }
 
 func scanYEncRecoveryCandidateWithRank(scanner interface{ Scan(dest ...any) error }) (YEncRecoveryCandidate, error) {

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/datallboy/gonzb/internal/app"
+	"github.com/datallboy/gonzb/internal/gonzbnet/transportpolicy"
 	"github.com/datallboy/gonzb/internal/infra/config"
 )
 
@@ -162,12 +163,17 @@ func ValidateRuntimeSettings(base *config.Config, runtime *app.RuntimeSettings) 
 		runtime.Aggregator.Sources.UsenetIndexer.Enabled && !base.Modules.UsenetIndexer.Enabled {
 		issues = append(issues, "aggregator.sources.usenet_indexer.enabled requires modules.usenet_indexer.enabled in config.yaml")
 	}
+	if base != nil && base.Modules.Aggregator.Enabled && runtime.Aggregator != nil &&
+		runtime.Aggregator.Sources.GoNZBNet.Enabled && !base.Modules.GoNZBNet.Enabled {
+		issues = append(issues, "aggregator.sources.gonzbnet.enabled requires modules.gonzbnet.enabled in config.yaml")
+	}
 
 	issues = append(issues, validateServers("servers", runtime.Servers)...)
 	issues = append(issues, validateIndexers(runtime.Indexers)...)
 	issues = append(issues, validateDownload(runtime.Download)...)
 	issues = append(issues, validateNNTPPool(runtime.NNTPPool)...)
 	issues = append(issues, validateIndexing(runtime.Indexing)...)
+	issues = append(issues, validateGoNZBNet(runtime.GoNZBNet)...)
 
 	indexingEnabled := anyIndexerStageEnabled(runtime.Indexing)
 	if indexingEnabled {
@@ -179,6 +185,57 @@ func ValidateRuntimeSettings(base *config.Config, runtime *app.RuntimeSettings) 
 		return fmt.Errorf("runtime settings validation failed: %s", strings.Join(issues, "; "))
 	}
 	return nil
+}
+
+func validateGoNZBNet(in *app.GoNZBNetRuntimeSettings) []string {
+	if in == nil {
+		return nil
+	}
+	issues := make([]string, 0)
+	positiveInt := func(field string, value int) {
+		if value <= 0 {
+			issues = append(issues, fmt.Sprintf("gonzbnet.%s must be greater than 0", field))
+		}
+	}
+	positiveFloat := func(field string, value float64) {
+		if value <= 0 {
+			issues = append(issues, fmt.Sprintf("gonzbnet.%s must be greater than 0", field))
+		}
+	}
+
+	positiveInt("publish_release_cards_batch_size", in.PublishReleaseCardsBatchSize)
+	positiveFloat("publish_release_cards_interval_minutes", in.PublishReleaseCardsIntervalMin)
+	positiveInt("health_attestations_batch_size", in.HealthAttestationsBatchSize)
+	positiveFloat("health_attestations_interval_minutes", in.HealthAttestationsIntervalMin)
+	positiveInt("validation_batch_size", in.ValidationBatchSize)
+	positiveFloat("validation_interval_minutes", in.ValidationIntervalMin)
+	positiveFloat("pull_sync_interval_minutes", in.PullSyncIntervalMin)
+	positiveFloat("push_sync_interval_minutes", in.PushSyncIntervalMin)
+	positiveInt("push_sync_batch_size", in.PushSyncBatchSize)
+	positiveFloat("gossip_interval_minutes", in.GossipIntervalMin)
+	positiveInt("gossip_batch_size", in.GossipBatchSize)
+	positiveInt("gossip_ttl", in.GossipTTL)
+	positiveInt("gossip_fanout", in.GossipFanout)
+	positiveInt("max_event_bytes", in.MaxEventBytes)
+	positiveInt("max_manifest_bytes", in.MaxManifestBytes)
+	positiveInt("manifest_fetch_timeout_seconds", in.ManifestFetchTimeoutSeconds)
+	positiveInt("max_batch_events", in.MaxBatchEvents)
+	positiveInt("rate_limit_events_per_minute", in.RateLimitEventsPerMinute)
+	positiveInt("time_tolerance_seconds", in.TimeToleranceSeconds)
+	positiveInt("max_event_age_hours", in.MaxEventAgeHours)
+	positiveInt("nonce_ttl_seconds", in.NonceTTLSeconds)
+	if in.ScannerMaxGroups < 0 || in.ScannerMaxArticlesPerHour < 0 || in.ScannerClaimTTLMinutes < 0 || in.ScannerCheckpointIntervalSecs < 0 {
+		issues = append(issues, "gonzbnet scanner limits must be greater than or equal to 0")
+	}
+	if in.ManifestCacheMaxBytes < 0 || in.ManifestCacheTTLDays < 0 {
+		issues = append(issues, "gonzbnet manifest cache limits must be greater than or equal to 0")
+	}
+	for index, peerURL := range in.ManualPeers {
+		if err := transportpolicy.ValidateHTTPURL(peerURL, in.AllowInsecurePeerHTTP); err != nil {
+			issues = append(issues, fmt.Sprintf("gonzbnet.manual_peers[%d]: %s", index, err))
+		}
+	}
+	return issues
 }
 
 func validateNNTPPool(pool *app.NNTPPoolRuntimeSettings) []string {
@@ -314,6 +371,31 @@ func validateIndexing(indexing *app.IndexingRuntimeSettings) []string {
 			if _, err := time.Parse("2006-01-02", group.BackfillUntilDate); err != nil {
 				issues = append(issues, fmt.Sprintf("indexing.explicit_groups[%d].backfill_until_date must be YYYY-MM-DD", i))
 			}
+		}
+	}
+	timeframeIDs := make(map[string]int, len(indexing.ScrapeTimeframes))
+	for i, timeframe := range indexing.ScrapeTimeframes {
+		id := strings.TrimSpace(timeframe.ID)
+		if id == "" {
+			issues = append(issues, fmt.Sprintf("indexing.scrape_timeframes[%d].id is required", i))
+		} else if previous, exists := timeframeIDs[strings.ToLower(id)]; exists {
+			issues = append(issues, fmt.Sprintf("indexing.scrape_timeframes[%d].id duplicates indexing.scrape_timeframes[%d].id", i, previous))
+		} else {
+			timeframeIDs[strings.ToLower(id)] = i
+		}
+		if strings.TrimSpace(timeframe.GroupName) == "" {
+			issues = append(issues, fmt.Sprintf("indexing.scrape_timeframes[%d].group_name is required", i))
+		}
+		start, startErr := time.Parse("2006-01-02", strings.TrimSpace(timeframe.StartDate))
+		end, endErr := time.Parse("2006-01-02", strings.TrimSpace(timeframe.EndDate))
+		if startErr != nil {
+			issues = append(issues, fmt.Sprintf("indexing.scrape_timeframes[%d].start_date must be YYYY-MM-DD", i))
+		}
+		if endErr != nil {
+			issues = append(issues, fmt.Sprintf("indexing.scrape_timeframes[%d].end_date must be YYYY-MM-DD", i))
+		}
+		if startErr == nil && endErr == nil && end.Before(start) {
+			issues = append(issues, fmt.Sprintf("indexing.scrape_timeframes[%d].end_date must be on or after start_date", i))
 		}
 	}
 	for i, rule := range indexing.WildcardRules {
@@ -472,6 +554,8 @@ func indexingStages(indexing *app.IndexingRuntimeSettings) []namedStage {
 	return []namedStage{
 		{name: "scrape_latest", config: indexing.ScrapeLatest},
 		{name: "scrape_backfill", config: indexing.ScrapeBackfill},
+		{name: "scrape_timeframe", config: indexing.ScrapeTimeframe},
+		{name: "scrape_deferred", config: indexing.ScrapeDeferred},
 		{name: "article_cohort_schedule", config: indexing.ArticleCohortSchedule},
 		{name: "assemble", config: indexing.Assemble},
 		{name: "recover_yenc", config: indexing.RecoverYEnc},
@@ -549,7 +633,7 @@ func validateIndexerMaintenanceTasks(next *app.RuntimeSettings) error {
 
 func maintenanceTaskMinIntervalHours(taskKey string) int {
 	switch strings.TrimSpace(strings.ToLower(taskKey)) {
-	case "dashboard_stats_refresh", "group_profile_refresh":
+	case "dashboard_stats_refresh", "group_profile_refresh", "outcome_reconcile":
 		return 1
 	case "raw_stage_retention", "partition_default_rehome", "stale_nonrelease_source_purge", "emergency_source_window_reset":
 		return 24
@@ -570,6 +654,7 @@ func BuildCapabilities(base *config.Config, runtime *app.RuntimeSettings) *app.C
 		"downloader":     moduleCapability(base.Modules.Downloader.Enabled, downloaderConfigured(runtime), nil),
 		"aggregator":     moduleCapability(base.Modules.Aggregator.Enabled, aggregatorConfigured(runtime), aggregatorRequirements(base, runtime)),
 		"usenet_indexer": moduleCapability(base.Modules.UsenetIndexer.Enabled, indexerConfigured(runtime), indexerRequirements(runtime)),
+		"gonzbnet":       moduleCapability(base.Modules.GoNZBNet.Enabled, gonzbnetConfigured(base), gonzbnetRequirements(base)),
 		"web_ui":         moduleCapability(base.Modules.WebUI.Enabled, base.Modules.WebUI.Enabled, nil),
 		"api":            moduleCapability(base.Modules.API.Enabled, base.Modules.API.Enabled, nil),
 	}
@@ -617,24 +702,41 @@ func aggregatorConfigured(runtime *app.RuntimeSettings) bool {
 	}
 	hasExternal := len(runtime.Indexers) > 0
 	hasLocal := runtime.Aggregator != nil &&
-		(runtime.Aggregator.Sources.LocalBlob.Enabled || runtime.Aggregator.Sources.UsenetIndexer.Enabled)
+		(runtime.Aggregator.Sources.LocalBlob.Enabled || runtime.Aggregator.Sources.UsenetIndexer.Enabled || runtime.Aggregator.Sources.GoNZBNet.Enabled)
 	return hasExternal || hasLocal
 }
 
 func aggregatorRequirements(base *config.Config, runtime *app.RuntimeSettings) []string {
 	reqs := make([]string, 0, 2)
 	if !aggregatorConfigured(runtime) {
-		reqs = append(reqs, "enable local blob, local indexer, or an external Newznab source")
+		reqs = append(reqs, "enable local blob, local indexer, GoNZBNet, or an external Newznab source")
 	}
 	if runtime != nil && runtime.Aggregator != nil && runtime.Aggregator.Sources.UsenetIndexer.Enabled &&
 		(base == nil || !base.Modules.UsenetIndexer.Enabled) {
 		reqs = append(reqs, "enable usenet_indexer module in config.yaml")
 	}
+	if runtime != nil && runtime.Aggregator != nil && runtime.Aggregator.Sources.GoNZBNet.Enabled &&
+		(base == nil || !base.Modules.GoNZBNet.Enabled) {
+		reqs = append(reqs, "enable gonzbnet module in config.yaml")
+	}
 	return reqs
 }
 
+func gonzbnetConfigured(base *config.Config) bool {
+	return base != nil && strings.TrimSpace(base.Store.PGDSN) != ""
+}
+
+func gonzbnetRequirements(base *config.Config) []string {
+	if gonzbnetConfigured(base) {
+		return nil
+	}
+	return []string{"configure store.pg_dsn in config.yaml"}
+}
+
 func indexerConfigured(runtime *app.RuntimeSettings) bool {
-	return runtime != nil && len(app.IndexerNNTPServers(runtime)) > 0 && runtime.Indexing != nil && len(app.EffectiveNewsgroupNames(runtime.Indexing)) > 0
+	return runtime != nil &&
+		len(app.IndexerNNTPServers(runtime)) > 0 &&
+		hasConfiguredIndexerScrapeSource(runtime.Indexing)
 }
 
 func indexerRequirements(runtime *app.RuntimeSettings) []string {
@@ -642,10 +744,30 @@ func indexerRequirements(runtime *app.RuntimeSettings) []string {
 	if runtime == nil || len(app.IndexerNNTPServers(runtime)) == 0 {
 		reqs = append(reqs, "configure at least one NNTP server")
 	}
-	if runtime == nil || runtime.Indexing == nil || len(app.EffectiveNewsgroupNames(runtime.Indexing)) == 0 {
-		reqs = append(reqs, "configure at least one scrape group")
+	if runtime == nil || !hasConfiguredIndexerScrapeSource(runtime.Indexing) {
+		reqs = append(reqs, "configure at least one active scrape group or enabled historical timeframe")
 	}
 	return reqs
+}
+
+func hasConfiguredIndexerScrapeSource(indexing *app.IndexingRuntimeSettings) bool {
+	if indexing == nil {
+		return false
+	}
+	if len(app.EffectiveNewsgroupNames(indexing)) > 0 {
+		return true
+	}
+	for _, timeframe := range indexing.ScrapeTimeframes {
+		if !timeframe.Enabled || strings.TrimSpace(timeframe.ID) == "" || strings.TrimSpace(timeframe.GroupName) == "" {
+			continue
+		}
+		start, startErr := time.Parse("2006-01-02", strings.TrimSpace(timeframe.StartDate))
+		end, endErr := time.Parse("2006-01-02", strings.TrimSpace(timeframe.EndDate))
+		if startErr == nil && endErr == nil && !end.Before(start) {
+			return true
+		}
+	}
+	return false
 }
 
 func anyIndexerStageEnabled(indexing *app.IndexingRuntimeSettings) bool {
@@ -654,6 +776,7 @@ func anyIndexerStageEnabled(indexing *app.IndexingRuntimeSettings) bool {
 	}
 	return indexing.ScrapeLatest.Enabled ||
 		indexing.ScrapeBackfill.Enabled ||
+		indexing.ScrapeTimeframe.Enabled ||
 		indexing.Assemble.Enabled ||
 		indexing.RecoverYEnc.Enabled ||
 		indexing.ReleaseSummaryRefresh.Enabled ||

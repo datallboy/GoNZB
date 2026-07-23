@@ -113,6 +113,9 @@ func (s *Service) RunOnce(ctx context.Context) error {
 }
 
 func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error) {
+	if s == nil || s.repo == nil || s.matcher == nil || s.fetcher == nil {
+		return nil, fmt.Errorf("yenc recovery service is not configured")
+	}
 	metrics := map[string]any{
 		"batch_size":                        s.opts.BatchSize,
 		"batch_requested":                   s.opts.BatchSize,
@@ -202,10 +205,6 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 		"target_window_pct":                 s.opts.TargetWindowPercent,
 		"newest_pct":                        s.opts.NewestPercent,
 	}
-	if s == nil || s.repo == nil || s.matcher == nil || s.fetcher == nil {
-		return metrics, fmt.Errorf("yenc recovery service is not configured")
-	}
-
 	selectionStarted := time.Now()
 	selectionOpts, err := s.selectionOptions()
 	if err != nil {

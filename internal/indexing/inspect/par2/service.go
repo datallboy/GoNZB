@@ -130,7 +130,7 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 			}
 			metrics["processed_count"] = processed
 			metrics["processing_ms"] = durationMillis(time.Since(processingStarted))
-			if s != nil && s.log != nil {
+			if s.log != nil {
 				s.log.Warn("inspect_par2: failed binary_id=%d release_id=%s file=%s processed=%d/%d duration_ms=%.2f err=%v",
 					candidate.BinaryID,
 					candidate.ReleaseID,
@@ -453,7 +453,7 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 				ErrorText:       err.Error(),
 				SourceUpdatedAt: candidate.SourceUpdatedAt,
 			})
-			if s != nil && s.log != nil {
+			if s.log != nil {
 				s.log.Warn("inspect_par2: candidate failed binary_id=%d release_id=%s err=%v", candidate.BinaryID, candidate.ReleaseID, err)
 			}
 			return result, nil
@@ -465,7 +465,7 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 			return result, persistErr
 		}
 		result.persist = persist
-		if s != nil && s.log != nil {
+		if s.log != nil {
 			s.log.Debug(
 				"inspect_par2: skipped binary_id=%d release_id=%s reason=%s detail=%q",
 				candidate.BinaryID,

@@ -2,11 +2,30 @@ package settings
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/datallboy/gonzb/internal/app"
+	"github.com/datallboy/gonzb/internal/infra/config"
 )
+
+func TestNewStoreRestrictsDatabasePermissions(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "settings.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	info, err := os.Stat(dbPath)
+	if err != nil {
+		t.Fatalf("stat settings database: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0600 {
+		t.Fatalf("expected settings database permissions 0600, got %04o", got)
+	}
+}
 
 func TestGetRuntimeSettingsReturnsDefaultsForFreshStore(t *testing.T) {
 	store, err := NewStore(filepath.Join(t.TempDir(), "settings.db"))
@@ -28,6 +47,29 @@ func TestGetRuntimeSettingsReturnsDefaultsForFreshStore(t *testing.T) {
 	}
 	if runtime.Indexing == nil || runtime.Indexing.ScrapeLatest.Enabled || runtime.Indexing.Release.Enabled {
 		t.Fatalf("expected disabled indexer stage defaults, got %+v", runtime.Indexing)
+	}
+}
+
+func TestGetRuntimeSettingsUsesBootstrapConfigForFreshStore(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "settings.db"))
+	if err != nil {
+		t.Fatalf("new settings store: %v", err)
+	}
+	defer store.Close()
+
+	base := &config.Config{
+		Aggregator: config.AggregatorConfig{
+			Sources: config.AggregatorSourcesConfig{
+				GoNZBNet: config.ModuleToggle{Enabled: true},
+			},
+		},
+	}
+	runtime, err := store.GetRuntimeSettings(context.Background(), base)
+	if err != nil {
+		t.Fatalf("get runtime settings: %v", err)
+	}
+	if runtime.Aggregator == nil || !runtime.Aggregator.Sources.GoNZBNet.Enabled {
+		t.Fatalf("expected bootstrap gonzbnet source to remain enabled, got %+v", runtime.Aggregator)
 	}
 }
 
@@ -125,5 +167,57 @@ func TestUpdateSettingsPreservesZeroNewestPctAcrossReload(t *testing.T) {
 	}
 	if got := reloaded.Indexing.RecoverYEnc.NewestPct; got != 0 {
 		t.Fatalf("expected newest pct 0, got %d", got)
+	}
+}
+
+func TestUpdateSettingsPreservesGoNZBNetOptionsAcrossReload(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "settings.db"))
+	if err != nil {
+		t.Fatalf("new settings store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	runtime := DefaultRuntimeSettings()
+	runtime.GoNZBNet.NodeAlias = "runtime-node"
+	runtime.GoNZBNet.ScannerEnabled = true
+	runtime.GoNZBNet.ManualPeers = []string{"https://peer.example"}
+	if err := store.UpdateSettings(ctx, runtime); err != nil {
+		t.Fatalf("persist runtime settings: %v", err)
+	}
+
+	reloaded, err := store.GetRuntimeSettings(ctx)
+	if err != nil {
+		t.Fatalf("reload runtime settings: %v", err)
+	}
+	if reloaded.GoNZBNet == nil || reloaded.GoNZBNet.NodeAlias != "runtime-node" || !reloaded.GoNZBNet.ScannerEnabled {
+		t.Fatalf("expected GoNZBNet options to round-trip, got %+v", reloaded.GoNZBNet)
+	}
+	if len(reloaded.GoNZBNet.ManualPeers) != 1 || reloaded.GoNZBNet.ManualPeers[0] != "https://peer.example" {
+		t.Fatalf("expected GoNZBNet manual peer to round-trip, got %+v", reloaded.GoNZBNet.ManualPeers)
+	}
+}
+
+func TestOlderStructuredSettingsUseBootstrapGoNZBNetOptions(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "settings.db"))
+	if err != nil {
+		t.Fatalf("new settings store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	runtime := DefaultRuntimeSettings()
+	runtime.GoNZBNet = nil
+	if err := store.UpdateSettings(ctx, runtime); err != nil {
+		t.Fatalf("persist older-shaped runtime settings: %v", err)
+	}
+	base := &config.Config{GoNZBNet: config.GoNZBNetConfig{NodeAlias: "bootstrap-node", ScannerEnabled: true}}
+
+	reloaded, err := store.GetRuntimeSettings(ctx, base)
+	if err != nil {
+		t.Fatalf("reload runtime settings: %v", err)
+	}
+	if reloaded.GoNZBNet == nil || reloaded.GoNZBNet.NodeAlias != "bootstrap-node" || !reloaded.GoNZBNet.ScannerEnabled {
+		t.Fatalf("expected missing GoNZBNet options to inherit bootstrap config, got %+v", reloaded.GoNZBNet)
 	}
 }

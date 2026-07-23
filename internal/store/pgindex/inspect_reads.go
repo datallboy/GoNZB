@@ -915,10 +915,6 @@ var stageThroughputDefinitions = []stageThroughputDefinition{
 	{StageName: "release_generate_nzb", Label: "Generate NZB", ItemLabel: "releases"},
 	{StageName: "release_archive_nzb", Label: "Archive NZB", ItemLabel: "releases"},
 	{StageName: "maintenance.release_source_purge", Label: "Source Purge", ItemLabel: "releases"},
-	{StageName: "inspect_discovery_ready_refresh", Label: "Inspect Discovery Queue", ItemLabel: "rows"},
-	{StageName: "inspect_par2_ready_refresh", Label: "Inspect PAR2 Queue", ItemLabel: "rows"},
-	{StageName: "inspect_archive_ready_refresh", Label: "Inspect Archive Queue", ItemLabel: "rows"},
-	{StageName: "inspect_media_ready_refresh", Label: "Inspect Media Queue", ItemLabel: "rows"},
 	{StageName: "inspect_discovery", Label: "Inspect Discovery", ItemLabel: "binaries"},
 	{StageName: "inspect_par2", Label: "Inspect PAR2", ItemLabel: "binaries"},
 	{StageName: "inspect_nfo", Label: "Inspect NFO", ItemLabel: "binaries"},
@@ -1145,8 +1141,6 @@ func stageThroughputMetricKeys(stageName string) []string {
 		return []string{"archived_count", "archive_claimed", "archive_candidates"}
 	case "release_purge_archived_sources", "maintenance.release_source_purge":
 		return []string{"purged_count", "purge_candidates"}
-	case "inspect_discovery_ready_refresh", "inspect_par2_ready_refresh", "inspect_archive_ready_refresh", "inspect_media_ready_refresh":
-		return []string{"ready_upserted", "retired", "requeued"}
 	case "inspect_discovery", "inspect_par2", "inspect_nfo", "inspect_archive", "inspect_password", "inspect_media":
 		return []string{"processed_count", "candidate_count"}
 	case "enrich_predb", "enrich_tmdb":
@@ -1330,18 +1324,6 @@ func (s *Store) countBlobArchivedReleases(ctx context.Context) (int64, error) {
 	return count, nil
 }
 
-func (s *Store) countTableRows(ctx context.Context, table string) (int64, error) {
-	query, err := dashboardTableCountQuery(table)
-	if err != nil {
-		return 0, err
-	}
-	var count int64
-	if err := s.db.QueryRowContext(ctx, query).Scan(&count); err != nil {
-		return 0, fmt.Errorf("count rows for %s: %w", table, err)
-	}
-	return count, nil
-}
-
 func (s *Store) tableTotalBytes(ctx context.Context, table string) (int64, error) {
 	if _, err := dashboardTableCountQuery(table); err != nil {
 		return 0, err
@@ -1353,21 +1335,6 @@ func (s *Store) tableTotalBytes(ctx context.Context, table string) (int64, error
 		return 0, fmt.Errorf("table bytes for %s: %w", table, err)
 	}
 	return bytes, nil
-}
-
-func (s *Store) tableDeadTuples(ctx context.Context, table string) (int64, error) {
-	if _, err := dashboardTableCountQuery(table); err != nil {
-		return 0, err
-	}
-	var dead int64
-	if err := s.db.QueryRowContext(ctx, `
-		SELECT COALESCE(n_dead_tup, 0)
-		FROM pg_stat_user_tables
-		WHERE relname = $1`, table,
-	).Scan(&dead); err != nil {
-		return 0, fmt.Errorf("dead tuples for %s: %w", table, err)
-	}
-	return dead, nil
 }
 
 func dashboardTableCountQuery(table string) (string, error) {
@@ -3743,11 +3710,7 @@ func (s *Store) GetIndexerFileDetail(ctx context.Context, fileID int64) (*Indexe
 	}
 	item.Articles = make([]IndexerFileArticleSummary, 0, len(articles))
 	for _, article := range articles {
-		item.Articles = append(item.Articles, IndexerFileArticleSummary{
-			MessageID:  article.MessageID,
-			Bytes:      article.Bytes,
-			PartNumber: article.PartNumber,
-		})
+		item.Articles = append(item.Articles, IndexerFileArticleSummary(article))
 	}
 
 	return &item, nil

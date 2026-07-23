@@ -731,41 +731,6 @@ func (m *Manager) acquire(ctx context.Context, scope string, mp *managedProvider
 	return false, nil
 }
 
-func (m *Manager) waitAcquire(ctx context.Context, scope string, mp *managedProvider) error {
-	if mp == nil {
-		return ErrProviderBusy
-	}
-	start := time.Now()
-	scopeStats := m.scopeStats(scope)
-	module := moduleForScope(scope)
-	m.stats.waiting.Add(1)
-	scopeStats.waiting.Add(1)
-	defer m.stats.waiting.Add(-1)
-	defer scopeStats.waiting.Add(-1)
-	ticker := time.NewTicker(10 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		if module == "downloader" {
-			m.recordDownloaderDemand()
-		}
-		if m.moduleCanAcquire(module) {
-			select {
-			case mp.semaphore <- struct{}{}:
-				m.recordActive(scope, module, 1)
-				m.recordWait(scopeStats, time.Since(start))
-				return nil
-			default:
-			}
-		}
-		select {
-		case <-ctx.Done():
-			m.recordWait(scopeStats, time.Since(start))
-			return ctx.Err()
-		case <-ticker.C:
-		}
-	}
-}
-
 func (m *Manager) waitForProvider(ctx context.Context, scope string) (*managedProvider, error) {
 	return m.waitForProviderFromList(ctx, scope, m.eligibleProviders(scope))
 }
@@ -827,19 +792,6 @@ func (m *Manager) waitForProviderFromList(ctx context.Context, scope string, pro
 		case <-ticker.C:
 		}
 	}
-}
-
-func (m *Manager) firstFetchProvider(scope string, seg *domain.Segment) *managedProvider {
-	for _, mp := range m.providers {
-		if !mp.allowsScope(scope) {
-			continue
-		}
-		if seg != nil && seg.MissingFrom != nil && seg.MissingFrom[mp.ID()] {
-			continue
-		}
-		return mp
-	}
-	return nil
 }
 
 func (m *Manager) eligibleProviders(scope string) []*managedProvider {
@@ -939,10 +891,6 @@ func (m *Manager) missingEligibleProviderCount(scope string, seg *domain.Segment
 		}
 	}
 	return count
-}
-
-func (m *Manager) release(mp *managedProvider) {
-	m.releaseForScope("unscoped", mp)
 }
 
 func (m *Manager) releaseForScope(scope string, mp *managedProvider) {

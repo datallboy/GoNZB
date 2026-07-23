@@ -1,23 +1,14 @@
-import { createContext, useContext, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { PropsWithChildren } from 'react'
 import { deleteSession, getSession } from '../api/auth'
 import type { SessionInfo } from '../types'
-
-type AuthContextValue = {
-  loading: boolean
-  session: SessionInfo
-  refreshSession: () => Promise<void>
-  logout: () => Promise<void>
-  hasPermission: (permission: string) => boolean
-}
+import { AuthContext } from './AuthState'
 
 const unauthenticatedSession: SessionInfo = {
   authenticated: false,
   setup_required: false,
   permissions: [],
 }
-
-const AuthContext = createContext<AuthContextValue | null>(null)
 
 export function AuthProvider({ children }: PropsWithChildren) {
   const [loading, setLoading] = useState(true)
@@ -34,9 +25,12 @@ export function AuthProvider({ children }: PropsWithChildren) {
   }
 
   useEffect(() => {
-    void refreshSession()
-      .catch(() => setSession(unauthenticatedSession))
-      .finally(() => setLoading(false))
+    const timer = window.setTimeout(() => {
+      void refreshSession()
+        .catch(() => setSession(unauthenticatedSession))
+        .finally(() => setLoading(false))
+    }, 0)
+    return () => window.clearTimeout(timer)
   }, [])
 
   function hasPermission(permission: string) {
@@ -48,12 +42,4 @@ export function AuthProvider({ children }: PropsWithChildren) {
       {children}
     </AuthContext.Provider>
   )
-}
-
-export function useAuth() {
-  const value = useContext(AuthContext)
-  if (!value) {
-    throw new Error('useAuth must be used inside AuthProvider')
-  }
-  return value
 }

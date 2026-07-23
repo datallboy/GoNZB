@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { createToken, getUserDetail, revokeToken } from '../../shared/api/auth'
@@ -13,7 +13,7 @@ export function AdminUserDetailPage() {
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
-  async function refresh() {
+  const refresh = useCallback(async () => {
     try {
       const response = await getUserDetail(id)
       setUser(response.user)
@@ -22,11 +22,12 @@ export function AdminUserDetailPage() {
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load user detail')
     }
-  }
+  }, [id])
 
   useEffect(() => {
-    void refresh()
-  }, [id])
+    const timer = window.setTimeout(() => void refresh(), 0)
+    return () => window.clearTimeout(timer)
+  }, [refresh])
 
   async function handleCreateToken(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()

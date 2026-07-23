@@ -7,11 +7,13 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/datallboy/gonzb/internal/api/controllers"
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/auth"
+	"github.com/datallboy/gonzb/internal/gonzbnet/requestauth"
 	"github.com/datallboy/gonzb/internal/telemetry"
 	"github.com/datallboy/gonzb/internal/webui"
 	"github.com/labstack/echo/v5"
@@ -70,6 +72,8 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 	indexerCtrl := controllers.NewIndexerController(appCtx)
 	indexerAdminCtrl := controllers.NewIndexerAdminController(indexerCtrl.Service)
 	indexerScrapeAdminCtrl := controllers.NewIndexerScrapeAdminController(appCtx)
+	gonzbnetCtrl := controllers.NewGoNZBNetController(appCtx)
+	gonzbnetAdminCtrl := controllers.NewGoNZBNetAdminController(appCtx)
 	var authSvc *auth.Service
 	if store, ok := any(appCtx.SettingsStore).(auth.Store); ok {
 		authSvc = auth.NewService(store)
@@ -83,6 +87,7 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 			ExpiresIn: 15 * time.Minute,
 		}),
 	})
+	federationRateLimit := federationRateLimitMiddleware(appCtx.Config.GoNZBNet.RateLimitEventsPerMinute)
 
 	// runtime settings admin API for modules with SQLite settings state.
 	if modules.API.Enabled && appCtx.SettingsStore != nil {
@@ -132,6 +137,122 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		})
 	}
 
+	if modules.API.Enabled && modules.GoNZBNet.Enabled {
+		if appCtx.Config.GoNZBNet.HTTPEnabled {
+			e.GET("/.well-known/gonzbnet", gonzbnetCtrl.WellKnown)
+			fed := e.Group(gonzbnetHTTPBasePath(appCtx.Config.GoNZBNet.HTTPBasePath), federationBodyLimitMiddleware(appCtx.Config.GoNZBNet))
+			fed.GET("/node", gonzbnetCtrl.Node)
+			fed.GET("/caps", gonzbnetCtrl.Caps)
+			fed.POST("/handshake", gonzbnetCtrl.Handshake)
+			fed.GET("/pools", gonzbnetCtrl.AdmissionPools)
+			fed.POST("/pools/:pool_id/join-requests", gonzbnetCtrl.SubmitPoolJoin, federationRateLimit)
+			fed.GET("/pools/:pool_id/admissions/:proposal_event_id", gonzbnetCtrl.AdmissionStatus, federationRateLimit)
+			fed.POST("/pools/:pool_id/admissions/:proposal_event_id/approvals", gonzbnetCtrl.SubmitPoolApproval, federationRateLimit)
+			fed.POST("/pools/:pool_id/admissions/:proposal_event_id/rejections", gonzbnetCtrl.SubmitPoolRejection, federationRateLimit)
+			fed.GET("/outbox", gonzbnetCtrl.Outbox)
+			fed.GET("/events/:event_id", gonzbnetCtrl.Event)
+			fed.POST("/events/batch", gonzbnetCtrl.Inbox, federationRateLimit)
+			fed.POST("/inbox", gonzbnetCtrl.Inbox, federationRateLimit)
+			fed.POST("/manifests/:manifest_id/request", gonzbnetCtrl.RequestManifest, federationRateLimit)
+			fed.GET("/manifests/:manifest_id", gonzbnetCtrl.GetManifest, federationRateLimit)
+			fed.GET("/coverage/groups", gonzbnetCtrl.CoverageGroups)
+			fed.GET("/coverage/plan", gonzbnetCtrl.CoveragePlan)
+			fed.GET("/coverage/work", gonzbnetCtrl.CoverageWork)
+			fed.POST("/coverage/claim", gonzbnetCtrl.CoverageClaim, federationRateLimit)
+			fed.POST("/coverage/checkpoint", gonzbnetCtrl.CoverageCheckpoint, federationRateLimit)
+			fed.POST("/validation/request", gonzbnetCtrl.ValidationRequest, federationRateLimit)
+			fed.GET("/capabilities/nodes", gonzbnetCtrl.NodeCapabilities)
+			fed.GET("/pools/:pool_id/checkpoint", gonzbnetCtrl.PoolCheckpoint)
+			fed.GET("/pools/:pool_id/members", gonzbnetCtrl.PoolMembers)
+			fed.GET("/peers", gonzbnetCtrl.Peers)
+			fed.GET("/ws", gonzbnetCtrl.GossipWS)
+		}
+
+		v1AdminGoNZBNet := e.Group("/api/v1/admin/gonzbnet", bodyLimitMiddleware(adminJSONBodyLimit, defaultMultipartBodyLimit))
+		v1AdminGoNZBNet.Use(authMiddleware(authSvc, false, auth.PermissionGoNZBNetAdminPools))
+		v1AdminGoNZBNet.Use(csrfProtectionMiddleware())
+		v1AdminGoNZBNet.Use(auditLogMiddleware(appCtx, "admin.gonzbnet"))
+		v1AdminGoNZBNet.GET("/node/profile", gonzbnetAdminCtrl.NodeProfile)
+		v1AdminGoNZBNet.GET("/config/validation", gonzbnetAdminCtrl.ConfigValidation)
+		v1AdminGoNZBNet.GET("/overview", gonzbnetAdminCtrl.ReportingOverview)
+		v1AdminGoNZBNet.GET("/roles", gonzbnetAdminCtrl.ReportingRoles)
+		v1AdminGoNZBNet.GET("/activity", gonzbnetAdminCtrl.ReportingActivity)
+		v1AdminGoNZBNet.GET("/metrics", gonzbnetAdminCtrl.Metrics)
+		v1AdminGoNZBNet.GET("/metrics/prometheus", gonzbnetAdminCtrl.PrometheusMetrics)
+		v1AdminGoNZBNet.GET("/pools", gonzbnetAdminCtrl.ListPools)
+		v1AdminGoNZBNet.POST("/pools", gonzbnetAdminCtrl.UpsertPool)
+		v1AdminGoNZBNet.POST("/pools/:pool_id/invitations", gonzbnetAdminCtrl.CreatePoolInvitation)
+		v1AdminGoNZBNet.POST("/admission/discover", gonzbnetAdminCtrl.DiscoverAdmissionNode)
+		v1AdminGoNZBNet.POST("/admission/join", gonzbnetAdminCtrl.JoinAdmissionPool)
+		v1AdminGoNZBNet.GET("/admissions", gonzbnetAdminCtrl.ListAdmissions)
+		v1AdminGoNZBNet.POST("/admissions/:proposal_event_id/refresh", gonzbnetAdminCtrl.RefreshAdmission)
+		v1AdminGoNZBNet.POST("/admissions/:proposal_event_id/approve", gonzbnetAdminCtrl.ApproveAdmission)
+		v1AdminGoNZBNet.POST("/admissions/:proposal_event_id/reject", gonzbnetAdminCtrl.RejectAdmission)
+		v1AdminGoNZBNet.GET("/pools/:pool_id/members", gonzbnetAdminCtrl.ListPoolMembers)
+		v1AdminGoNZBNet.GET("/pools/:pool_id/health", gonzbnetAdminCtrl.ReportingPoolHealth)
+		v1AdminGoNZBNet.GET("/pools/:pool_id/control-events", gonzbnetAdminCtrl.ListPoolControlEvents)
+		v1AdminGoNZBNet.GET("/pools/:pool_id/role-access", gonzbnetAdminCtrl.ListRolePoolAccess)
+		v1AdminGoNZBNet.POST("/pools/:pool_id/role-access", gonzbnetAdminCtrl.UpsertRolePoolAccess)
+		v1AdminGoNZBNet.DELETE("/pools/:pool_id/role-access/:role_id", gonzbnetAdminCtrl.DeleteRolePoolAccess)
+		v1AdminGoNZBNet.POST("/pools/:pool_id/members", gonzbnetAdminCtrl.UpsertPoolMember)
+		v1AdminGoNZBNet.POST("/pools/:pool_id/members/:node_id/approve", gonzbnetAdminCtrl.ApprovePoolMember)
+		v1AdminGoNZBNet.POST("/pools/:pool_id/members/:node_id/revocations", gonzbnetAdminCtrl.CreatePoolMemberRevocation)
+		v1AdminGoNZBNet.POST("/pools/:pool_id/members/:node_id/revoke", gonzbnetAdminCtrl.RevokePoolMember)
+		v1AdminGoNZBNet.POST("/pools/:pool_id/join-requests", gonzbnetAdminCtrl.RequestPoolJoin)
+		v1AdminGoNZBNet.GET("/nodes/capabilities", gonzbnetAdminCtrl.ListNodeCapabilities)
+		v1AdminGoNZBNet.GET("/coverage", gonzbnetAdminCtrl.CoverageDashboard)
+		v1AdminGoNZBNet.GET("/coverage/groups", gonzbnetAdminCtrl.CoverageGroupCatalog)
+		v1AdminGoNZBNet.GET("/coverage/validation-gaps", gonzbnetAdminCtrl.ValidationGaps)
+		v1AdminGoNZBNet.GET("/coverage/suggestions", gonzbnetAdminCtrl.CoverageSuggestions)
+		v1AdminGoNZBNet.GET("/coverage/plan", gonzbnetAdminCtrl.CoverageSchedulerPlan)
+		v1AdminGoNZBNet.GET("/diagnostics/peers", gonzbnetAdminCtrl.PeerDiagnostics)
+		v1AdminGoNZBNet.GET("/diagnostics/events", gonzbnetAdminCtrl.EventDiagnostics)
+		v1AdminGoNZBNet.GET("/diagnostics/rejected-events", gonzbnetAdminCtrl.RejectedEventDiagnostics)
+		v1AdminGoNZBNet.GET("/diagnostics/deliveries", gonzbnetAdminCtrl.PeerDeliveryDiagnostics)
+		v1AdminGoNZBNet.GET("/diagnostics/validation-tasks", gonzbnetAdminCtrl.ValidationTaskDiagnostics)
+		v1AdminGoNZBNet.GET("/diagnostics/release-sources", gonzbnetAdminCtrl.ReleaseSourceDiagnostics)
+		v1AdminGoNZBNet.GET("/diagnostics/manifest-sources", gonzbnetAdminCtrl.ManifestSourceDiagnostics)
+		v1AdminGoNZBNet.GET("/diagnostics/article-availability", gonzbnetAdminCtrl.ArticleAvailabilityDiagnostics)
+		v1AdminGoNZBNet.GET("/diagnostics/health", gonzbnetAdminCtrl.HealthDiagnostics)
+		v1AdminGoNZBNet.GET("/diagnostics/reputation", gonzbnetAdminCtrl.ReputationDiagnostics)
+		v1AdminGoNZBNet.POST("/manifests/resolve", gonzbnetAdminCtrl.ResolveManifest)
+		v1AdminGoNZBNet.POST("/scores/recompute", gonzbnetAdminCtrl.RecomputeScores)
+		v1AdminGoNZBNet.POST("/coverage/assignments", gonzbnetAdminCtrl.CreateCoverageAssignment)
+		v1AdminGoNZBNet.POST("/coverage/claims", gonzbnetAdminCtrl.CreateCoverageClaim)
+		v1AdminGoNZBNet.POST("/coverage/complete", gonzbnetAdminCtrl.CreateCoverageComplete)
+		v1AdminGoNZBNet.POST("/coverage/failed", gonzbnetAdminCtrl.CreateCoverageFailed)
+		v1AdminGoNZBNet.POST("/coverage/stale-penalties", gonzbnetAdminCtrl.MaterializeStaleClaimPenalties)
+		v1AdminGoNZBNet.POST("/coverage/stale-reassignments", gonzbnetAdminCtrl.CreateStaleClaimReassignments)
+
+		v1AdminGoNZBNetPeers := e.Group("/api/v1/admin/gonzbnet", bodyLimitMiddleware(adminJSONBodyLimit, defaultMultipartBodyLimit))
+		v1AdminGoNZBNetPeers.Use(authMiddleware(authSvc, false, auth.PermissionGoNZBNetAdminPeers))
+		v1AdminGoNZBNetPeers.Use(csrfProtectionMiddleware())
+		v1AdminGoNZBNetPeers.Use(auditLogMiddleware(appCtx, "admin.gonzbnet.peers"))
+		v1AdminGoNZBNetPeers.POST("/peers", gonzbnetAdminCtrl.UpsertPeer)
+		v1AdminGoNZBNetPeers.POST("/peers/:peer_id/enable", gonzbnetAdminCtrl.EnablePeer)
+		v1AdminGoNZBNetPeers.POST("/peers/:peer_id/disable", gonzbnetAdminCtrl.DisablePeer)
+		v1AdminGoNZBNetPeers.DELETE("/peers/:peer_id", gonzbnetAdminCtrl.DeletePeer)
+		v1AdminGoNZBNetPeers.POST("/nodes/:node_id/block", gonzbnetAdminCtrl.BlockNode)
+		v1AdminGoNZBNetPeers.POST("/nodes/:node_id/unblock", gonzbnetAdminCtrl.UnblockNode)
+		v1AdminGoNZBNetPeers.POST("/sync/pull", gonzbnetAdminCtrl.PullSync)
+		v1AdminGoNZBNetPeers.POST("/sync/push", gonzbnetAdminCtrl.PushSync)
+		v1AdminGoNZBNetPeers.POST("/sync/gossip", gonzbnetAdminCtrl.GossipSync)
+
+		v1AdminGoNZBNetModeration := e.Group("/api/v1/admin/gonzbnet", bodyLimitMiddleware(adminJSONBodyLimit, defaultMultipartBodyLimit))
+		v1AdminGoNZBNetModeration.Use(authMiddleware(authSvc, false, auth.PermissionGoNZBNetAdminModeration))
+		v1AdminGoNZBNetModeration.Use(csrfProtectionMiddleware())
+		v1AdminGoNZBNetModeration.Use(auditLogMiddleware(appCtx, "admin.gonzbnet.moderation"))
+		v1AdminGoNZBNetModeration.GET("/moderation/tombstones", gonzbnetAdminCtrl.ListTombstones)
+		v1AdminGoNZBNetModeration.POST("/moderation/tombstones", gonzbnetAdminCtrl.CreateTombstone)
+
+		v1AdminGoNZBNetKeys := e.Group("/api/v1/admin/gonzbnet", bodyLimitMiddleware(adminJSONBodyLimit, defaultMultipartBodyLimit))
+		v1AdminGoNZBNetKeys.Use(authMiddleware(authSvc, false, auth.PermissionGoNZBNetAdminKeys))
+		v1AdminGoNZBNetKeys.Use(csrfProtectionMiddleware())
+		v1AdminGoNZBNetKeys.Use(auditLogMiddleware(appCtx, "admin.gonzbnet.keys"))
+		v1AdminGoNZBNetKeys.POST("/keys/export", gonzbnetAdminCtrl.ExportKey)
+		v1AdminGoNZBNetKeys.POST("/keys/rotate", gonzbnetAdminCtrl.RotateKey)
+	}
+
 	var (
 		nzbCtrl *controllers.NewznabController
 		sabCtrl *controllers.SABController
@@ -176,6 +297,7 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		v1AdminIndexer.GET("/work/recovery-capacity", indexerAdminCtrl.GetRecoveryCapacity)
 		v1AdminIndexer.GET("/work/group-profiles", indexerAdminCtrl.ListGroupProfiles)
 		v1AdminIndexer.GET("/work/deferred-ranges", indexerAdminCtrl.ListDeferredArticleRanges)
+		v1AdminIndexer.GET("/work/source-outcomes", indexerAdminCtrl.GetSourceBucketOutcomes)
 		v1AdminIndexer.GET("/work/cohorts", indexerAdminCtrl.ListArticleCohorts)
 		v1AdminIndexer.GET("/overview/throughput", indexerAdminCtrl.GetStageThroughput)
 		v1AdminIndexer.GET("/overview/nntp", indexerAdminCtrl.GetNNTPStats)
@@ -262,6 +384,142 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 	if modules.WebUI.Enabled {
 		registerWebUIRoutes(e)
 	}
+}
+
+func gonzbnetHTTPBasePath(configured string) string {
+	path := strings.TrimRight(strings.TrimSpace(configured), "/")
+	if path == "" {
+		return "/gonzbnet/v1"
+	}
+	if !strings.HasPrefix(path, "/") {
+		return "/" + path
+	}
+	return path
+}
+
+func federationRateLimitMiddleware(eventsPerMinute int) echo.MiddlewareFunc {
+	if eventsPerMinute <= 0 {
+		eventsPerMinute = 120
+	}
+	ratePerSecond := float64(eventsPerMinute) / 60.0
+	if ratePerSecond <= 0 {
+		ratePerSecond = 1
+	}
+	throttle := newFederationFloodThrottle(3, 15*time.Minute, 5*time.Minute)
+	limiter := middleware.RateLimiterWithConfig(middleware.RateLimiterConfig{
+		Store: middleware.NewRateLimiterMemoryStoreWithConfig(middleware.RateLimiterMemoryStoreConfig{
+			Rate:      ratePerSecond,
+			Burst:     eventsPerMinute,
+			ExpiresIn: 15 * time.Minute,
+		}),
+		IdentifierExtractor: func(c *echo.Context) (string, error) {
+			return federationRateLimitIdentifier(c), nil
+		},
+		DenyHandler: func(c *echo.Context, identifier string, err error) error {
+			if throttle.recordViolation(identifier, time.Now()) {
+				return federationTransportError(c, http.StatusTooManyRequests, "temporarily_throttled", "temporary throttle active")
+			}
+			return federationTransportError(c, http.StatusTooManyRequests, "rate_limited", "rate limit exceeded")
+		},
+	})
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		limited := limiter(next)
+		return func(c *echo.Context) error {
+			if throttle.isThrottled(federationRateLimitIdentifier(c), time.Now()) {
+				return federationTransportError(c, http.StatusTooManyRequests, "temporarily_throttled", "temporary throttle active")
+			}
+			return limited(c)
+		}
+	}
+}
+
+type federationFloodThrottle struct {
+	mu          sync.Mutex
+	threshold   int
+	window      time.Duration
+	duration    time.Duration
+	violations  map[string]int
+	firstSeen   map[string]time.Time
+	throttledTo map[string]time.Time
+}
+
+func newFederationFloodThrottle(threshold int, window, duration time.Duration) *federationFloodThrottle {
+	if threshold <= 0 {
+		threshold = 3
+	}
+	if window <= 0 {
+		window = 15 * time.Minute
+	}
+	if duration <= 0 {
+		duration = 5 * time.Minute
+	}
+	return &federationFloodThrottle{
+		threshold:   threshold,
+		window:      window,
+		duration:    duration,
+		violations:  map[string]int{},
+		firstSeen:   map[string]time.Time{},
+		throttledTo: map[string]time.Time{},
+	}
+}
+
+func (t *federationFloodThrottle) isThrottled(identifier string, now time.Time) bool {
+	if t == nil {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	until, ok := t.throttledTo[identifier]
+	if !ok {
+		return false
+	}
+	if now.Before(until) {
+		return true
+	}
+	delete(t.throttledTo, identifier)
+	delete(t.violations, identifier)
+	delete(t.firstSeen, identifier)
+	return false
+}
+
+func (t *federationFloodThrottle) recordViolation(identifier string, now time.Time) bool {
+	if t == nil {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if until, ok := t.throttledTo[identifier]; ok && now.Before(until) {
+		return true
+	}
+	first, ok := t.firstSeen[identifier]
+	if !ok || now.Sub(first) > t.window {
+		t.firstSeen[identifier] = now
+		t.violations[identifier] = 0
+	}
+	t.violations[identifier]++
+	if t.violations[identifier] < t.threshold {
+		return false
+	}
+	t.throttledTo[identifier] = now.Add(t.duration)
+	return true
+}
+
+func federationRateLimitIdentifier(c *echo.Context) string {
+	if nodeID := federationAuthorizationNodeID(c); nodeID != "" {
+		return "node:" + nodeID
+	}
+	return "ip:" + c.RealIP()
+}
+
+func federationAuthorizationNodeID(c *echo.Context) string {
+	if c == nil || c.Request() == nil {
+		return ""
+	}
+	values, err := requestauth.ParseAuthorization(c.Request().Header.Get("Authorization"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(values["node_id"])
 }
 
 func apiTokenMiddleware(authSvc *auth.Service, permissions ...string) echo.MiddlewareFunc {

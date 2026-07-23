@@ -1,0 +1,454 @@
+package pools
+
+import (
+	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/datallboy/gonzb/internal/gonzbnet/canonical"
+	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
+)
+
+const (
+	EventTypeReleaseCard                    = "ReleaseCard"
+	EventTypeHealthAttestation              = "HealthAttestation"
+	EventTypeTrustAttestation               = "TrustAttestation"
+	EventTypeTombstone                      = "Tombstone"
+	EventTypeValidatorCapacity              = "ValidatorCapacity"
+	EventTypeArticleAvailabilityAttestation = "ArticleAvailabilityAttestation"
+	EventTypeChecksumAttestation            = "ChecksumAttestation"
+	EventTypeManifestAvailability           = "ManifestAvailability"
+	EventTypeScannerCapacity                = "ScannerCapacity"
+	EventTypeScannerHeartbeat               = "ScannerHeartbeat"
+	EventTypeGroupObservation               = "GroupObservation"
+	EventTypeCoveragePlan                   = "CoveragePlan"
+	EventTypeCoverageAssignment             = "CoverageAssignment"
+	EventTypeRangeClaim                     = "RangeClaim"
+	EventTypeTimeWindowClaim                = "TimeWindowClaim"
+	EventTypeCoverageCheckpoint             = "CoverageCheckpoint"
+	EventTypeRangeComplete                  = "RangeComplete"
+	EventTypeRangeFailed                    = "RangeFailed"
+
+	EventTypePoolGenesis        = "PoolGenesis"
+	EventTypePoolJoinRequest    = "PoolJoinRequest"
+	EventTypePoolMemberApproved = "PoolMemberApproved"
+	EventTypePoolMemberRevoked  = "PoolMemberRevoked"
+	EventTypePoolCheckpoint     = "PoolCheckpoint"
+
+	RoleAdmin   = "admin"
+	RoleWitness = "witness"
+	RoleMember  = "member"
+
+	StatusActive  = "active"
+	StatusRevoked = "revoked"
+
+	bodySchemaPrefix = "gonzbnet."
+	bodySchemaSuffix = "/1.0"
+)
+
+type Policy struct {
+	MembershipThreshold         int      `json:"membership_threshold"`
+	ModerationThreshold         int      `json:"moderation_threshold"`
+	CheckpointWitnessThreshold  int      `json:"checkpoint_witness_threshold"`
+	ManifestQuorum              int      `json:"manifest_quorum"`
+	HealthQuorum                int      `json:"health_quorum"`
+	AcceptMode                  string   `json:"accept_mode"`
+	MinNodeTrustScore           float64  `json:"min_node_trust_score"`
+	MinResultScore              float64  `json:"min_result_score"`
+	MaxReleaseCardAgeDays       int      `json:"max_release_card_age_days"`
+	AllowManifestFetch          bool     `json:"allow_manifest_fetch"`
+	ManifestFetchRequiresMember bool     `json:"manifest_fetch_requires_membership"`
+	AllowLiveQuery              bool     `json:"allow_live_query"`
+	ShareResolutionManifests    string   `json:"share_resolution_manifests"`
+	AllowEncryptedManifests     bool     `json:"allow_encrypted_manifests"`
+	AcceptedEventTypes          []string `json:"accepted_event_types,omitempty"`
+}
+
+type Genesis struct {
+	SchemaVersion    string   `json:"schema_version"`
+	Type             string   `json:"type"`
+	PoolID           string   `json:"pool_id"`
+	DisplayName      string   `json:"display_name"`
+	Description      string   `json:"description,omitempty"`
+	CreatedAt        string   `json:"created_at"`
+	Admins           []string `json:"admins"`
+	Witnesses        []string `json:"witnesses"`
+	Policy           Policy   `json:"policy"`
+	Visibility       string   `json:"visibility,omitempty"`
+	JoinMode         string   `json:"join_mode,omitempty"`
+	AdmissionEnabled bool     `json:"admission_enabled,omitempty"`
+}
+
+type JoinRequest struct {
+	SchemaVersion           string   `json:"schema_version"`
+	Type                    string   `json:"type"`
+	PoolID                  string   `json:"pool_id"`
+	CandidateNodeID         string   `json:"candidate_node_id"`
+	CandidateProfileEventID string   `json:"candidate_profile_event_id,omitempty"`
+	RequestedRoles          []string `json:"requested_roles"`
+	RequestedCapabilities   []string `json:"requested_capabilities,omitempty"`
+	Message                 string   `json:"message,omitempty"`
+	GenesisEventID          string   `json:"genesis_event_id,omitempty"`
+	CandidateURL            string   `json:"candidate_url,omitempty"`
+	RelayNodeID             string   `json:"relay_node_id,omitempty"`
+	RelayURL                string   `json:"relay_url,omitempty"`
+	CreatedAt               string   `json:"created_at"`
+}
+
+type Approval struct {
+	NodeID     string `json:"node_id"`
+	ApprovedAt string `json:"approved_at,omitempty"`
+	Signature  string `json:"signature"`
+}
+
+type MemberApproved struct {
+	SchemaVersion       string          `json:"schema_version"`
+	Type                string          `json:"type"`
+	PoolID              string          `json:"pool_id"`
+	SubjectNodeID       string          `json:"subject_node_id"`
+	Role                string          `json:"role"`
+	ProposalEventID     string          `json:"proposal_event_id"`
+	AllowedCapabilities []string        `json:"allowed_capabilities,omitempty"`
+	Limits              json.RawMessage `json:"limits,omitempty"`
+	ApprovalsRequired   int             `json:"approvals_required"`
+	Approvals           []Approval      `json:"approvals"`
+}
+
+type MemberRevoked struct {
+	SchemaVersion     string     `json:"schema_version"`
+	Type              string     `json:"type"`
+	PoolID            string     `json:"pool_id"`
+	SubjectNodeID     string     `json:"subject_node_id"`
+	Reason            string     `json:"reason"`
+	EffectiveAt       string     `json:"effective_at"`
+	ApprovalsRequired int        `json:"approvals_required"`
+	Approvals         []Approval `json:"approvals"`
+}
+
+type Checkpoint struct {
+	SchemaVersion string     `json:"schema_version"`
+	Type          string     `json:"type"`
+	PoolID        string     `json:"pool_id"`
+	Height        int64      `json:"height"`
+	EventCount    int64      `json:"event_count"`
+	FromEventID   string     `json:"from_event_id"`
+	ToEventID     string     `json:"to_event_id"`
+	MerkleRoot    string     `json:"merkle_root"`
+	CreatedAt     string     `json:"created_at"`
+	Witnesses     []Approval `json:"witnesses"`
+}
+
+type CheckpointLeaf struct {
+	EventID      string    `json:"event_id"`
+	AuthorNodeID string    `json:"author_node_id"`
+	Sequence     int64     `json:"sequence"`
+	BodyHash     string    `json:"body_hash"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+type PoolPolicy struct {
+	PoolID                     string
+	MembershipThreshold        int
+	ModerationThreshold        int
+	CheckpointWitnessThreshold int
+	AcceptMode                 string
+	MinNodeTrustScore          float64
+	AcceptedEventTypes         []string
+}
+
+type Member struct {
+	PoolID string
+	NodeID string
+	Role   string
+	Status string
+}
+
+func NormalizePolicy(policy Policy, adminCount int) Policy {
+	out := policy
+	if out.MembershipThreshold <= 0 {
+		out.MembershipThreshold = defaultThreshold(adminCount)
+	}
+	if out.ModerationThreshold <= 0 {
+		out.ModerationThreshold = defaultThreshold(adminCount)
+	}
+	if out.CheckpointWitnessThreshold <= 0 {
+		out.CheckpointWitnessThreshold = defaultThreshold(adminCount)
+	}
+	if strings.TrimSpace(out.AcceptMode) == "" {
+		out.AcceptMode = "pool_member"
+	}
+	if len(out.AcceptedEventTypes) == 0 {
+		out.AcceptedEventTypes = []string{
+			EventTypeReleaseCard,
+			EventTypeHealthAttestation,
+			EventTypeTrustAttestation,
+			EventTypeTombstone,
+			EventTypeValidatorCapacity,
+			EventTypeArticleAvailabilityAttestation,
+			EventTypeChecksumAttestation,
+			EventTypeManifestAvailability,
+			EventTypeScannerCapacity,
+			EventTypeScannerHeartbeat,
+			EventTypeGroupObservation,
+			EventTypeCoveragePlan,
+			EventTypeCoverageAssignment,
+			EventTypeRangeClaim,
+			EventTypeTimeWindowClaim,
+			EventTypeCoverageCheckpoint,
+			EventTypeRangeComplete,
+			EventTypeRangeFailed,
+		}
+	}
+	return out
+}
+
+func EventIsPoolControl(eventType string) bool {
+	switch strings.TrimSpace(eventType) {
+	case EventTypePoolGenesis, EventTypePoolJoinRequest, EventTypePoolMemberApproved, EventTypePoolMemberRevoked, EventTypePoolCheckpoint:
+		return true
+	default:
+		return false
+	}
+}
+
+func EventTypeSupported(eventType string) bool {
+	switch strings.TrimSpace(eventType) {
+	case EventTypeReleaseCard,
+		EventTypeHealthAttestation,
+		EventTypeTrustAttestation,
+		EventTypeTombstone,
+		EventTypeValidatorCapacity,
+		EventTypeArticleAvailabilityAttestation,
+		EventTypeChecksumAttestation,
+		EventTypeManifestAvailability,
+		EventTypeScannerCapacity,
+		EventTypeScannerHeartbeat,
+		EventTypeGroupObservation,
+		EventTypeCoveragePlan,
+		EventTypeCoverageAssignment,
+		EventTypeRangeClaim,
+		EventTypeTimeWindowClaim,
+		EventTypeCoverageCheckpoint,
+		EventTypeRangeComplete,
+		EventTypeRangeFailed,
+		EventTypePoolGenesis,
+		EventTypePoolJoinRequest,
+		EventTypePoolMemberApproved,
+		EventTypePoolMemberRevoked,
+		EventTypePoolCheckpoint:
+		return true
+	default:
+		return false
+	}
+}
+
+func BodySchema(eventType string) string {
+	eventType = strings.TrimSpace(eventType)
+	if eventType == "" {
+		return bodySchemaPrefix + "PoolControl" + bodySchemaSuffix
+	}
+	return bodySchemaPrefix + eventType + bodySchemaSuffix
+}
+
+func AuthorizeEvent(policy PoolPolicy, activeMember bool, trustScore float64, eventType string) (bool, string) {
+	if !eventTypeAllowed(policy.AcceptedEventTypes, eventType) {
+		return false, "event_type_not_allowed"
+	}
+	if strings.TrimSpace(policy.AcceptMode) == "pool_member" && !activeMember {
+		return false, "not_pool_member"
+	}
+	if policy.MinNodeTrustScore > 0 && trustScore < policy.MinNodeTrustScore {
+		return false, "node_trust_below_pool_minimum"
+	}
+	return true, ""
+}
+
+func ValidateMemberApproval(body MemberApproved, adminKeys map[string]ed25519.PublicKey) error {
+	required := body.ApprovalsRequired
+	if required <= 0 {
+		required = 1
+	}
+	return validateApprovals(required, body.Approvals, adminKeys, func(approval Approval) (map[string]any, error) {
+		return MemberApprovalPayload(body, approval.ApprovedAt), nil
+	})
+}
+
+func MemberApprovalPayload(body MemberApproved, approvedAt string) map[string]any {
+	payload := map[string]any{
+		"pool_id":           body.PoolID,
+		"proposal_event_id": body.ProposalEventID,
+		"subject_node_id":   body.SubjectNodeID,
+		"role":              body.Role,
+		"approved_at":       approvedAt,
+	}
+	if len(body.AllowedCapabilities) > 0 {
+		payload["allowed_capabilities"] = body.AllowedCapabilities
+	}
+	if len(body.Limits) > 0 {
+		payload["limits"] = body.Limits
+	}
+	return payload
+}
+
+func ValidateMemberRevocation(body MemberRevoked, adminKeys map[string]ed25519.PublicKey) error {
+	required := body.ApprovalsRequired
+	if required <= 0 {
+		required = 1
+	}
+	return validateApprovals(required, body.Approvals, adminKeys, func(approval Approval) (map[string]any, error) {
+		return map[string]any{
+			"pool_id":         body.PoolID,
+			"subject_node_id": body.SubjectNodeID,
+			"reason":          body.Reason,
+			"effective_at":    body.EffectiveAt,
+		}, nil
+	})
+}
+
+func ValidateCheckpoint(body Checkpoint, witnessKeys map[string]ed25519.PublicKey, required int, leaves []CheckpointLeaf) error {
+	if strings.TrimSpace(body.PoolID) == "" {
+		return fmt.Errorf("checkpoint requires pool_id")
+	}
+	if body.Height <= 0 {
+		return fmt.Errorf("checkpoint height must be positive")
+	}
+	if body.EventCount <= 0 {
+		return fmt.Errorf("checkpoint event_count must be positive")
+	}
+	if strings.TrimSpace(body.FromEventID) == "" || strings.TrimSpace(body.ToEventID) == "" {
+		return fmt.Errorf("checkpoint requires from_event_id and to_event_id")
+	}
+	if _, err := time.Parse(time.RFC3339, strings.TrimSpace(body.CreatedAt)); err != nil {
+		return fmt.Errorf("checkpoint created_at must be RFC3339")
+	}
+	if int64(len(leaves)) != body.EventCount {
+		return fmt.Errorf("checkpoint event range missing: have %d need %d", len(leaves), body.EventCount)
+	}
+	if leaves[0].EventID != body.FromEventID || leaves[len(leaves)-1].EventID != body.ToEventID {
+		return fmt.Errorf("checkpoint event range mismatch")
+	}
+	root, err := CheckpointMerkleRoot(leaves)
+	if err != nil {
+		return err
+	}
+	if root != strings.TrimSpace(body.MerkleRoot) {
+		return fmt.Errorf("checkpoint merkle_root mismatch")
+	}
+	return validateApprovals(required, body.Witnesses, witnessKeys, func(approval Approval) (map[string]any, error) {
+		return map[string]any{
+			"pool_id":       body.PoolID,
+			"height":        body.Height,
+			"event_count":   body.EventCount,
+			"from_event_id": body.FromEventID,
+			"to_event_id":   body.ToEventID,
+			"merkle_root":   body.MerkleRoot,
+			"created_at":    body.CreatedAt,
+			"witnessed_at":  approval.ApprovedAt,
+		}, nil
+	})
+}
+
+func CheckpointMerkleRoot(leaves []CheckpointLeaf) (string, error) {
+	if len(leaves) == 0 {
+		return "", fmt.Errorf("checkpoint requires at least one leaf")
+	}
+	level := make([][]byte, 0, len(leaves))
+	for _, leaf := range leaves {
+		payload := map[string]any{
+			"event_id":       leaf.EventID,
+			"author_node_id": leaf.AuthorNodeID,
+			"sequence":       leaf.Sequence,
+			"body_hash":      leaf.BodyHash,
+			"created_at":     leaf.CreatedAt.UTC().Format(time.RFC3339Nano),
+		}
+		canonicalLeaf, err := canonical.Marshal(payload)
+		if err != nil {
+			return "", err
+		}
+		sum := sha256.Sum256(canonicalLeaf)
+		level = append(level, sum[:])
+	}
+	for len(level) > 1 {
+		next := make([][]byte, 0, (len(level)+1)/2)
+		for i := 0; i < len(level); i += 2 {
+			left := level[i]
+			right := left
+			if i+1 < len(level) {
+				right = level[i+1]
+			}
+			combined := make([]byte, 0, len(left)+len(right))
+			combined = append(combined, left...)
+			combined = append(combined, right...)
+			sum := sha256.Sum256(combined)
+			next = append(next, sum[:])
+		}
+		level = next
+	}
+	return "sha256:" + hex.EncodeToString(level[0]), nil
+}
+
+func validateApprovals(required int, approvals []Approval, adminKeys map[string]ed25519.PublicKey, payload func(Approval) (map[string]any, error)) error {
+	if required <= 0 {
+		required = 1
+	}
+	seen := map[string]struct{}{}
+	valid := 0
+	for _, approval := range approvals {
+		nodeID := strings.TrimSpace(approval.NodeID)
+		if nodeID == "" {
+			continue
+		}
+		if _, ok := seen[nodeID]; ok {
+			continue
+		}
+		publicKey, ok := adminKeys[nodeID]
+		if !ok || identity.NodeIDFromPublicKey(publicKey) != nodeID {
+			continue
+		}
+		signature, err := canonical.DecodeBase64URL(approval.Signature)
+		if err != nil {
+			continue
+		}
+		object, err := payload(approval)
+		if err != nil {
+			return err
+		}
+		canonicalPayload, err := canonical.Marshal(object)
+		if err != nil {
+			return err
+		}
+		if !identity.Verify(publicKey, canonicalPayload, signature) {
+			continue
+		}
+		seen[nodeID] = struct{}{}
+		valid++
+	}
+	if valid < required {
+		return fmt.Errorf("approval threshold not met: have %d need %d", valid, required)
+	}
+	return nil
+}
+
+func defaultThreshold(adminCount int) int {
+	if adminCount <= 1 {
+		return 1
+	}
+	return 2
+}
+
+func eventTypeAllowed(allowed []string, eventType string) bool {
+	if len(allowed) == 0 {
+		return true
+	}
+	eventType = strings.TrimSpace(eventType)
+	for _, value := range allowed {
+		if strings.TrimSpace(value) == eventType {
+			return true
+		}
+	}
+	return false
+}

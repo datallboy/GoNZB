@@ -12,6 +12,10 @@ func SetPrincipal(c *echo.Context, principal *auth.Principal) {
 		return
 	}
 	c.Set(principalContextKey, principal)
+	if principal != nil && c.Request() != nil {
+		req := c.Request()
+		c.SetRequest(req.WithContext(auth.ContextWithPrincipal(req.Context(), principal)))
+	}
 }
 
 func PrincipalFromContext(c *echo.Context) (*auth.Principal, bool) {

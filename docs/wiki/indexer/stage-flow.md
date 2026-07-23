@@ -15,15 +15,36 @@ Latest scrape feeds the current day. Backfill fills older daily buckets. Scrape
 is capped by downstream backlog pressure so source rows do not grow without a
 consumer path.
 
+Historical timeframe scrape is an optional third mode. An operator may define
+multiple inclusive UTC date windows, including multiple windows for the same
+newsgroup. Each entry has a stable ID and independent durable progress in
+`indexer_scrape_timeframe_progress`; it does not move latest or backfill
+checkpoints. The stage locates date boundaries with bounded XOVER probes,
+persists the resulting article-number range, and then consumes that fixed range
+in normal scrape batches. Changing an entry's dates resets only that entry.
+
+XOVER may return source dates far outside the current calendar window. Scrape
+provisions only the exact observed days it will admit, never a continuous date
+horizon. A pass that encounters more than the configured new-day cap admits the
+newest work and durably defers the remaining article-number ranges.
+
+`scrape_deferred` is the bounded consumer for those durable ranges. It claims
+one range with a lease, fetches at most its configured batch size, and writes a
+smaller continuation range before completing the claim. A source-day cap may
+also create smaller child ranges. Fetch failures retry with bounded attempts;
+exhausted failures become operator-visible `abandoned` work instead of moving a
+scrape checkpoint again. Keep this stage enabled whenever any scrape producer
+is enabled.
+
 Runtime group tiering controls how much work each group can admit:
 
 - hot groups get freshness priority and the largest recovery budget;
 - warm groups run while queue depth and recovery lag are healthy;
 - cold groups are sampled or deferred and must not starve hot groups.
 
-Hard caps stop new scrape/recovery admission when downstream queues are above
-their configured limits. Soft pressure should reduce backfill first, then warm
-and cold work, while preserving latest hot-group freshness where possible.
+Hard recovery caps reserve capacity for latest high-value work. Backfill and
+low-yield recovery stop at the non-reserved limit; structured latest assembly
+may continue while the independently bounded source queue has capacity.
 
 ## Assemble
 
@@ -42,6 +63,15 @@ projection ownership. It promotes complete Subject multipart posts directly to
 assemble priority work and promotes suspicious opaque singleton bursts to yEnc
 priority work. Weak near-time cohorts are scheduling evidence only; they do not
 become binary identity proof without HEAD-complete or recovered BODY evidence.
+
+Subject-complete cohort admission is bounded to 1,000 queue rows per scheduler
+pass. The configured assembly queue limit remains a capacity limit; the smaller
+transaction chunk lets the recurring scheduler drain large partitioned
+backlogs without exceeding its statement timeout. Each pass materializes the
+eligible article set once and shares it between the cohort-state upsert and
+assembly-queue insert. The scheduler leaves join selection to PostgreSQL so
+partition-spanning eligibility checks can use parallel hash or merge plans when
+they are cheaper than nested loops.
 
 ## Assemble
 
@@ -99,3 +129,30 @@ ready candidates and writes release catalog/lineage state.
 Inspect stages consume `binary_inspection_ready_queue` and write inspection
 history/evidence tables. Inspection results can improve archive, media, text,
 and PAR2 visibility without using upstream source tables as progress state.
+
+Direct media inspection is prefix-bounded. Matroska/WebM binaries are decoded
+from their EBML `Info` and `Tracks` elements and parsing stops before media
+clusters, retaining duration, embedded title, dimensions, codecs, audio tracks,
+languages, subtitles, and dispositions without materializing the payload.
+The same streaming parser is used for Matroska members extracted from archives;
+the extractor is stopped after `Tracks`. Other direct and archive-member
+containers use a bounded prefix with `ffprobe`. An inconclusive prefix is
+recorded explicitly; `inspect_media` does not download a complete media file
+merely to obtain container metadata.
+
+Archive-member probing uses sparse temporary archive files. Split and single
+7z archives materialize only the archive header, encoded-header ranges, and a
+bounded leading region. RAR, ZIP, TAR, and other 7z-readable archive families
+materialize a bounded leading region across sparse volume files; ZIP also
+reserves part of that budget for its trailing directory. Standard and
+obfuscated split-RAR names are normalized inside the temporary workspace so
+the extractor can follow the volume sequence. The selected member is streamed
+from the sparse archive into the Matroska parser or a bounded `ffprobe` input.
+If the selected member or enough compressed data falls outside the populated
+ranges, inspection records an explicit inconclusive/extraction result rather
+than downloading the entire archive family.
+
+Ready-queue population is an internal part of inspection candidate selection,
+not a separately scheduled supervisor stage. Queued inspection stages perform
+bounded, advisory-locked top-ups when they need claimable work; operators only
+configure and schedule the inspection consumers themselves.

@@ -18,7 +18,9 @@ const (
 type SearchRequest struct {
 	Type SearchType
 
-	Query string
+	Query      string
+	Categories []int
+	Limit      int
 
 	IMDbID   string
 	TVDBID   string
@@ -33,6 +35,12 @@ type catalogSource interface {
 	Name() string
 	Search(ctx context.Context, req SearchRequest) ([]*domain.Release, error)
 	GetNZB(ctx context.Context, rel *domain.Release) (io.ReadCloser, error)
+}
+
+// getAuthorizer is implemented by sources whose result access depends on
+// request-local policy beyond the source's global permission.
+type getAuthorizer interface {
+	AuthorizeGet(ctx context.Context, rel *domain.Release) error
 }
 
 type store interface {

@@ -3,7 +3,9 @@ package app
 type SearchRequest struct {
 	Type string
 
-	Query string
+	Query      string
+	Categories []int
+	Limit      int
 
 	IMDbID   string
 	TVDBID   string

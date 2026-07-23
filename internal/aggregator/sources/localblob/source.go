@@ -31,7 +31,11 @@ func (s *Source) Search(ctx context.Context, req aggregator.SearchRequest) ([]*d
 		return []*domain.Release{}, nil
 	}
 
-	items, err := s.store.SearchAggregatorReleaseCache(ctx, query, 100)
+	limit := req.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	items, err := s.store.SearchAggregatorReleaseCache(ctx, query, limit)
 	if err != nil {
 		return nil, err
 	}

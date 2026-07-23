@@ -280,6 +280,9 @@ func (s *Store) partitionRetentionReport(ctx context.Context, dryRun bool, batch
 	if batchSize <= 0 {
 		batchSize = 7
 	}
+	if batchSize > 31 {
+		batchSize = 31
+	}
 	targetTables := nativeSourceWorkPartitionTables()
 	result := &MaintenanceTaskResult{
 		TaskKey:              "partition_retention_drop",
@@ -287,7 +290,7 @@ func (s *Store) partitionRetentionReport(ctx context.Context, dryRun bool, batch
 		EstimatedRowsByTable: map[string]int64{},
 		Warnings: []string{
 			"targets the native source/work/projection partition set; binary_core and durable release/archive/catalog tables remain unpartitioned by design",
-			"batch size is interpreted as retention-days horizon",
+			"batch size is the maximum number of terminal source days considered per run",
 		},
 	}
 	if !dryRun {
@@ -363,7 +366,7 @@ func (s *Store) partitionRetentionReport(ctx context.Context, dryRun bool, batch
 	result.EstimatedRowsByTable["tables_with_source_posted_at"] = withSourcePostedAt
 	result.EstimatedRowsByTable["native_partitioned_tables"] = partitioned
 	result.EstimatedRowsByTable["non_partitioned_target_tables"] = nonPartitioned
-	result.EstimatedRowsByTable["retention_days_horizon"] = int64(batchSize)
+	result.EstimatedRowsByTable["terminal_day_limit"] = int64(batchSize)
 	partitionRows, err := s.db.QueryContext(ctx, `
 		WITH target(table_name) AS (
 			VALUES `+targetValues.String()+`
@@ -417,12 +420,6 @@ func (s *Store) partitionRetentionReport(ctx context.Context, dryRun bool, batch
 	}
 	for table, count := range defaultRows {
 		result.EstimatedRowsByTable[table+"_default_rows"] = count
-		if count > 0 {
-			result.Blockers = append(result.Blockers, fmt.Sprintf("%s default partition contains %d rows", table, count))
-		}
-	}
-	if len(result.Blockers) > 0 {
-		return result, nil
 	}
 
 	candidates, err := s.partitionRetentionCandidates(ctx, batchSize, targetTables)
@@ -488,7 +485,6 @@ func nativeSourceWorkPartitionTables() []string {
 		"binary_lifecycle",
 		"binary_completion_keys",
 		"binary_grouping_evidence",
-		"binary_projection_events",
 		"binary_superseded_sources",
 		"yenc_recovery_work_items",
 		"article_cohort_candidates",
@@ -527,7 +523,6 @@ func nativeSourceWorkPartitionDropOrder() []string {
 		"article_cohort_yenc_queue",
 		"article_cohort_assembly_queue",
 		"article_cohort_candidates",
-		"binary_projection_events",
 		"binary_superseded_sources",
 		"binary_grouping_evidence",
 		"binary_completion_keys",
@@ -633,6 +628,18 @@ func (s *Store) partitionDefaultRehomeReport(ctx context.Context, dryRun bool, b
 }
 
 func (s *Store) addPartitionDefaultRehomeBlockers(ctx context.Context, result *MaintenanceTaskResult) error {
+	var activeWriters int64
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM indexer_stage_runs
+		WHERE status = 'running'
+		  AND stage_name NOT IN ('maintenance.partition_default_rehome', 'partition_default_rehome')
+		  AND COALESCE(heartbeat_at, started_at) >= NOW() - INTERVAL '10 minutes'`).Scan(&activeWriters); err != nil {
+		return fmt.Errorf("check active indexer stages before default rehome: %w", err)
+	}
+	if activeWriters > 0 {
+		result.Blockers = append(result.Blockers, fmt.Sprintf("offline rehome requires all indexer writer stages to be stopped; %d recent running stage(s) remain", activeWriters))
+	}
 	exists, err := s.tableExists(ctx, "article_headers_default")
 	if err != nil {
 		return err
@@ -684,7 +691,7 @@ func (s *Store) partitionDefaultRehomeDays(ctx context.Context, targetTables []s
 			continue
 		}
 		rows, err := s.db.QueryContext(ctx, `
-			SELECT (date_trunc('day', source_posted_at))::date::text AS day_key, COUNT(*)::bigint
+			SELECT (source_posted_at AT TIME ZONE 'UTC')::date::text AS day_key, COUNT(*)::bigint
 			FROM `+quoteIdentifier(defaultTable)+`
 			GROUP BY day_key
 			ORDER BY day_key`)
@@ -722,6 +729,14 @@ func (s *Store) partitionDefaultRehomeDays(ctx context.Context, targetTables []s
 }
 
 func (s *Store) rehomeDefaultPartitionDay(ctx context.Context, dayKey string, targetTables []string) (map[string]int64, error) {
+	dayStart, err := time.ParseInLocation("2006-01-02", dayKey, time.UTC)
+	if err != nil {
+		return nil, fmt.Errorf("parse default partition rehome day %q: %w", dayKey, err)
+	}
+	dayEnd := dayStart.AddDate(0, 0, 1)
+	dayStartLiteral := quoteLiteral(dayStart.Format(time.RFC3339))
+	dayEndLiteral := quoteLiteral(dayEnd.Format(time.RFC3339))
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("begin default partition rehome tx: %w", err)
@@ -748,11 +763,11 @@ func (s *Store) rehomeDefaultPartitionDay(ctx context.Context, dayKey string, ta
 		detached = append(detached, table)
 		childTable := table + "_" + strings.ReplaceAll(dayKey, "-", "")
 		if _, err := tx.ExecContext(ctx, fmt.Sprintf(
-			`CREATE TABLE IF NOT EXISTS %s PARTITION OF %s FOR VALUES FROM (%s::date::timestamptz) TO ((%s::date + 1)::timestamptz)`,
+			`CREATE TABLE IF NOT EXISTS %s PARTITION OF %s FOR VALUES FROM (%s::timestamptz) TO (%s::timestamptz)`,
 			quoteIdentifier(childTable),
 			quoteIdentifier(table),
-			quoteLiteral(dayKey),
-			quoteLiteral(dayKey),
+			dayStartLiteral,
+			dayEndLiteral,
 		)); err != nil {
 			return nil, fmt.Errorf("create dated partition %s: %w", childTable, err)
 		}
@@ -776,15 +791,15 @@ func (s *Store) rehomeDefaultPartitionDay(ctx context.Context, dayKey string, ta
 			INSERT INTO %s (%s)
 			SELECT %s
 			FROM %s
-			WHERE source_posted_at >= %s::date::timestamptz
-			  AND source_posted_at < (%s::date + 1)::timestamptz
+			WHERE source_posted_at >= %s::timestamptz
+			  AND source_posted_at < %s::timestamptz
 			ON CONFLICT DO NOTHING`,
 			quoteIdentifier(table),
 			columnSQL,
 			columnSQL,
 			quoteIdentifier(defaultTable),
-			quoteLiteral(dayKey),
-			quoteLiteral(dayKey),
+			dayStartLiteral,
+			dayEndLiteral,
 		))
 		if err != nil {
 			return nil, fmt.Errorf("copy %s default rows for %s: %w", table, dayKey, err)
@@ -801,11 +816,11 @@ func (s *Store) rehomeDefaultPartitionDay(ctx context.Context, dayKey string, ta
 		defaultTable := table + "_default"
 		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
 			DELETE FROM %s
-			WHERE source_posted_at >= %s::date::timestamptz
-			  AND source_posted_at < (%s::date + 1)::timestamptz`,
+			WHERE source_posted_at >= %s::timestamptz
+			  AND source_posted_at < %s::timestamptz`,
 			quoteIdentifier(defaultTable),
-			quoteLiteral(dayKey),
-			quoteLiteral(dayKey),
+			dayStartLiteral,
+			dayEndLiteral,
 		)); err != nil {
 			return nil, fmt.Errorf("delete moved %s rows for %s: %w", defaultTable, dayKey, err)
 		}
@@ -909,7 +924,7 @@ func (s *Store) tableExists(ctx context.Context, table string) (bool, error) {
 	return exists, nil
 }
 
-func (s *Store) partitionRetentionCandidates(ctx context.Context, retentionDays int, targetTables []string) ([]partitionRetentionCandidate, error) {
+func (s *Store) partitionRetentionCandidates(ctx context.Context, dayLimit int, targetTables []string) ([]partitionRetentionCandidate, error) {
 	targetValues := strings.Builder{}
 	args := make([]any, 0, len(targetTables)+1)
 	for i, table := range targetTables {
@@ -919,10 +934,21 @@ func (s *Store) partitionRetentionCandidates(ctx context.Context, retentionDays 
 		fmt.Fprintf(&targetValues, "($%d::text)", len(args)+1)
 		args = append(args, table)
 	}
-	args = append(args, retentionDays)
+	args = append(args, dayLimit)
 	rows, err := s.db.QueryContext(ctx, `
 		WITH target(table_name) AS (
 			VALUES `+targetValues.String()+`
+		),
+		eligible_days AS (
+			SELECT source_day
+			FROM indexer_source_bucket_state
+			GROUP BY source_day
+			HAVING COUNT(*) > 0
+			   AND BOOL_AND(state IN ('success', 'no_yield'))
+			   AND BOOL_AND(purge_eligible_at IS NOT NULL AND purge_eligible_at <= NOW())
+			   AND BOOL_AND(open_work_count = 0)
+			ORDER BY source_day
+			LIMIT $`+fmt.Sprint(len(args))+`
 		)
 		SELECT
 			parent.relname AS parent_table,
@@ -939,8 +965,9 @@ func (s *Store) partitionRetentionCandidates(ctx context.Context, retentionDays 
 		  ON i.inhparent = parent.oid
 		JOIN pg_class child
 		  ON child.oid = i.inhrelid
+		JOIN eligible_days eligible
+		  ON eligible.source_day = to_date(substring(child.relname from '([0-9]{8})$'), 'YYYYMMDD')::date
 		WHERE child.relname ~ '_[0-9]{8}$'
-		  AND to_date(substring(child.relname from '([0-9]{8})$'), 'YYYYMMDD') < CURRENT_DATE - ($`+fmt.Sprint(len(args))+`::int)
 		ORDER BY partition_day, parent.relname`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list partition retention candidates: %w", err)
@@ -963,6 +990,17 @@ func (s *Store) partitionRetentionCandidates(ctx context.Context, retentionDays 
 func (s *Store) partitionRetentionDayBlockers(ctx context.Context, day time.Time) ([]string, error) {
 	start := day.UTC()
 	end := start.AddDate(0, 0, 1)
+	dayKey := start.Format("2006-01-02")
+	out := []string{}
+	for _, table := range nativeSourceWorkPartitionTables() {
+		hasRows, err := s.defaultPartitionHasRowsForDay(ctx, table, dayKey)
+		if err != nil {
+			return nil, fmt.Errorf("check %s default rows for source day %s: %w", table, dayKey, err)
+		}
+		if hasRows {
+			out = append(out, table+" default partition contains rows for this source day")
+		}
+	}
 	checks := []struct {
 		label string
 		query string
@@ -1004,7 +1042,6 @@ func (s *Store) partitionRetentionDayBlockers(ctx context.Context, day time.Time
 				  AND COALESCE(ras.archive_status, 'active') NOT IN ('archived', 'purge_pending', 'purged')`,
 		},
 	}
-	out := []string{}
 	for _, check := range checks {
 		var count int64
 		if err := s.db.QueryRowContext(ctx, check.query, start, end).Scan(&count); err != nil {
@@ -1044,6 +1081,17 @@ func (s *Store) dropPartitionRetentionDay(ctx context.Context, candidates []part
 			return nil, fmt.Errorf("drop partition %s: %w", candidate.ChildTable, err)
 		}
 		out[candidate.ChildTable] = candidate.RowEstimate
+	}
+	if len(candidates) > 0 {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE indexer_source_bucket_state
+			SET state = 'purged', purged_at = NOW(), updated_at = NOW()
+			WHERE source_day = $1
+			  AND state IN ('success', 'no_yield')
+			  AND purge_eligible_at IS NOT NULL
+			  AND open_work_count = 0`, candidates[0].Day); err != nil {
+			return nil, fmt.Errorf("mark source day %s purged: %w", candidates[0].Day.Format("2006-01-02"), err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit partition drop tx: %w", err)
@@ -1934,7 +1982,6 @@ func (s *Store) runEmergencySourceWindowReset(ctx context.Context, result *Maint
 		"binary_par2_targets",
 		"binary_completion_keys",
 		"binary_lifecycle",
-		"binary_projection_events",
 		"binary_superseded_sources",
 		"yenc_recovery_work_items",
 		"article_headers",
@@ -2108,7 +2155,6 @@ func countStagedEmergencyBinaryRows(ctx context.Context, tx *sql.Tx) (map[string
 		"binary_par2_targets":           `SELECT COUNT(*) FROM binary_par2_targets t JOIN tmp_emergency_source_window_binary_ids e ON e.binary_id = t.binary_id`,
 		"binary_completion_keys":        `SELECT COUNT(*) FROM binary_completion_keys t JOIN tmp_emergency_source_window_binary_ids e ON e.binary_id = t.binary_id`,
 		"binary_lifecycle":              `SELECT COUNT(*) FROM binary_lifecycle t JOIN tmp_emergency_source_window_binary_ids e ON e.binary_id = t.binary_id`,
-		"binary_projection_events":      `SELECT COUNT(*) FROM binary_projection_events t JOIN tmp_emergency_source_window_binary_ids e ON e.binary_id = t.binary_id`,
 		"binary_superseded_sources": `
 			SELECT COUNT(*)
 			FROM (
@@ -2192,7 +2238,6 @@ func isVacuumableMaintenanceTable(table string) bool {
 		"binary_observation_stats",
 		"binary_par2_sets",
 		"binary_par2_targets",
-		"binary_projection_events",
 		"binary_recovery_current",
 		"binary_superseded_sources",
 		"binary_parts",

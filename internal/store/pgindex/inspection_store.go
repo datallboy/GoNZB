@@ -25,7 +25,6 @@ var (
 	par2CoverageRARFamilyRE    = regexp.MustCompile(`(?i)\.part\d+\.rar$|\.r\d{2,3}$`)
 	par2CoverageSeparatorRE    = regexp.MustCompile(`[\[\]\(\)\{\}\-_=+,;:]+`)
 	par2CoverageMultiSpaceRE   = regexp.MustCompile(`\s+`)
-	par2CoverageNonKeyCharsRE  = regexp.MustCompile(`[^\pL\pN]+`)
 )
 
 func execInspectionReplaceBatch(ctx context.Context, tx *sql.Tx, insertPrefix string, rows [][]any) error {
@@ -119,14 +118,6 @@ func (s *Store) existingReleaseIDsForInspectionRows(ctx context.Context, q inspe
 		return nil, err
 	}
 	return existing, nil
-}
-
-func binaryStillExistsInTx(ctx context.Context, tx *sql.Tx, binaryID int64) (bool, error) {
-	var exists bool
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM binary_core WHERE binary_id = $1)`, binaryID).Scan(&exists); err != nil {
-		return false, fmt.Errorf("check binary existence %d: %w", binaryID, err)
-	}
-	return exists, nil
 }
 
 func binarySourcePostedAtInTx(ctx context.Context, tx *sql.Tx, binaryID int64) (time.Time, bool, error) {
@@ -1293,6 +1284,15 @@ func (s *Store) listBinaryInspectionCandidatesRaw(ctx context.Context, q binaryI
 		errorRerunPredicate += `
 			OR COALESCE(bi.summary_json->>'probe_error_detail', '') ILIKE '%has no articles%'
 			OR (
+				bi.status = 'completed' AND
+				COALESCE(r.password_state, '') = 'unknown' AND
+				COALESCE(bi.summary_json->>'encrypted', '') = 'false' AND
+				CASE
+					WHEN jsonb_typeof(bi.summary_json->'archive_entries') = 'array' THEN jsonb_array_length(bi.summary_json->'archive_entries')
+					ELSE 0
+				END > 0
+			)
+			OR (
 				COALESCE(bi.summary_json->>'probe_strategy', '') = 'metadata_only' AND
 				CASE
 					WHEN jsonb_typeof(bi.summary_json->'archive_entries') = 'array' THEN jsonb_array_length(bi.summary_json->'archive_entries')
@@ -1895,6 +1895,13 @@ func (s *Store) ClaimBinaryInspectionCandidates(ctx context.Context, req BinaryI
 	if _, err := inspectCandidateFilter(req.StageName, req.Options.RequireExpectedFileCount); err != nil {
 		return nil, err
 	}
+	preview, err := s.listBinaryInspectionCandidates(ctx, s.db, req.StageName, req.Limit, req.Options)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.ensurePartitionBundleForBinaryIDs(ctx, partitionBundleInspect, inspectionCandidateBinaryIDs(preview)); err != nil {
+		return nil, err
+	}
 	if isQueuedInspectionStage(req.StageName) {
 		refreshLimit := req.Limit * 10
 		if refreshLimit < 1000 {
@@ -2012,6 +2019,7 @@ func (s *Store) ClaimBinaryInspectionCandidates(ctx context.Context, req BinaryI
 			NOW() + ($3::DOUBLE PRECISION * INTERVAL '1 second'),
 			NOW()
 			FROM locked_binaries req
+			WHERE to_regclass('public.binary_inspections_' || to_char(req.source_posted_at AT TIME ZONE 'UTC', 'YYYYMMDD')) IS NOT NULL
 			ON CONFLICT (source_posted_at, stage_name, binary_id) DO UPDATE
 			SET release_id = COALESCE(EXCLUDED.release_id, binary_inspections.release_id),
 		    status = 'running',
@@ -2051,6 +2059,9 @@ func (s *Store) StartBinaryInspection(ctx context.Context, stageName string, bin
 	}
 	if binaryID <= 0 {
 		return fmt.Errorf("binary id is required")
+	}
+	if err := s.ensurePartitionBundleForBinaryIDs(ctx, partitionBundleInspect, []int64{binaryID}); err != nil {
+		return err
 	}
 
 	var sourceUpdated any
@@ -2605,6 +2616,9 @@ func (s *Store) ReplaceBinaryInspectionArtifacts(ctx context.Context, stageName 
 	if stageName == "" {
 		return fmt.Errorf("stage name is required")
 	}
+	if err := s.ensurePartitionBundleForBinaryIDs(ctx, partitionBundleInspect, []int64{binaryID}); err != nil {
+		return err
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -2625,6 +2639,9 @@ func (s *Store) ReplaceBinaryInspectionArtifacts(ctx context.Context, stageName 
 func (s *Store) ReplaceBinaryArchiveEntries(ctx context.Context, binaryID int64, rows []BinaryArchiveEntryRecord) error {
 	if binaryID <= 0 {
 		return fmt.Errorf("binary id is required")
+	}
+	if err := s.ensurePartitionBundleForBinaryIDs(ctx, partitionBundleInspect, []int64{binaryID}); err != nil {
+		return err
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -2705,6 +2722,9 @@ func (s *Store) ReplaceBinaryArchiveEntries(ctx context.Context, binaryID int64,
 func (s *Store) ReplaceBinaryMediaStreams(ctx context.Context, binaryID int64, rows []BinaryMediaStreamRecord) error {
 	if binaryID <= 0 {
 		return fmt.Errorf("binary id is required")
+	}
+	if err := s.ensurePartitionBundleForBinaryIDs(ctx, partitionBundleInspect, []int64{binaryID}); err != nil {
+		return err
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -2800,6 +2820,9 @@ func (s *Store) ReplaceBinaryTextEvidence(ctx context.Context, stageName string,
 	if stageName == "" {
 		return fmt.Errorf("stage name is required")
 	}
+	if err := s.ensurePartitionBundleForBinaryIDs(ctx, partitionBundleInspect, []int64{binaryID}); err != nil {
+		return err
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -2877,6 +2900,9 @@ func (s *Store) ReplaceBinaryPAR2Sets(ctx context.Context, binaryID int64, rows 
 	if binaryID <= 0 {
 		return fmt.Errorf("binary id is required")
 	}
+	if err := s.ensurePartitionBundleForBinaryIDs(ctx, partitionBundleInspect, []int64{binaryID}); err != nil {
+		return err
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -2897,6 +2923,9 @@ func (s *Store) ReplaceBinaryPAR2Sets(ctx context.Context, binaryID int64, rows 
 func (s *Store) ReplaceBinaryPAR2Targets(ctx context.Context, binaryID int64, rows []BinaryPAR2TargetRecord) error {
 	if binaryID <= 0 {
 		return fmt.Errorf("binary id is required")
+	}
+	if err := s.ensurePartitionBundleForBinaryIDs(ctx, partitionBundleInspect, []int64{binaryID}); err != nil {
+		return err
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -2932,6 +2961,13 @@ func (s *Store) ApplyBinaryPAR2TargetCoverage(ctx context.Context, binaryID int6
 func (s *Store) ApplyPAR2InspectionBatch(ctx context.Context, rows []PAR2InspectionBatchRecord) (*PAR2InspectionBatchResult, error) {
 	if len(rows) == 0 {
 		return &PAR2InspectionBatchResult{}, nil
+	}
+	binaryIDs := make([]int64, 0, len(rows))
+	for _, row := range rows {
+		binaryIDs = append(binaryIDs, row.BinaryID)
+	}
+	if err := s.ensurePartitionBundleForBinaryIDs(ctx, partitionBundleInspect, binaryIDs); err != nil {
+		return nil, err
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -3307,11 +3343,6 @@ func par2CoverageBaseStem(fileName string) string {
 	return strings.TrimSpace(lower)
 }
 
-func par2CoverageReleaseKey(baseStem string) string {
-	key := par2CoverageNonKeyCharsRE.ReplaceAllString(strings.ToLower(strings.TrimSpace(baseStem)), "")
-	return strings.TrimSpace(key)
-}
-
 func parseInt64PGIndex(value string) int64 {
 	var out int64
 	for _, r := range strings.TrimSpace(value) {
@@ -3324,7 +3355,18 @@ func parseInt64PGIndex(value string) int64 {
 }
 
 func (s *Store) finishBinaryInspection(ctx context.Context, in BinaryInspectionRecord, fallbackStatus string) error {
+	if err := s.ensurePartitionBundleForBinaryIDs(ctx, partitionBundleInspect, []int64{in.BinaryID}); err != nil {
+		return err
+	}
 	return s.finishBinaryInspectionWithDB(ctx, s.db, in, fallbackStatus)
+}
+
+func inspectionCandidateBinaryIDs(candidates []BinaryInspectionCandidate) []int64 {
+	ids := make([]int64, 0, len(candidates))
+	for _, candidate := range candidates {
+		ids = append(ids, candidate.BinaryID)
+	}
+	return ids
 }
 
 type inspectionExecer interface {
@@ -3527,21 +3569,6 @@ func inspectionSummaryMessage(summary map[string]any, key string) string {
 		return ""
 	}
 	return strings.TrimSpace(fmt.Sprint(raw))
-}
-
-func isRecoverableInspectionError(msg string) bool {
-	msg = strings.ToLower(strings.TrimSpace(msg))
-	if msg == "" {
-		return false
-	}
-	return strings.Contains(msg, "broken pipe") ||
-		strings.Contains(msg, "connection reset by peer") ||
-		strings.Contains(msg, "timeout") ||
-		strings.Contains(msg, "i/o timeout") ||
-		strings.Contains(msg, "unexpected eof") ||
-		strings.Contains(msg, "connection refused") ||
-		strings.Contains(msg, "no such host") ||
-		strings.Contains(msg, "network is unreachable")
 }
 
 func inspectCandidateFilter(stageName string, requireExpectedFileCount bool) (string, error) {

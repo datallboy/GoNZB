@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { getCapabilities, getSettings, updateSettings } from '../../shared/api/settings'
 import type {
   AdminStageConfigPatch,
   ArrIntegrationRuntimeSettings,
   ControlPlaneCapabilities,
+  GoNZBNetRuntimeSettings,
   IndexerRuntimeSettings,
   IndexingRuntimeSettings,
   RuntimeSettings,
@@ -15,6 +16,8 @@ import type {
 type StageKey =
   | 'scrape_latest'
   | 'scrape_backfill'
+  | 'scrape_timeframe'
+  | 'scrape_deferred'
   | 'poster_materialize'
   | 'crosspost_popularity_refresh'
   | 'assemble'
@@ -24,10 +27,6 @@ type StageKey =
   | 'release_archive_nzb'
   | 'release'
   | 'inspect_discovery'
-  | 'inspect_discovery_ready_refresh'
-  | 'inspect_par2_ready_refresh'
-  | 'inspect_archive_ready_refresh'
-  | 'inspect_media_ready_refresh'
   | 'inspect_par2'
   | 'inspect_nfo'
   | 'inspect_archive'
@@ -36,7 +35,7 @@ type StageKey =
   | 'enrich_predb'
   | 'enrich_tmdb'
 
-type SettingsTab = 'nntp' | 'downloader' | 'aggregator' | 'indexer'
+type SettingsTab = 'nntp' | 'downloader' | 'aggregator' | 'gonzbnet' | 'indexer'
 
 type StageDefinition = {
   key: StageKey
@@ -58,6 +57,8 @@ type StageDefinition = {
 const stageDefinitions: StageDefinition[] = [
   { key: 'scrape_latest', label: 'Scrape latest', supportsConcurrency: true, showMaxBatches: true, defaultMaxBatches: 1, description: 'Round-robin head scan. Each worker takes one group claim at a time so large group sets stay responsive.', batchHelpText: 'Article numbers requested per group claim.', maxBatchesHelpText: 'Maximum group claims per scheduled run. Default 1 keeps each pass narrow; raise to scan more groups per pass.', concurrencyHelpText: 'Parallel NNTP XOVER workers. Default 1. Higher values consume more indexer NNTP slots and Postgres ingest capacity.' },
   { key: 'scrape_backfill', label: 'Scrape backfill', supportsConcurrency: true, showMaxBatches: true, defaultMaxBatches: 1, description: 'Round-robin older article scan. Use concurrency plus max batches to spread work across many groups safely.', batchHelpText: 'Article numbers requested per group claim.', maxBatchesHelpText: 'Maximum group claims per scheduled run. Default 1 keeps backfill from monopolizing provider and DB capacity.', concurrencyHelpText: 'Parallel NNTP XOVER workers. Default 1. Higher values consume more indexer NNTP slots and Postgres ingest capacity.' },
+  { key: 'scrape_timeframe', label: 'Scrape historical timeframes', supportsConcurrency: false, showMaxBatches: true, defaultMaxBatches: 1, description: 'Processes explicitly configured date windows without changing latest or backfill progress. Dates are resolved to article-number bounds using bounded XOVER probes.', batchHelpText: 'Article numbers requested from one timeframe per pass.', maxBatchesHelpText: 'Maximum configured timeframe entries advanced per scheduled run. Default 1 keeps historical work subordinate to latest indexing.' },
+  { key: 'scrape_deferred', label: 'Drain deferred scrape ranges', supportsConcurrency: false, showMaxBatches: true, defaultMaxBatches: 1, description: 'Claims durable article ranges postponed by partition-day or recovery-cap limits. Keep enabled whenever latest, backfill, or historical scrape can create deferred work.', batchHelpText: 'Maximum article numbers in the claimed deferred range; the saved range itself remains the source of truth.', maxBatchesHelpText: 'Maximum deferred ranges claimed per run. Default 1 prevents catch-up work from displacing latest freshness.' },
   { key: 'poster_materialize', label: 'Poster materialize', supportsConcurrency: false, description: 'Drains queued raw poster names into the poster dimension and per-header poster projection without mutating scrape payload rows.', batchHelpText: 'Queued poster rows claimed per run.' },
   { key: 'crosspost_popularity_refresh', label: 'Crosspost popularity', supportsConcurrency: false, description: 'Refreshes the cross-post popularity report from raw Xref telemetry. Reporting-only; not required for release formation.', batchHelpText: 'Observed cross-post groups claimed per run.' },
   { key: 'assemble', label: 'Assemble', supportsConcurrency: true, showBinaryUpsertChunk: true, showLaneBalance: true, description: 'Creates and completes binary files from scraped article headers. Internally balances completion work and fresh binary creation.', batchHelpText: 'Article headers claimed per worker pass.', concurrencyHelpText: 'CPU/DB workers. Raise only if Postgres and CPU have headroom.' },
@@ -66,10 +67,6 @@ const stageDefinitions: StageDefinition[] = [
   { key: 'release', label: 'Release', supportsConcurrency: false, description: 'Clusters ready summary candidates into persisted releases.', batchHelpText: 'Ready candidate families inspected per run.' },
   { key: 'release_generate_nzb', label: 'Generate NZB', supportsConcurrency: false, description: 'Pre-generates NZBs in the background for releases that already meet the public-ready policy.', batchHelpText: 'Eligible releases processed per run.' },
   { key: 'release_archive_nzb', label: 'Archive NZB', supportsConcurrency: false, description: 'Copies release NZBs into the archive store before source purge begins.', batchHelpText: 'Generated NZBs archived per run.' },
-  { key: 'inspect_discovery_ready_refresh', label: 'Inspect discovery queue', supportsConcurrency: false, description: 'Populates and retires discovery ready-queue rows before discovery workers claim them.', batchHelpText: 'Ready candidates scanned per refresh pass.' },
-  { key: 'inspect_par2_ready_refresh', label: 'Inspect PAR2 queue', supportsConcurrency: false, description: 'Populates PAR2 inspection ready-queue rows before PAR2 workers claim them.', batchHelpText: 'Ready candidates scanned per refresh pass.' },
-  { key: 'inspect_archive_ready_refresh', label: 'Inspect archive queue', supportsConcurrency: false, description: 'Populates archive inspection ready-queue rows before archive workers claim them.', batchHelpText: 'Ready candidates scanned per refresh pass.' },
-  { key: 'inspect_media_ready_refresh', label: 'Inspect media queue', supportsConcurrency: false, description: 'Populates media inspection ready-queue rows before media workers claim them.', batchHelpText: 'Ready candidates scanned per refresh pass.' },
   { key: 'inspect_discovery', label: 'Inspect discovery', supportsConcurrency: true, description: 'Pre-release opaque-binary discovery pass that identifies archive/PAR2/NFO/media-like binaries.', batchHelpText: 'Binary candidates sampled per run.', concurrencyHelpText: 'NNTP prefix-sampling workers. Raise cautiously because each worker fetches article prefixes.' },
   { key: 'inspect_par2', label: 'Inspect PAR2', supportsConcurrency: true, description: 'PAR2 inspection and recovery metadata extraction.', batchHelpText: 'PAR2 binaries claimed per run.', concurrencyHelpText: 'Inspection workers. Uses NNTP when materializing binaries.' },
   { key: 'inspect_nfo', label: 'Inspect NFO', supportsConcurrency: false, description: 'NFO text extraction and evidence capture.', batchHelpText: 'NFO binaries claimed per run.' },
@@ -81,10 +78,9 @@ const stageDefinitions: StageDefinition[] = [
 ]
 
 const stageGroups: Array<{ title: string; keys: StageKey[] }> = [
-  { title: 'Scrape commands', keys: ['scrape_latest', 'scrape_backfill', 'poster_materialize', 'crosspost_popularity_refresh'] },
+  { title: 'Scrape commands', keys: ['scrape_latest', 'scrape_backfill', 'scrape_timeframe', 'scrape_deferred', 'poster_materialize', 'crosspost_popularity_refresh'] },
   { title: 'Assemble and recovery commands', keys: ['assemble', 'recover_yenc'] },
   { title: 'Release commands', keys: ['release_summary_refresh', 'release', 'release_generate_nzb', 'release_archive_nzb'] },
-  { title: 'Inspection queue refresh', keys: ['inspect_discovery_ready_refresh', 'inspect_par2_ready_refresh', 'inspect_archive_ready_refresh', 'inspect_media_ready_refresh'] },
   { title: 'Inspection commands', keys: ['inspect_discovery', 'inspect_par2', 'inspect_nfo', 'inspect_archive', 'inspect_password', 'inspect_media'] },
   { title: 'Enrichment commands', keys: ['enrich_predb', 'enrich_tmdb'] },
 ]
@@ -93,8 +89,13 @@ const settingsTabs: Array<{ key: SettingsTab; label: string }> = [
   { key: 'nntp', label: 'NNTP' },
   { key: 'downloader', label: 'Downloader' },
   { key: 'aggregator', label: 'Aggregator' },
+  { key: 'gonzbnet', label: 'GoNZBNet' },
   { key: 'indexer', label: 'Indexer' },
 ]
+
+function settingsTabFromQuery(value: string | null): SettingsTab {
+  return settingsTabs.some((tab) => tab.key === value) ? value as SettingsTab : 'nntp'
+}
 
 const nntpProviderRoles = [
   { key: 'scrape', label: 'Scrape' },
@@ -103,13 +104,89 @@ const nntpProviderRoles = [
   { key: 'download', label: 'Download' },
 ]
 
+function defaultGoNZBNetSettings(): GoNZBNetRuntimeSettings {
+  return {
+    node_alias: '',
+    advertise_url: '',
+    allow_insecure_peer_http: false,
+    publish_pool_ids: [],
+    manual_peers: [],
+    visibility: 'unlisted',
+    allow_pool_creation: true,
+    allow_join_requests: true,
+    admission_relay_enabled: true,
+    consumer_enabled: true,
+    scanner_enabled: false,
+    index_projection_enabled: true,
+    manifest_builder_enabled: false,
+    manifest_cache_enabled: true,
+    validator_enabled: false,
+    health_checker_enabled: false,
+    coverage_enabled: false,
+    scheduler_enabled: false,
+    publish_release_cards_enabled: false,
+    publish_release_cards_batch_size: 50,
+    publish_release_cards_interval_minutes: 10,
+    manifest_availability_enabled: false,
+    health_attestations_enabled: false,
+    health_attestations_batch_size: 50,
+    health_attestations_interval_minutes: 30,
+    scanner_max_groups: 25,
+    scanner_max_articles_per_hour: 250000,
+    scanner_claim_ttl_minutes: 30,
+    scanner_checkpoint_interval_seconds: 300,
+    scanner_respect_remote_claims: true,
+    scanner_allow_unassigned_work: false,
+    coverage_mode: 'manual',
+    coverage_min_trust_for_claim: 0.65,
+    coverage_validation_overlap_percent: 10,
+    coverage_stale_claim_penalty: true,
+    coverage_provider_scope_mode: 'hash_only',
+    validation_batch_size: 25,
+    validation_interval_minutes: 15,
+    validation_tiers: ['metadata', 'article_stat', 'segment_stat'],
+    validation_max_manifests_per_hour: 500,
+    validation_sample_percent: 10,
+    validation_allow_sample_payload_fetch: false,
+    validation_allow_par2_validation: false,
+    validation_publish_provider_scope_hash: true,
+    checksum_validation_enabled: false,
+    manifest_cache_max_bytes: 10 * 1024 * 1024 * 1024,
+    manifest_cache_ttl_days: 90,
+    manifest_cache_serve_to_trusted_pools: true,
+    pull_sync_enabled: false,
+    pull_sync_interval_minutes: 10,
+    push_sync_enabled: false,
+    push_sync_interval_minutes: 10,
+    push_sync_batch_size: 100,
+    websocket_gossip_enabled: false,
+    gossip_interval_minutes: 1,
+    gossip_batch_size: 100,
+    gossip_ttl: 4,
+    gossip_fanout: 4,
+    peer_exchange_enabled: false,
+    relay_enabled: false,
+    max_event_bytes: 262144,
+    max_manifest_bytes: 10485760,
+    manifest_fetch_timeout_seconds: 20,
+    max_batch_events: 100,
+    rate_limit_events_per_minute: 120,
+    time_tolerance_seconds: 120,
+    max_event_age_hours: 720,
+    nonce_ttl_seconds: 600,
+    share_provider_backbone_hash: false,
+    share_source_indexer_hash: false,
+  }
+}
+
 function defaultSettings(): RuntimeSettings {
   return {
     servers: [],
     downloader_servers: [],
     indexer_servers: [],
     indexers: [],
-    aggregator: { sources: { local_blob: { enabled: false }, usenet_indexer: { enabled: false } } },
+    aggregator: { sources: { local_blob: { enabled: false }, usenet_indexer: { enabled: false }, gonzbnet: { enabled: false } } },
+    gonzbnet: defaultGoNZBNetSettings(),
     download: {
       out_dir: './downloads',
       completed_dir: './downloads/completed',
@@ -128,8 +205,11 @@ function defaultSettings(): RuntimeSettings {
       wildcard_rules: [],
       provider_group_inventory: [],
       materialized_groups: [],
+      scrape_timeframes: [],
       scrape_latest: stageDefaults(5000, 1, { max_batches: 1 }),
       scrape_backfill: stageDefaults(5000, 1, { max_batches: 1 }),
+      scrape_timeframe: { ...stageDefaults(5000, 1, { max_batches: 1 }), enabled: false },
+      scrape_deferred: { ...stageDefaults(5000, 1, { max_batches: 1 }), enabled: true },
       poster_materialize: stageDefaults(10000),
       crosspost_popularity_refresh: stageDefaults(1000),
       assemble: stageDefaults(5000, 1, { binary_upsert_db_chunk_size: 250, lane_a_target_pct: 70, lane_b_min_pct: 30 }),
@@ -142,6 +222,20 @@ function defaultSettings(): RuntimeSettings {
         resume_open_headers: 10000,
         max_blocking_yenc: 50000,
         resume_blocking_yenc: 10000,
+      },
+      partitions: {
+        precreate_days_ahead: 2,
+        max_new_source_days_per_pass: 32,
+        ddl_lock_timeout_seconds: 5,
+      },
+      retention: {
+        source_settle_hours: 24,
+        no_yield_grace_days: 7,
+        yenc_terminal_attempts: 4,
+        execute_outcome_purge: false,
+      },
+      recovery_admission: {
+        latest_reserve_percent: 10,
       },
       release_summary_refresh: stageDefaults(10000, 0, { max_batches: 10 }),
       release: {
@@ -169,10 +263,6 @@ function defaultSettings(): RuntimeSettings {
       },
       release_generate_nzb: stageDefaults(100),
       release_archive_nzb: stageDefaults(100),
-      inspect_discovery_ready_refresh: stageDefaults(10000),
-      inspect_par2_ready_refresh: stageDefaults(10000),
-      inspect_archive_ready_refresh: stageDefaults(10000),
-      inspect_media_ready_refresh: stageDefaults(10000),
       match: {
         high_confidence_threshold: 0.85,
         probable_confidence_threshold: 0.55,
@@ -261,7 +351,15 @@ function normalizeSettings(input?: RuntimeSettings): RuntimeSettings {
         ...input?.aggregator?.sources,
         local_blob: { enabled: Boolean(input?.aggregator?.sources?.local_blob?.enabled) },
         usenet_indexer: { enabled: Boolean(input?.aggregator?.sources?.usenet_indexer?.enabled) },
+        gonzbnet: { enabled: Boolean(input?.aggregator?.sources?.gonzbnet?.enabled) },
       },
+    },
+    gonzbnet: {
+      ...defaults.gonzbnet!,
+      ...input?.gonzbnet,
+      publish_pool_ids: input?.gonzbnet?.publish_pool_ids ?? [],
+      manual_peers: input?.gonzbnet?.manual_peers ?? [],
+      validation_tiers: input?.gonzbnet?.validation_tiers ?? defaults.gonzbnet!.validation_tiers,
     },
     download: {
       ...defaults.download!,
@@ -281,8 +379,11 @@ function normalizeSettings(input?: RuntimeSettings): RuntimeSettings {
       wildcard_rules: indexing.wildcard_rules ?? [],
       provider_group_inventory: indexing.provider_group_inventory ?? [],
       materialized_groups: indexing.materialized_groups ?? [],
+      scrape_timeframes: indexing.scrape_timeframes ?? [],
       scrape_latest: { ...defaults.indexing!.scrape_latest, ...indexing.scrape_latest },
       scrape_backfill: { ...defaults.indexing!.scrape_backfill, ...indexing.scrape_backfill },
+      scrape_timeframe: { ...defaults.indexing!.scrape_timeframe, ...indexing.scrape_timeframe },
+      scrape_deferred: { ...defaults.indexing!.scrape_deferred, ...indexing.scrape_deferred },
       poster_materialize: { ...defaults.indexing!.poster_materialize, ...indexing.poster_materialize },
       crosspost_popularity_refresh: { ...defaults.indexing!.crosspost_popularity_refresh, ...indexing.crosspost_popularity_refresh },
       assemble: { ...defaults.indexing!.assemble, ...indexing.assemble },
@@ -296,14 +397,26 @@ function normalizeSettings(input?: RuntimeSettings): RuntimeSettings {
         max_blocking_yenc: indexing.source_window?.max_blocking_yenc ?? defaults.indexing!.source_window!.max_blocking_yenc,
         resume_blocking_yenc: indexing.source_window?.resume_blocking_yenc ?? defaults.indexing!.source_window!.resume_blocking_yenc,
       },
+      partitions: {
+        precreate_days_ahead: indexing.partitions?.precreate_days_ahead ?? 2,
+        max_new_source_days_per_pass: indexing.partitions?.max_new_source_days_per_pass ?? 32,
+        ddl_lock_timeout_seconds: indexing.partitions?.ddl_lock_timeout_seconds ?? 5,
+      },
+      retention: {
+        ...indexing.retention,
+        source_settle_hours: indexing.retention?.source_settle_hours ?? 24,
+        no_yield_grace_days: indexing.retention?.no_yield_grace_days ?? 7,
+        yenc_terminal_attempts: indexing.retention?.yenc_terminal_attempts ?? 4,
+        execute_outcome_purge: indexing.retention?.execute_outcome_purge ?? false,
+      },
+      recovery_admission: {
+        ...indexing.recovery_admission,
+        latest_reserve_percent: indexing.recovery_admission?.latest_reserve_percent ?? 10,
+      },
       release_summary_refresh: { ...defaults.indexing!.release_summary_refresh, ...indexing.release_summary_refresh },
       release: { ...defaults.indexing!.release, ...indexing.release },
       release_generate_nzb: { ...defaults.indexing!.release_generate_nzb, ...indexing.release_generate_nzb },
       release_archive_nzb: { ...defaults.indexing!.release_archive_nzb, ...indexing.release_archive_nzb },
-      inspect_discovery_ready_refresh: { ...defaults.indexing!.inspect_discovery_ready_refresh, ...indexing.inspect_discovery_ready_refresh },
-      inspect_par2_ready_refresh: { ...defaults.indexing!.inspect_par2_ready_refresh, ...indexing.inspect_par2_ready_refresh },
-      inspect_archive_ready_refresh: { ...defaults.indexing!.inspect_archive_ready_refresh, ...indexing.inspect_archive_ready_refresh },
-      inspect_media_ready_refresh: { ...defaults.indexing!.inspect_media_ready_refresh, ...indexing.inspect_media_ready_refresh },
       match: { ...defaults.indexing!.match, ...indexing.match },
       inspect: { ...defaults.indexing!.inspect, ...indexing.inspect },
       storage_guard: { ...defaults.indexing!.storage_guard, ...indexing.storage_guard },
@@ -502,6 +615,11 @@ function buildTabPatch(tab: SettingsTab, settings: RuntimeSettings) {
         indexers: settings.indexers ?? [],
         aggregator: settings.aggregator,
       }
+    case 'gonzbnet':
+      return {
+        gonzbnet: settings.gonzbnet,
+        aggregator: settings.aggregator,
+      }
     case 'indexer':
       return {
         indexing: settings.indexing ? sanitizeIndexingForSave(settings.indexing) : settings.indexing,
@@ -510,9 +628,9 @@ function buildTabPatch(tab: SettingsTab, settings: RuntimeSettings) {
 }
 
 export function AdminSettingsPage() {
+  const [searchParams, setSearchParams] = useSearchParams()
   const [settings, setSettings] = useState<RuntimeSettings>(defaultSettings())
   const [capabilities, setCapabilities] = useState<ControlPlaneCapabilities | null>(null)
-  const [activeTab, setActiveTab] = useState<SettingsTab>('nntp')
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -554,8 +672,10 @@ export function AdminSettingsPage() {
   }
 
   const normalized = normalizeSettings(settings)
+  const activeTab = settingsTabFromQuery(searchParams.get('tab'))
   const indexing = normalized.indexing!
   const aggregator = normalized.aggregator!
+  const gonzbnet = normalized.gonzbnet!
   const download = normalized.download!
   const nntpPool = normalized.nntp_pool!
   const servers = normalized.servers ?? []
@@ -568,6 +688,10 @@ export function AdminSettingsPage() {
 
   function setIndexing(next: IndexingRuntimeSettings) {
     setSettings((current) => ({ ...current, indexing: next }))
+  }
+
+  function setGoNZBNet(patch: Partial<GoNZBNetRuntimeSettings>) {
+    setSettings((current) => ({ ...current, gonzbnet: { ...gonzbnet, ...patch } }))
   }
 
   function updateStage(key: StageKey, patch: AdminStageConfigPatch) {
@@ -594,7 +718,7 @@ export function AdminSettingsPage() {
               className={tab.key === activeTab ? 'settings-tab is-active' : 'settings-tab'}
               aria-selected={tab.key === activeTab}
               onClick={() => {
-                setActiveTab(tab.key)
+                setSearchParams({ tab: tab.key }, { replace: true })
                 setMessage(null)
                 setError(null)
               }}
@@ -748,6 +872,167 @@ export function AdminSettingsPage() {
                 </div>
               </div>
             ))}
+          </SettingsSection>
+          <SettingsActions onReload={() => void refresh()} />
+        </ModuleGroup>
+        ) : null}
+
+        {activeTab === 'gonzbnet' ? (
+        <ModuleGroup title="GoNZBNet settings">
+          <div className="banner">
+            These settings reload the federation runtime. Module enablement, database connection, listener/base path, protocol and network identity, private-key storage, local pool identity, and relay credentials remain bootstrap settings in <code>config.yaml</code>.{' '}
+            <Link to="/admin/gonzbnet">Open GoNZBNet administration</Link>
+          </div>
+          {!capabilities?.modules.gonzbnet?.enabled ? (
+            <div className="banner">The GoNZBNet module is disabled in bootstrap configuration. You can preconfigure runtime behavior here, but it will not run until the module is enabled.</div>
+          ) : null}
+
+          <SettingsSection title="Participation roles">
+            <div className="banner">
+              For one operator running the indexer and aggregator, one GoNZBNet node is recommended. Enable the roles that use those local modules; add another node only for a different operator, NNTP viewpoint, failure domain, exposure boundary, or independently scaled workload. Another container on the same host usually is not an independent node.
+            </div>
+            <div className="toolbar-grid">
+              <CheckboxField label="Aggregator federation source" checked={Boolean(aggregator.sources?.gonzbnet?.enabled)} onChange={(enabled) => setSettings((current) => ({ ...current, aggregator: { sources: { ...aggregator.sources, gonzbnet: { enabled } } } }))} helpText="Allows the aggregator to resolve releases and manifests from the federated cache." />
+              <CheckboxField label="Consumer" checked={gonzbnet.consumer_enabled} onChange={(value) => setGoNZBNet({ consumer_enabled: value })} helpText="Consumes signed pool events and fetches manifests." />
+              <CheckboxField label="Scanner" checked={gonzbnet.scanner_enabled} onChange={(value) => setGoNZBNet({ scanner_enabled: value })} helpText="Performs assigned NNTP coverage work." />
+              <CheckboxField label="Index projection" checked={gonzbnet.index_projection_enabled} onChange={(value) => setGoNZBNet({ index_projection_enabled: value })} helpText="Projects accepted release cards into the local searchable index." />
+              <CheckboxField label="Manifest builder" checked={gonzbnet.manifest_builder_enabled} onChange={(value) => setGoNZBNet({ manifest_builder_enabled: value })} helpText="Builds shareable manifests from eligible local releases." />
+              <CheckboxField label="Manifest cache" checked={gonzbnet.manifest_cache_enabled} onChange={(value) => setGoNZBNet({ manifest_cache_enabled: value })} helpText="Caches and serves trusted manifests." />
+              <CheckboxField label="Validator" checked={gonzbnet.validator_enabled} onChange={(value) => setGoNZBNet({ validator_enabled: value })} helpText="Validates manifests and article availability." />
+              <CheckboxField label="Health checker" checked={gonzbnet.health_checker_enabled} onChange={(value) => setGoNZBNet({ health_checker_enabled: value })} helpText="Checks federated release and manifest health." />
+              <CheckboxField label="Coverage coordinator" checked={gonzbnet.coverage_enabled} onChange={(value) => setGoNZBNet({ coverage_enabled: value })} helpText="Shares coverage assignments, claims, and outcomes." />
+              <CheckboxField label="Coverage scheduler" checked={gonzbnet.scheduler_enabled} onChange={(value) => setGoNZBNet({ scheduler_enabled: value })} helpText="Proposes or assigns coverage work using pool state." />
+              <CheckboxField label="Relay" checked={gonzbnet.relay_enabled} onChange={(value) => setGoNZBNet({ relay_enabled: value })} helpText="Relays eligible events for configured pools." />
+            </div>
+          </SettingsSection>
+
+          <SettingsSection title="Node, peers, and admission">
+            <div className="toolbar-grid">
+              <TextField label="Node alias" value={gonzbnet.node_alias} onChange={(value) => setGoNZBNet({ node_alias: value })} helpText="Human-readable name shown to pool administrators. It does not change the cryptographic node ID." />
+              <TextField label="Advertise URL" value={gonzbnet.advertise_url} onChange={(value) => setGoNZBNet({ advertise_url: value })} helpText="Externally reachable HTTPS URL advertised to peers." />
+              <SelectField
+                label="Visibility"
+                value={gonzbnet.visibility}
+                options={[
+                  { value: 'private', label: 'Private (invitation required)' },
+                  { value: 'unlisted', label: 'Unlisted (recommended)' },
+                  { value: 'pool', label: 'Pool discoverable' },
+                  { value: 'public', label: 'Public' },
+                ]}
+                onChange={(value) => setGoNZBNet({ visibility: value })}
+                helpText="Controls admission-listing posture, not network access. Private hides pools without an invitation; the other choices currently differ only in advertised metadata because global discovery is not implemented. Use firewall/TLS controls for endpoint security."
+              />
+              <TextField label="Publish pool IDs" value={gonzbnet.publish_pool_ids.join(', ')} onChange={(value) => setGoNZBNet({ publish_pool_ids: parseCSV(value) })} helpText="Comma-separated pools that receive locally published events." />
+              <TextField label="Manual peer URLs" value={gonzbnet.manual_peers.join(', ')} onChange={(value) => setGoNZBNet({ manual_peers: parseCSV(value) })} helpText="Comma-separated peer base URLs. HTTPS is required except explicit local development." />
+              <CheckboxField label="Allow pool creation" checked={gonzbnet.allow_pool_creation} onChange={(value) => setGoNZBNet({ allow_pool_creation: value })} helpText="Allows an authenticated local administrator to create new pool genesis state on this node." />
+              <CheckboxField label="Allow join requests" checked={gonzbnet.allow_join_requests} onChange={(value) => setGoNZBNet({ allow_join_requests: value })} helpText="Advertises pools to eligible visitors and accepts signed admission requests. Approval is still required." />
+              <CheckboxField label="Admission relay" checked={gonzbnet.admission_relay_enabled} onChange={(value) => setGoNZBNet({ admission_relay_enabled: value })} helpText="Lets this member relay signed admission fragments between a candidate and pool administrators; it cannot approve a request itself." />
+              <CheckboxField label="Allow local HTTP peers" checked={gonzbnet.allow_insecure_peer_http} onChange={(value) => setGoNZBNet({ allow_insecure_peer_http: value })} helpText="Development only; non-local HTTP peers remain rejected." />
+            </div>
+          </SettingsSection>
+
+          <SettingsSection title="Publication and shared health">
+            <div className="banner">
+              Role switches allow the work; publication switches decide which locally produced results are signed and shared with authorized pools.
+            </div>
+            <div className="toolbar-grid">
+              <CheckboxField label="Publish release cards" checked={gonzbnet.publish_release_cards_enabled} onChange={(value) => setGoNZBNet({ publish_release_cards_enabled: value })} helpText="Publishes compact searchable metadata for eligible local indexer releases." />
+              <NumberField label="Release card batch size" min={1} value={gonzbnet.publish_release_cards_batch_size} onChange={(value) => setGoNZBNet({ publish_release_cards_batch_size: value })} />
+              <NumberField label="Release card interval (minutes)" min={0.01} step="any" value={gonzbnet.publish_release_cards_interval_minutes} onChange={(value) => setGoNZBNet({ publish_release_cards_interval_minutes: value })} />
+              <CheckboxField label="Publish manifest availability" checked={gonzbnet.manifest_availability_enabled} onChange={(value) => setGoNZBNet({ manifest_availability_enabled: value })} helpText="Announces that this node can resolve or serve a signed manifest; it does not publish user grabs or searches." />
+              <CheckboxField label="Publish health attestations" checked={gonzbnet.health_attestations_enabled} onChange={(value) => setGoNZBNet({ health_attestations_enabled: value })} helpText="Shares signed aggregate release/manifest health results produced by this node." />
+              <NumberField label="Health batch size" min={1} value={gonzbnet.health_attestations_batch_size} onChange={(value) => setGoNZBNet({ health_attestations_batch_size: value })} />
+              <NumberField label="Health interval (minutes)" min={0.01} step="any" value={gonzbnet.health_attestations_interval_minutes} onChange={(value) => setGoNZBNet({ health_attestations_interval_minutes: value })} />
+            </div>
+          </SettingsSection>
+
+          <SettingsSection title="Scanner and coverage">
+            <div className="banner">
+              Coverage coordinates indexer scrape ranges so scanners avoid duplicating work. It does not scan by itself: scanner and coverage roles, pool grants, and assigned or explicitly allowed unassigned work are also required.
+            </div>
+            <div className="toolbar-grid">
+              <NumberField label="Scanner max groups" min={0} value={gonzbnet.scanner_max_groups} onChange={(value) => setGoNZBNet({ scanner_max_groups: value })} />
+              <NumberField label="Scanner max articles/hour" min={0} value={gonzbnet.scanner_max_articles_per_hour} onChange={(value) => setGoNZBNet({ scanner_max_articles_per_hour: value })} />
+              <NumberField label="Claim TTL (minutes)" min={0} value={gonzbnet.scanner_claim_ttl_minutes} onChange={(value) => setGoNZBNet({ scanner_claim_ttl_minutes: value })} />
+              <NumberField label="Checkpoint interval (seconds)" min={0} value={gonzbnet.scanner_checkpoint_interval_seconds} onChange={(value) => setGoNZBNet({ scanner_checkpoint_interval_seconds: value })} />
+              <CheckboxField label="Respect remote claims" checked={gonzbnet.scanner_respect_remote_claims} onChange={(value) => setGoNZBNet({ scanner_respect_remote_claims: value })} helpText="Skips ranges actively claimed by another eligible scanner, reducing duplicate NNTP work." />
+              <CheckboxField label="Allow unassigned work" checked={gonzbnet.scanner_allow_unassigned_work} onChange={(value) => setGoNZBNet({ scanner_allow_unassigned_work: value })} helpText="Allows local scraping without a pool assignment. Useful for a solo node; avoid on coordinated multi-scanner pools." />
+              <SelectField
+                label="Coverage mode"
+                value={gonzbnet.coverage_mode}
+                options={[
+                  { value: 'manual', label: 'Manual (safe default)' },
+                  { value: 'scheduler', label: 'Assigned work only' },
+                  { value: 'automatic', label: 'Assigned work + stale reassignment' },
+                ]}
+                onChange={(value) => setGoNZBNet({ coverage_mode: value })}
+                helpText="Manual does not attach assigned coverage work unless unassigned work is allowed. Scheduler consumes signed assignments but does not run the stale-claim reassigner. Automatic also reassigns stale claims; it does not create an initial coverage plan by itself."
+              />
+              <NumberField label="Minimum trust for claim" min={0} max={1} step="0.01" value={gonzbnet.coverage_min_trust_for_claim} onChange={(value) => setGoNZBNet({ coverage_min_trust_for_claim: value })} />
+              <NumberField label="Validation overlap %" min={0} max={100} value={gonzbnet.coverage_validation_overlap_percent} onChange={(value) => setGoNZBNet({ coverage_validation_overlap_percent: value })} />
+              <CheckboxField label="Penalize stale claims" checked={gonzbnet.coverage_stale_claim_penalty} onChange={(value) => setGoNZBNet({ coverage_stale_claim_penalty: value })} />
+              <SelectField
+                label="Provider scope"
+                value={gonzbnet.coverage_provider_scope_mode}
+                options={[
+                  { value: 'hash_only', label: 'Hashed provider scope (recommended)' },
+                  { value: 'disabled', label: 'Do not disclose provider scope' },
+                ]}
+                onChange={(value) => setGoNZBNet({ coverage_provider_scope_mode: value })}
+                helpText="A scoped hash lets coordination and validation distinguish provider/backbone viewpoints without exposing credentials. Disabled provides more privacy but less evidence diversity and scheduling context."
+              />
+            </div>
+          </SettingsSection>
+
+          <SettingsSection title="Validation and manifest cache">
+            <div className="toolbar-grid">
+              <NumberField label="Validation batch size" min={1} value={gonzbnet.validation_batch_size} onChange={(value) => setGoNZBNet({ validation_batch_size: value })} />
+              <NumberField label="Validation interval (minutes)" min={0.01} step="any" value={gonzbnet.validation_interval_minutes} onChange={(value) => setGoNZBNet({ validation_interval_minutes: value })} />
+              <TextField label="Validation tiers" value={gonzbnet.validation_tiers.join(', ')} onChange={(value) => setGoNZBNet({ validation_tiers: parseCSV(value) })} helpText="Supported: metadata, article_stat, segment_stat, checksum." />
+              <NumberField label="Max manifests/hour" min={0} value={gonzbnet.validation_max_manifests_per_hour} onChange={(value) => setGoNZBNet({ validation_max_manifests_per_hour: value })} />
+              <NumberField label="Sample percent" min={0} max={100} value={gonzbnet.validation_sample_percent} onChange={(value) => setGoNZBNet({ validation_sample_percent: value })} />
+              <CheckboxField label="Allow sample payload fetch" checked={gonzbnet.validation_allow_sample_payload_fetch} onChange={(value) => setGoNZBNet({ validation_allow_sample_payload_fetch: value })} />
+              <CheckboxField label="Allow PAR2 validation" checked={gonzbnet.validation_allow_par2_validation} onChange={(value) => setGoNZBNet({ validation_allow_par2_validation: value })} />
+              <CheckboxField label="Publish provider scope hash" checked={gonzbnet.validation_publish_provider_scope_hash} onChange={(value) => setGoNZBNet({ validation_publish_provider_scope_hash: value })} />
+              <CheckboxField label="Checksum validation" checked={gonzbnet.checksum_validation_enabled} onChange={(value) => setGoNZBNet({ checksum_validation_enabled: value })} />
+              <NumberField label="Manifest cache bytes" min={0} value={gonzbnet.manifest_cache_max_bytes} onChange={(value) => setGoNZBNet({ manifest_cache_max_bytes: value })} />
+              <NumberField label="Manifest cache TTL (days)" min={0} value={gonzbnet.manifest_cache_ttl_days} onChange={(value) => setGoNZBNet({ manifest_cache_ttl_days: value })} />
+              <CheckboxField label="Serve cache to trusted pools" checked={gonzbnet.manifest_cache_serve_to_trusted_pools} onChange={(value) => setGoNZBNet({ manifest_cache_serve_to_trusted_pools: value })} />
+            </div>
+          </SettingsSection>
+
+          <SettingsSection title="Synchronization and gossip">
+            <div className="banner">
+              Enable only the transports used by your topology. Pull is the simplest baseline; push reduces delay; WebSocket gossip is useful for larger or frequently changing peer sets.
+            </div>
+            <div className="toolbar-grid">
+              <CheckboxField label="Pull sync" checked={gonzbnet.pull_sync_enabled} onChange={(value) => setGoNZBNet({ pull_sync_enabled: value })} />
+              <NumberField label="Pull interval (minutes)" min={0.01} step="any" value={gonzbnet.pull_sync_interval_minutes} onChange={(value) => setGoNZBNet({ pull_sync_interval_minutes: value })} />
+              <CheckboxField label="Push sync" checked={gonzbnet.push_sync_enabled} onChange={(value) => setGoNZBNet({ push_sync_enabled: value })} />
+              <NumberField label="Push interval (minutes)" min={0.01} step="any" value={gonzbnet.push_sync_interval_minutes} onChange={(value) => setGoNZBNet({ push_sync_interval_minutes: value })} />
+              <NumberField label="Push batch size" min={1} value={gonzbnet.push_sync_batch_size} onChange={(value) => setGoNZBNet({ push_sync_batch_size: value })} />
+              <CheckboxField label="WebSocket gossip" checked={gonzbnet.websocket_gossip_enabled} onChange={(value) => setGoNZBNet({ websocket_gossip_enabled: value })} />
+              <NumberField label="Gossip interval (minutes)" min={0.01} step="any" value={gonzbnet.gossip_interval_minutes} onChange={(value) => setGoNZBNet({ gossip_interval_minutes: value })} />
+              <NumberField label="Gossip batch size" min={1} value={gonzbnet.gossip_batch_size} onChange={(value) => setGoNZBNet({ gossip_batch_size: value })} />
+              <NumberField label="Gossip TTL" min={1} value={gonzbnet.gossip_ttl} onChange={(value) => setGoNZBNet({ gossip_ttl: value })} />
+              <NumberField label="Gossip fanout" min={1} value={gonzbnet.gossip_fanout} onChange={(value) => setGoNZBNet({ gossip_fanout: value })} />
+              <CheckboxField label="Peer exchange" checked={gonzbnet.peer_exchange_enabled} onChange={(value) => setGoNZBNet({ peer_exchange_enabled: value })} helpText="Allows authenticated members of a shared pool to exchange peer endpoints. It does not grant membership or trust." />
+            </div>
+          </SettingsSection>
+
+          <SettingsSection title="Transport limits and privacy">
+            <div className="toolbar-grid">
+              <NumberField label="Max event bytes" min={1} value={gonzbnet.max_event_bytes} onChange={(value) => setGoNZBNet({ max_event_bytes: value })} />
+              <NumberField label="Max manifest bytes" min={1} value={gonzbnet.max_manifest_bytes} onChange={(value) => setGoNZBNet({ max_manifest_bytes: value })} />
+              <NumberField label="Manifest fetch timeout (seconds)" min={1} value={gonzbnet.manifest_fetch_timeout_seconds} onChange={(value) => setGoNZBNet({ manifest_fetch_timeout_seconds: value })} />
+              <NumberField label="Max batch events" min={1} value={gonzbnet.max_batch_events} onChange={(value) => setGoNZBNet({ max_batch_events: value })} />
+              <NumberField label="Rate limit events/minute" min={1} value={gonzbnet.rate_limit_events_per_minute} onChange={(value) => setGoNZBNet({ rate_limit_events_per_minute: value })} />
+              <NumberField label="Clock tolerance (seconds)" min={1} value={gonzbnet.time_tolerance_seconds} onChange={(value) => setGoNZBNet({ time_tolerance_seconds: value })} />
+              <NumberField label="Max event age (hours)" min={1} value={gonzbnet.max_event_age_hours} onChange={(value) => setGoNZBNet({ max_event_age_hours: value })} />
+              <NumberField label="Nonce TTL (seconds)" min={1} value={gonzbnet.nonce_ttl_seconds} onChange={(value) => setGoNZBNet({ nonce_ttl_seconds: value })} />
+              <CheckboxField label="Share provider backbone hash" checked={gonzbnet.share_provider_backbone_hash} onChange={(value) => setGoNZBNet({ share_provider_backbone_hash: value })} helpText="Adds a non-credential hash to evidence so pool operators can measure independent NNTP viewpoints. Disabled by default for privacy." />
+              <CheckboxField label="Share source indexer hash" checked={gonzbnet.share_source_indexer_hash} onChange={(value) => setGoNZBNet({ share_source_indexer_hash: value })} helpText="Adds a non-credential source-indexer hash for provenance grouping. Disabled by default for privacy." />
+            </div>
           </SettingsSection>
           <SettingsActions onReload={() => void refresh()} />
         </ModuleGroup>
@@ -1164,6 +1449,73 @@ export function AdminSettingsPage() {
           </div>
         </SettingsSection>
 
+        <SettingsSection title="Partitions and outcome retention">
+          <div className="banner">
+            The indexer creates daily partitions only for source dates it actually sees. Unexpected old XOVER dates are admitted in bounded batches and deferred durably; article age alone never authorizes deletion.
+          </div>
+          <div className="toolbar-grid">
+            <NumberField
+              label="Precreate days ahead"
+              min={0}
+              max={14}
+              value={indexing.partitions?.precreate_days_ahead ?? 2}
+              helpText="Proactively creates the scrape bundle for the current UTC day plus this many future days. This reduces first-write latency and is not a retention horizon."
+              onChange={(value) => setIndexing({ ...indexing, partitions: { ...indexing.partitions!, precreate_days_ahead: value } })}
+            />
+            <NumberField
+              label="Max new source days per pass"
+              min={1}
+              max={366}
+              value={indexing.partitions?.max_new_source_days_per_pass ?? 32}
+              helpText="Maximum previously unseen posted-date partitions one scrape pass may introduce. Newest dates are admitted first; the rest are saved as deferred article ranges."
+              onChange={(value) => setIndexing({ ...indexing, partitions: { ...indexing.partitions!, max_new_source_days_per_pass: value } })}
+            />
+            <NumberField
+              label="Partition DDL lock timeout seconds"
+              min={1}
+              max={60}
+              value={indexing.partitions?.ddl_lock_timeout_seconds ?? 5}
+              helpText="Maximum lock wait for each individual parent/day partition transaction. A timeout defers work instead of writing into a default partition."
+              onChange={(value) => setIndexing({ ...indexing, partitions: { ...indexing.partitions!, ddl_lock_timeout_seconds: value } })}
+            />
+            <NumberField
+              label="Source settle hours"
+              min={1}
+              value={indexing.retention?.source_settle_hours ?? 24}
+              helpText="Quiet period after the last ingestion before a source-day bucket can be considered settled. New input reactivates it."
+              onChange={(value) => setIndexing({ ...indexing, retention: { ...indexing.retention!, source_settle_hours: value } })}
+            />
+            <NumberField
+              label="No-yield grace days"
+              min={1}
+              value={indexing.retention?.no_yield_grace_days ?? 7}
+              helpText="Minimum time without ingestion or useful progress before fully drained work can be classified as bounded no-yield."
+              onChange={(value) => setIndexing({ ...indexing, retention: { ...indexing.retention!, no_yield_grace_days: value } })}
+            />
+            <NumberField
+              label="Terminal yEnc attempts"
+              min={1}
+              value={indexing.retention?.yenc_terminal_attempts ?? 4}
+              helpText="Missing yEnc observations at or above this budget count as exhausted only after no ready or running work remains."
+              onChange={(value) => setIndexing({ ...indexing, retention: { ...indexing.retention!, yenc_terminal_attempts: value } })}
+            />
+            <NumberField
+              label="Latest recovery reserve %"
+              min={1}
+              max={50}
+              value={indexing.recovery_admission?.latest_reserve_percent ?? 10}
+              helpText="Reserves this share of each yEnc recovery claim for the newest available work before older fairness lanes are selected."
+              onChange={(value) => setIndexing({ ...indexing, recovery_admission: { ...indexing.recovery_admission!, latest_reserve_percent: value } })}
+            />
+            <CheckboxField
+              label="Enable destructive outcome purge"
+              checked={Boolean(indexing.retention?.execute_outcome_purge)}
+              helpText="Off by default. Enable only after outcome reconciliation is healthy and the Outcome Partition Retention dry-run shows the expected terminal days and no blockers."
+              onChange={(value) => setIndexing({ ...indexing, retention: { ...indexing.retention!, execute_outcome_purge: value } })}
+            />
+          </div>
+        </SettingsSection>
+
         <SettingsSection title="Database storage guard">
           <div className="banner">
             When free space on the PostgreSQL data volume drops below the configured threshold, growth-heavy indexer stages pause automatically. Maintenance plus the NZB archive and purge tail remain allowed so the system can try to recover space instead of pushing the database further into failure.
@@ -1543,6 +1895,34 @@ function NumberField({
     <label className="field">
       <span>{label}</span>
       <input type="number" step={step} min={min} max={max} required={required} value={value} onChange={(event) => onChange(fieldNumber(event.target.value))} />
+      {helpText ? <small>{helpText}</small> : null}
+    </label>
+  )
+}
+
+function SelectField({
+  label,
+  value,
+  options,
+  helpText,
+  onChange,
+}: {
+  label: string
+  value: string
+  options: Array<string | { value: string; label: string }>
+  helpText?: string
+  onChange: (value: string) => void
+}) {
+  return (
+    <label className="field">
+      <span>{label}</span>
+      <select value={value} onChange={(event) => onChange(event.target.value)}>
+        {options.map((option) => {
+          const value = typeof option === 'string' ? option : option.value
+          const optionLabel = typeof option === 'string' ? option : option.label
+          return <option key={value} value={value}>{optionLabel}</option>
+        })}
+      </select>
       {helpText ? <small>{helpText}</small> : null}
     </label>
   )

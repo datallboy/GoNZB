@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import {
@@ -104,7 +104,7 @@ export function AdminReleaseDetailPage() {
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
-  async function refresh() {
+  const refresh = useCallback(async () => {
     try {
       const response = await getAdminRelease(id)
       setData(response)
@@ -130,11 +130,12 @@ export function AdminReleaseDetailPage() {
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load release')
     }
-  }
+  }, [id])
 
   useEffect(() => {
-    void refresh()
-  }, [id])
+    const timer = window.setTimeout(() => void refresh(), 0)
+    return () => window.clearTimeout(timer)
+  }, [refresh])
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()

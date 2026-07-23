@@ -1,0 +1,2626 @@
+package controllers
+
+import (
+	"context"
+	"crypto/ed25519"
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/datallboy/gonzb/internal/app"
+	"github.com/datallboy/gonzb/internal/gonzbnet/admission"
+	"github.com/datallboy/gonzb/internal/gonzbnet/canonical"
+	"github.com/datallboy/gonzb/internal/gonzbnet/capability"
+	"github.com/datallboy/gonzb/internal/gonzbnet/coverage"
+	"github.com/datallboy/gonzb/internal/gonzbnet/events"
+	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
+	"github.com/datallboy/gonzb/internal/gonzbnet/manifestresolver"
+	gonzbnetmetrics "github.com/datallboy/gonzb/internal/gonzbnet/metrics"
+	"github.com/datallboy/gonzb/internal/gonzbnet/moderation"
+	"github.com/datallboy/gonzb/internal/gonzbnet/pools"
+	"github.com/datallboy/gonzb/internal/gonzbnet/profile"
+	"github.com/datallboy/gonzb/internal/gonzbnet/reassigner"
+	gonzbnetsync "github.com/datallboy/gonzb/internal/gonzbnet/sync"
+	"github.com/datallboy/gonzb/internal/gonzbnet/transportpolicy"
+	"github.com/datallboy/gonzb/internal/store/pgindex"
+	"github.com/labstack/echo/v5"
+)
+
+type GoNZBNetAdminController struct {
+	appCtx        *app.Context
+	storeOverride gonzbnetAdminStore
+}
+
+type gonzbnetAdminStore interface {
+	ListTrustPools(ctx context.Context) ([]pgindex.TrustPoolRecord, error)
+	ListPoolMembers(ctx context.Context, poolID string) ([]pgindex.PoolMemberRecord, error)
+	ListPoolControlEvents(ctx context.Context, poolID string, limit int) ([]pgindex.PoolControlEventRecord, error)
+	ListFederationRolePoolAccess(ctx context.Context, poolID string) ([]pgindex.FederationRolePoolAccessRecord, error)
+	UpsertFederationRolePoolAccess(ctx context.Context, record pgindex.FederationRolePoolAccessRecord) error
+	DeleteFederationRolePoolAccess(ctx context.Context, poolID, roleID string) (bool, error)
+	UpsertTrustPool(ctx context.Context, pool pgindex.TrustPoolRecord) error
+	UpsertPoolMember(ctx context.Context, member pgindex.PoolMemberRecord) error
+	RevokePoolMember(ctx context.Context, poolID, nodeID, eventID string, effectiveAt *time.Time) error
+	GetTrustPoolPolicy(ctx context.Context, poolID string) (pools.PoolPolicy, error)
+	UpsertFederationNodeIdentity(ctx context.Context, nodeID string, publicKey ed25519.PublicKey) error
+	NextFederationEventSequence(ctx context.Context, authorNodeID string) (int64, *string, error)
+	FindFederationEventByBodyHash(ctx context.Context, authorNodeID, eventType, bodyHash, poolID string) (string, error)
+	FederationEventExists(ctx context.Context, eventID string) (bool, error)
+	IsActivePoolAdmin(ctx context.Context, poolID, nodeID string) (bool, error)
+	ValidateFederationPoolControlEvent(ctx context.Context, event *events.SignedEvent) error
+	AppendVerifiedFederationEvent(ctx context.Context, event *events.SignedEvent, validation *events.ValidationResult) error
+	ProjectFederationPoolEvent(ctx context.Context, event *events.SignedEvent) error
+	ProjectTombstone(ctx context.Context, projection pgindex.TombstoneProjection) error
+	ListTombstones(ctx context.Context, activeOnly bool) ([]pgindex.TombstoneRecord, error)
+	ProjectCoverageEvent(ctx context.Context, event *events.SignedEvent) error
+	SetFederationNodeStatus(ctx context.Context, nodeID, status string) (bool, error)
+	UpsertFederationPeerURL(ctx context.Context, peerURL string) (int64, error)
+	SetFederationPeerEnabled(ctx context.Context, peerID int64, enabled bool) error
+	DeleteFederationPeer(ctx context.Context, peerID int64) (bool, error)
+	ListCoverageDashboard(ctx context.Context, poolID string) (pgindex.CoverageDashboard, error)
+	SuggestCoverageWork(ctx context.Context, params pgindex.CoverageWorkSuggestionParams) ([]pgindex.CoverageWorkSuggestion, error)
+	BuildCoverageSchedulerPlan(ctx context.Context, params pgindex.CoverageWorkSuggestionParams) (pgindex.CoverageSchedulerPlan, error)
+	ListStaleCoverageRangeClaims(ctx context.Context, poolID string, limit int) ([]pgindex.CoverageClaimRecord, error)
+	ListStaleCoverageTimeWindowClaims(ctx context.Context, poolID string, limit int) ([]pgindex.CoverageClaimRecord, error)
+	ListCoverageScannerNodes(ctx context.Context, poolID string, minTrustScore float64) ([]pgindex.CoverageScannerNode, error)
+	CoverageAssignmentExists(ctx context.Context, assignmentID string) (bool, error)
+	ListFederationNodeCapabilities(ctx context.Context) ([]pgindex.NodeCapabilityView, error)
+	ListCoverageGroupCatalog(ctx context.Context, poolID string) ([]pgindex.CoverageGroupCatalogItem, error)
+	ListValidationGaps(ctx context.Context, poolID string, limit int) ([]pgindex.ValidationGap, error)
+	MaterializeCoverageStaleClaimPenalties(ctx context.Context, poolID string) (int64, error)
+	ListFederationPeerDiagnostics(ctx context.Context, limit int) ([]pgindex.FederationPeerDiagnostic, error)
+	ListFederationEventDiagnostics(ctx context.Context, limit int) ([]pgindex.FederationEventDiagnostic, error)
+	ListFederationRejectedEventDiagnostics(ctx context.Context, limit int) ([]pgindex.FederationRejectedEventDiagnostic, error)
+	ListFederationRejectedEventSummary(ctx context.Context, limit int) ([]pgindex.FederationRejectedEventSummary, error)
+	ListFederationPeerDeliveryDiagnostics(ctx context.Context, limit int) ([]pgindex.FederationPeerDeliveryDiagnostic, error)
+	ListValidationTaskDiagnostics(ctx context.Context, limit int) ([]pgindex.ValidationTaskDiagnostic, error)
+	ListFederatedReleaseSourceDiagnostics(ctx context.Context, poolID string, limit int) ([]pgindex.FederatedReleaseSourceDiagnostic, error)
+	ListFederatedManifestSourceDiagnostics(ctx context.Context, poolID string, limit int) ([]pgindex.FederatedManifestSourceDiagnostic, error)
+	ListHealthAttestationDiagnostics(ctx context.Context, poolID string, limit int) ([]pgindex.HealthAttestationDiagnostic, error)
+	ListReputationDiagnostics(ctx context.Context, limit int) ([]pgindex.ReputationDiagnostic, error)
+	RecomputeFederatedScores(ctx context.Context, poolID string) (pgindex.FederatedScoreRecomputeResult, error)
+}
+
+type trustPoolRequest struct {
+	PoolID                     string   `json:"pool_id"`
+	DisplayName                string   `json:"display_name"`
+	Description                string   `json:"description"`
+	MembershipThreshold        int      `json:"membership_threshold"`
+	ModerationThreshold        int      `json:"moderation_threshold"`
+	CheckpointWitnessThreshold int      `json:"checkpoint_witness_threshold"`
+	AcceptMode                 string   `json:"accept_mode"`
+	MinNodeTrustScore          float64  `json:"min_node_trust_score"`
+	AcceptedEventTypes         []string `json:"accepted_event_types"`
+	Enabled                    *bool    `json:"enabled"`
+	Visibility                 string   `json:"visibility"`
+	JoinMode                   string   `json:"join_mode"`
+	AdmissionEnabled           *bool    `json:"admission_enabled"`
+}
+
+func (ctrl *GoNZBNetAdminController) Metrics(c *echo.Context) error {
+	if store, ok := ctrl.store(); ok {
+		if items, listErr := store.ListTombstones(c.Request().Context(), true); listErr == nil {
+			gonzbnetmetrics.Default.SetActiveTombstones(int64(len(items)))
+		}
+	}
+	return c.JSON(http.StatusOK, gonzbnetmetrics.Default.Snapshot())
+}
+
+func (ctrl *GoNZBNetAdminController) PrometheusMetrics(c *echo.Context) error {
+	if store, ok := ctrl.store(); ok {
+		if items, listErr := store.ListTombstones(c.Request().Context(), true); listErr == nil {
+			gonzbnetmetrics.Default.SetActiveTombstones(int64(len(items)))
+		}
+	}
+	c.Response().Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	return c.String(http.StatusOK, gonzbnetmetrics.Default.Prometheus())
+}
+
+type admissionDiscoverRequest struct {
+	Locator        string `json:"locator"`
+	ExpectedNodeID string `json:"expected_node_id"`
+}
+
+type admissionJoinRequest struct {
+	Locator               string   `json:"locator"`
+	PoolID                string   `json:"pool_id"`
+	ExpectedNodeID        string   `json:"expected_node_id"`
+	Role                  string   `json:"role"`
+	RequestedCapabilities []string `json:"requested_capabilities"`
+	Message               string   `json:"message"`
+}
+
+type admissionInviteRequest struct {
+	ExpiresInHours int `json:"expires_in_hours"`
+}
+
+type admissionRejectRequest struct {
+	Reason string `json:"reason"`
+}
+
+type poolMemberRequest struct {
+	NodeID              string          `json:"node_id"`
+	Role                string          `json:"role"`
+	Status              string          `json:"status"`
+	AllowedCapabilities []string        `json:"allowed_capabilities"`
+	Limits              json.RawMessage `json:"limits"`
+}
+
+type rolePoolAccessRequest struct {
+	RoleID             string `json:"role_id"`
+	CanSearch          *bool  `json:"can_search"`
+	CanGet             *bool  `json:"can_get"`
+	CanResolveManifest *bool  `json:"can_resolve_manifest"`
+}
+
+type poolJoinRequest struct {
+	RequestedRoles []string `json:"requested_roles"`
+	Message        string   `json:"message"`
+}
+
+type poolJoinResponse struct {
+	Status          string   `json:"status"`
+	EventID         string   `json:"event_id"`
+	PoolID          string   `json:"pool_id"`
+	CandidateNodeID string   `json:"candidate_node_id"`
+	RequestedRoles  []string `json:"requested_roles"`
+}
+
+type poolMemberApprovalRequest struct {
+	Role                string           `json:"role"`
+	ProposalEventID     string           `json:"proposal_event_id"`
+	AllowedCapabilities []string         `json:"allowed_capabilities"`
+	Limits              json.RawMessage  `json:"limits"`
+	ApprovalsRequired   int              `json:"approvals_required"`
+	Approvals           []pools.Approval `json:"approvals"`
+}
+
+type poolMemberApprovalResponse struct {
+	Status            string `json:"status"`
+	EventID           string `json:"event_id"`
+	PoolID            string `json:"pool_id"`
+	SubjectNodeID     string `json:"subject_node_id"`
+	Role              string `json:"role"`
+	ApprovalsRequired int    `json:"approvals_required"`
+	ApprovalCount     int    `json:"approval_count"`
+}
+
+type poolMemberRevocationRequest struct {
+	Reason            string           `json:"reason"`
+	EffectiveAt       string           `json:"effective_at"`
+	ApprovalsRequired int              `json:"approvals_required"`
+	Approvals         []pools.Approval `json:"approvals"`
+}
+
+type poolMemberRevocationResponse struct {
+	Status            string `json:"status"`
+	EventID           string `json:"event_id"`
+	PoolID            string `json:"pool_id"`
+	SubjectNodeID     string `json:"subject_node_id"`
+	Reason            string `json:"reason"`
+	EffectiveAt       string `json:"effective_at"`
+	ApprovalsRequired int    `json:"approvals_required"`
+	ApprovalCount     int    `json:"approval_count"`
+}
+
+type peerRequest struct {
+	PeerURL string `json:"peer_url"`
+}
+
+type manifestResolveRequest struct {
+	ReleaseID string `json:"release_id"`
+}
+
+type manifestResolveResponse struct {
+	Status    string `json:"status"`
+	ReleaseID string `json:"release_id"`
+	NZBBytes  int    `json:"nzb_bytes"`
+	Resolved  bool   `json:"resolved"`
+}
+
+type scoreRecomputeRequest struct {
+	PoolID string `json:"pool_id"`
+}
+
+type scoreRecomputeResponse struct {
+	Status string                                `json:"status"`
+	Result pgindex.FederatedScoreRecomputeResult `json:"result"`
+}
+
+type keyExportRequest struct {
+	BackupPassword string `json:"backup_password"`
+	Confirmation   string `json:"confirmation"`
+}
+
+type keyRotateRequest struct {
+	Confirmation string `json:"confirmation"`
+}
+
+type keyExportResponse struct {
+	Status       string `json:"status"`
+	NodeID       string `json:"node_id"`
+	PublicKey    string `json:"public_key"`
+	Format       string `json:"format"`
+	EncryptedKey string `json:"encrypted_key"`
+	CreatedAt    string `json:"created_at"`
+}
+
+type keyRotateResponse struct {
+	Status       string `json:"status"`
+	OldNodeID    string `json:"old_node_id"`
+	OldPublicKey string `json:"old_public_key"`
+	NewNodeID    string `json:"new_node_id"`
+	NewPublicKey string `json:"new_public_key"`
+	BackupPath   string `json:"backup_path"`
+	RotatedAt    string `json:"rotated_at"`
+	Warning      string `json:"warning"`
+}
+
+type gonzbnetAdminNodeProfileResponse struct {
+	NodeID    string              `json:"node_id"`
+	PublicKey string              `json:"public_key"`
+	Profile   profile.NodeProfile `json:"profile"`
+}
+
+type gonzbnetAdminConfigValidationResponse struct {
+	Valid   bool                       `json:"valid"`
+	Summary gonzbnetAdminConfigSummary `json:"summary"`
+	Issues  []gonzbnetAdminConfigIssue `json:"issues"`
+}
+
+type gonzbnetAdminConfigSummary struct {
+	Mode                         string          `json:"mode"`
+	HTTPEnabled                  bool            `json:"http_enabled"`
+	AdvertiseURL                 string          `json:"advertise_url"`
+	HTTPBasePath                 string          `json:"http_base_path"`
+	PrivateNetwork               bool            `json:"private_network"`
+	NetworkID                    string          `json:"network_id"`
+	LocalPoolID                  string          `json:"local_pool_id"`
+	ManualPeers                  int             `json:"manual_peers"`
+	ModuleEnabled                map[string]bool `json:"module_enabled"`
+	Limits                       map[string]int  `json:"limits"`
+	Privacy                      map[string]bool `json:"privacy"`
+	Publisher                    map[string]any  `json:"publisher"`
+	Scanner                      map[string]any  `json:"scanner"`
+	Coverage                     map[string]any  `json:"coverage"`
+	Validation                   map[string]any  `json:"validation"`
+	ManifestCache                map[string]any  `json:"manifest_cache"`
+	Sync                         map[string]any  `json:"sync"`
+	Gossip                       map[string]any  `json:"gossip"`
+	RedactedSensitiveConfigNames []string        `json:"redacted_sensitive_config_names"`
+}
+
+type gonzbnetAdminConfigIssue struct {
+	Severity string `json:"severity"`
+	Field    string `json:"field"`
+	Message  string `json:"message"`
+}
+
+type tombstoneRequest struct {
+	TargetType       string   `json:"target_type"`
+	TargetID         string   `json:"target_id"`
+	PoolID           string   `json:"pool_id"`
+	Reason           string   `json:"reason"`
+	Severity         string   `json:"severity"`
+	EvidenceEventIDs []string `json:"evidence_event_ids"`
+	EffectiveAt      string   `json:"effective_at"`
+	ExpiresAt        *string  `json:"expires_at"`
+}
+
+type coverageAssignmentRequest struct {
+	AssignmentID   string `json:"assignment_id"`
+	PlanID         string `json:"plan_id"`
+	PoolID         string `json:"pool_id"`
+	Group          string `json:"group"`
+	AssignedNodeID string `json:"assigned_node_id"`
+	RangeStart     int64  `json:"range_start"`
+	RangeEnd       int64  `json:"range_end"`
+	WindowStart    string `json:"window_start"`
+	WindowEnd      string `json:"window_end"`
+	Priority       int    `json:"priority"`
+	DueAt          string `json:"due_at"`
+}
+
+type coverageClaimRequest struct {
+	ClaimID      string `json:"claim_id"`
+	AssignmentID string `json:"assignment_id"`
+	PoolID       string `json:"pool_id"`
+	Group        string `json:"group"`
+	RangeStart   int64  `json:"range_start"`
+	RangeEnd     int64  `json:"range_end"`
+	WindowStart  string `json:"window_start"`
+	WindowEnd    string `json:"window_end"`
+	ExpiresAt    string `json:"expires_at"`
+}
+
+type coverageOutcomeRequest struct {
+	OutcomeID    string `json:"outcome_id"`
+	ClaimID      string `json:"claim_id"`
+	AssignmentID string `json:"assignment_id"`
+	PoolID       string `json:"pool_id"`
+	Group        string `json:"group"`
+	RangeStart   int64  `json:"range_start"`
+	RangeEnd     int64  `json:"range_end"`
+	ReleaseCount int    `json:"release_count"`
+	Reason       string `json:"reason"`
+}
+
+func NewGoNZBNetAdminController(appCtx *app.Context) *GoNZBNetAdminController {
+	return &GoNZBNetAdminController{appCtx: appCtx}
+}
+
+func (ctrl *GoNZBNetAdminController) NodeProfile(c *echo.Context) error {
+	if ctrl == nil || ctrl.appCtx == nil || ctrl.appCtx.Config == nil {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin controller is unavailable")
+	}
+	nodeIdentity, err := ctrl.localIdentity()
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	cfg := ctrl.adminProfileConfig(c)
+	nodeProfile, err := profile.NodeProfileFor(c.Request().Context(), nodeIdentity, cfg, time.Now())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, gonzbnetAdminNodeProfileResponse{
+		NodeID:    nodeProfile.NodeID,
+		PublicKey: nodeProfile.PublicKey,
+		Profile:   nodeProfile,
+	})
+}
+
+func (ctrl *GoNZBNetAdminController) ConfigValidation(c *echo.Context) error {
+	if ctrl == nil || ctrl.appCtx == nil || ctrl.appCtx.Config == nil {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin controller is unavailable")
+	}
+	cfg := ctrl.appCtx.Config.GoNZBNet
+	issues := []gonzbnetAdminConfigIssue{}
+	if err := ctrl.appCtx.Config.ValidateEffective(); err != nil {
+		issues = append(issues, gonzbnetAdminConfigIssue{
+			Severity: "error",
+			Field:    "config",
+			Message:  err.Error(),
+		})
+	}
+	issue := func(severity, field, message string) {
+		issues = append(issues, gonzbnetAdminConfigIssue{
+			Severity: severity,
+			Field:    field,
+			Message:  message,
+		})
+	}
+	if cfg.SendUserContext {
+		issue("error", "gonzbnet.send_user_context", "must remain false; federation must not send local user context")
+	}
+	if cfg.MaxEventBytes <= 0 {
+		issue("error", "gonzbnet.max_event_bytes", "must be greater than 0")
+	}
+	if cfg.MaxManifestBytes <= 0 {
+		issue("error", "gonzbnet.max_manifest_bytes", "must be greater than 0")
+	}
+	if cfg.MaxBatchEvents <= 0 {
+		issue("error", "gonzbnet.max_batch_events", "must be greater than 0")
+	}
+	if cfg.RateLimitEventsPerMinute <= 0 {
+		issue("error", "gonzbnet.rate_limit_events_per_minute", "must be greater than 0")
+	}
+	if cfg.TimeToleranceSeconds <= 0 {
+		issue("error", "gonzbnet.time_tolerance_seconds", "must be greater than 0")
+	}
+	if cfg.MaxEventAgeHours <= 0 {
+		issue("error", "gonzbnet.max_event_age_hours", "must be greater than 0")
+	}
+	if cfg.NonceTTLSeconds <= 0 {
+		issue("error", "gonzbnet.nonce_ttl_seconds", "must be greater than 0")
+	}
+	if cfg.HTTPEnabled && strings.TrimSpace(cfg.AdvertiseURL) == "" {
+		issue("warning", "gonzbnet.advertise_url", "not set; public node profile falls back to the current request host")
+	}
+	if cfg.HTTPEnabled && strings.TrimSpace(cfg.HTTPBasePath) != "" && !strings.HasPrefix(strings.TrimSpace(cfg.HTTPBasePath), "/") {
+		issue("warning", "gonzbnet.http_base_path", "should start with /")
+	}
+	if cfg.AllowInsecurePeerHTTP {
+		issue("warning", "gonzbnet.allow_insecure_peer_http", "local development only; non-local HTTP peers are still rejected")
+	}
+	for i, peerURL := range cfg.ManualPeers {
+		if err := transportpolicy.ValidateHTTPURL(peerURL, cfg.AllowInsecurePeerHTTP); err != nil {
+			issue("error", fmt.Sprintf("gonzbnet.manual_peers[%d]", i), err.Error())
+		}
+	}
+	if !cfg.HTTPEnabled && (cfg.PushSyncEnabled || cfg.WebSocketGossipEnabled || cfg.RelayEnabled) {
+		issue("warning", "gonzbnet.http_enabled", "disabled while inbound push, gossip, or relay features are enabled")
+	}
+	if cfg.LiveQueryEnabled {
+		issue("error", "gonzbnet.live_query_enabled", "reserved; searches must use the local federated cache")
+	}
+	if cfg.PublishReleaseCardsEnabled && !ctrl.appCtx.Config.Modules.UsenetIndexer.Enabled && !cfg.ScannerEnabled {
+		issue("warning", "gonzbnet.publish_release_cards_enabled", "enabled without the local indexer module or scanner capability")
+	}
+	if cfg.ValidatorEnabled && !cfg.ManifestCacheEnabled {
+		issue("warning", "gonzbnet.manifest_cache_enabled", "disabled while validator is enabled; validation can be limited without cached manifests")
+	}
+	if cfg.HealthCheckerEnabled && !cfg.ManifestCacheEnabled {
+		issue("warning", "gonzbnet.manifest_cache_enabled", "disabled while health checker is enabled; health checks can be limited without cached manifests")
+	}
+	if ctrl.appCtx.Config.Aggregator.Sources.GoNZBNet.Enabled && !cfg.ConsumerEnabled {
+		issue("warning", "gonzbnet.consumer_enabled", "disabled while the GoNZBNet aggregator source is enabled")
+	}
+	valid := true
+	for _, item := range issues {
+		if item.Severity == "error" {
+			valid = false
+			break
+		}
+	}
+	return c.JSON(http.StatusOK, gonzbnetAdminConfigValidationResponse{
+		Valid:   valid,
+		Summary: ctrl.adminConfigSummary(),
+		Issues:  issues,
+	})
+}
+
+func (ctrl *GoNZBNetAdminController) ResolveManifest(c *echo.Context) error {
+	var req manifestResolveRequest
+	if err := decodeJSONBody(c, &req); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	releaseID := strings.TrimSpace(req.ReleaseID)
+	if releaseID == "" {
+		return jsonError(c, http.StatusBadRequest, "release_id is required")
+	}
+	resolver, err := ctrl.manifestResolver()
+	if err != nil {
+		return jsonError(c, http.StatusServiceUnavailable, err.Error())
+	}
+	reader, err := resolver.ResolveNZB(c.Request().Context(), releaseID)
+	if err != nil {
+		return jsonError(c, http.StatusBadGateway, err.Error())
+	}
+	defer reader.Close()
+	payload, err := io.ReadAll(io.LimitReader(reader, int64(ctrl.appCtx.Config.GoNZBNet.MaxManifestBytes)))
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, manifestResolveResponse{
+		Status:    "ok",
+		ReleaseID: releaseID,
+		NZBBytes:  len(payload),
+		Resolved:  len(payload) > 0,
+	})
+}
+
+func (ctrl *GoNZBNetAdminController) RecomputeScores(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	var req scoreRecomputeRequest
+	if err := decodeJSONBody(c, &req); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	poolID := firstNonBlank(req.PoolID, ctrl.appCtx.Config.GoNZBNet.LocalPoolID, "pool.local")
+	result, err := store.RecomputeFederatedScores(c.Request().Context(), poolID)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, scoreRecomputeResponse{Status: "ok", Result: result})
+}
+
+func (ctrl *GoNZBNetAdminController) ExportKey(c *echo.Context) error {
+	var req keyExportRequest
+	if err := decodeJSONBody(c, &req); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	if strings.TrimSpace(req.Confirmation) != "export-gonzbnet-node-key" {
+		return jsonError(c, http.StatusBadRequest, "confirmation must be export-gonzbnet-node-key")
+	}
+	if strings.TrimSpace(req.BackupPassword) == "" {
+		return jsonError(c, http.StatusBadRequest, "backup_password is required")
+	}
+	nodeIdentity, err := ctrl.localIdentity()
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	nodeID, err := nodeIdentity.NodeID(c.Request().Context())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	publicKey, err := nodeIdentity.PublicKeyBase64URL(c.Request().Context())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	encryptedKey, err := nodeIdentity.ExportEncryptedPrivateKey(req.BackupPassword)
+	if err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	return c.JSON(http.StatusOK, keyExportResponse{
+		Status:       "ok",
+		NodeID:       nodeID,
+		PublicKey:    publicKey,
+		Format:       "gonzbnet.ed25519.private.v1",
+		EncryptedKey: encryptedKey,
+		CreatedAt:    time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
+func (ctrl *GoNZBNetAdminController) RotateKey(c *echo.Context) error {
+	var req keyRotateRequest
+	if err := decodeJSONBody(c, &req); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	if strings.TrimSpace(req.Confirmation) != "rotate-gonzbnet-node-key" {
+		return jsonError(c, http.StatusBadRequest, "confirmation must be rotate-gonzbnet-node-key")
+	}
+	if ctrl == nil || ctrl.appCtx == nil || ctrl.appCtx.Config == nil {
+		return jsonError(c, http.StatusInternalServerError, "gonzbnet admin controller is not initialized")
+	}
+	cfg := ctrl.appCtx.Config.GoNZBNet
+	result, err := identity.Rotate(cfg.KeysDir, cfg.KeyPassword, time.Now().UTC())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	oldNodeID, err := result.OldIdentity.NodeID(c.Request().Context())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	newNodeID, err := result.NewIdentity.NodeID(c.Request().Context())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	oldPublicKey, err := result.OldIdentity.PublicKeyBase64URL(c.Request().Context())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	newPublicKey, err := result.NewIdentity.PublicKeyBase64URL(c.Request().Context())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, keyRotateResponse{
+		Status:       "ok",
+		OldNodeID:    oldNodeID,
+		OldPublicKey: oldPublicKey,
+		NewNodeID:    newNodeID,
+		NewPublicKey: newPublicKey,
+		BackupPath:   result.BackupPath,
+		RotatedAt:    result.RotatedAt.Format(time.RFC3339),
+		Warning:      "node key rotation changes the node_id; re-establish pool membership and peer trust for the new node_id",
+	})
+}
+
+func (ctrl *GoNZBNetAdminController) ListPools(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	items, err := store.ListTrustPools(c.Request().Context())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
+func (ctrl *GoNZBNetAdminController) UpsertPool(c *echo.Context) error {
+	if ctrl == nil || ctrl.appCtx == nil || ctrl.appCtx.Config == nil || !ctrl.appCtx.Config.GoNZBNet.AllowPoolCreation {
+		return jsonError(c, http.StatusForbidden, "pool creation is disabled")
+	}
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	var req trustPoolRequest
+	if err := decodeJSONBody(c, &req); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	if strings.TrimSpace(req.PoolID) == "" || strings.TrimSpace(req.DisplayName) == "" {
+		return jsonError(c, http.StatusBadRequest, "pool_id and display_name are required")
+	}
+	enabled := true
+	if req.Enabled != nil {
+		enabled = *req.Enabled
+	}
+	acceptedTypes := req.AcceptedEventTypes
+	if len(acceptedTypes) == 0 {
+		acceptedTypes = []string{
+			pools.EventTypeReleaseCard,
+			pools.EventTypeHealthAttestation,
+			pools.EventTypeTombstone,
+			pools.EventTypeValidatorCapacity,
+			pools.EventTypeArticleAvailabilityAttestation,
+			pools.EventTypeChecksumAttestation,
+			pools.EventTypeManifestAvailability,
+			pools.EventTypeScannerCapacity,
+			pools.EventTypeScannerHeartbeat,
+			pools.EventTypeGroupObservation,
+			pools.EventTypeCoveragePlan,
+			pools.EventTypeCoverageAssignment,
+			pools.EventTypeRangeClaim,
+			pools.EventTypeTimeWindowClaim,
+			pools.EventTypeCoverageCheckpoint,
+			pools.EventTypeRangeComplete,
+			pools.EventTypeRangeFailed,
+		}
+	}
+	policy := pools.Policy{
+		MembershipThreshold:        req.MembershipThreshold,
+		ModerationThreshold:        req.ModerationThreshold,
+		CheckpointWitnessThreshold: req.CheckpointWitnessThreshold,
+		AcceptMode:                 req.AcceptMode,
+		MinNodeTrustScore:          req.MinNodeTrustScore,
+		AcceptedEventTypes:         acceptedTypes,
+	}
+	policy = pools.NormalizePolicy(policy, req.MembershipThreshold)
+	policyJSON, _ := json.Marshal(policy)
+	visibility := firstNonBlank(req.Visibility, "unlisted")
+	joinMode := firstNonBlank(req.JoinMode, "approval")
+	admissionEnabled := boolDefault(req.AdmissionEnabled, true)
+	poolRecord := pgindex.TrustPoolRecord{
+		PoolID:                     req.PoolID,
+		DisplayName:                req.DisplayName,
+		Description:                req.Description,
+		PolicyJSON:                 policyJSON,
+		MembershipThreshold:        policy.MembershipThreshold,
+		ModerationThreshold:        policy.ModerationThreshold,
+		CheckpointWitnessThreshold: policy.CheckpointWitnessThreshold,
+		AcceptMode:                 policy.AcceptMode,
+		MinNodeTrustScore:          policy.MinNodeTrustScore,
+		AcceptedEventTypes:         policy.AcceptedEventTypes,
+		Enabled:                    enabled,
+		Visibility:                 visibility,
+		JoinMode:                   joinMode,
+		AdmissionEnabled:           admissionEnabled,
+	}
+	if extended, ok := store.(interface {
+		GetTrustPool(context.Context, string) (pgindex.TrustPoolRecord, error)
+	}); ok {
+		existing, err := extended.GetTrustPool(c.Request().Context(), req.PoolID)
+		if err == nil && existing.GenesisEventID != "" {
+			poolRecord.GenesisEventID = existing.GenesisEventID
+			if err := store.UpsertTrustPool(c.Request().Context(), poolRecord); err != nil {
+				return jsonError(c, http.StatusInternalServerError, err.Error())
+			}
+			return c.JSON(http.StatusOK, map[string]string{"status": "ok", "genesis_event_id": existing.GenesisEventID})
+		}
+		if err != nil && err != sql.ErrNoRows {
+			return jsonError(c, http.StatusInternalServerError, err.Error())
+		}
+	}
+	nodeIdentity, err := ctrl.localIdentity()
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	nodeID, err := nodeIdentity.NodeID(c.Request().Context())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	publicKey, err := nodeIdentity.PublicKey(c.Request().Context())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if err := store.UpsertFederationNodeIdentity(c.Request().Context(), nodeID, publicKey); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	sequence, previousEventID, err := store.NextFederationEventSequence(c.Request().Context(), nodeID)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	now := time.Now().UTC()
+	body := pools.Genesis{
+		SchemaVersion: "1.0", Type: pools.EventTypePoolGenesis, PoolID: req.PoolID,
+		DisplayName: req.DisplayName, Description: req.Description,
+		CreatedAt: now.Format(time.RFC3339), Admins: []string{nodeID}, Witnesses: []string{nodeID},
+		Policy: policy, Visibility: visibility, JoinMode: joinMode, AdmissionEnabled: admissionEnabled,
+	}
+	event, validation, err := events.Create(c.Request().Context(), nodeIdentity, events.CreateOptions{
+		EventType: pools.EventTypePoolGenesis, Sequence: sequence, PreviousEventID: previousEventID,
+		CreatedAt: now, PoolIDs: []string{req.PoolID}, Visibility: "pool",
+		BodySchema: pools.BodySchema(pools.EventTypePoolGenesis), Body: body,
+	})
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if err := store.ValidateFederationPoolControlEvent(c.Request().Context(), event); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	if err := store.AppendVerifiedFederationEvent(c.Request().Context(), event, validation); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if err := store.ProjectFederationPoolEvent(c.Request().Context(), event); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	_ = store.UpsertFederationRolePoolAccess(c.Request().Context(), pgindex.FederationRolePoolAccessRecord{RoleID: "admin", PoolID: req.PoolID, CanSearch: true, CanGet: true, CanResolveManifest: true})
+	return c.JSON(http.StatusCreated, map[string]string{"status": "ok", "genesis_event_id": event.EventID})
+}
+
+func (ctrl *GoNZBNetAdminController) DiscoverAdmissionNode(c *echo.Context) error {
+	var req admissionDiscoverRequest
+	if err := decodeJSONBody(c, &req); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	nodeIdentity, err := ctrl.localIdentity()
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	client := admission.NewClient(nodeIdentity, ctrl.appCtx.Config.GoNZBNet.AllowInsecurePeerHTTP)
+	remote, err := client.Discover(c.Request().Context(), req.Locator, req.ExpectedNodeID)
+	if err != nil {
+		return jsonError(c, http.StatusBadGateway, err.Error())
+	}
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	publicKey, _ := canonical.DecodeBase64URL(remote.Profile.PublicKey)
+	if err := store.UpsertFederationNodeIdentity(c.Request().Context(), remote.Profile.NodeID, ed25519.PublicKey(publicKey)); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if _, err := store.UpsertFederationPeerURL(c.Request().Context(), remote.WellKnown.BaseURL); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, remote)
+}
+
+func (ctrl *GoNZBNetAdminController) JoinAdmissionPool(c *echo.Context) error {
+	var req admissionJoinRequest
+	if err := decodeJSONBody(c, &req); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	locator := strings.TrimSpace(req.Locator)
+	var invitation *admission.Invitation
+	if strings.HasPrefix(locator, "gonzbnet://") {
+		value, err := admission.ParseInvitation(locator)
+		if err != nil {
+			return jsonError(c, http.StatusBadRequest, err.Error())
+		}
+		invitation = &value
+		locator = value.RelayURL
+		if req.PoolID == "" {
+			req.PoolID = value.PoolID
+		}
+	}
+	nodeIdentity, err := ctrl.localIdentity()
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	client := admission.NewClient(nodeIdentity, ctrl.appCtx.Config.GoNZBNet.AllowInsecurePeerHTTP)
+	discoveryLocator := locator
+	if invitation != nil {
+		discoveryLocator = strings.TrimSpace(req.Locator)
+	}
+	remote, err := client.Discover(c.Request().Context(), discoveryLocator, req.ExpectedNodeID)
+	if err != nil {
+		return jsonError(c, http.StatusBadGateway, err.Error())
+	}
+	publicKeyBytes, _ := canonical.DecodeBase64URL(remote.Profile.PublicKey)
+	if invitation != nil {
+		if err := invitation.Verify(time.Now().UTC()); err != nil {
+			return jsonError(c, http.StatusBadRequest, err.Error())
+		}
+	}
+	var descriptor *admission.PoolDescriptor
+	for i := range remote.Pools {
+		if remote.Pools[i].PoolID == strings.TrimSpace(req.PoolID) {
+			descriptor = &remote.Pools[i]
+			break
+		}
+	}
+	if descriptor == nil {
+		return jsonError(c, http.StatusBadRequest, "selected pool is not accepting join requests")
+	}
+	if invitation != nil && invitation.GenesisEventID != descriptor.GenesisEventID {
+		return jsonError(c, http.StatusBadRequest, "invitation pool fingerprint does not match remote pool")
+	}
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	if err := store.UpsertFederationNodeIdentity(c.Request().Context(), remote.Profile.NodeID, ed25519.PublicKey(publicKeyBytes)); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if _, err := store.UpsertFederationPeerURL(c.Request().Context(), remote.WellKnown.BaseURL); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	genesis := descriptor.GenesisEvent
+	genesisPublicKey, _ := canonical.DecodeBase64URL(genesis.AuthorPublicKey)
+	if err := store.UpsertFederationNodeIdentity(c.Request().Context(), genesis.AuthorNodeID, ed25519.PublicKey(genesisPublicKey)); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	exists, err := store.FederationEventExists(c.Request().Context(), genesis.EventID)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if !exists {
+		genesisValidation, err := events.VerifyWithin(genesis, time.Now().UTC(), time.Duration(ctrl.appCtx.Config.GoNZBNet.TimeToleranceSeconds)*time.Second, 0)
+		if err != nil || genesisValidation == nil || !genesisValidation.OK {
+			return jsonError(c, http.StatusBadGateway, "pool genesis failed verification")
+		}
+		if err := store.ValidateFederationPoolControlEvent(c.Request().Context(), genesis); err != nil {
+			return jsonError(c, http.StatusBadGateway, err.Error())
+		}
+		if err := store.AppendVerifiedFederationEvent(c.Request().Context(), genesis, genesisValidation); err != nil {
+			return jsonError(c, http.StatusInternalServerError, err.Error())
+		}
+	}
+	if err := store.ProjectFederationPoolEvent(c.Request().Context(), genesis); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	nodeID, _ := nodeIdentity.NodeID(c.Request().Context())
+	localPublicKey, _ := nodeIdentity.PublicKey(c.Request().Context())
+	_ = store.UpsertFederationNodeIdentity(c.Request().Context(), nodeID, localPublicKey)
+	sequence, previousEventID, err := store.NextFederationEventSequence(c.Request().Context(), nodeID)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	capabilities := capability.Normalize(req.RequestedCapabilities)
+	if len(capabilities) == 0 {
+		capabilities = ctrl.recommendedLocalCapabilities()
+	}
+	if retryStore, ok := store.(interface {
+		ListFederationAdmissions(context.Context, string, string, int) ([]pgindex.FederationAdmissionRecord, error)
+		GetFederationEvent(context.Context, string) (*events.SignedEvent, error)
+	}); ok {
+		pending, err := retryStore.ListFederationAdmissions(c.Request().Context(), descriptor.PoolID, "pending", 100)
+		if err != nil {
+			return jsonError(c, http.StatusInternalServerError, err.Error())
+		}
+		for _, item := range pending {
+			if item.CandidateNodeID != nodeID || strings.TrimRight(item.RelayURL, "/") != strings.TrimRight(remote.WellKnown.BaseURL, "/") {
+				continue
+			}
+			existing, err := retryStore.GetFederationEvent(c.Request().Context(), item.ProposalEventID)
+			if err != nil || existing == nil {
+				continue
+			}
+			if err := client.SubmitJoin(c.Request().Context(), remote.WellKnown.BaseURL, descriptor.PoolID, existing); err != nil {
+				return jsonError(c, http.StatusBadGateway, err.Error())
+			}
+			return c.JSON(http.StatusAccepted, map[string]any{"status": "pending", "proposal_event_id": existing.EventID, "pool_id": descriptor.PoolID, "relay_url": remote.WellKnown.BaseURL})
+		}
+	}
+	now := time.Now().UTC()
+	body := pools.JoinRequest{
+		SchemaVersion: "1.0", Type: pools.EventTypePoolJoinRequest,
+		PoolID: descriptor.PoolID, CandidateNodeID: nodeID,
+		RequestedRoles:        []string{firstNonBlank(req.Role, pools.RoleMember)},
+		RequestedCapabilities: capabilities, Message: strings.TrimSpace(req.Message),
+		GenesisEventID: descriptor.GenesisEventID, CandidateURL: ctrl.adminProfileConfig(c).AdvertiseURL,
+		RelayNodeID: remote.Profile.NodeID, RelayURL: remote.WellKnown.BaseURL,
+		CreatedAt: now.Format(time.RFC3339),
+	}
+	event, validation, err := events.Create(c.Request().Context(), nodeIdentity, events.CreateOptions{
+		EventType: pools.EventTypePoolJoinRequest, Sequence: sequence, PreviousEventID: previousEventID,
+		CreatedAt: now, PoolIDs: []string{descriptor.PoolID}, Visibility: "pool",
+		BodySchema: pools.BodySchema(pools.EventTypePoolJoinRequest), Body: body,
+	})
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if err := store.AppendVerifiedFederationEvent(c.Request().Context(), event, validation); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if err := store.ProjectFederationPoolEvent(c.Request().Context(), event); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if err := client.SubmitJoin(c.Request().Context(), remote.WellKnown.BaseURL, descriptor.PoolID, event); err != nil {
+		return jsonError(c, http.StatusBadGateway, err.Error())
+	}
+	return c.JSON(http.StatusAccepted, map[string]any{"status": "pending", "proposal_event_id": event.EventID, "pool_id": descriptor.PoolID, "relay_url": remote.WellKnown.BaseURL})
+}
+
+func (ctrl *GoNZBNetAdminController) ListAdmissions(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	extended, ok := store.(interface {
+		ListFederationAdmissions(context.Context, string, string, int) ([]pgindex.FederationAdmissionRecord, error)
+	})
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admission store is unavailable")
+	}
+	items, err := extended.ListFederationAdmissions(c.Request().Context(), queryParamTrimmed(c, "pool_id"), queryParamTrimmed(c, "status"), parseIntDefault(queryParamTrimmed(c, "limit"), 100))
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
+func (ctrl *GoNZBNetAdminController) RefreshAdmission(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	extended, ok := store.(gonzbnetStore)
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admission store is unavailable")
+	}
+	record, err := extended.GetFederationAdmission(c.Request().Context(), pathParamTrimmed(c, "proposal_event_id"))
+	if err != nil {
+		return jsonError(c, http.StatusNotFound, "admission request not found")
+	}
+	nodeIdentity, err := ctrl.localIdentity()
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	client := admission.NewClient(nodeIdentity, ctrl.appCtx.Config.GoNZBNet.AllowInsecurePeerHTTP)
+	status, err := client.FetchStatus(c.Request().Context(), record.RelayURL, record.PoolID, record.ProposalEventID)
+	if err != nil {
+		return jsonError(c, http.StatusBadGateway, err.Error())
+	}
+	admissionEvents := make([]*events.SignedEvent, 0, len(status.TrustEvents)+2)
+	admissionEvents = append(admissionEvents, status.GenesisEvent)
+	admissionEvents = append(admissionEvents, status.TrustEvents...)
+	admissionEvents = append(admissionEvents, status.ApprovalEvent)
+	seenEvents := map[string]struct{}{}
+	for _, event := range admissionEvents {
+		if event == nil {
+			continue
+		}
+		if _, seen := seenEvents[event.EventID]; seen {
+			continue
+		}
+		seenEvents[event.EventID] = struct{}{}
+		validation, err := events.VerifyWithin(event, time.Now().UTC(), time.Duration(ctrl.appCtx.Config.GoNZBNet.TimeToleranceSeconds)*time.Second, 0)
+		if err != nil || validation == nil || !validation.OK {
+			return jsonError(c, http.StatusBadGateway, "remote admission event failed verification")
+		}
+		publicKey, _ := canonical.DecodeBase64URL(event.AuthorPublicKey)
+		if err := store.UpsertFederationNodeIdentity(c.Request().Context(), event.AuthorNodeID, ed25519.PublicKey(publicKey)); err != nil {
+			return jsonError(c, http.StatusInternalServerError, err.Error())
+		}
+		if err := store.ValidateFederationPoolControlEvent(c.Request().Context(), event); err != nil {
+			return jsonError(c, http.StatusBadGateway, err.Error())
+		}
+		if err := store.AppendVerifiedFederationEvent(c.Request().Context(), event, validation); err != nil {
+			return jsonError(c, http.StatusInternalServerError, err.Error())
+		}
+		if err := store.ProjectFederationPoolEvent(c.Request().Context(), event); err != nil {
+			return jsonError(c, http.StatusInternalServerError, err.Error())
+		}
+	}
+	if status.Status == "approved" {
+		localNodeID, _ := nodeIdentity.NodeID(c.Request().Context())
+		for _, endpoint := range status.MemberEndpoints {
+			if strings.TrimSpace(endpoint.NodeID) == "" || endpoint.NodeID == localNodeID || strings.TrimSpace(endpoint.BaseURL) == "" {
+				continue
+			}
+			if err := transportpolicy.ValidateHTTPURL(endpoint.BaseURL, ctrl.appCtx.Config.GoNZBNet.AllowInsecurePeerHTTP); err != nil {
+				return jsonError(c, http.StatusBadGateway, "pool member endpoint failed transport policy")
+			}
+			if _, err := store.UpsertFederationPeerURL(c.Request().Context(), endpoint.BaseURL); err != nil {
+				return jsonError(c, http.StatusInternalServerError, err.Error())
+			}
+		}
+	}
+	return c.JSON(http.StatusOK, status)
+}
+
+func (ctrl *GoNZBNetAdminController) CreatePoolInvitation(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	extended, ok := store.(interface {
+		GetTrustPool(context.Context, string) (pgindex.TrustPoolRecord, error)
+	})
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet pool store is unavailable")
+	}
+	pool, err := extended.GetTrustPool(c.Request().Context(), pathParamTrimmed(c, "pool_id"))
+	if err != nil || pool.GenesisEventID == "" {
+		return jsonError(c, http.StatusNotFound, "pool genesis is unavailable")
+	}
+	nodeIdentity, err := ctrl.localIdentity()
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	nodeID, _ := nodeIdentity.NodeID(c.Request().Context())
+	active, err := store.IsActivePoolAdmin(c.Request().Context(), pool.PoolID, nodeID)
+	if err != nil || !active {
+		return jsonError(c, http.StatusForbidden, "local node is not a pool admin")
+	}
+	var req admissionInviteRequest
+	if err := decodeJSONBody(c, &req); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	var expires *time.Time
+	if req.ExpiresInHours > 0 {
+		value := time.Now().UTC().Add(time.Duration(req.ExpiresInHours) * time.Hour)
+		expires = &value
+	}
+	invite, err := admission.NewInvitation(c.Request().Context(), nodeIdentity, pool.PoolID, pool.GenesisEventID, ctrl.adminProfileConfig(c).AdvertiseURL, expires)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	link, err := invite.Encode()
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusCreated, map[string]any{"invitation": invite, "link": link})
+}
+
+func (ctrl *GoNZBNetAdminController) ApproveAdmission(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	extended, ok := store.(gonzbnetStore)
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admission store is unavailable")
+	}
+	record, err := extended.GetFederationAdmission(c.Request().Context(), pathParamTrimmed(c, "proposal_event_id"))
+	if err != nil {
+		return jsonError(c, http.StatusNotFound, "admission request not found")
+	}
+	nodeIdentity, err := ctrl.localIdentity()
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	nodeID, _ := nodeIdentity.NodeID(c.Request().Context())
+	active, err := store.IsActivePoolAdmin(c.Request().Context(), record.PoolID, nodeID)
+	if err != nil || !active {
+		return jsonError(c, http.StatusForbidden, "local node is not an active pool admin")
+	}
+	body := pools.MemberApproved{PoolID: record.PoolID, SubjectNodeID: record.CandidateNodeID, Role: record.RequestedRole, ProposalEventID: record.ProposalEventID, AllowedCapabilities: record.RequestedCapabilities}
+	fragment, err := admission.NewApprovalFragment(c.Request().Context(), nodeIdentity, body, time.Now().UTC())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	localBase := strings.TrimRight(ctrl.adminProfileConfig(c).AdvertiseURL, "/")
+	if record.RelayNodeID == nodeID || strings.TrimRight(record.RelayURL, "/") == localBase {
+		if err := extended.StoreFederationApprovalFragment(c.Request().Context(), fragment); err != nil {
+			return jsonError(c, http.StatusInternalServerError, err.Error())
+		}
+		status, err := finalizePoolAdmission(c.Request().Context(), nodeIdentity, extended, record.ProposalEventID)
+		if err != nil {
+			return jsonError(c, http.StatusBadRequest, err.Error())
+		}
+		return c.JSON(http.StatusOK, status)
+	}
+	client := admission.NewClient(nodeIdentity, ctrl.appCtx.Config.GoNZBNet.AllowInsecurePeerHTTP)
+	status, err := client.SubmitApproval(c.Request().Context(), record.RelayURL, fragment)
+	if err != nil {
+		return jsonError(c, http.StatusBadGateway, err.Error())
+	}
+	return c.JSON(http.StatusOK, status)
+}
+
+func (ctrl *GoNZBNetAdminController) RejectAdmission(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	extended, ok := store.(gonzbnetStore)
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admission store is unavailable")
+	}
+	record, err := extended.GetFederationAdmission(c.Request().Context(), pathParamTrimmed(c, "proposal_event_id"))
+	if err != nil {
+		return jsonError(c, http.StatusNotFound, "admission request not found")
+	}
+	nodeIdentity, err := ctrl.localIdentity()
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	nodeID, _ := nodeIdentity.NodeID(c.Request().Context())
+	active, err := store.IsActivePoolAdmin(c.Request().Context(), record.PoolID, nodeID)
+	if err != nil || !active {
+		return jsonError(c, http.StatusForbidden, "local node is not an active pool admin")
+	}
+	var req admissionRejectRequest
+	if err := decodeJSONBody(c, &req); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	reason := firstNonBlank(req.Reason, "rejected by pool administrator")
+	localBase := strings.TrimRight(ctrl.adminProfileConfig(c).AdvertiseURL, "/")
+	if record.RelayNodeID == nodeID || strings.TrimRight(record.RelayURL, "/") == localBase {
+		if err := extended.FinalizeFederationAdmission(c.Request().Context(), record.ProposalEventID, "", "rejected", reason); err != nil {
+			return jsonError(c, http.StatusInternalServerError, err.Error())
+		}
+		return c.JSON(http.StatusOK, map[string]any{"status": "rejected", "proposal_event_id": record.ProposalEventID, "reason": reason})
+	}
+	fragment, err := admission.NewRejectionFragment(c.Request().Context(), nodeIdentity, record.PoolID, record.ProposalEventID, record.CandidateNodeID, reason, time.Now().UTC())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	client := admission.NewClient(nodeIdentity, ctrl.appCtx.Config.GoNZBNet.AllowInsecurePeerHTTP)
+	status, err := client.SubmitRejection(c.Request().Context(), record.RelayURL, fragment)
+	if err != nil {
+		return jsonError(c, http.StatusBadGateway, err.Error())
+	}
+	_ = extended.FinalizeFederationAdmission(c.Request().Context(), record.ProposalEventID, "", "rejected", reason)
+	return c.JSON(http.StatusOK, status)
+}
+
+func (ctrl *GoNZBNetAdminController) ListPoolMembers(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	items, err := store.ListPoolMembers(c.Request().Context(), pathParamTrimmed(c, "pool_id"))
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
+func (ctrl *GoNZBNetAdminController) ListPoolControlEvents(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	items, err := store.ListPoolControlEvents(c.Request().Context(), pathParamTrimmed(c, "pool_id"), parseIntDefault(queryParamTrimmed(c, "limit"), 100))
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
+func (ctrl *GoNZBNetAdminController) ListRolePoolAccess(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	items, err := store.ListFederationRolePoolAccess(c.Request().Context(), pathParamTrimmed(c, "pool_id"))
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
+func (ctrl *GoNZBNetAdminController) UpsertRolePoolAccess(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	var req rolePoolAccessRequest
+	if err := decodeJSONBody(c, &req); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	roleID := strings.TrimSpace(req.RoleID)
+	poolID := pathParamTrimmed(c, "pool_id")
+	if roleID == "" || poolID == "" {
+		return jsonError(c, http.StatusBadRequest, "role_id and pool_id are required")
+	}
+	if err := store.UpsertFederationRolePoolAccess(c.Request().Context(), pgindex.FederationRolePoolAccessRecord{
+		RoleID:             roleID,
+		PoolID:             poolID,
+		CanSearch:          boolDefault(req.CanSearch, true),
+		CanGet:             boolDefault(req.CanGet, true),
+		CanResolveManifest: boolDefault(req.CanResolveManifest, false),
+	}); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (ctrl *GoNZBNetAdminController) DeleteRolePoolAccess(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	deleted, err := store.DeleteFederationRolePoolAccess(c.Request().Context(), pathParamTrimmed(c, "pool_id"), pathParamTrimmed(c, "role_id"))
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if !deleted {
+		return jsonError(c, http.StatusNotFound, "role pool access grant was not found")
+	}
+	return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (ctrl *GoNZBNetAdminController) UpsertPoolMember(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	var req poolMemberRequest
+	if err := decodeJSONBody(c, &req); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	if strings.TrimSpace(req.NodeID) == "" {
+		return jsonError(c, http.StatusBadRequest, "node_id is required")
+	}
+	if len(req.Limits) > 0 && !json.Valid(req.Limits) {
+		return jsonError(c, http.StatusBadRequest, "limits must be a JSON object")
+	}
+	if err := store.UpsertPoolMember(c.Request().Context(), pgindex.PoolMemberRecord{
+		PoolID:              pathParamTrimmed(c, "pool_id"),
+		NodeID:              req.NodeID,
+		Role:                firstNonBlank(req.Role, pools.RoleMember),
+		Status:              firstNonBlank(req.Status, pools.StatusActive),
+		AllowedCapabilities: capability.Normalize(req.AllowedCapabilities),
+		LimitsJSON:          req.Limits,
+	}); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (ctrl *GoNZBNetAdminController) ApprovePoolMember(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	var req poolMemberApprovalRequest
+	if err := decodeJSONBody(c, &req); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	poolID := pathParamTrimmed(c, "pool_id")
+	subjectNodeID := pathParamTrimmed(c, "node_id")
+	if poolID == "" || subjectNodeID == "" {
+		return jsonError(c, http.StatusBadRequest, "pool_id and node_id are required")
+	}
+	proposalEventID := strings.TrimSpace(req.ProposalEventID)
+	if proposalEventID == "" {
+		return jsonError(c, http.StatusBadRequest, "proposal_event_id is required")
+	}
+	role := firstNonBlank(req.Role, pools.RoleMember)
+	policy, err := store.GetTrustPoolPolicy(c.Request().Context(), poolID)
+	if err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	required := req.ApprovalsRequired
+	if required < policy.MembershipThreshold {
+		required = policy.MembershipThreshold
+	}
+	if required <= 0 {
+		required = 1
+	}
+	nodeIdentity, err := ctrl.localIdentity()
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	nodeID, err := nodeIdentity.NodeID(c.Request().Context())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	publicKey, err := nodeIdentity.PublicKey(c.Request().Context())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if err := store.UpsertFederationNodeIdentity(c.Request().Context(), nodeID, publicKey); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	sequence, previousEventID, err := store.NextFederationEventSequence(c.Request().Context(), nodeID)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	now := time.Now().UTC()
+	body := pools.MemberApproved{
+		SchemaVersion:       "1.0",
+		Type:                pools.EventTypePoolMemberApproved,
+		PoolID:              poolID,
+		SubjectNodeID:       subjectNodeID,
+		Role:                role,
+		ProposalEventID:     proposalEventID,
+		AllowedCapabilities: capability.Normalize(req.AllowedCapabilities),
+		Limits:              req.Limits,
+		ApprovalsRequired:   required,
+		Approvals:           append([]pools.Approval(nil), req.Approvals...),
+	}
+	approval, err := signPoolMemberApproval(c.Request().Context(), nodeIdentity, body, now.Format(time.RFC3339))
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	body.Approvals = append(body.Approvals, approval)
+	event, validation, err := events.Create(c.Request().Context(), nodeIdentity, events.CreateOptions{
+		EventType:       pools.EventTypePoolMemberApproved,
+		Sequence:        sequence,
+		PreviousEventID: previousEventID,
+		CreatedAt:       now,
+		PoolIDs:         []string{poolID},
+		Visibility:      "pool",
+		BodySchema:      pools.BodySchema(pools.EventTypePoolMemberApproved),
+		Body:            body,
+	})
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if validation == nil || !validation.OK {
+		return jsonError(c, http.StatusInternalServerError, "signed pool member approval did not verify")
+	}
+	if err := store.ValidateFederationPoolControlEvent(c.Request().Context(), event); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	if err := store.AppendVerifiedFederationEvent(c.Request().Context(), event, validation); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if err := store.ProjectFederationPoolEvent(c.Request().Context(), event); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, poolMemberApprovalResponse{
+		Status:            "ok",
+		EventID:           event.EventID,
+		PoolID:            poolID,
+		SubjectNodeID:     subjectNodeID,
+		Role:              role,
+		ApprovalsRequired: required,
+		ApprovalCount:     len(body.Approvals),
+	})
+}
+
+func (ctrl *GoNZBNetAdminController) CreatePoolMemberRevocation(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	var req poolMemberRevocationRequest
+	if err := decodeJSONBody(c, &req); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	poolID := pathParamTrimmed(c, "pool_id")
+	subjectNodeID := pathParamTrimmed(c, "node_id")
+	if poolID == "" || subjectNodeID == "" {
+		return jsonError(c, http.StatusBadRequest, "pool_id and node_id are required")
+	}
+	reason := strings.TrimSpace(req.Reason)
+	if reason == "" {
+		return jsonError(c, http.StatusBadRequest, "reason is required")
+	}
+	policy, err := store.GetTrustPoolPolicy(c.Request().Context(), poolID)
+	if err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	required := req.ApprovalsRequired
+	if required < policy.ModerationThreshold {
+		required = policy.ModerationThreshold
+	}
+	if required <= 0 {
+		required = 1
+	}
+	nodeIdentity, err := ctrl.localIdentity()
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	nodeID, err := nodeIdentity.NodeID(c.Request().Context())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	publicKey, err := nodeIdentity.PublicKey(c.Request().Context())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if err := store.UpsertFederationNodeIdentity(c.Request().Context(), nodeID, publicKey); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	sequence, previousEventID, err := store.NextFederationEventSequence(c.Request().Context(), nodeID)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	now := time.Now().UTC()
+	effectiveAt := strings.TrimSpace(req.EffectiveAt)
+	if effectiveAt == "" {
+		effectiveAt = now.Format(time.RFC3339)
+	}
+	body := pools.MemberRevoked{
+		SchemaVersion:     "1.0",
+		Type:              pools.EventTypePoolMemberRevoked,
+		PoolID:            poolID,
+		SubjectNodeID:     subjectNodeID,
+		Reason:            reason,
+		EffectiveAt:       effectiveAt,
+		ApprovalsRequired: required,
+		Approvals:         append([]pools.Approval(nil), req.Approvals...),
+	}
+	approval, err := signPoolMemberRevocation(c.Request().Context(), nodeIdentity, body)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	body.Approvals = append(body.Approvals, approval)
+	event, validation, err := events.Create(c.Request().Context(), nodeIdentity, events.CreateOptions{
+		EventType:       pools.EventTypePoolMemberRevoked,
+		Sequence:        sequence,
+		PreviousEventID: previousEventID,
+		CreatedAt:       now,
+		PoolIDs:         []string{poolID},
+		Visibility:      "pool",
+		BodySchema:      pools.BodySchema(pools.EventTypePoolMemberRevoked),
+		Body:            body,
+	})
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if validation == nil || !validation.OK {
+		return jsonError(c, http.StatusInternalServerError, "signed pool member revocation did not verify")
+	}
+	if err := store.ValidateFederationPoolControlEvent(c.Request().Context(), event); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	if err := store.AppendVerifiedFederationEvent(c.Request().Context(), event, validation); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if err := store.ProjectFederationPoolEvent(c.Request().Context(), event); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, poolMemberRevocationResponse{
+		Status:            "ok",
+		EventID:           event.EventID,
+		PoolID:            poolID,
+		SubjectNodeID:     subjectNodeID,
+		Reason:            reason,
+		EffectiveAt:       effectiveAt,
+		ApprovalsRequired: required,
+		ApprovalCount:     len(body.Approvals),
+	})
+}
+
+func (ctrl *GoNZBNetAdminController) RevokePoolMember(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	if err := store.RevokePoolMember(c.Request().Context(), pathParamTrimmed(c, "pool_id"), pathParamTrimmed(c, "node_id"), "", nil); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (ctrl *GoNZBNetAdminController) RequestPoolJoin(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	var req poolJoinRequest
+	if err := decodeJSONBody(c, &req); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	poolID := pathParamTrimmed(c, "pool_id")
+	if poolID == "" {
+		return jsonError(c, http.StatusBadRequest, "pool_id is required")
+	}
+	nodeIdentity, err := ctrl.localIdentity()
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	nodeID, err := nodeIdentity.NodeID(c.Request().Context())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	publicKey, err := nodeIdentity.PublicKey(c.Request().Context())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if err := store.UpsertFederationNodeIdentity(c.Request().Context(), nodeID, publicKey); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	sequence, previousEventID, err := store.NextFederationEventSequence(c.Request().Context(), nodeID)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	now := time.Now().UTC()
+	roles := normalizeRequestedRoles(req.RequestedRoles)
+	body := pools.JoinRequest{
+		SchemaVersion:   "1.0",
+		Type:            pools.EventTypePoolJoinRequest,
+		PoolID:          poolID,
+		CandidateNodeID: nodeID,
+		RequestedRoles:  roles,
+		Message:         strings.TrimSpace(req.Message),
+		CreatedAt:       now.Format(time.RFC3339),
+	}
+	event, validation, err := events.Create(c.Request().Context(), nodeIdentity, events.CreateOptions{
+		EventType:       pools.EventTypePoolJoinRequest,
+		Sequence:        sequence,
+		PreviousEventID: previousEventID,
+		CreatedAt:       now,
+		PoolIDs:         []string{poolID},
+		Visibility:      "pool",
+		BodySchema:      pools.BodySchema(pools.EventTypePoolJoinRequest),
+		Body:            body,
+	})
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if validation == nil || !validation.OK {
+		return jsonError(c, http.StatusInternalServerError, "signed pool join request did not verify")
+	}
+	if err := store.ValidateFederationPoolControlEvent(c.Request().Context(), event); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	if err := store.AppendVerifiedFederationEvent(c.Request().Context(), event, validation); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, poolJoinResponse{
+		Status:          "ok",
+		EventID:         event.EventID,
+		PoolID:          poolID,
+		CandidateNodeID: nodeID,
+		RequestedRoles:  roles,
+	})
+}
+
+func (ctrl *GoNZBNetAdminController) ListTombstones(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	activeOnly := strings.EqualFold(queryParamTrimmed(c, "active"), "true")
+	items, err := store.ListTombstones(c.Request().Context(), activeOnly)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
+func (ctrl *GoNZBNetAdminController) CreateTombstone(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	var req tombstoneRequest
+	if err := decodeJSONBody(c, &req); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	now := time.Now().UTC()
+	severity := firstNonBlank(req.Severity, moderation.SeverityReject)
+	if strings.TrimSpace(req.PoolID) == "" && strings.TrimSpace(req.Severity) == "" {
+		severity = moderation.SeverityLocalOnly
+	}
+	effectiveAt := firstNonBlank(req.EffectiveAt, now.Format(time.RFC3339))
+	body := moderation.Tombstone{
+		SchemaVersion:    "1.0",
+		Type:             moderation.Type,
+		TargetType:       strings.TrimSpace(req.TargetType),
+		TargetID:         strings.TrimSpace(req.TargetID),
+		PoolID:           strings.TrimSpace(req.PoolID),
+		Reason:           strings.TrimSpace(req.Reason),
+		Severity:         severity,
+		EvidenceEventIDs: req.EvidenceEventIDs,
+		EffectiveAt:      effectiveAt,
+		ExpiresAt:        req.ExpiresAt,
+	}
+	if err := moderation.Validate(body, now, 2*time.Minute); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	nodeIdentity, err := ctrl.localIdentity()
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	nodeID, err := nodeIdentity.NodeID(c.Request().Context())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	publicKey, err := nodeIdentity.PublicKey(c.Request().Context())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if err := store.UpsertFederationNodeIdentity(c.Request().Context(), nodeID, publicKey); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if body.PoolID != "" && body.Severity != moderation.SeverityLocalOnly {
+		allowed, err := store.IsActivePoolAdmin(c.Request().Context(), body.PoolID, nodeID)
+		if err != nil {
+			return jsonError(c, http.StatusInternalServerError, err.Error())
+		}
+		if !allowed {
+			return jsonError(c, http.StatusForbidden, "local node is not an active pool admin")
+		}
+	}
+	bodyHash, err := moderation.HashBody(body)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if existingEventID, err := store.FindFederationEventByBodyHash(c.Request().Context(), nodeID, moderation.Type, bodyHash, body.PoolID); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	} else if existingEventID != "" {
+		if err := store.ProjectTombstone(c.Request().Context(), pgindex.TombstoneProjection{
+			Tombstone:    body,
+			EventID:      existingEventID,
+			AuthorNodeID: nodeID,
+		}); err != nil {
+			return jsonError(c, http.StatusInternalServerError, err.Error())
+		}
+		return c.JSON(http.StatusOK, map[string]string{"status": "ok", "event_id": existingEventID})
+	}
+	sequence, previousEventID, err := store.NextFederationEventSequence(c.Request().Context(), nodeID)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	poolIDs := []string{}
+	visibility := "local"
+	if strings.TrimSpace(body.PoolID) != "" && body.Severity != moderation.SeverityLocalOnly {
+		poolIDs = []string{body.PoolID}
+		visibility = "pool"
+	}
+	event, validation, err := events.Create(c.Request().Context(), nodeIdentity, events.CreateOptions{
+		EventType:       moderation.Type,
+		Sequence:        sequence,
+		PreviousEventID: previousEventID,
+		CreatedAt:       now,
+		PoolIDs:         poolIDs,
+		Visibility:      visibility,
+		BodySchema:      moderation.BodySchema,
+		Body:            body,
+	})
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if validation == nil || !validation.OK {
+		return jsonError(c, http.StatusInternalServerError, "signed tombstone did not verify")
+	}
+	if err := store.AppendVerifiedFederationEvent(c.Request().Context(), event, validation); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if err := store.ProjectTombstone(c.Request().Context(), pgindex.TombstoneProjection{
+		Tombstone:    body,
+		EventID:      event.EventID,
+		AuthorNodeID: nodeID,
+	}); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusCreated, map[string]string{"status": "ok", "event_id": event.EventID})
+}
+
+func (ctrl *GoNZBNetAdminController) CoverageDashboard(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	poolID := firstNonBlank(queryParamTrimmed(c, "pool_id"), ctrl.appCtx.Config.GoNZBNet.LocalPoolID, "pool.local")
+	dashboard, err := store.ListCoverageDashboard(c.Request().Context(), poolID)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, dashboard)
+}
+
+func (ctrl *GoNZBNetAdminController) ListNodeCapabilities(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	items, err := store.ListFederationNodeCapabilities(c.Request().Context())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
+func (ctrl *GoNZBNetAdminController) CoverageGroupCatalog(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	poolID := firstNonBlank(queryParamTrimmed(c, "pool_id"), ctrl.appCtx.Config.GoNZBNet.LocalPoolID, "pool.local")
+	items, err := store.ListCoverageGroupCatalog(c.Request().Context(), poolID)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
+func (ctrl *GoNZBNetAdminController) ValidationGaps(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	poolID := firstNonBlank(queryParamTrimmed(c, "pool_id"), ctrl.appCtx.Config.GoNZBNet.LocalPoolID, "pool.local")
+	limit := parseIntDefault(queryParamTrimmed(c, "limit"), 100)
+	items, err := store.ListValidationGaps(c.Request().Context(), poolID, limit)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
+func (ctrl *GoNZBNetAdminController) MaterializeStaleClaimPenalties(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	poolID := firstNonBlank(queryParamTrimmed(c, "pool_id"), ctrl.appCtx.Config.GoNZBNet.LocalPoolID, "pool.local")
+	count, err := store.MaterializeCoverageStaleClaimPenalties(c.Request().Context(), poolID)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"status": "ok", "created": count})
+}
+
+func (ctrl *GoNZBNetAdminController) CoverageSuggestions(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	poolID := firstNonBlank(queryParamTrimmed(c, "pool_id"), ctrl.appCtx.Config.GoNZBNet.LocalPoolID, "pool.local")
+	nodeID := queryParamTrimmed(c, "node_id")
+	if nodeID == "" {
+		var err error
+		nodeID, err = ctrl.localNodeID(c)
+		if err != nil {
+			return jsonError(c, http.StatusInternalServerError, err.Error())
+		}
+	}
+	limit := parseIntDefault(queryParamTrimmed(c, "limit"), 25)
+	minTrust := parseCoverageFloatDefault(queryParamTrimmed(c, "min_blocking_trust"), 0.25)
+	items, err := store.SuggestCoverageWork(c.Request().Context(), pgindex.CoverageWorkSuggestionParams{
+		PoolID:                poolID,
+		NodeID:                nodeID,
+		Mode:                  firstNonBlank(queryParamTrimmed(c, "mode"), "scanner"),
+		Limit:                 limit,
+		MinBlockingTrustScore: minTrust,
+	})
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
+func (ctrl *GoNZBNetAdminController) CoverageSchedulerPlan(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	params, err := ctrl.coverageSuggestionParams(c)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	plan, err := store.BuildCoverageSchedulerPlan(c.Request().Context(), params)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, plan)
+}
+
+func (ctrl *GoNZBNetAdminController) CreateStaleClaimReassignments(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	nodeIdentity, err := ctrl.localIdentity()
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	poolID := firstNonBlank(queryParamTrimmed(c, "pool_id"), ctrl.appCtx.Config.GoNZBNet.LocalPoolID, "pool.local")
+	limit := parseIntDefault(queryParamTrimmed(c, "limit"), 25)
+	minTrust := parseCoverageFloatDefault(queryParamTrimmed(c, "min_blocking_trust"), ctrl.appCtx.Config.GoNZBNet.CoverageMinTrustForClaim)
+	svc, err := reassigner.New(nodeIdentity, store, poolID, minTrust)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	result, err := svc.RunOnce(c.Request().Context(), limit)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"status": "ok", "result": result})
+}
+
+func (ctrl *GoNZBNetAdminController) UpsertPeer(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	var req peerRequest
+	if err := decodeJSONBody(c, &req); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	if err := transportpolicy.ValidateHTTPURL(req.PeerURL, ctrl.appCtx.Config.GoNZBNet.AllowInsecurePeerHTTP); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	peerID, err := store.UpsertFederationPeerURL(c.Request().Context(), req.PeerURL)
+	if err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"status": "ok", "peer_id": peerID})
+}
+
+func (ctrl *GoNZBNetAdminController) EnablePeer(c *echo.Context) error {
+	return ctrl.setPeerEnabled(c, true)
+}
+
+func (ctrl *GoNZBNetAdminController) DisablePeer(c *echo.Context) error {
+	return ctrl.setPeerEnabled(c, false)
+}
+
+func (ctrl *GoNZBNetAdminController) DeletePeer(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	peerID, err := strconv.ParseInt(pathParamTrimmed(c, "peer_id"), 10, 64)
+	if err != nil || peerID <= 0 {
+		return jsonError(c, http.StatusBadRequest, "valid peer_id is required")
+	}
+	deleted, err := store.DeleteFederationPeer(c.Request().Context(), peerID)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if !deleted {
+		return jsonError(c, http.StatusNotFound, "peer not found")
+	}
+	return c.JSON(http.StatusOK, map[string]any{"status": "ok", "peer_id": peerID})
+}
+
+func (ctrl *GoNZBNetAdminController) BlockNode(c *echo.Context) error {
+	return ctrl.setNodeStatus(c, "blocked")
+}
+
+func (ctrl *GoNZBNetAdminController) UnblockNode(c *echo.Context) error {
+	return ctrl.setNodeStatus(c, "known")
+}
+
+func (ctrl *GoNZBNetAdminController) PullSync(c *echo.Context) error {
+	service, err := ctrl.syncService()
+	if err != nil {
+		return jsonError(c, http.StatusServiceUnavailable, err.Error())
+	}
+	result, err := service.SyncOnce(c.Request().Context())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"status": "ok", "result": result})
+}
+
+func (ctrl *GoNZBNetAdminController) PushSync(c *echo.Context) error {
+	service, err := ctrl.syncService()
+	if err != nil {
+		return jsonError(c, http.StatusServiceUnavailable, err.Error())
+	}
+	limit := parseIntDefault(queryParamTrimmed(c, "limit"), ctrl.appCtx.Config.GoNZBNet.PushSyncBatchSize)
+	result, err := service.PushOnce(c.Request().Context(), limit)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"status": "ok", "result": result})
+}
+
+func (ctrl *GoNZBNetAdminController) GossipSync(c *echo.Context) error {
+	service, err := ctrl.syncService()
+	if err != nil {
+		return jsonError(c, http.StatusServiceUnavailable, err.Error())
+	}
+	cfg := ctrl.appCtx.Config.GoNZBNet
+	result, err := service.GossipOnce(c.Request().Context(), gonzbnetsync.GossipOptions{
+		NetworkID:           cfg.NetworkID,
+		TTL:                 cfg.GossipTTL,
+		BatchSize:           cfg.GossipBatchSize,
+		Fanout:              cfg.GossipFanout,
+		PeerExchangeEnabled: cfg.PeerExchangeEnabled,
+	})
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"status": "ok", "result": result})
+}
+
+func (ctrl *GoNZBNetAdminController) setPeerEnabled(c *echo.Context, enabled bool) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	peerID, err := strconv.ParseInt(pathParamTrimmed(c, "peer_id"), 10, 64)
+	if err != nil || peerID <= 0 {
+		return jsonError(c, http.StatusBadRequest, "peer_id is required")
+	}
+	if err := store.SetFederationPeerEnabled(c.Request().Context(), peerID, enabled); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (ctrl *GoNZBNetAdminController) setNodeStatus(c *echo.Context, status string) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	nodeID := pathParamTrimmed(c, "node_id")
+	if nodeID == "" {
+		return jsonError(c, http.StatusBadRequest, "node_id is required")
+	}
+	localNodeID, err := ctrl.localNodeID(c)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if nodeID == localNodeID {
+		return jsonError(c, http.StatusBadRequest, "local node status cannot be changed")
+	}
+	updated, err := store.SetFederationNodeStatus(c.Request().Context(), nodeID, status)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if !updated {
+		return jsonError(c, http.StatusNotFound, "node not found")
+	}
+	return c.JSON(http.StatusOK, map[string]any{"status": "ok", "node_id": nodeID})
+}
+
+func (ctrl *GoNZBNetAdminController) PeerDiagnostics(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	items, err := store.ListFederationPeerDiagnostics(c.Request().Context(), parseIntDefault(queryParamTrimmed(c, "limit"), 100))
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
+func (ctrl *GoNZBNetAdminController) EventDiagnostics(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	items, err := store.ListFederationEventDiagnostics(c.Request().Context(), parseIntDefault(queryParamTrimmed(c, "limit"), 100))
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
+func (ctrl *GoNZBNetAdminController) RejectedEventDiagnostics(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	limit := parseIntDefault(queryParamTrimmed(c, "limit"), 100)
+	items, err := store.ListFederationRejectedEventDiagnostics(c.Request().Context(), limit)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	summary, err := store.ListFederationRejectedEventSummary(c.Request().Context(), limit)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items), "summary": summary})
+}
+
+func (ctrl *GoNZBNetAdminController) PeerDeliveryDiagnostics(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	items, err := store.ListFederationPeerDeliveryDiagnostics(c.Request().Context(), parseIntDefault(queryParamTrimmed(c, "limit"), 100))
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
+func (ctrl *GoNZBNetAdminController) ValidationTaskDiagnostics(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	items, err := store.ListValidationTaskDiagnostics(c.Request().Context(), parseIntDefault(queryParamTrimmed(c, "limit"), 100))
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
+func (ctrl *GoNZBNetAdminController) ReleaseSourceDiagnostics(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	items, err := store.ListFederatedReleaseSourceDiagnostics(c.Request().Context(), queryParamTrimmed(c, "pool_id"), parseIntDefault(queryParamTrimmed(c, "limit"), 100))
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
+func (ctrl *GoNZBNetAdminController) ManifestSourceDiagnostics(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	items, err := store.ListFederatedManifestSourceDiagnostics(c.Request().Context(), queryParamTrimmed(c, "pool_id"), parseIntDefault(queryParamTrimmed(c, "limit"), 100))
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
+func (ctrl *GoNZBNetAdminController) HealthDiagnostics(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	items, err := store.ListHealthAttestationDiagnostics(c.Request().Context(), queryParamTrimmed(c, "pool_id"), parseIntDefault(queryParamTrimmed(c, "limit"), 100))
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
+func (ctrl *GoNZBNetAdminController) ReputationDiagnostics(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	items, err := store.ListReputationDiagnostics(c.Request().Context(), parseIntDefault(queryParamTrimmed(c, "limit"), 100))
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
+func (ctrl *GoNZBNetAdminController) coverageSuggestionParams(c *echo.Context) (pgindex.CoverageWorkSuggestionParams, error) {
+	poolID := firstNonBlank(queryParamTrimmed(c, "pool_id"), ctrl.appCtx.Config.GoNZBNet.LocalPoolID, "pool.local")
+	nodeID := queryParamTrimmed(c, "node_id")
+	if nodeID == "" {
+		localNodeID, err := ctrl.localNodeID(c)
+		if err != nil {
+			return pgindex.CoverageWorkSuggestionParams{}, err
+		}
+		nodeID = localNodeID
+	}
+	return pgindex.CoverageWorkSuggestionParams{
+		PoolID:                poolID,
+		NodeID:                nodeID,
+		Mode:                  firstNonBlank(queryParamTrimmed(c, "mode"), "scanner"),
+		Limit:                 parseIntDefault(queryParamTrimmed(c, "limit"), 25),
+		MinBlockingTrustScore: parseCoverageFloatDefault(queryParamTrimmed(c, "min_blocking_trust"), 0.25),
+	}, nil
+}
+
+func (ctrl *GoNZBNetAdminController) CreateCoverageAssignment(c *echo.Context) error {
+	var req coverageAssignmentRequest
+	if err := decodeJSONBody(c, &req); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	now := time.Now().UTC()
+	body := coverage.CoverageAssignment{
+		SchemaVersion:  "1.0",
+		Type:           coverage.TypeCoverageAssignment,
+		AssignmentID:   firstNonBlank(req.AssignmentID, coverageID("assign", now)),
+		PlanID:         strings.TrimSpace(req.PlanID),
+		PoolID:         firstNonBlank(req.PoolID, ctrl.appCtx.Config.GoNZBNet.LocalPoolID, "pool.local"),
+		Group:          strings.TrimSpace(req.Group),
+		Mode:           coverageAssignmentMode(req.RangeStart, req.RangeEnd, req.WindowStart, req.WindowEnd),
+		Role:           "primary_scanner",
+		AssignedNodeID: strings.TrimSpace(req.AssignedNodeID),
+		ProviderScope:  providerBackboneHashForAppContext(ctrl.appCtx),
+		RangeStart:     req.RangeStart,
+		RangeEnd:       req.RangeEnd,
+		WindowStart:    strings.TrimSpace(req.WindowStart),
+		WindowEnd:      strings.TrimSpace(req.WindowEnd),
+		Priority:       req.Priority,
+		DueAt:          strings.TrimSpace(req.DueAt),
+		ExpiresAt:      strings.TrimSpace(req.DueAt),
+		CreatedAt:      now.Format(time.RFC3339),
+	}
+	return ctrl.signAndProjectCoverage(c, coverage.TypeCoverageAssignment, body, body.PoolID)
+}
+
+func (ctrl *GoNZBNetAdminController) CreateCoverageClaim(c *echo.Context) error {
+	var req coverageClaimRequest
+	if err := decodeJSONBody(c, &req); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	now := time.Now().UTC()
+	nodeID, err := ctrl.localNodeID(c)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	poolID := firstNonBlank(req.PoolID, ctrl.appCtx.Config.GoNZBNet.LocalPoolID, "pool.local")
+	expiresAt := firstNonBlank(req.ExpiresAt, now.Add(30*time.Minute).Format(time.RFC3339))
+	if strings.TrimSpace(req.WindowStart) != "" || strings.TrimSpace(req.WindowEnd) != "" {
+		body := coverage.TimeWindowClaim{
+			SchemaVersion: "1.0",
+			Type:          coverage.TypeTimeWindowClaim,
+			ClaimID:       firstNonBlank(req.ClaimID, coverageID("claim", now)),
+			AssignmentID:  strings.TrimSpace(req.AssignmentID),
+			PoolID:        poolID,
+			Group:         strings.TrimSpace(req.Group),
+			NodeID:        nodeID,
+			ProviderScope: providerBackboneHashForAppContext(ctrl.appCtx),
+			WindowStart:   strings.TrimSpace(req.WindowStart),
+			WindowEnd:     strings.TrimSpace(req.WindowEnd),
+			ClaimedAt:     now.Format(time.RFC3339),
+			ExpiresAt:     expiresAt,
+			ClaimMode:     "primary_scan",
+		}
+		return ctrl.signAndProjectCoverage(c, coverage.TypeTimeWindowClaim, body, poolID)
+	}
+	body := coverage.RangeClaim{
+		SchemaVersion:                     "1.0",
+		Type:                              coverage.TypeRangeClaim,
+		ClaimID:                           firstNonBlank(req.ClaimID, coverageID("claim", now)),
+		AssignmentID:                      strings.TrimSpace(req.AssignmentID),
+		PoolID:                            poolID,
+		Group:                             strings.TrimSpace(req.Group),
+		NodeID:                            nodeID,
+		ProviderScope:                     providerBackboneHashForAppContext(ctrl.appCtx),
+		RangeStart:                        req.RangeStart,
+		RangeEnd:                          req.RangeEnd,
+		ClaimedAt:                         now.Format(time.RFC3339),
+		ExpiresAt:                         expiresAt,
+		ClaimMode:                         "primary_scan",
+		ExpectedCheckpointIntervalSeconds: ctrl.appCtx.Config.GoNZBNet.ScannerCheckpointIntervalSecs,
+	}
+	return ctrl.signAndProjectCoverage(c, coverage.TypeRangeClaim, body, poolID)
+}
+
+func (ctrl *GoNZBNetAdminController) CreateCoverageComplete(c *echo.Context) error {
+	var req coverageOutcomeRequest
+	if err := decodeJSONBody(c, &req); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	now := time.Now().UTC()
+	nodeID, err := ctrl.localNodeID(c)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	poolID := firstNonBlank(req.PoolID, ctrl.appCtx.Config.GoNZBNet.LocalPoolID, "pool.local")
+	body := coverage.RangeComplete{
+		SchemaVersion: "1.0",
+		Type:          coverage.TypeRangeComplete,
+		OutcomeID:     firstNonBlank(req.OutcomeID, coverageID("complete", now)),
+		ClaimID:       strings.TrimSpace(req.ClaimID),
+		AssignmentID:  strings.TrimSpace(req.AssignmentID),
+		PoolID:        poolID,
+		Group:         strings.TrimSpace(req.Group),
+		NodeID:        nodeID,
+		ProviderScope: providerBackboneHashForAppContext(ctrl.appCtx),
+		RangeStart:    req.RangeStart,
+		RangeEnd:      req.RangeEnd,
+		ReleaseCount:  req.ReleaseCount,
+		CompletedAt:   now.Format(time.RFC3339),
+	}
+	return ctrl.signAndProjectCoverage(c, coverage.TypeRangeComplete, body, poolID)
+}
+
+func (ctrl *GoNZBNetAdminController) CreateCoverageFailed(c *echo.Context) error {
+	var req coverageOutcomeRequest
+	if err := decodeJSONBody(c, &req); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	now := time.Now().UTC()
+	nodeID, err := ctrl.localNodeID(c)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	poolID := firstNonBlank(req.PoolID, ctrl.appCtx.Config.GoNZBNet.LocalPoolID, "pool.local")
+	body := coverage.RangeFailed{
+		SchemaVersion: "1.0",
+		Type:          coverage.TypeRangeFailed,
+		OutcomeID:     firstNonBlank(req.OutcomeID, coverageID("failed", now)),
+		ClaimID:       strings.TrimSpace(req.ClaimID),
+		AssignmentID:  strings.TrimSpace(req.AssignmentID),
+		PoolID:        poolID,
+		Group:         strings.TrimSpace(req.Group),
+		NodeID:        nodeID,
+		ProviderScope: providerBackboneHashForAppContext(ctrl.appCtx),
+		RangeStart:    req.RangeStart,
+		RangeEnd:      req.RangeEnd,
+		Reason:        strings.TrimSpace(req.Reason),
+		Retryable:     true,
+		FailedAt:      now.Format(time.RFC3339),
+	}
+	return ctrl.signAndProjectCoverage(c, coverage.TypeRangeFailed, body, poolID)
+}
+
+func coverageAssignmentMode(rangeStart, rangeEnd int64, windowStart, windowEnd string) string {
+	if strings.TrimSpace(windowStart) != "" || strings.TrimSpace(windowEnd) != "" {
+		return "time_window"
+	}
+	if rangeStart > 0 || rangeEnd > 0 {
+		return "article_range"
+	}
+	return ""
+}
+
+func (ctrl *GoNZBNetAdminController) signAndProjectCoverage(c *echo.Context, eventType string, body any, poolID string) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	now := time.Now().UTC()
+	if err := coverage.Validate(eventType, body, now, 2*time.Minute); err != nil {
+		return jsonError(c, http.StatusBadRequest, err.Error())
+	}
+	nodeIdentity, err := ctrl.localIdentity()
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	nodeID, err := nodeIdentity.NodeID(c.Request().Context())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	publicKey, err := nodeIdentity.PublicKey(c.Request().Context())
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if err := store.UpsertFederationNodeIdentity(c.Request().Context(), nodeID, publicKey); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	sequence, previousEventID, err := store.NextFederationEventSequence(c.Request().Context(), nodeID)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	event, validation, err := events.Create(c.Request().Context(), nodeIdentity, events.CreateOptions{
+		EventType:       eventType,
+		Sequence:        sequence,
+		PreviousEventID: previousEventID,
+		CreatedAt:       now,
+		PoolIDs:         []string{poolID},
+		Visibility:      "pool",
+		BodySchema:      coverage.BodySchema(eventType),
+		Body:            body,
+	})
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if validation == nil || !validation.OK {
+		return jsonError(c, http.StatusInternalServerError, "signed coverage event did not verify")
+	}
+	if err := store.AppendVerifiedFederationEvent(c.Request().Context(), event, validation); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	if err := store.ProjectCoverageEvent(c.Request().Context(), event); err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]string{"status": "ok", "event_id": event.EventID})
+}
+
+func (ctrl *GoNZBNetAdminController) localNodeID(c *echo.Context) (string, error) {
+	nodeIdentity, err := ctrl.localIdentity()
+	if err != nil {
+		return "", err
+	}
+	return nodeIdentity.NodeID(c.Request().Context())
+}
+
+func (ctrl *GoNZBNetAdminController) localIdentity() (*identity.Identity, error) {
+	if ctrl == nil || ctrl.appCtx == nil || ctrl.appCtx.Config == nil {
+		return nil, fmt.Errorf("gonzbnet admin controller is not initialized")
+	}
+	cfg := ctrl.appCtx.Config.GoNZBNet
+	return identity.LoadOrCreateWithPassword(cfg.KeysDir, cfg.KeyPassword)
+}
+
+func (ctrl *GoNZBNetAdminController) syncService() (*gonzbnetsync.Service, error) {
+	if ctrl == nil || ctrl.appCtx == nil || ctrl.appCtx.PGIndexStore == nil {
+		return nil, fmt.Errorf("gonzbnet admin store is unavailable")
+	}
+	syncStore, ok := ctrl.appCtx.PGIndexStore.(gonzbnetsync.Store)
+	if !ok {
+		return nil, fmt.Errorf("gonzbnet sync store is unavailable")
+	}
+	nodeIdentity, err := ctrl.localIdentity()
+	if err != nil {
+		return nil, err
+	}
+	return gonzbnetsync.NewWithOptions(nodeIdentity, syncStore, ctrl.appCtx.Logger, gonzbnetsync.Options{
+		AllowInsecurePeerHTTP: ctrl.appCtx.Config.GoNZBNet.AllowInsecurePeerHTTP,
+		EventTimeTolerance:    time.Duration(ctrl.appCtx.Config.GoNZBNet.TimeToleranceSeconds) * time.Second,
+		MaxEventAge:           time.Duration(ctrl.appCtx.Config.GoNZBNet.MaxEventAgeHours) * time.Hour,
+	}), nil
+}
+
+func (ctrl *GoNZBNetAdminController) manifestResolver() (*manifestresolver.Resolver, error) {
+	if ctrl == nil || ctrl.appCtx == nil || ctrl.appCtx.PGIndexStore == nil {
+		return nil, fmt.Errorf("gonzbnet manifest resolver store is unavailable")
+	}
+	resolverStore, ok := ctrl.appCtx.PGIndexStore.(manifestresolver.Store)
+	if !ok {
+		return nil, fmt.Errorf("gonzbnet manifest resolver store is unavailable")
+	}
+	nodeIdentity, err := ctrl.localIdentity()
+	if err != nil {
+		return nil, err
+	}
+	return manifestresolver.NewWithOptions(nodeIdentity, resolverStore, manifestresolver.Options{
+		AllowInsecurePeerHTTP: ctrl.appCtx.Config.GoNZBNet.AllowInsecurePeerHTTP,
+		EventTimeTolerance:    time.Duration(ctrl.appCtx.Config.GoNZBNet.TimeToleranceSeconds) * time.Second,
+		MaxEventAge:           time.Duration(ctrl.appCtx.Config.GoNZBNet.MaxEventAgeHours) * time.Hour,
+		MaxManifestBytes:      int64(ctrl.appCtx.Config.GoNZBNet.MaxManifestBytes),
+	}), nil
+}
+
+func signPoolMemberApproval(ctx context.Context, signer events.Identity, body pools.MemberApproved, approvedAt string) (pools.Approval, error) {
+	if signer == nil {
+		return pools.Approval{}, fmt.Errorf("identity is required")
+	}
+	nodeID, err := signer.NodeID(ctx)
+	if err != nil {
+		return pools.Approval{}, err
+	}
+	payload, err := canonical.Marshal(pools.MemberApprovalPayload(body, approvedAt))
+	if err != nil {
+		return pools.Approval{}, fmt.Errorf("canonical approval: %w", err)
+	}
+	signature, err := signer.Sign(ctx, payload)
+	if err != nil {
+		return pools.Approval{}, err
+	}
+	return pools.Approval{
+		NodeID:     nodeID,
+		ApprovedAt: approvedAt,
+		Signature:  canonical.Base64URL(signature),
+	}, nil
+}
+
+func signPoolMemberRevocation(ctx context.Context, signer events.Identity, body pools.MemberRevoked) (pools.Approval, error) {
+	if signer == nil {
+		return pools.Approval{}, fmt.Errorf("identity is required")
+	}
+	nodeID, err := signer.NodeID(ctx)
+	if err != nil {
+		return pools.Approval{}, err
+	}
+	payload, err := canonical.Marshal(map[string]any{
+		"pool_id":         body.PoolID,
+		"subject_node_id": body.SubjectNodeID,
+		"reason":          body.Reason,
+		"effective_at":    body.EffectiveAt,
+	})
+	if err != nil {
+		return pools.Approval{}, fmt.Errorf("canonical revocation: %w", err)
+	}
+	signature, err := signer.Sign(ctx, payload)
+	if err != nil {
+		return pools.Approval{}, err
+	}
+	return pools.Approval{
+		NodeID:    nodeID,
+		Signature: canonical.Base64URL(signature),
+	}, nil
+}
+
+func normalizeRequestedRoles(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	if len(out) == 0 {
+		return []string{pools.RoleMember}
+	}
+	return out
+}
+
+func boolDefault(value *bool, fallback bool) bool {
+	if value == nil {
+		return fallback
+	}
+	return *value
+}
+
+func coverageID(prefix string, now time.Time) string {
+	return fmt.Sprintf("%s_%d", prefix, now.UnixNano())
+}
+
+func parseCoverageFloatDefault(raw string, fallback float64) float64 {
+	value, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	if err != nil {
+		return fallback
+	}
+	return value
+}
+
+func (ctrl *GoNZBNetAdminController) store() (gonzbnetAdminStore, bool) {
+	if ctrl == nil {
+		return nil, false
+	}
+	if ctrl.storeOverride != nil {
+		return ctrl.storeOverride, true
+	}
+	if ctrl.appCtx == nil || ctrl.appCtx.PGIndexStore == nil {
+		return nil, false
+	}
+	store, ok := ctrl.appCtx.PGIndexStore.(gonzbnetAdminStore)
+	return store, ok
+}
+
+func (ctrl *GoNZBNetAdminController) adminProfileConfig(c *echo.Context) profile.Config {
+	cfg := ctrl.appCtx.Config.GoNZBNet
+	return profile.Config{
+		Alias:                         cfg.NodeAlias,
+		AdvertiseURL:                  ctrl.adminBaseURL(c),
+		HTTPBasePath:                  cfg.HTTPBasePath,
+		PrivateNetwork:                cfg.PrivateNetwork,
+		LiveQueryEnabled:              cfg.LiveQueryEnabled,
+		WebSocketGossip:               cfg.WebSocketGossipEnabled,
+		PeerExchange:                  cfg.PeerExchangeEnabled,
+		RelayMode:                     cfg.RelayEnabled,
+		Consumer:                      cfg.ConsumerEnabled,
+		Scanner:                       cfg.ScannerEnabled,
+		Indexer:                       ctrl.appCtx.Config.Modules.UsenetIndexer.Enabled,
+		IndexProjection:               cfg.IndexProjectionEnabled,
+		ManifestBuilder:               cfg.ManifestBuilderEnabled,
+		ManifestCache:                 cfg.ManifestCacheEnabled,
+		Validator:                     cfg.ValidatorEnabled,
+		HealthChecker:                 cfg.HealthCheckerEnabled,
+		Coverage:                      cfg.CoverageEnabled,
+		Scheduler:                     cfg.SchedulerEnabled,
+		Visibility:                    cfg.Visibility,
+		AcceptsJoinRequests:           cfg.AllowJoinRequests,
+		AdmissionRelay:                cfg.AdmissionRelayEnabled,
+		ScannerMaxGroups:              cfg.ScannerMaxGroups,
+		ScannerMaxArticlesPerHour:     cfg.ScannerMaxArticlesPerHour,
+		ValidationMaxManifestsPerHour: cfg.ValidationMaxManifestsPerHour,
+		ValidationTiers:               cfg.ValidationTiers,
+		ValidationAllowSamplePayload:  cfg.ValidationAllowSamplePayload,
+		ValidationAllowPAR2:           cfg.ValidationAllowPAR2,
+		ProviderDisclosure:            cfg.CoverageProviderScopeMode,
+		ProviderBackboneHash:          providerBackboneHashForAppContext(ctrl.appCtx),
+		MaxEventBytes:                 cfg.MaxEventBytes,
+		MaxManifestBytes:              cfg.MaxManifestBytes,
+		MaxBatchEvents:                cfg.MaxBatchEvents,
+	}
+}
+
+func (ctrl *GoNZBNetAdminController) recommendedLocalCapabilities() []string {
+	if ctrl == nil || ctrl.appCtx == nil || ctrl.appCtx.Config == nil {
+		return []string{capability.Consumer}
+	}
+	cfg := ctrl.appCtx.Config.GoNZBNet
+	values := []string{}
+	if cfg.ConsumerEnabled {
+		values = append(values, capability.Consumer)
+	}
+	if cfg.ScannerEnabled {
+		values = append(values, capability.Scanner)
+	}
+	if ctrl.appCtx.Config.Modules.UsenetIndexer.Enabled || cfg.IndexProjectionEnabled {
+		values = append(values, capability.Indexer)
+	}
+	if cfg.ManifestBuilderEnabled {
+		values = append(values, capability.ManifestBuilder)
+	}
+	if cfg.ManifestCacheEnabled {
+		values = append(values, capability.ManifestCache)
+	}
+	if cfg.ValidatorEnabled {
+		values = append(values, capability.Validator)
+	}
+	if cfg.HealthCheckerEnabled {
+		values = append(values, capability.HealthChecker)
+	}
+	if cfg.CoverageEnabled {
+		values = append(values, capability.Coverage)
+	}
+	if cfg.SchedulerEnabled {
+		values = append(values, capability.Scheduler, capability.CoverageCoordinator)
+	}
+	if cfg.RelayEnabled {
+		values = append(values, capability.Relay)
+	}
+	if len(values) == 0 {
+		values = append(values, capability.Consumer)
+	}
+	return capability.Normalize(values)
+}
+
+func (ctrl *GoNZBNetAdminController) adminBaseURL(c *echo.Context) string {
+	cfg := ctrl.appCtx.Config.GoNZBNet
+	if strings.TrimSpace(cfg.AdvertiseURL) != "" {
+		return strings.TrimRight(strings.TrimSpace(cfg.AdvertiseURL), "/")
+	}
+	basePath := strings.TrimRight(strings.TrimSpace(cfg.HTTPBasePath), "/")
+	if basePath == "" {
+		basePath = "/gonzbnet/v1"
+	}
+	return fmt.Sprintf("%s://%s%s", c.Scheme(), c.Request().Host, basePath)
+}
+
+func (ctrl *GoNZBNetAdminController) adminConfigSummary() gonzbnetAdminConfigSummary {
+	cfg := ctrl.appCtx.Config.GoNZBNet
+	return gonzbnetAdminConfigSummary{
+		Mode:           cfg.Mode,
+		HTTPEnabled:    cfg.HTTPEnabled,
+		AdvertiseURL:   cfg.AdvertiseURL,
+		HTTPBasePath:   cfg.HTTPBasePath,
+		PrivateNetwork: cfg.PrivateNetwork,
+		NetworkID:      cfg.NetworkID,
+		LocalPoolID:    cfg.LocalPoolID,
+		ManualPeers:    len(cfg.ManualPeers),
+		ModuleEnabled: map[string]bool{
+			"aggregator_gonzbnet":  ctrl.appCtx.Config.Aggregator.Sources.GoNZBNet.Enabled,
+			"consumer":             cfg.ConsumerEnabled,
+			"coverage":             cfg.CoverageEnabled,
+			"health_checker":       cfg.HealthCheckerEnabled,
+			"index_projection":     cfg.IndexProjectionEnabled,
+			"manifest_builder":     cfg.ManifestBuilderEnabled,
+			"manifest_cache":       cfg.ManifestCacheEnabled,
+			"peer_exchange":        cfg.PeerExchangeEnabled,
+			"publish_releasecards": cfg.PublishReleaseCardsEnabled,
+			"relay":                cfg.RelayEnabled,
+			"scanner":              cfg.ScannerEnabled,
+			"scheduler":            cfg.SchedulerEnabled,
+			"usenet_indexer":       ctrl.appCtx.Config.Modules.UsenetIndexer.Enabled,
+			"validator":            cfg.ValidatorEnabled,
+			"websocket_gossip":     cfg.WebSocketGossipEnabled,
+		},
+		Limits: map[string]int{
+			"max_batch_events":             cfg.MaxBatchEvents,
+			"max_event_bytes":              cfg.MaxEventBytes,
+			"max_event_age_hours":          cfg.MaxEventAgeHours,
+			"max_manifest_bytes":           cfg.MaxManifestBytes,
+			"nonce_ttl_seconds":            cfg.NonceTTLSeconds,
+			"rate_limit_events_per_minute": cfg.RateLimitEventsPerMinute,
+			"time_tolerance_seconds":       cfg.TimeToleranceSeconds,
+		},
+		Privacy: map[string]bool{
+			"allow_insecure_peer_http":   cfg.AllowInsecurePeerHTTP,
+			"live_query_enabled":         cfg.LiveQueryEnabled,
+			"manifest_trusted_pool_only": true,
+			"private_network":            cfg.PrivateNetwork,
+			"send_user_context":          cfg.SendUserContext,
+			"share_provider_backbone":    cfg.ShareProviderBackbone,
+			"share_source_indexer_hash":  cfg.ShareSourceIndexer,
+		},
+		Publisher: map[string]any{
+			"checksum_validation_enabled":        cfg.ChecksumValidationEnabled,
+			"health_attestations_batch_size":     cfg.HealthAttestationsBatchSize,
+			"health_attestations_enabled":        cfg.HealthAttestationsEnabled,
+			"health_attestations_interval_min":   cfg.HealthAttestationsIntervalMin,
+			"manifest_availability_enabled":      cfg.ManifestAvailabilityEnabled,
+			"publish_release_cards_batch_size":   cfg.PublishReleaseCardsBatchSize,
+			"publish_release_cards_enabled":      cfg.PublishReleaseCardsEnabled,
+			"publish_release_cards_interval_min": cfg.PublishReleaseCardsIntervalMin,
+			"validation_batch_size":              cfg.ValidationBatchSize,
+			"validation_interval_min":            cfg.ValidationIntervalMin,
+		},
+		Scanner: map[string]any{
+			"allow_unassigned_work":         cfg.ScannerAllowUnassignedWork,
+			"checkpoint_interval_seconds":   cfg.ScannerCheckpointIntervalSecs,
+			"claim_ttl_minutes":             cfg.ScannerClaimTTLMinutes,
+			"max_articles_per_hour":         cfg.ScannerMaxArticlesPerHour,
+			"max_groups":                    cfg.ScannerMaxGroups,
+			"respect_remote_claims":         cfg.ScannerRespectRemoteClaims,
+			"project_to_local_index":        cfg.IndexProjectionEnabled,
+			"publish_manifest_availability": cfg.ManifestAvailabilityEnabled,
+			"publish_release_cards":         cfg.PublishReleaseCardsEnabled,
+		},
+		Coverage: map[string]any{
+			"mode":                       cfg.CoverageMode,
+			"min_trust_for_claim":        cfg.CoverageMinTrustForClaim,
+			"provider_scope_mode":        cfg.CoverageProviderScopeMode,
+			"stale_claim_penalty":        cfg.CoverageStaleClaimPenalty,
+			"validation_overlap_percent": cfg.CoverageValidationOverlapPct,
+		},
+		Validation: map[string]any{
+			"allow_par2_validation":       cfg.ValidationAllowPAR2,
+			"allow_sample_payload_fetch":  cfg.ValidationAllowSamplePayload,
+			"max_manifests_per_hour":      cfg.ValidationMaxManifestsPerHour,
+			"publish_provider_scope_hash": cfg.ValidationPublishProviderScope,
+			"sample_percent":              cfg.ValidationSamplePercent,
+			"tiers":                       cfg.ValidationTiers,
+			"checksum_validation_enabled": cfg.ChecksumValidationEnabled,
+			"validation_batch_size":       cfg.ValidationBatchSize,
+			"validation_interval_min":     cfg.ValidationIntervalMin,
+		},
+		ManifestCache: map[string]any{
+			"max_bytes":              cfg.ManifestCacheMaxBytes,
+			"serve_to_trusted_pools": cfg.ManifestCacheServeTrustedPools,
+			"ttl_days":               cfg.ManifestCacheTTLDays,
+		},
+		Sync: map[string]any{
+			"pull_sync_enabled":      cfg.PullSyncEnabled,
+			"pull_sync_interval_min": cfg.PullSyncIntervalMin,
+			"push_sync_batch_size":   cfg.PushSyncBatchSize,
+			"push_sync_enabled":      cfg.PushSyncEnabled,
+			"push_sync_interval_min": cfg.PushSyncIntervalMin,
+		},
+		Gossip: map[string]any{
+			"gossip_batch_size":        cfg.GossipBatchSize,
+			"gossip_fanout":            cfg.GossipFanout,
+			"gossip_interval_min":      cfg.GossipIntervalMin,
+			"gossip_ttl":               cfg.GossipTTL,
+			"peer_exchange_enabled":    cfg.PeerExchangeEnabled,
+			"websocket_gossip_enabled": cfg.WebSocketGossipEnabled,
+		},
+		RedactedSensitiveConfigNames: []string{
+			"gonzbnet.key_password",
+			"gonzbnet.manual_peers",
+			"gonzbnet.relay_api_key",
+		},
+	}
+}

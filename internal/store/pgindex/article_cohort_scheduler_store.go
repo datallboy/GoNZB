@@ -11,6 +11,7 @@ const (
 	articleCohortDefaultBatchSize      = 50000
 	articleCohortDefaultAssemblyLimit  = 20000
 	articleCohortDefaultYEncLimit      = 25000
+	articleCohortSubjectRunLimit       = 1000
 	articleCohortStatementTimeout      = 20 * time.Second
 	articleCohortOpaqueMinSingletons   = 20
 	articleCohortNoIdentityCooldown    = 30 * time.Minute
@@ -47,6 +48,9 @@ func (s *Store) RunArticleCohortScheduler(ctx context.Context, req ArticleCohort
 	if req.YEncQueueMax <= 0 {
 		req.YEncQueueMax = articleCohortDefaultYEncLimit
 	}
+	if err := s.provisionSchedulerPartitionsForReadyWork(ctx, 32); err != nil {
+		return nil, err
+	}
 	started := time.Now()
 	out := &ArticleCohortSchedulerResult{}
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -56,12 +60,6 @@ func (s *Store) RunArticleCohortScheduler(ctx context.Context, req ArticleCohort
 	defer rollbackTx(tx)
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`SET LOCAL statement_timeout = %d`, articleCohortStatementTimeout.Milliseconds())); err != nil {
 		return nil, fmt.Errorf("set article cohort scheduler statement timeout: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `SET LOCAL enable_hashjoin = off`); err != nil {
-		return nil, fmt.Errorf("set article cohort scheduler hash join guard: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `SET LOCAL enable_mergejoin = off`); err != nil {
-		return nil, fmt.Errorf("set article cohort scheduler merge join guard: %w", err)
 	}
 	var lockAcquired bool
 	if err := tx.QueryRowContext(ctx, `SELECT pg_try_advisory_xact_lock(hashtext('gonzb-article-cohort-scheduler'))`).Scan(&lockAcquired); err != nil {
@@ -118,6 +116,7 @@ func runSubjectCompleteCohortSchedule(ctx context.Context, tx *sql.Tx, batchSize
 		return 0, 0, nil
 	}
 	queueLimit -= openQueued
+	queueLimit = subjectCohortRunLimit(queueLimit)
 
 	scanLimit := queueLimit * articleCohortSubjectScanMultiplier
 	if scanLimit < queueLimit {
@@ -127,7 +126,7 @@ func runSubjectCompleteCohortSchedule(ctx context.Context, tx *sql.Tx, batchSize
 	if scanLimit > maxScanLimit {
 		scanLimit = maxScanLimit
 	}
-	var cohorts int64
+	var cohorts, queued int64
 	if err := tx.QueryRowContext(ctx, `
 		WITH recent AS MATERIALIZED (
 			SELECT
@@ -147,6 +146,7 @@ func runSubjectCompleteCohortSchedule(ctx context.Context, tx *sql.Tx, batchSize
 			  ON p.source_posted_at = q.source_posted_at
 			 AND p.article_header_id = q.article_header_id
 			WHERE (q.claim_until IS NULL OR q.claim_until < NOW())
+			  AND to_regclass('public.article_cohort_candidates_' || to_char(q.source_posted_at AT TIME ZONE 'UTC', 'YYYYMMDD')) IS NOT NULL
 			  AND q.queue_kind = 'structured'
 			  AND BTRIM(COALESCE(p.subject_file_name, '')) <> ''
 			  AND COALESCE(p.subject_file_index, 0) > 0
@@ -207,58 +207,16 @@ func runSubjectCompleteCohortSchedule(ctx context.Context, tx *sql.Tx, batchSize
 			    last_scheduled_at = NOW(),
 			    updated_at = NOW()
 			RETURNING 1
-		)
-		SELECT COUNT(*) FROM upserted`, scanLimit).Scan(&cohorts); err != nil {
-		return 0, 0, fmt.Errorf("upsert subject-complete article cohorts: %w", err)
-	}
-
-	var queued int64
-	if err := tx.QueryRowContext(ctx, `
-		WITH candidates AS MATERIALIZED (
+		),
+		queue_rows AS MATERIALIZED (
 			SELECT
-				r.source_posted_at,
-				r.article_header_id,
-				r.provider_id,
-				r.newsgroup_id,
-				'subject:' || r.provider_id || ':' || r.newsgroup_id || ':' ||
-					md5(LOWER(BTRIM(r.subject_file_name)) || ':' || r.subject_file_index || ':' || r.subject_file_total || ':' || r.yenc_total_parts || ':' || r.yenc_file_size) AS cohort_key,
-				r.article_number,
-				r.subject_file_name,
-				r.yenc_total_parts
-			FROM (
-				SELECT
-					q.source_posted_at,
-					q.article_header_id,
-					q.provider_id,
-					q.newsgroup_id,
-					q.article_number,
-					COALESCE(p.subject_file_name, '') AS subject_file_name,
-					COALESCE(p.subject_file_index, 0) AS subject_file_index,
-					COALESCE(p.subject_file_total, 0) AS subject_file_total,
-					COALESCE(p.yenc_total_parts, 0) AS yenc_total_parts,
-					COALESCE(p.yenc_file_size, 0) AS yenc_file_size,
-					COALESCE(p.yenc_part_number, 0) AS yenc_part_number
-				FROM article_header_assembly_queue q
-				JOIN article_header_ingest_payloads p
-				  ON p.source_posted_at = q.source_posted_at
-				 AND p.article_header_id = q.article_header_id
-				WHERE (q.claim_until IS NULL OR q.claim_until < NOW())
-				  AND q.queue_kind = 'structured'
-				  AND BTRIM(COALESCE(p.subject_file_name, '')) <> ''
-				  AND COALESCE(p.subject_file_index, 0) > 0
-				  AND COALESCE(p.subject_file_total, 0) > 0
-				  AND COALESCE(p.yenc_part_number, 0) > 0
-				  AND COALESCE(p.yenc_total_parts, 0) > 1
-				  AND NOT EXISTS (
-					SELECT 1
-					FROM article_cohort_assembly_queue cq
-					WHERE cq.source_posted_at = q.source_posted_at
-					  AND cq.article_header_id = q.article_header_id
-					  AND cq.status IN ('ready', 'running', 'done')
-				  )
-				ORDER BY q.article_header_id DESC
-				LIMIT $1
-			) r
+				source_posted_at,
+				article_header_id,
+				provider_id,
+				newsgroup_id,
+				'subject:' || provider_id || ':' || newsgroup_id || ':' ||
+					md5(LOWER(BTRIM(subject_file_name)) || ':' || subject_file_index || ':' || subject_file_total || ':' || yenc_total_parts || ':' || yenc_file_size) AS cohort_key
+			FROM recent
 		),
 		inserted AS (
 			INSERT INTO article_cohort_assembly_queue (
@@ -269,7 +227,7 @@ func runSubjectCompleteCohortSchedule(ctx context.Context, tx *sql.Tx, batchSize
 				source_posted_at, article_header_id, cohort_key, provider_id, newsgroup_id,
 				'subject_complete', 0, 1000000::double precision, 'subject_complete_head',
 				'ready', NOW()
-			FROM candidates
+			FROM queue_rows
 			ORDER BY article_header_id DESC
 			LIMIT $2
 			ON CONFLICT (source_posted_at, article_header_id) DO UPDATE
@@ -281,10 +239,22 @@ func runSubjectCompleteCohortSchedule(ctx context.Context, tx *sql.Tx, batchSize
 			    updated_at = NOW()
 			RETURNING 1
 		)
-		SELECT COUNT(*) FROM inserted`, scanLimit, queueLimit).Scan(&queued); err != nil {
-		return 0, 0, fmt.Errorf("queue subject-complete cohort assembly rows: %w", err)
+		SELECT
+			(SELECT COUNT(*) FROM upserted),
+			(SELECT COUNT(*) FROM inserted)`, scanLimit, queueLimit).Scan(&cohorts, &queued); err != nil {
+		return 0, 0, fmt.Errorf("schedule subject-complete article cohorts: %w", err)
 	}
 	return cohorts, queued, nil
+}
+
+func subjectCohortRunLimit(queueCapacity int) int {
+	if queueCapacity <= 0 {
+		return 0
+	}
+	if queueCapacity > articleCohortSubjectRunLimit {
+		return articleCohortSubjectRunLimit
+	}
+	return queueCapacity
 }
 
 func cleanupStaleArticleCohortAssemblyQueueInTx(ctx context.Context, tx *sql.Tx, limit int) error {
@@ -384,6 +354,7 @@ func runOpaqueYEncCohortSchedule(ctx context.Context, tx *sql.Tx, batchSize, que
 			FROM binary_observation_stats
 			WHERE total_parts <= 1
 			  AND observed_parts <= 1
+			  AND to_regclass('public.article_cohort_candidates_' || to_char(source_posted_at AT TIME ZONE 'UTC', 'YYYYMMDD')) IS NOT NULL
 			  AND posted_at IS NOT NULL
 			  AND source_posted_at >= $4
 			  AND source_posted_at < $5
@@ -486,6 +457,7 @@ func runOpaqueYEncCohortSchedule(ctx context.Context, tx *sql.Tx, batchSize, que
 			FROM binary_observation_stats
 			WHERE total_parts <= 1
 			  AND observed_parts <= 1
+			  AND to_regclass('public.article_cohort_candidates_' || to_char(source_posted_at AT TIME ZONE 'UTC', 'YYYYMMDD')) IS NOT NULL
 			  AND posted_at IS NOT NULL
 			  AND source_posted_at >= $5
 			  AND source_posted_at < $6

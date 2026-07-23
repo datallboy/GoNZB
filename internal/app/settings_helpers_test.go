@@ -144,6 +144,100 @@ func TestDefaultRuntimeSettingsAreOperationallyDisabled(t *testing.T) {
 	if runtime.Indexing.InspectPAR2.Concurrency != 4 {
 		t.Fatalf("expected inspect_par2 concurrency default, got %+v", runtime.Indexing.InspectPAR2)
 	}
+	if runtime.Indexing.Retention.CreatePartitionsDaysBefore != 0 || runtime.Indexing.Retention.CreatePartitionsDaysAhead != 2 {
+		t.Fatalf("expected legacy partition settings to avoid historical precreation, got %+v", runtime.Indexing.Retention)
+	}
+	if runtime.Indexing.Partitions.PrecreateDaysAhead != 2 || runtime.Indexing.Partitions.MaxNewSourceDaysPerPass != 32 || runtime.Indexing.Partitions.DDLLockTimeoutSeconds != 5 {
+		t.Fatalf("unexpected sparse partition defaults: %+v", runtime.Indexing.Partitions)
+	}
+	if runtime.Indexing.Retention.SourceSettleHours != 24 || runtime.Indexing.Retention.NoYieldGraceDays != 7 || runtime.Indexing.Retention.YEncTerminalAttempts != 4 || runtime.Indexing.Retention.ExecuteOutcomePurge {
+		t.Fatalf("unexpected outcome retention defaults: %+v", runtime.Indexing.Retention)
+	}
+	if runtime.Indexing.RecoveryAdmission.LatestReservePercent != 10 {
+		t.Fatalf("expected latest-work capacity reserve, got %+v", runtime.Indexing.RecoveryAdmission)
+	}
+}
+
+func TestWithRuntimeDefaultsMapsLegacyPartitionAheadSetting(t *testing.T) {
+	runtime := WithRuntimeDefaults(&RuntimeSettings{
+		Indexing: &IndexingRuntimeSettings{
+			Retention: IndexingRetentionRuntimeSettings{CreatePartitionsDaysAhead: 6},
+		},
+	})
+
+	if runtime.Indexing == nil || runtime.Indexing.Partitions.PrecreateDaysAhead != 6 {
+		t.Fatalf("expected legacy partition-ahead setting to populate the partition policy, got %+v", runtime.Indexing)
+	}
+}
+
+func TestGoNZBNetRuntimeSettingsRoundTripPreservesBootstrapBoundaries(t *testing.T) {
+	base := &config.Config{GoNZBNet: config.GoNZBNetConfig{
+		Mode:                        "federation",
+		KeysDir:                     "/keys/bootstrap",
+		HTTPBasePath:                "/federation/v1",
+		NetworkID:                   "network-a",
+		LocalPoolID:                 "pool-a",
+		NodeAlias:                   "before",
+		ManualPeers:                 []string{"https://peer-a.example"},
+		ConsumerEnabled:             true,
+		ScannerEnabled:              true,
+		ValidationTiers:             []string{"metadata"},
+		ManifestCacheMaxBytes:       1024,
+		ManifestCacheTTLDays:        7,
+		PullSyncIntervalMin:         5,
+		PushSyncIntervalMin:         5,
+		PushSyncBatchSize:           25,
+		GossipIntervalMin:           1,
+		GossipBatchSize:             25,
+		GossipTTL:                   3,
+		GossipFanout:                2,
+		MaxEventBytes:               4096,
+		MaxManifestBytes:            8192,
+		ManifestFetchTimeoutSeconds: 15,
+		MaxBatchEvents:              50,
+		RateLimitEventsPerMinute:    60,
+		TimeToleranceSeconds:        120,
+		MaxEventAgeHours:            24,
+		NonceTTLSeconds:             300,
+	}}
+
+	runtime := FromConfig(base)
+	if runtime.GoNZBNet == nil || runtime.GoNZBNet.NodeAlias != "before" || !runtime.GoNZBNet.ScannerEnabled {
+		t.Fatalf("expected GoNZBNet bootstrap values in runtime settings, got %+v", runtime.GoNZBNet)
+	}
+	runtime.GoNZBNet.NodeAlias = "after"
+	runtime.GoNZBNet.ScannerEnabled = false
+	runtime.GoNZBNet.ManualPeers = []string{"https://peer-b.example"}
+	runtime.GoNZBNet.ValidationTiers = []string{"metadata", "article_stat"}
+
+	effective := ApplyToConfig(base, runtime)
+	if effective.GoNZBNet.NodeAlias != "after" || effective.GoNZBNet.ScannerEnabled {
+		t.Fatalf("expected runtime GoNZBNet values to apply, got %+v", effective.GoNZBNet)
+	}
+	if len(effective.GoNZBNet.ManualPeers) != 1 || effective.GoNZBNet.ManualPeers[0] != "https://peer-b.example" {
+		t.Fatalf("expected runtime manual peers to apply, got %+v", effective.GoNZBNet.ManualPeers)
+	}
+	if effective.GoNZBNet.KeysDir != "/keys/bootstrap" || effective.GoNZBNet.HTTPBasePath != "/federation/v1" || effective.GoNZBNet.NetworkID != "network-a" || effective.GoNZBNet.LocalPoolID != "pool-a" {
+		t.Fatalf("expected bootstrap-only fields to remain unchanged, got %+v", effective.GoNZBNet)
+	}
+}
+
+func TestWithRuntimeDefaultsFromConfigBackfillsGoNZBNetFromBootstrap(t *testing.T) {
+	runtime := DefaultRuntimeSettings()
+	runtime.GoNZBNet = nil
+	base := &config.Config{GoNZBNet: config.GoNZBNetConfig{
+		NodeAlias:      "bootstrap-node",
+		ScannerEnabled: true,
+		PublishPoolIDs: []string{"pool-a"},
+	}}
+
+	got := WithRuntimeDefaultsFromConfig(runtime, base)
+	if got.GoNZBNet == nil || got.GoNZBNet.NodeAlias != "bootstrap-node" || !got.GoNZBNet.ScannerEnabled {
+		t.Fatalf("expected bootstrap GoNZBNet settings to backfill older snapshot, got %+v", got.GoNZBNet)
+	}
+	if len(got.GoNZBNet.PublishPoolIDs) != 1 || got.GoNZBNet.PublishPoolIDs[0] != "pool-a" {
+		t.Fatalf("expected bootstrap publish pools, got %+v", got.GoNZBNet.PublishPoolIDs)
+	}
 }
 
 func TestWithRuntimeDefaultsBackfillsAssembleStageDefaults(t *testing.T) {

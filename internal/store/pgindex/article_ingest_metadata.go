@@ -19,7 +19,6 @@ type parsedArticleMetadata struct {
 var (
 	ingestQuotedFilenameRE = regexp.MustCompile(`"([^"]+)"`)
 	ingestCounterPairRE    = regexp.MustCompile(`(?i)([\(\[])\s*(\d{1,5})\s*/\s*(\d{1,5})\s*[\)\]]`)
-	ingestYEncTailRE       = regexp.MustCompile(`(?i)\s+yenc.*$`)
 	ingestYEncSizeRE       = regexp.MustCompile(`(?i)\byenc\s*\(\s*\d{1,5}\s*/\s*\d{1,5}\s*\)\s+(\d{1,18})\s*$`)
 )
 

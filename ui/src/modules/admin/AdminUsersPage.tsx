@@ -31,7 +31,10 @@ export function AdminUsersPage() {
   }
 
   useEffect(() => {
-    void refresh().catch((err) => setMessage(err instanceof Error ? err.message : 'Failed to load users'))
+    const timer = window.setTimeout(() => {
+      void refresh().catch((err) => setMessage(err instanceof Error ? err.message : 'Failed to load users'))
+    }, 0)
+    return () => window.clearTimeout(timer)
   }, [])
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/infra/config"
@@ -146,20 +147,21 @@ func aggregatorHasSource(cfg *config.Config) bool {
 	}
 	return len(cfg.Indexers) > 0 ||
 		cfg.Aggregator.Sources.LocalBlob.Enabled ||
-		cfg.Aggregator.Sources.UsenetIndexer.Enabled
+		cfg.Aggregator.Sources.UsenetIndexer.Enabled ||
+		cfg.Aggregator.Sources.GoNZBNet.Enabled
 }
 
 type usenetIndexerRuntimeModule struct {
-	appCtx                    *app.Context
-	current                   io.Closer
-	telemetry                 io.Closer
-	runParent                 context.Context
-	runCancel                 context.CancelFunc
-	running                   bool
-	stageOwner                string
-	nntpStats                 func() app.NNTPRuntimeStats
-	partitionCreateDaysBefore int
-	partitionCreateDaysAhead  int
+	appCtx                   *app.Context
+	current                  io.Closer
+	telemetry                io.Closer
+	runParent                context.Context
+	runCancel                context.CancelFunc
+	running                  bool
+	stageOwner               string
+	nntpStats                func() app.NNTPRuntimeStats
+	partitionCreateDaysAhead int
+	partitionDDLLockTimeout  time.Duration
 }
 
 func (m *usenetIndexerRuntimeModule) Name() string { return moduleNameUsenetIndexer }
@@ -256,8 +258,8 @@ func (m *usenetIndexerRuntimeModule) rebuild(parent context.Context) error {
 	m.appCtx.UsenetIndexer = rt.service
 	m.current = rt.scrapeProvider
 	m.nntpStats = rt.nntpStats
-	m.partitionCreateDaysBefore = rt.partitionCreateDaysBefore
 	m.partitionCreateDaysAhead = rt.partitionCreateDaysAhead
+	m.partitionDDLLockTimeout = rt.partitionDDLLockTimeout
 	if wasRunning {
 		m.stopRuntime()
 		m.running = true
@@ -294,8 +296,9 @@ func (m *usenetIndexerRuntimeModule) startCurrentRuntime() {
 
 	service := m.appCtx.UsenetIndexer
 	if m.appCtx.PGIndexStore != nil {
-		m.appCtx.Logger.Info("pre-provisioning usenet indexer native partitions days_before=%d days_ahead=%d", m.partitionCreateDaysBefore, m.partitionCreateDaysAhead)
-		if err := m.appCtx.PGIndexStore.ProvisionSourceWorkPartitions(childCtx, m.partitionCreateDaysBefore, m.partitionCreateDaysAhead); err != nil {
+		m.appCtx.PGIndexStore.ConfigurePartitionProvisioning(m.partitionDDLLockTimeout)
+		m.appCtx.Logger.Info("pre-provisioning scrape partitions current_day=true days_ahead=%d ddl_lock_timeout=%s", m.partitionCreateDaysAhead, m.partitionDDLLockTimeout)
+		if err := m.appCtx.PGIndexStore.ProvisionSourceWorkPartitions(childCtx, 0, m.partitionCreateDaysAhead); err != nil {
 			childCancel()
 			m.runCancel = nil
 			m.running = false
@@ -304,11 +307,32 @@ func (m *usenetIndexerRuntimeModule) startCurrentRuntime() {
 		}
 	}
 	m.appCtx.Logger.Info("starting usenet indexer supervisor")
+	go m.runPartitionProvisioner(childCtx, m.partitionCreateDaysAhead)
 	go func() {
 		if err := service.Start(childCtx, 0); err != nil && childCtx.Err() == nil {
 			m.appCtx.Logger.Error("usenet indexer supervisor failed: %v", err)
 		}
 	}()
+}
+
+func (m *usenetIndexerRuntimeModule) runPartitionProvisioner(ctx context.Context, daysAhead int) {
+	for {
+		now := time.Now().UTC()
+		nextUTCRefresh := now.Truncate(24 * time.Hour).Add(24*time.Hour + time.Minute)
+		timer := time.NewTimer(time.Until(nextUTCRefresh))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+			if m.appCtx == nil || m.appCtx.PGIndexStore == nil {
+				continue
+			}
+			if err := m.appCtx.PGIndexStore.ProvisionSourceWorkPartitions(ctx, 0, daysAhead); err != nil && ctx.Err() == nil {
+				m.appCtx.Logger.Error("usenet indexer UTC rollover partition provisioning failed: %v", err)
+			}
+		}
+	}
 }
 
 func (m *usenetIndexerRuntimeModule) stopRuntime() {
@@ -354,6 +378,7 @@ func registerRuntimeModules(appCtx *app.Context) {
 		&downloaderRuntimeModule{appCtx: appCtx},
 		&aggregatorRuntimeModule{appCtx: appCtx},
 		&usenetIndexerRuntimeModule{appCtx: appCtx},
+		&gonzbnetRuntimeModule{appCtx: appCtx},
 		&arrNotifierRuntimeModule{appCtx: appCtx},
 	)
 }

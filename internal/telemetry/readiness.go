@@ -184,29 +184,6 @@ func evaluateRuntimeModule(ctx context.Context, module app.RuntimeModule) Module
 	}
 }
 
-func boolCheck(name string, ok bool, detail string) Check {
-	if ok {
-		return Check{Name: name, Status: "ok"}
-	}
-	return Check{Name: name, Status: "fail", Detail: detail}
-}
-
-func errorCheck(name string, err error) Check {
-	if err == nil {
-		return Check{Name: name, Status: "ok"}
-	}
-	return Check{Name: name, Status: "fail", Detail: err.Error()}
-}
-
-func allChecksOK(checks []Check) bool {
-	for _, check := range checks {
-		if check.Status != "ok" {
-			return false
-		}
-	}
-	return true
-}
-
 func readyStatus(ready bool) string {
 	if ready {
 		return "ready"

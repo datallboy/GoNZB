@@ -21,9 +21,11 @@ type Config struct {
 
 	Indexing   IndexingConfig   `mapstructure:"indexing" yaml:"indexing"`
 	Aggregator AggregatorConfig `mapstructure:"aggregator" yaml:"aggregator"`
+	GoNZBNet   GoNZBNetConfig   `mapstructure:"gonzbnet" yaml:"gonzbnet"`
 	Modules    ModulesConfig    `mapstructure:"modules" yaml:"modules"`
 
-	Port string `mapstructure:"port" yaml:"port"`
+	Port        string `mapstructure:"port" yaml:"port"`
+	BindAddress string `mapstructure:"bind_address" yaml:"bind_address"`
 }
 
 type ServerConfig struct {
@@ -86,38 +88,120 @@ type AggregatorConfig struct {
 type AggregatorSourcesConfig struct {
 	LocalBlob     ModuleToggle `mapstructure:"local_blob" yaml:"local_blob"`
 	UsenetIndexer ModuleToggle `mapstructure:"usenet_indexer" yaml:"usenet_indexer"`
+	GoNZBNet      ModuleToggle `mapstructure:"gonzbnet" yaml:"gonzbnet"`
+}
+
+type GoNZBNetConfig struct {
+	Mode                           string   `mapstructure:"mode" yaml:"mode"`
+	NodeAlias                      string   `mapstructure:"node_alias" yaml:"node_alias"`
+	AdvertiseURL                   string   `mapstructure:"advertise_url" yaml:"advertise_url"`
+	KeysDir                        string   `mapstructure:"keys_dir" yaml:"keys_dir"`
+	KeyPassword                    string   `mapstructure:"key_password" yaml:"key_password"`
+	SpecVersion                    string   `mapstructure:"spec_version" yaml:"spec_version"`
+	HTTPEnabled                    bool     `mapstructure:"http_enabled" yaml:"http_enabled"`
+	HTTPBasePath                   string   `mapstructure:"http_base_path" yaml:"http_base_path"`
+	AllowInsecurePeerHTTP          bool     `mapstructure:"allow_insecure_peer_http" yaml:"allow_insecure_peer_http"`
+	PrivateNetwork                 bool     `mapstructure:"private_network" yaml:"private_network"`
+	NetworkID                      string   `mapstructure:"network_id" yaml:"network_id"`
+	LocalPoolID                    string   `mapstructure:"local_pool_id" yaml:"local_pool_id"`
+	PublishPoolIDs                 []string `mapstructure:"publish_pool_ids" yaml:"publish_pool_ids"`
+	ManualPeers                    []string `mapstructure:"manual_peers" yaml:"manual_peers"`
+	Visibility                     string   `mapstructure:"visibility" yaml:"visibility"`
+	AllowPoolCreation              bool     `mapstructure:"allow_pool_creation" yaml:"allow_pool_creation"`
+	AllowJoinRequests              bool     `mapstructure:"allow_join_requests" yaml:"allow_join_requests"`
+	AdmissionRelayEnabled          bool     `mapstructure:"admission_relay_enabled" yaml:"admission_relay_enabled"`
+	ConsumerEnabled                bool     `mapstructure:"consumer_enabled" yaml:"consumer_enabled"`
+	ScannerEnabled                 bool     `mapstructure:"scanner_enabled" yaml:"scanner_enabled"`
+	IndexProjectionEnabled         bool     `mapstructure:"index_projection_enabled" yaml:"index_projection_enabled"`
+	ManifestBuilderEnabled         bool     `mapstructure:"manifest_builder_enabled" yaml:"manifest_builder_enabled"`
+	ManifestCacheEnabled           bool     `mapstructure:"manifest_cache_enabled" yaml:"manifest_cache_enabled"`
+	ValidatorEnabled               bool     `mapstructure:"validator_enabled" yaml:"validator_enabled"`
+	HealthCheckerEnabled           bool     `mapstructure:"health_checker_enabled" yaml:"health_checker_enabled"`
+	CoverageEnabled                bool     `mapstructure:"coverage_enabled" yaml:"coverage_enabled"`
+	SchedulerEnabled               bool     `mapstructure:"scheduler_enabled" yaml:"scheduler_enabled"`
+	PublishReleaseCardsEnabled     bool     `mapstructure:"publish_release_cards_enabled" yaml:"publish_release_cards_enabled"`
+	PublishReleaseCardsBatchSize   int      `mapstructure:"publish_release_cards_batch_size" yaml:"publish_release_cards_batch_size"`
+	PublishReleaseCardsIntervalMin float64  `mapstructure:"publish_release_cards_interval_minutes" yaml:"publish_release_cards_interval_minutes"`
+	ManifestAvailabilityEnabled    bool     `mapstructure:"manifest_availability_enabled" yaml:"manifest_availability_enabled"`
+	HealthAttestationsEnabled      bool     `mapstructure:"health_attestations_enabled" yaml:"health_attestations_enabled"`
+	HealthAttestationsBatchSize    int      `mapstructure:"health_attestations_batch_size" yaml:"health_attestations_batch_size"`
+	HealthAttestationsIntervalMin  float64  `mapstructure:"health_attestations_interval_minutes" yaml:"health_attestations_interval_minutes"`
+	ScannerMaxGroups               int      `mapstructure:"scanner_max_groups" yaml:"scanner_max_groups"`
+	ScannerMaxArticlesPerHour      int64    `mapstructure:"scanner_max_articles_per_hour" yaml:"scanner_max_articles_per_hour"`
+	ScannerClaimTTLMinutes         int      `mapstructure:"scanner_claim_ttl_minutes" yaml:"scanner_claim_ttl_minutes"`
+	ScannerCheckpointIntervalSecs  int      `mapstructure:"scanner_checkpoint_interval_seconds" yaml:"scanner_checkpoint_interval_seconds"`
+	ScannerRespectRemoteClaims     bool     `mapstructure:"scanner_respect_remote_claims" yaml:"scanner_respect_remote_claims"`
+	ScannerAllowUnassignedWork     bool     `mapstructure:"scanner_allow_unassigned_work" yaml:"scanner_allow_unassigned_work"`
+	CoverageMode                   string   `mapstructure:"coverage_mode" yaml:"coverage_mode"`
+	CoverageMinTrustForClaim       float64  `mapstructure:"coverage_min_trust_for_claim" yaml:"coverage_min_trust_for_claim"`
+	CoverageValidationOverlapPct   int      `mapstructure:"coverage_validation_overlap_percent" yaml:"coverage_validation_overlap_percent"`
+	CoverageStaleClaimPenalty      bool     `mapstructure:"coverage_stale_claim_penalty" yaml:"coverage_stale_claim_penalty"`
+	CoverageProviderScopeMode      string   `mapstructure:"coverage_provider_scope_mode" yaml:"coverage_provider_scope_mode"`
+	ValidationBatchSize            int      `mapstructure:"validation_batch_size" yaml:"validation_batch_size"`
+	ValidationIntervalMin          float64  `mapstructure:"validation_interval_minutes" yaml:"validation_interval_minutes"`
+	ValidationTiers                []string `mapstructure:"validation_tiers" yaml:"validation_tiers"`
+	ValidationMaxManifestsPerHour  int      `mapstructure:"validation_max_manifests_per_hour" yaml:"validation_max_manifests_per_hour"`
+	ValidationSamplePercent        int      `mapstructure:"validation_sample_percent" yaml:"validation_sample_percent"`
+	ValidationAllowSamplePayload   bool     `mapstructure:"validation_allow_sample_payload_fetch" yaml:"validation_allow_sample_payload_fetch"`
+	ValidationAllowPAR2            bool     `mapstructure:"validation_allow_par2_validation" yaml:"validation_allow_par2_validation"`
+	ValidationPublishProviderScope bool     `mapstructure:"validation_publish_provider_scope_hash" yaml:"validation_publish_provider_scope_hash"`
+	ChecksumValidationEnabled      bool     `mapstructure:"checksum_validation_enabled" yaml:"checksum_validation_enabled"`
+	ManifestCacheMaxBytes          int64    `mapstructure:"manifest_cache_max_bytes" yaml:"manifest_cache_max_bytes"`
+	ManifestCacheTTLDays           int      `mapstructure:"manifest_cache_ttl_days" yaml:"manifest_cache_ttl_days"`
+	ManifestCacheServeTrustedPools bool     `mapstructure:"manifest_cache_serve_to_trusted_pools" yaml:"manifest_cache_serve_to_trusted_pools"`
+	PullSyncEnabled                bool     `mapstructure:"pull_sync_enabled" yaml:"pull_sync_enabled"`
+	PullSyncIntervalMin            float64  `mapstructure:"pull_sync_interval_minutes" yaml:"pull_sync_interval_minutes"`
+	PushSyncEnabled                bool     `mapstructure:"push_sync_enabled" yaml:"push_sync_enabled"`
+	PushSyncIntervalMin            float64  `mapstructure:"push_sync_interval_minutes" yaml:"push_sync_interval_minutes"`
+	PushSyncBatchSize              int      `mapstructure:"push_sync_batch_size" yaml:"push_sync_batch_size"`
+	WebSocketGossipEnabled         bool     `mapstructure:"websocket_gossip_enabled" yaml:"websocket_gossip_enabled"`
+	GossipIntervalMin              float64  `mapstructure:"gossip_interval_minutes" yaml:"gossip_interval_minutes"`
+	GossipBatchSize                int      `mapstructure:"gossip_batch_size" yaml:"gossip_batch_size"`
+	GossipTTL                      int      `mapstructure:"gossip_ttl" yaml:"gossip_ttl"`
+	GossipFanout                   int      `mapstructure:"gossip_fanout" yaml:"gossip_fanout"`
+	PeerExchangeEnabled            bool     `mapstructure:"peer_exchange_enabled" yaml:"peer_exchange_enabled"`
+	RelayEnabled                   bool     `mapstructure:"relay_enabled" yaml:"relay_enabled"`
+	RelayAPIKey                    string   `mapstructure:"relay_api_key" yaml:"relay_api_key"`
+	MaxEventBytes                  int      `mapstructure:"max_event_bytes" yaml:"max_event_bytes"`
+	MaxManifestBytes               int      `mapstructure:"max_manifest_bytes" yaml:"max_manifest_bytes"`
+	ManifestFetchTimeoutSeconds    int      `mapstructure:"manifest_fetch_timeout_seconds" yaml:"manifest_fetch_timeout_seconds"`
+	MaxBatchEvents                 int      `mapstructure:"max_batch_events" yaml:"max_batch_events"`
+	RateLimitEventsPerMinute       int      `mapstructure:"rate_limit_events_per_minute" yaml:"rate_limit_events_per_minute"`
+	TimeToleranceSeconds           int      `mapstructure:"time_tolerance_seconds" yaml:"time_tolerance_seconds"`
+	MaxEventAgeHours               int      `mapstructure:"max_event_age_hours" yaml:"max_event_age_hours"`
+	NonceTTLSeconds                int      `mapstructure:"nonce_ttl_seconds" yaml:"nonce_ttl_seconds"`
+	LiveQueryEnabled               bool     `mapstructure:"live_query_enabled" yaml:"live_query_enabled"`
+	SendUserContext                bool     `mapstructure:"send_user_context" yaml:"send_user_context"`
+	ShareProviderBackbone          bool     `mapstructure:"share_provider_backbone_hash" yaml:"share_provider_backbone_hash"`
+	ShareSourceIndexer             bool     `mapstructure:"share_source_indexer_hash" yaml:"share_source_indexer_hash"`
 }
 
 type IndexingConfig struct {
-	Newsgroups                   []string                   `mapstructure:"newsgroups" yaml:"newsgroups"`
-	BackfillUntilDateByGroup     map[string]string          `mapstructure:"backfill_until_date_by_group" yaml:"backfill_until_date_by_group"`
-	ScrapeLatest                 IndexingStageConfig        `mapstructure:"scrape_latest" yaml:"scrape_latest"`
-	ScrapeBackfill               IndexingStageConfig        `mapstructure:"scrape_backfill" yaml:"scrape_backfill"`
-	PosterMaterialize            IndexingStageConfig        `mapstructure:"poster_materialize" yaml:"poster_materialize"`
-	CrosspostPopularityRefresh   IndexingStageConfig        `mapstructure:"crosspost_popularity_refresh" yaml:"crosspost_popularity_refresh"`
-	Assemble                     IndexingStageConfig        `mapstructure:"assemble" yaml:"assemble"`
-	RecoverYEnc                  IndexingStageConfig        `mapstructure:"recover_yenc" yaml:"recover_yenc"`
-	ReleaseSummaryRefresh        IndexingStageConfig        `mapstructure:"release_summary_refresh" yaml:"release_summary_refresh"`
-	Release                      IndexingReleaseConfig      `mapstructure:"release" yaml:"release"`
-	ReleaseGenerateNZB           IndexingStageConfig        `mapstructure:"release_generate_nzb" yaml:"release_generate_nzb"`
-	ReleaseArchiveNZB            IndexingStageConfig        `mapstructure:"release_archive_nzb" yaml:"release_archive_nzb"`
-	ReleasePurgeArchivedSources  IndexingStageConfig        `mapstructure:"release_purge_archived_sources" yaml:"release_purge_archived_sources"`
-	InspectDiscoveryReadyRefresh IndexingStageConfig        `mapstructure:"inspect_discovery_ready_refresh" yaml:"inspect_discovery_ready_refresh"`
-	InspectPAR2ReadyRefresh      IndexingStageConfig        `mapstructure:"inspect_par2_ready_refresh" yaml:"inspect_par2_ready_refresh"`
-	InspectArchiveReadyRefresh   IndexingStageConfig        `mapstructure:"inspect_archive_ready_refresh" yaml:"inspect_archive_ready_refresh"`
-	InspectMediaReadyRefresh     IndexingStageConfig        `mapstructure:"inspect_media_ready_refresh" yaml:"inspect_media_ready_refresh"`
-	Match                        IndexingMatchConfig        `mapstructure:"match" yaml:"match"`
-	Inspect                      IndexingInspectConfig      `mapstructure:"inspect" yaml:"inspect"`
-	StorageGuard                 IndexingStorageGuardConfig `mapstructure:"storage_guard" yaml:"storage_guard"`
-	MemoryGuard                  IndexingMemoryGuardConfig  `mapstructure:"memory_guard" yaml:"memory_guard"`
-	InspectDiscovery             IndexingStageConfig        `mapstructure:"inspect_discovery" yaml:"inspect_discovery"`
-	InspectPAR2                  IndexingStageConfig        `mapstructure:"inspect_par2" yaml:"inspect_par2"`
-	InspectNFO                   IndexingStageConfig        `mapstructure:"inspect_nfo" yaml:"inspect_nfo"`
-	InspectArchive               IndexingStageConfig        `mapstructure:"inspect_archive" yaml:"inspect_archive"`
-	InspectPassword              IndexingStageConfig        `mapstructure:"inspect_password" yaml:"inspect_password"`
-	InspectMedia                 IndexingStageConfig        `mapstructure:"inspect_media" yaml:"inspect_media"`
-	EnrichPreDB                  IndexingPreDBConfig        `mapstructure:"enrich_predb" yaml:"enrich_predb"`
-	EnrichTMDB                   IndexingTMDBConfig         `mapstructure:"enrich_tmdb" yaml:"enrich_tmdb"`
+	Newsgroups                  []string                   `mapstructure:"newsgroups" yaml:"newsgroups"`
+	BackfillUntilDateByGroup    map[string]string          `mapstructure:"backfill_until_date_by_group" yaml:"backfill_until_date_by_group"`
+	ScrapeLatest                IndexingStageConfig        `mapstructure:"scrape_latest" yaml:"scrape_latest"`
+	ScrapeBackfill              IndexingStageConfig        `mapstructure:"scrape_backfill" yaml:"scrape_backfill"`
+	PosterMaterialize           IndexingStageConfig        `mapstructure:"poster_materialize" yaml:"poster_materialize"`
+	CrosspostPopularityRefresh  IndexingStageConfig        `mapstructure:"crosspost_popularity_refresh" yaml:"crosspost_popularity_refresh"`
+	Assemble                    IndexingStageConfig        `mapstructure:"assemble" yaml:"assemble"`
+	RecoverYEnc                 IndexingStageConfig        `mapstructure:"recover_yenc" yaml:"recover_yenc"`
+	ReleaseSummaryRefresh       IndexingStageConfig        `mapstructure:"release_summary_refresh" yaml:"release_summary_refresh"`
+	Release                     IndexingReleaseConfig      `mapstructure:"release" yaml:"release"`
+	ReleaseGenerateNZB          IndexingStageConfig        `mapstructure:"release_generate_nzb" yaml:"release_generate_nzb"`
+	ReleaseArchiveNZB           IndexingStageConfig        `mapstructure:"release_archive_nzb" yaml:"release_archive_nzb"`
+	ReleasePurgeArchivedSources IndexingStageConfig        `mapstructure:"release_purge_archived_sources" yaml:"release_purge_archived_sources"`
+	Match                       IndexingMatchConfig        `mapstructure:"match" yaml:"match"`
+	Inspect                     IndexingInspectConfig      `mapstructure:"inspect" yaml:"inspect"`
+	StorageGuard                IndexingStorageGuardConfig `mapstructure:"storage_guard" yaml:"storage_guard"`
+	MemoryGuard                 IndexingMemoryGuardConfig  `mapstructure:"memory_guard" yaml:"memory_guard"`
+	InspectDiscovery            IndexingStageConfig        `mapstructure:"inspect_discovery" yaml:"inspect_discovery"`
+	InspectPAR2                 IndexingStageConfig        `mapstructure:"inspect_par2" yaml:"inspect_par2"`
+	InspectNFO                  IndexingStageConfig        `mapstructure:"inspect_nfo" yaml:"inspect_nfo"`
+	InspectArchive              IndexingStageConfig        `mapstructure:"inspect_archive" yaml:"inspect_archive"`
+	InspectPassword             IndexingStageConfig        `mapstructure:"inspect_password" yaml:"inspect_password"`
+	InspectMedia                IndexingStageConfig        `mapstructure:"inspect_media" yaml:"inspect_media"`
+	EnrichPreDB                 IndexingPreDBConfig        `mapstructure:"enrich_predb" yaml:"enrich_predb"`
+	EnrichTMDB                  IndexingTMDBConfig         `mapstructure:"enrich_tmdb" yaml:"enrich_tmdb"`
 }
 
 type IndexingStageConfig struct {
@@ -238,6 +322,7 @@ type ModulesConfig struct {
 	Downloader    ModuleToggle `mapstructure:"downloader" yaml:"downloader"`
 	Aggregator    ModuleToggle `mapstructure:"aggregator" yaml:"aggregator"`
 	UsenetIndexer ModuleToggle `mapstructure:"usenet_indexer" yaml:"usenet_indexer"`
+	GoNZBNet      ModuleToggle `mapstructure:"gonzbnet" yaml:"gonzbnet"`
 	WebUI         ModuleToggle `mapstructure:"web_ui" yaml:"web_ui"`
 	API           ModuleToggle `mapstructure:"api" yaml:"api"`
 }
@@ -269,10 +354,10 @@ func Load(path string) (*Config, error) {
 				path = "/config/config.yaml"
 			} else if _, errEx := os.Stat("config.yaml.example"); errEx == nil {
 				// If config.yaml is missing but example exists, give a helpful error
-				return nil, fmt.Errorf("configuration file 'config.yaml' not found\n\n" +
-					"To fix this, run:\n" +
+				return nil, errors.New("configuration file 'config.yaml' not found\n\n" +
+					"to fix this, run:\n" +
 					"  cp config.yaml.example config.yaml\n" +
-					"Then edit it with your Usenet credentials.")
+					"then edit it with your Usenet credentials")
 			} else {
 				return nil, fmt.Errorf("config file not found: %s", path)
 			}
@@ -353,22 +438,6 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("indexing.release_purge_archived_sources.interval_minutes", 10.0)
 	v.SetDefault("indexing.release_purge_archived_sources.batch_size", 50)
 	v.SetDefault("indexing.release_purge_archived_sources.backoff_seconds", 0)
-	v.SetDefault("indexing.inspect_discovery_ready_refresh.enabled", false)
-	v.SetDefault("indexing.inspect_discovery_ready_refresh.interval_minutes", 10.0)
-	v.SetDefault("indexing.inspect_discovery_ready_refresh.batch_size", 10000)
-	v.SetDefault("indexing.inspect_discovery_ready_refresh.backoff_seconds", 0)
-	v.SetDefault("indexing.inspect_par2_ready_refresh.enabled", false)
-	v.SetDefault("indexing.inspect_par2_ready_refresh.interval_minutes", 10.0)
-	v.SetDefault("indexing.inspect_par2_ready_refresh.batch_size", 10000)
-	v.SetDefault("indexing.inspect_par2_ready_refresh.backoff_seconds", 0)
-	v.SetDefault("indexing.inspect_archive_ready_refresh.enabled", false)
-	v.SetDefault("indexing.inspect_archive_ready_refresh.interval_minutes", 10.0)
-	v.SetDefault("indexing.inspect_archive_ready_refresh.batch_size", 10000)
-	v.SetDefault("indexing.inspect_archive_ready_refresh.backoff_seconds", 0)
-	v.SetDefault("indexing.inspect_media_ready_refresh.enabled", false)
-	v.SetDefault("indexing.inspect_media_ready_refresh.interval_minutes", 10.0)
-	v.SetDefault("indexing.inspect_media_ready_refresh.batch_size", 10000)
-	v.SetDefault("indexing.inspect_media_ready_refresh.backoff_seconds", 0)
 	v.SetDefault("indexing.match.high_confidence_threshold", 0.85)
 	v.SetDefault("indexing.match.probable_confidence_threshold", 0.55)
 	v.SetDefault("indexing.match.article_bucket_size", int64(5000))
@@ -448,10 +517,94 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("modules.downloader.enabled", true)
 	v.SetDefault("modules.aggregator.enabled", true)
 	v.SetDefault("modules.usenet_indexer.enabled", true)
+	v.SetDefault("modules.gonzbnet.enabled", false)
 	v.SetDefault("modules.web_ui.enabled", true)
 	v.SetDefault("modules.api.enabled", true)
 	v.SetDefault("aggregator.sources.local_blob.enabled", false)
 	v.SetDefault("aggregator.sources.usenet_indexer.enabled", false)
+	v.SetDefault("aggregator.sources.gonzbnet.enabled", false)
+	v.SetDefault("gonzbnet.mode", "integrated")
+	v.SetDefault("gonzbnet.node_alias", "")
+	v.SetDefault("gonzbnet.advertise_url", "")
+	v.SetDefault("gonzbnet.keys_dir", "data/gonzbnet/keys")
+	v.SetDefault("gonzbnet.key_password", "")
+	v.SetDefault("gonzbnet.spec_version", "gonzbnet/1.0")
+	v.SetDefault("gonzbnet.http_enabled", true)
+	v.SetDefault("gonzbnet.http_base_path", "/gonzbnet/v1")
+	v.SetDefault("gonzbnet.allow_insecure_peer_http", false)
+	v.SetDefault("gonzbnet.private_network", true)
+	v.SetDefault("gonzbnet.network_id", "default")
+	v.SetDefault("gonzbnet.local_pool_id", "pool.local")
+	v.SetDefault("gonzbnet.publish_pool_ids", []string{})
+	v.SetDefault("gonzbnet.manual_peers", []string{})
+	v.SetDefault("gonzbnet.visibility", "unlisted")
+	v.SetDefault("gonzbnet.allow_pool_creation", true)
+	v.SetDefault("gonzbnet.allow_join_requests", true)
+	v.SetDefault("gonzbnet.admission_relay_enabled", true)
+	v.SetDefault("gonzbnet.consumer_enabled", true)
+	v.SetDefault("gonzbnet.scanner_enabled", false)
+	v.SetDefault("gonzbnet.index_projection_enabled", true)
+	v.SetDefault("gonzbnet.manifest_builder_enabled", false)
+	v.SetDefault("gonzbnet.manifest_cache_enabled", true)
+	v.SetDefault("gonzbnet.validator_enabled", false)
+	v.SetDefault("gonzbnet.health_checker_enabled", false)
+	v.SetDefault("gonzbnet.coverage_enabled", false)
+	v.SetDefault("gonzbnet.scheduler_enabled", false)
+	v.SetDefault("gonzbnet.publish_release_cards_enabled", false)
+	v.SetDefault("gonzbnet.publish_release_cards_batch_size", 50)
+	v.SetDefault("gonzbnet.publish_release_cards_interval_minutes", 10.0)
+	v.SetDefault("gonzbnet.manifest_availability_enabled", false)
+	v.SetDefault("gonzbnet.health_attestations_enabled", false)
+	v.SetDefault("gonzbnet.health_attestations_batch_size", 50)
+	v.SetDefault("gonzbnet.health_attestations_interval_minutes", 30.0)
+	v.SetDefault("gonzbnet.scanner_max_groups", 25)
+	v.SetDefault("gonzbnet.scanner_max_articles_per_hour", int64(250000))
+	v.SetDefault("gonzbnet.scanner_claim_ttl_minutes", 30)
+	v.SetDefault("gonzbnet.scanner_checkpoint_interval_seconds", 300)
+	v.SetDefault("gonzbnet.scanner_respect_remote_claims", true)
+	v.SetDefault("gonzbnet.scanner_allow_unassigned_work", false)
+	v.SetDefault("gonzbnet.coverage_mode", "manual")
+	v.SetDefault("gonzbnet.coverage_min_trust_for_claim", 0.65)
+	v.SetDefault("gonzbnet.coverage_validation_overlap_percent", 10)
+	v.SetDefault("gonzbnet.coverage_stale_claim_penalty", true)
+	v.SetDefault("gonzbnet.coverage_provider_scope_mode", "hash_only")
+	v.SetDefault("gonzbnet.validation_batch_size", 25)
+	v.SetDefault("gonzbnet.validation_interval_minutes", 15.0)
+	v.SetDefault("gonzbnet.validation_tiers", []string{"metadata", "article_stat", "segment_stat"})
+	v.SetDefault("gonzbnet.validation_max_manifests_per_hour", 500)
+	v.SetDefault("gonzbnet.validation_sample_percent", 10)
+	v.SetDefault("gonzbnet.validation_allow_sample_payload_fetch", false)
+	v.SetDefault("gonzbnet.validation_allow_par2_validation", false)
+	v.SetDefault("gonzbnet.validation_publish_provider_scope_hash", true)
+	v.SetDefault("gonzbnet.checksum_validation_enabled", false)
+	v.SetDefault("gonzbnet.manifest_cache_max_bytes", int64(10737418240))
+	v.SetDefault("gonzbnet.manifest_cache_ttl_days", 90)
+	v.SetDefault("gonzbnet.manifest_cache_serve_to_trusted_pools", true)
+	v.SetDefault("gonzbnet.pull_sync_enabled", false)
+	v.SetDefault("gonzbnet.pull_sync_interval_minutes", 10.0)
+	v.SetDefault("gonzbnet.push_sync_enabled", false)
+	v.SetDefault("gonzbnet.push_sync_interval_minutes", 10.0)
+	v.SetDefault("gonzbnet.push_sync_batch_size", 100)
+	v.SetDefault("gonzbnet.websocket_gossip_enabled", false)
+	v.SetDefault("gonzbnet.gossip_interval_minutes", 1.0)
+	v.SetDefault("gonzbnet.gossip_batch_size", 100)
+	v.SetDefault("gonzbnet.gossip_ttl", 4)
+	v.SetDefault("gonzbnet.gossip_fanout", 4)
+	v.SetDefault("gonzbnet.peer_exchange_enabled", false)
+	v.SetDefault("gonzbnet.relay_enabled", false)
+	v.SetDefault("gonzbnet.relay_api_key", "")
+	v.SetDefault("gonzbnet.max_event_bytes", 262144)
+	v.SetDefault("gonzbnet.max_manifest_bytes", 10485760)
+	v.SetDefault("gonzbnet.manifest_fetch_timeout_seconds", 20)
+	v.SetDefault("gonzbnet.max_batch_events", 100)
+	v.SetDefault("gonzbnet.rate_limit_events_per_minute", 120)
+	v.SetDefault("gonzbnet.time_tolerance_seconds", 120)
+	v.SetDefault("gonzbnet.max_event_age_hours", 720)
+	v.SetDefault("gonzbnet.nonce_ttl_seconds", 600)
+	v.SetDefault("gonzbnet.live_query_enabled", false)
+	v.SetDefault("gonzbnet.send_user_context", false)
+	v.SetDefault("gonzbnet.share_provider_backbone_hash", false)
+	v.SetDefault("gonzbnet.share_source_indexer_hash", false)
 
 	v.SetDefault("api.cors_allowed_origins", []string{
 		"http://localhost:5173",
@@ -470,6 +623,9 @@ func Load(path string) (*Config, error) {
 	v.SetEnvPrefix("GONZB")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
+	if err := bindGoNZBNetEnvAliases(v); err != nil {
+		return nil, err
+	}
 
 	var cfg Config
 	if err := v.Unmarshal(&cfg); err != nil {
@@ -483,6 +639,57 @@ func Load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
+func bindGoNZBNetEnvAliases(v *viper.Viper) error {
+	aliases := map[string][]string{
+		"modules.gonzbnet.enabled": {"GONZBNET_ENABLED"},
+
+		"gonzbnet.consumer_enabled":                       {"GONZBNET_CONSUMER_ENABLED"},
+		"gonzbnet.visibility":                             {"GONZBNET_VISIBILITY"},
+		"gonzbnet.allow_pool_creation":                    {"GONZBNET_ALLOW_POOL_CREATION"},
+		"gonzbnet.allow_join_requests":                    {"GONZBNET_ALLOW_JOIN_REQUESTS"},
+		"gonzbnet.admission_relay_enabled":                {"GONZBNET_ADMISSION_RELAY_ENABLED"},
+		"gonzbnet.scanner_enabled":                        {"GONZBNET_SCANNER_ENABLED"},
+		"gonzbnet.index_projection_enabled":               {"GONZBNET_INDEX_PROJECTION_ENABLED", "GONZBNET_SCANNER_PROJECT_TO_LOCAL_INDEX"},
+		"gonzbnet.manifest_builder_enabled":               {"GONZBNET_MANIFEST_BUILDER_ENABLED"},
+		"gonzbnet.manifest_cache_enabled":                 {"GONZBNET_MANIFEST_CACHE_ENABLED"},
+		"gonzbnet.validator_enabled":                      {"GONZBNET_VALIDATOR_ENABLED"},
+		"gonzbnet.health_checker_enabled":                 {"GONZBNET_HEALTH_CHECKER_ENABLED"},
+		"gonzbnet.coverage_enabled":                       {"GONZBNET_COVERAGE_ENABLED"},
+		"gonzbnet.scheduler_enabled":                      {"GONZBNET_SCHEDULER_ENABLED"},
+		"gonzbnet.relay_enabled":                          {"GONZBNET_RELAY_ENABLED"},
+		"gonzbnet.publish_release_cards_enabled":          {"GONZBNET_SCANNER_PUBLISH_RELEASE_CARDS"},
+		"gonzbnet.manifest_availability_enabled":          {"GONZBNET_SCANNER_PUBLISH_MANIFEST_AVAILABILITY"},
+		"gonzbnet.scanner_max_groups":                     {"GONZBNET_SCANNER_MAX_GROUPS"},
+		"gonzbnet.scanner_max_articles_per_hour":          {"GONZBNET_SCANNER_MAX_ARTICLES_PER_HOUR"},
+		"gonzbnet.scanner_claim_ttl_minutes":              {"GONZBNET_SCANNER_CLAIM_TTL_MINUTES"},
+		"gonzbnet.scanner_checkpoint_interval_seconds":    {"GONZBNET_SCANNER_CHECKPOINT_INTERVAL_SECONDS"},
+		"gonzbnet.scanner_respect_remote_claims":          {"GONZBNET_SCANNER_RESPECT_REMOTE_CLAIMS"},
+		"gonzbnet.scanner_allow_unassigned_work":          {"GONZBNET_SCANNER_ALLOW_UNASSIGNED_WORK"},
+		"gonzbnet.coverage_mode":                          {"GONZBNET_COVERAGE_MODE"},
+		"gonzbnet.coverage_min_trust_for_claim":           {"GONZBNET_COVERAGE_MIN_TRUST_FOR_CLAIM"},
+		"gonzbnet.coverage_validation_overlap_percent":    {"GONZBNET_COVERAGE_VALIDATION_OVERLAP_PERCENT"},
+		"gonzbnet.coverage_stale_claim_penalty":           {"GONZBNET_COVERAGE_STALE_CLAIM_PENALTY"},
+		"gonzbnet.coverage_provider_scope_mode":           {"GONZBNET_COVERAGE_PROVIDER_SCOPE_MODE"},
+		"gonzbnet.validation_tiers":                       {"GONZBNET_VALIDATION_TIERS"},
+		"gonzbnet.validation_max_manifests_per_hour":      {"GONZBNET_VALIDATION_MAX_MANIFESTS_PER_HOUR"},
+		"gonzbnet.validation_sample_percent":              {"GONZBNET_VALIDATION_SAMPLE_PERCENT"},
+		"gonzbnet.validation_allow_sample_payload_fetch":  {"GONZBNET_VALIDATION_ALLOW_SAMPLE_PAYLOAD_FETCH"},
+		"gonzbnet.validation_allow_par2_validation":       {"GONZBNET_VALIDATION_ALLOW_PAR2_VALIDATION"},
+		"gonzbnet.validation_publish_provider_scope_hash": {"GONZBNET_VALIDATION_PUBLISH_PROVIDER_SCOPE_HASH"},
+		"gonzbnet.manifest_cache_max_bytes":               {"GONZBNET_MANIFEST_CACHE_MAX_BYTES"},
+		"gonzbnet.manifest_cache_ttl_days":                {"GONZBNET_MANIFEST_CACHE_TTL_DAYS"},
+		"gonzbnet.manifest_cache_serve_to_trusted_pools":  {"GONZBNET_MANIFEST_CACHE_SERVE_TO_TRUSTED_POOLS"},
+		"gonzbnet.live_query_enabled":                     {"GONZBNET_LIVE_QUERY_ENABLED"},
+	}
+	for key, names := range aliases {
+		args := append([]string{key}, names...)
+		if err := v.BindEnv(args...); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // exported validation entrypoint for effective bootstrap+runtime settings.
 func (c *Config) ValidateEffective() error {
 	return c.validate()
@@ -492,6 +699,15 @@ func (c *Config) validate() error {
 
 	if c.Download.OutDir == "" {
 		c.Download.OutDir = "./downloads"
+	}
+	if c.GoNZBNet.SendUserContext {
+		return errors.New("gonzbnet.send_user_context must remain false; federation must not send local user context")
+	}
+	if c.GoNZBNet.LiveQueryEnabled {
+		return errors.New("gonzbnet.live_query_enabled is reserved; searches must use the local federated cache")
+	}
+	if err := validateGoNZBNetConfig(c.GoNZBNet, c.Modules.GoNZBNet.Enabled); err != nil {
+		return err
 	}
 	if err := validateIndexingStageConfig("indexing.scrape_latest", c.Indexing.ScrapeLatest); err != nil {
 		return err
@@ -520,18 +736,6 @@ func (c *Config) validate() error {
 		return err
 	}
 	if err := validateIndexingStageConfig("indexing.recover_yenc", c.Indexing.RecoverYEnc); err != nil {
-		return err
-	}
-	if err := validateIndexingStageConfig("indexing.inspect_discovery_ready_refresh", c.Indexing.InspectDiscoveryReadyRefresh); err != nil {
-		return err
-	}
-	if err := validateIndexingStageConfig("indexing.inspect_par2_ready_refresh", c.Indexing.InspectPAR2ReadyRefresh); err != nil {
-		return err
-	}
-	if err := validateIndexingStageConfig("indexing.inspect_archive_ready_refresh", c.Indexing.InspectArchiveReadyRefresh); err != nil {
-		return err
-	}
-	if err := validateIndexingStageConfig("indexing.inspect_media_ready_refresh", c.Indexing.InspectMediaReadyRefresh); err != nil {
 		return err
 	}
 	if err := validateIndexingStageConfig("indexing.release", IndexingStageConfig{
@@ -686,6 +890,7 @@ func (c *Config) validate() error {
 	if !c.Modules.Downloader.Enabled &&
 		!c.Modules.Aggregator.Enabled &&
 		!c.Modules.UsenetIndexer.Enabled &&
+		!c.Modules.GoNZBNet.Enabled &&
 		!c.Modules.API.Enabled &&
 		!c.Modules.WebUI.Enabled {
 		return errors.New("at least one module must be enabled")
@@ -699,6 +904,9 @@ func (c *Config) validate() error {
 	// Usenet/NZB Indexer requires PostgreSQL.
 	if c.Modules.UsenetIndexer.Enabled && strings.TrimSpace(c.Store.PGDSN) == "" {
 		return errors.New("store.pg_dsn is required when modules.usenet_indexer.enabled is true")
+	}
+	if c.Modules.GoNZBNet.Enabled && strings.TrimSpace(c.Store.PGDSN) == "" {
+		return errors.New("store.pg_dsn is required when modules.gonzbnet.enabled is true")
 	}
 
 	for i, s := range c.Servers {
@@ -736,6 +944,107 @@ func (c *Config) validate() error {
 		}
 	}
 
+	return nil
+}
+
+func validateGoNZBNetConfig(cfg GoNZBNetConfig, moduleEnabled bool) error {
+	switch strings.TrimSpace(cfg.Visibility) {
+	case "", "private", "unlisted", "pool", "public":
+	default:
+		return errors.New("gonzbnet.visibility must be one of: private, unlisted, pool, public")
+	}
+	if cfg.ScannerMaxGroups < 0 {
+		return errors.New("gonzbnet.scanner_max_groups must be greater than or equal to 0")
+	}
+	if cfg.ScannerMaxArticlesPerHour < 0 {
+		return errors.New("gonzbnet.scanner_max_articles_per_hour must be greater than or equal to 0")
+	}
+	if cfg.ScannerClaimTTLMinutes < 0 {
+		return errors.New("gonzbnet.scanner_claim_ttl_minutes must be greater than or equal to 0")
+	}
+	if cfg.ScannerCheckpointIntervalSecs < 0 {
+		return errors.New("gonzbnet.scanner_checkpoint_interval_seconds must be greater than or equal to 0")
+	}
+	switch strings.TrimSpace(cfg.CoverageMode) {
+	case "", "manual", "scheduler", "automatic":
+	default:
+		return errors.New("gonzbnet.coverage_mode must be one of: manual, scheduler, automatic")
+	}
+	if cfg.CoverageMinTrustForClaim < 0 || cfg.CoverageMinTrustForClaim > 1 {
+		return errors.New("gonzbnet.coverage_min_trust_for_claim must be between 0 and 1")
+	}
+	if cfg.CoverageValidationOverlapPct < 0 || cfg.CoverageValidationOverlapPct > 100 {
+		return errors.New("gonzbnet.coverage_validation_overlap_percent must be between 0 and 100")
+	}
+	switch strings.TrimSpace(cfg.CoverageProviderScopeMode) {
+	case "", "hash_only", "disabled":
+	default:
+		return errors.New("gonzbnet.coverage_provider_scope_mode must be one of: hash_only, disabled")
+	}
+	for _, tier := range cfg.ValidationTiers {
+		switch strings.TrimSpace(tier) {
+		case "metadata", "article_stat", "segment_stat", "checksum":
+		default:
+			return errors.New("gonzbnet.validation_tiers contains an unsupported tier")
+		}
+	}
+	if cfg.ValidationMaxManifestsPerHour < 0 {
+		return errors.New("gonzbnet.validation_max_manifests_per_hour must be greater than or equal to 0")
+	}
+	if cfg.ValidationSamplePercent < 0 || cfg.ValidationSamplePercent > 100 {
+		return errors.New("gonzbnet.validation_sample_percent must be between 0 and 100")
+	}
+	if cfg.ManifestCacheMaxBytes < 0 {
+		return errors.New("gonzbnet.manifest_cache_max_bytes must be greater than or equal to 0")
+	}
+	if cfg.ManifestCacheTTLDays < 0 {
+		return errors.New("gonzbnet.manifest_cache_ttl_days must be greater than or equal to 0")
+	}
+	if !moduleEnabled {
+		return nil
+	}
+	if cfg.PublishReleaseCardsEnabled && cfg.PublishReleaseCardsBatchSize <= 0 {
+		return errors.New("gonzbnet.publish_release_cards_batch_size must be greater than 0")
+	}
+	if cfg.PublishReleaseCardsEnabled && cfg.PublishReleaseCardsIntervalMin <= 0 {
+		return errors.New("gonzbnet.publish_release_cards_interval_minutes must be greater than 0")
+	}
+	if cfg.HealthAttestationsEnabled && cfg.HealthAttestationsBatchSize <= 0 {
+		return errors.New("gonzbnet.health_attestations_batch_size must be greater than 0")
+	}
+	if cfg.HealthAttestationsEnabled && cfg.HealthAttestationsIntervalMin <= 0 {
+		return errors.New("gonzbnet.health_attestations_interval_minutes must be greater than 0")
+	}
+	if cfg.ValidatorEnabled && cfg.ValidationBatchSize <= 0 {
+		return errors.New("gonzbnet.validation_batch_size must be greater than 0")
+	}
+	if cfg.ValidatorEnabled && cfg.ValidationIntervalMin <= 0 {
+		return errors.New("gonzbnet.validation_interval_minutes must be greater than 0")
+	}
+	if cfg.PullSyncEnabled && cfg.PullSyncIntervalMin <= 0 {
+		return errors.New("gonzbnet.pull_sync_interval_minutes must be greater than 0")
+	}
+	if cfg.PushSyncEnabled && cfg.PushSyncIntervalMin <= 0 {
+		return errors.New("gonzbnet.push_sync_interval_minutes must be greater than 0")
+	}
+	if cfg.PushSyncEnabled && cfg.PushSyncBatchSize <= 0 {
+		return errors.New("gonzbnet.push_sync_batch_size must be greater than 0")
+	}
+	if cfg.WebSocketGossipEnabled && cfg.GossipIntervalMin <= 0 {
+		return errors.New("gonzbnet.gossip_interval_minutes must be greater than 0")
+	}
+	if cfg.WebSocketGossipEnabled && (cfg.GossipBatchSize <= 0 || cfg.GossipTTL <= 0 || cfg.GossipFanout <= 0) {
+		return errors.New("gonzbnet gossip batch size, ttl, and fanout must be greater than 0")
+	}
+	if cfg.HTTPEnabled && (cfg.MaxEventBytes <= 0 || cfg.MaxManifestBytes <= 0 || cfg.MaxBatchEvents <= 0) {
+		return errors.New("gonzbnet event, manifest, and batch limits must be greater than 0")
+	}
+	if cfg.ConsumerEnabled && cfg.ManifestFetchTimeoutSeconds <= 0 {
+		return errors.New("gonzbnet.manifest_fetch_timeout_seconds must be greater than 0")
+	}
+	if cfg.HTTPEnabled && (cfg.RateLimitEventsPerMinute <= 0 || cfg.TimeToleranceSeconds <= 0 || cfg.MaxEventAgeHours <= 0 || cfg.NonceTTLSeconds <= 0) {
+		return errors.New("gonzbnet rate and time limits must be greater than 0")
+	}
 	return nil
 }
 
