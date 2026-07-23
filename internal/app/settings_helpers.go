@@ -304,11 +304,13 @@ func FromConfig(cfg *config.Config) *RuntimeSettings {
 
 	for _, idx := range cfg.Indexers {
 		out.Indexers = append(out.Indexers, IndexerRuntimeSettings{
-			ID:       idx.ID,
-			BaseURL:  idx.BaseUrl,
-			APIPath:  idx.ApiPath,
-			APIKey:   idx.ApiKey,
-			Redirect: idx.Redirect,
+			ID:                    idx.ID,
+			BaseURL:               idx.BaseUrl,
+			APIPath:               idx.ApiPath,
+			APIKey:                idx.ApiKey,
+			Redirect:              idx.Redirect,
+			AllowPrivateAddresses: idx.AllowPrivateAddresses,
+			AllowedCIDRs:          append([]string(nil), idx.AllowedCIDRs...),
 		})
 	}
 
@@ -687,11 +689,13 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 	effective.Indexers = make([]config.IndexerConfig, 0, len(runtime.Indexers))
 	for _, idx := range runtime.Indexers {
 		effective.Indexers = append(effective.Indexers, config.IndexerConfig{
-			ID:       strings.TrimSpace(idx.ID),
-			BaseUrl:  strings.TrimSpace(idx.BaseURL),
-			ApiPath:  strings.TrimSpace(idx.APIPath),
-			ApiKey:   idx.APIKey,
-			Redirect: idx.Redirect,
+			ID:                    strings.TrimSpace(idx.ID),
+			BaseUrl:               strings.TrimSpace(idx.BaseURL),
+			ApiPath:               strings.TrimSpace(idx.APIPath),
+			ApiKey:                idx.APIKey,
+			Redirect:              idx.Redirect,
+			AllowPrivateAddresses: idx.AllowPrivateAddresses,
+			AllowedCIDRs:          append([]string(nil), idx.AllowedCIDRs...),
 		})
 	}
 

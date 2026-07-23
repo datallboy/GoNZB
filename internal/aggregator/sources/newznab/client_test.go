@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/datallboy/gonzb/internal/aggregator"
@@ -19,7 +20,7 @@ func TestSearchForwardsLimitAndCategories(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := New("test", server.URL, "/api", "token", false)
+	client := New("test", server.URL, "/api", "token", false, OutboundPolicy{AllowPrivateAddresses: true})
 	_, err := client.Search(context.Background(), aggregator.SearchRequest{
 		Type:       aggregator.SearchTypeGeneric,
 		Query:      "example",
@@ -31,5 +32,33 @@ func TestSearchForwardsLimitAndCategories(t *testing.T) {
 	}
 	if gotLimit != "250" || gotCategories != "2000,2040" {
 		t.Fatalf("unexpected forwarded search window: limit=%q cat=%q", gotLimit, gotCategories)
+	}
+}
+
+func TestSearchBlocksPrivateAddressByDefault(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("blocked private source should not receive a request")
+	}))
+	defer server.Close()
+
+	client := New("test", server.URL, "/api", "token", false)
+	_, err := client.Search(context.Background(), aggregator.SearchRequest{Type: aggregator.SearchTypeGeneric})
+	if err == nil || !strings.Contains(err.Error(), "blocked by the Newznab source policy") {
+		t.Fatalf("expected private-address policy error, got %v", err)
+	}
+}
+
+func TestSearchAllowsExplicitPrivateCIDR(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		_, _ = w.Write([]byte(`<rss version="2.0"><channel></channel></rss>`))
+	}))
+	defer server.Close()
+
+	client := New("test", server.URL, "/api", "token", false, OutboundPolicy{
+		AllowedCIDRs: []string{"127.0.0.1/32"},
+	})
+	if _, err := client.Search(context.Background(), aggregator.SearchRequest{Type: aggregator.SearchTypeGeneric}); err != nil {
+		t.Fatalf("search through explicit CIDR allowlist: %v", err)
 	}
 }

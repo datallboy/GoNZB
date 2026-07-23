@@ -32,6 +32,18 @@ func TestAPITrustedProxyCIDRValidation(t *testing.T) {
 	}
 }
 
+func TestIndexerAllowedCIDRValidation(t *testing.T) {
+	cfg := minimalAggregatorConfig()
+	cfg.Indexers = []IndexerConfig{{
+		ID:           "external",
+		AllowedCIDRs: []string{"not-a-cidr"},
+	}}
+
+	if err := cfg.ValidateEffective(); err == nil {
+		t.Fatal("expected invalid indexer allowed CIDR validation error")
+	}
+}
+
 func TestAPIBootstrapTokenEnvironmentOverride(t *testing.T) {
 	cfgPath := writeMinimalConfig(t, `
 modules:
