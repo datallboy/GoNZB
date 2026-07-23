@@ -1,6 +1,10 @@
 # Production Readiness
 
-Status: active
+Status: archived development snapshot (2026-07-23)
+
+The security hardening that motivated this work is complete. Remaining items
+below were reclassified as future validation or enhancements rather than
+current implementation blockers.
 
 ## Current Assessment
 
