@@ -3,7 +3,6 @@ package inspect
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -403,18 +402,6 @@ func looksTextPrefix(data []byte) bool {
 		}
 	}
 	return len(checked) >= 32 && printable*100/len(checked) >= 92
-}
-
-func readPrefix(reader io.Reader, maxBytes int64) ([]byte, error) {
-	if maxBytes <= 0 {
-		maxBytes = 4096
-	}
-	buf := make([]byte, maxBytes)
-	n, err := reader.Read(buf)
-	if err != nil && err != io.EOF {
-		return nil, err
-	}
-	return append([]byte(nil), buf[:n]...), nil
 }
 
 func ExtractTextTokens(text string) []string {
