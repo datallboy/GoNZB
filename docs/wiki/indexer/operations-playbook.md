@@ -14,6 +14,21 @@ Check patch hygiene:
 git diff --check
 ```
 
+Run the opt-in query soak only against a disposable PostgreSQL database whose
+name contains `test` or `soak`:
+
+```sh
+GONZB_QUERY_SOAK=1 \
+GONZB_TEST_PG_DSN='postgres://user:password@127.0.0.1:55433/gonzb_soak?sslmode=disable' \
+go test ./internal/store/pgindex -run '^TestIndexerQuerySoak$' -count=1 -v
+```
+
+Enable `pg_stat_statements` and reset it immediately before the run. Review
+total/mean execution time, temporary blocks, WAL, deadlocks, table scans, index
+usage, and default-partition row counts afterward. Set
+`GONZB_QUERY_SOAK_KEEP_DATA=1` only when the cohort is needed for follow-up
+`EXPLAIN` work; otherwise the test removes its rows.
+
 ## Database Checks
 
 List partitioned target tables:

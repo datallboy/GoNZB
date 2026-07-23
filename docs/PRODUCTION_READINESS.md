@@ -31,6 +31,13 @@ hosts or pool members.
   observability reporting.
 - The inspected live database had no invalid or definition-equivalent duplicate
   indexes.
+- `staticcheck ./...` is clean after removing superseded archive-detail,
+  assembly, release-summary, and daily-bucket SQL implementations.
+- A disposable checksummed PostgreSQL 17 soak with 10,000 headers, 2,000
+  binaries, 9,800 parts, 1,900 release summaries, assembly claims, release
+  selection, yEnc selection, discovery claims, and dashboard refresh completed
+  without deadlocks, temporary files, or default-partition writes. Five
+  repeated 2,000-binary stats refreshes completed in 0.56-1.15 seconds each.
 - Synthetic RAR and ZIP media-inspection fixtures verify that sparse, bounded
   archive ranges can expose a selected member without downloading the complete
   archive. Matroska members are decoded with the streaming EBML parser and MP4
@@ -61,6 +68,12 @@ hosts or pool members.
 - Direct and archive-backed media metadata inspection is bounded. Single/split
   7z, RAR, ZIP, TAR, and other 7z-readable families use sparse archive probes;
   no complete contained media file is materialized merely for metadata.
+- Binary upsert and stats refresh always enqueue release-family summary work;
+  assemble no longer retains an inline summary writer that can bypass release
+  partition provisioning.
+- The unused `binary_projection_events` table and seven never-read federation
+  columns were removed through migration 029. A fresh schema has no duplicate
+  index definitions and every remaining root table has a production code owner.
 
 ## Release Blockers
 
@@ -80,12 +93,16 @@ configured two-day proactive look-ahead. Existing installations still need an
 operator-reviewed partition retention dry run and cleanup; do not blindly drop
 partitions from a database that contains wanted backfill data.
 
-`pg_stat_statements` was preloaded but absent from the inspected existing
-database, so representative hot-query timing could not be audited. New installs
-create it. Before production, run a sustained representative indexing workload
-and review total/call time, temporary writes, buffer reads, lock waits, and the
-high-volume sequential scans on header, ingest-payload, binary, yEnc, and poster
-queue partitions.
+The controlled query soak now covers the primary store write/selection paths
+and is repeatable with `TestIndexerQuerySoak` against a disposable database
+whose name contains `test` or `soak`. Its initial 2,000-binary stats
+materialization exposed an oversized 8,000-row refresh bound and an inline
+release-summary partition-order defect. The refresh bound is now 500 rows and
+release summaries are release-stage-only. The corrected run kept all default
+partitions empty, used no temporary files, and recorded no deadlocks. Before
+production, still run a sustained live NNTP indexing workload and review
+`pg_stat_statements`, lock waits, WAL, table growth, and autovacuum behavior;
+the synthetic soak does not model hours of concurrent supervisor churn.
 
 ### Indexer quality and performance
 
@@ -100,13 +117,12 @@ queue partitions.
   queue lag, inspection latency, and release yield.
 - Add regression plans for the documented expensive yEnc admission and release
   family-summary query shapes.
-
-### Code and UI quality gates
-
-- `staticcheck ./...` currently reports 29 unused declarations, all in legacy
-  archive-detail, assembly, release-summary, and daily-bucket store paths.
-  Remove those paths in focused commits; do not retain multiple unused
-  implementations of hot database operations.
+- Modernize the opt-in `repository_test.go` PostgreSQL fixtures. The general
+  package test passes with database tests skipped, and the new focused soak
+  passes on the v29 schema, but many older opt-in fixtures still issue test SQL
+  against the retired `binaries` table or omit required partition keys. They
+  are not valid fresh-schema release evidence until converted to the v2 binary
+  projections.
 
 ### Security and Internet exposure
 
