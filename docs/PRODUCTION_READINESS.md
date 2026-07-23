@@ -95,9 +95,9 @@ queue partitions.
 
 ### Code and UI quality gates
 
-- `staticcheck ./...` currently reports 42 unused declarations; the inspection,
-  release, NNTP, and runtime-wiring packages are clean. Remove the obsolete
-  query and pipeline paths in focused commits; do not retain multiple unused
+- `staticcheck ./...` currently reports 29 unused declarations, all in legacy
+  archive-detail, assembly, release-summary, and daily-bucket store paths.
+  Remove those paths in focused commits; do not retain multiple unused
   implementations of hot database operations.
 - UI lint currently reports 39 errors and four warnings. Most are effect/state
   and render-local component findings in admin/indexer screens. The UI build

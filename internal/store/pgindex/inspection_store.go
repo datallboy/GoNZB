@@ -25,7 +25,6 @@ var (
 	par2CoverageRARFamilyRE    = regexp.MustCompile(`(?i)\.part\d+\.rar$|\.r\d{2,3}$`)
 	par2CoverageSeparatorRE    = regexp.MustCompile(`[\[\]\(\)\{\}\-_=+,;:]+`)
 	par2CoverageMultiSpaceRE   = regexp.MustCompile(`\s+`)
-	par2CoverageNonKeyCharsRE  = regexp.MustCompile(`[^\pL\pN]+`)
 )
 
 func execInspectionReplaceBatch(ctx context.Context, tx *sql.Tx, insertPrefix string, rows [][]any) error {
@@ -119,14 +118,6 @@ func (s *Store) existingReleaseIDsForInspectionRows(ctx context.Context, q inspe
 		return nil, err
 	}
 	return existing, nil
-}
-
-func binaryStillExistsInTx(ctx context.Context, tx *sql.Tx, binaryID int64) (bool, error) {
-	var exists bool
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM binary_core WHERE binary_id = $1)`, binaryID).Scan(&exists); err != nil {
-		return false, fmt.Errorf("check binary existence %d: %w", binaryID, err)
-	}
-	return exists, nil
 }
 
 func binarySourcePostedAtInTx(ctx context.Context, tx *sql.Tx, binaryID int64) (time.Time, bool, error) {
@@ -3352,11 +3343,6 @@ func par2CoverageBaseStem(fileName string) string {
 	return strings.TrimSpace(lower)
 }
 
-func par2CoverageReleaseKey(baseStem string) string {
-	key := par2CoverageNonKeyCharsRE.ReplaceAllString(strings.ToLower(strings.TrimSpace(baseStem)), "")
-	return strings.TrimSpace(key)
-}
-
 func parseInt64PGIndex(value string) int64 {
 	var out int64
 	for _, r := range strings.TrimSpace(value) {
@@ -3583,21 +3569,6 @@ func inspectionSummaryMessage(summary map[string]any, key string) string {
 		return ""
 	}
 	return strings.TrimSpace(fmt.Sprint(raw))
-}
-
-func isRecoverableInspectionError(msg string) bool {
-	msg = strings.ToLower(strings.TrimSpace(msg))
-	if msg == "" {
-		return false
-	}
-	return strings.Contains(msg, "broken pipe") ||
-		strings.Contains(msg, "connection reset by peer") ||
-		strings.Contains(msg, "timeout") ||
-		strings.Contains(msg, "i/o timeout") ||
-		strings.Contains(msg, "unexpected eof") ||
-		strings.Contains(msg, "connection refused") ||
-		strings.Contains(msg, "no such host") ||
-		strings.Contains(msg, "network is unreachable")
 }
 
 func inspectCandidateFilter(stageName string, requireExpectedFileCount bool) (string, error) {

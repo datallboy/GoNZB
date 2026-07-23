@@ -66,14 +66,6 @@ func isStatementTimeoutError(err error) bool {
 		strings.Contains(msg, "context deadline exceeded")
 }
 
-func (s *Store) ensureYEncRecoveryWorkItemsSeed(ctx context.Context, limit int) error {
-	if limit <= 0 {
-		limit = yencRecoveryWorkItemSeedLimit
-	}
-	_, _, err := s.BackfillYEncRecoveryWorkItems(ctx, limit)
-	return err
-}
-
 func configureYEncRecoveryWorkItemQueryTx(ctx context.Context, tx *sql.Tx) error {
 	if tx == nil {
 		return fmt.Errorf("yenc recovery work item tx is required")
