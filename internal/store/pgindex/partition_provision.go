@@ -45,14 +45,12 @@ var partitionBundleParents = map[partitionBundle][]string{
 		"binary_lifecycle",
 		"binary_completion_keys",
 		"binary_grouping_evidence",
-		"binary_projection_events",
 		"binary_superseded_sources",
 	},
 	partitionBundleYEnc: {
 		"yenc_recovery_work_items",
 		"binary_recovery_current",
 		"binary_lifecycle",
-		"binary_projection_events",
 		"binary_superseded_sources",
 	},
 	partitionBundleInspect: {

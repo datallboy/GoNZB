@@ -485,7 +485,6 @@ func nativeSourceWorkPartitionTables() []string {
 		"binary_lifecycle",
 		"binary_completion_keys",
 		"binary_grouping_evidence",
-		"binary_projection_events",
 		"binary_superseded_sources",
 		"yenc_recovery_work_items",
 		"article_cohort_candidates",
@@ -524,7 +523,6 @@ func nativeSourceWorkPartitionDropOrder() []string {
 		"article_cohort_yenc_queue",
 		"article_cohort_assembly_queue",
 		"article_cohort_candidates",
-		"binary_projection_events",
 		"binary_superseded_sources",
 		"binary_grouping_evidence",
 		"binary_completion_keys",
@@ -1984,7 +1982,6 @@ func (s *Store) runEmergencySourceWindowReset(ctx context.Context, result *Maint
 		"binary_par2_targets",
 		"binary_completion_keys",
 		"binary_lifecycle",
-		"binary_projection_events",
 		"binary_superseded_sources",
 		"yenc_recovery_work_items",
 		"article_headers",
@@ -2158,7 +2155,6 @@ func countStagedEmergencyBinaryRows(ctx context.Context, tx *sql.Tx) (map[string
 		"binary_par2_targets":           `SELECT COUNT(*) FROM binary_par2_targets t JOIN tmp_emergency_source_window_binary_ids e ON e.binary_id = t.binary_id`,
 		"binary_completion_keys":        `SELECT COUNT(*) FROM binary_completion_keys t JOIN tmp_emergency_source_window_binary_ids e ON e.binary_id = t.binary_id`,
 		"binary_lifecycle":              `SELECT COUNT(*) FROM binary_lifecycle t JOIN tmp_emergency_source_window_binary_ids e ON e.binary_id = t.binary_id`,
-		"binary_projection_events":      `SELECT COUNT(*) FROM binary_projection_events t JOIN tmp_emergency_source_window_binary_ids e ON e.binary_id = t.binary_id`,
 		"binary_superseded_sources": `
 			SELECT COUNT(*)
 			FROM (
@@ -2242,7 +2238,6 @@ func isVacuumableMaintenanceTable(table string) bool {
 		"binary_observation_stats",
 		"binary_par2_sets",
 		"binary_par2_targets",
-		"binary_projection_events",
 		"binary_recovery_current",
 		"binary_superseded_sources",
 		"binary_parts",

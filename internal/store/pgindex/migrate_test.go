@@ -95,7 +95,6 @@ func TestFreshBaselineMigration(t *testing.T) {
 	}
 
 	idDefaultTables := []string{
-		"binary_projection_events",
 		"binary_inspections",
 		"binary_inspection_artifacts",
 		"binary_archive_entries",

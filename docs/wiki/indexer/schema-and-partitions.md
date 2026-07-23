@@ -35,7 +35,7 @@ These tables stay unpartitioned:
 - binary work/projection: `binary_parts`, `binary_observation_stats`,
   `binary_identity_current`, `binary_recovery_current`, `binary_lifecycle`,
   `binary_completion_keys`, `binary_grouping_evidence`,
-  `binary_projection_events`, `binary_superseded_sources`
+  `binary_superseded_sources`
 - yEnc/inspect work and evidence: `yenc_recovery_work_items`,
   `binary_inspection_ready_queue`, `binary_inspections`,
   `binary_inspection_artifacts`, `binary_archive_entries`,
