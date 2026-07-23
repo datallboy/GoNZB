@@ -47,6 +47,9 @@ hosts or pool members.
 - HTTPS session and CSRF cookies are marked Secure, the runtime `unrar` source
   archive is checksum verified, and fresh PostgreSQL installs enable checksums
   and diagnostic extensions.
+- The runtime image uses pinned Alpine 3.23 package revisions. Only the pinned
+  `par2cmdline-turbo` package is sourced from edge/testing; stable packages no
+  longer inherit the edge repository override.
 - Static indexer correctness findings, obsolete service helpers, Newznab
   filtering/pagination behavior, and the original excessive partition horizon
   were addressed in focused changes.
@@ -121,10 +124,6 @@ queue partitions.
 - External Newznab source URLs are administrator-controlled and can reach
   internal addresses. Add an optional outbound allowlist/private-address policy
   for installations where indexer-source administrators are not fully trusted.
-- Remove Alpine edge repositories from the runtime image or pin every package
-  source to a reproducible snapshot. The `unrar` source archive is now checksum
-  verified.
-
 ## Usability Work Still Needed
 
 1. Add a first-run deployment preset: personal all-in-one, consumer-only, or
