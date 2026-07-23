@@ -2,7 +2,6 @@ package pgindex
 
 import (
 	"context"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -15,16 +14,8 @@ import (
 )
 
 func TestFederationScanOutputManifestRepairSelection(t *testing.T) {
-	dsn := strings.TrimSpace(os.Getenv("GONZB_TEST_PG_DSN"))
-	if dsn == "" {
-		t.Skip("set GONZB_TEST_PG_DSN to run scan-output repair integration test")
-	}
 	ctx := context.Background()
-	store, err := NewStore(dsn)
-	if err != nil {
-		t.Fatalf("open migrated store: %v", err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
+	store := openPostgresTestStore(t)
 
 	node, err := identity.LoadOrCreate(t.TempDir())
 	if err != nil {

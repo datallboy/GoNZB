@@ -3,7 +3,6 @@ package pgindex
 import (
 	"context"
 	"database/sql"
-	"os"
 	"strings"
 	"testing"
 )
@@ -24,20 +23,7 @@ func TestExpectedMigrationVersionTracksLatestEmbeddedMigration(t *testing.T) {
 }
 
 func TestFreshBaselineMigration(t *testing.T) {
-	dsn := strings.TrimSpace(os.Getenv("GONZB_TEST_PG_DSN"))
-	if dsn == "" {
-		t.Skip("set GONZB_TEST_PG_DSN to run fresh pgindex migration smoke test")
-	}
-
-	store, err := NewStore(dsn)
-	if err != nil {
-		t.Fatalf("open fresh migrated store: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := store.Close(); err != nil {
-			t.Fatalf("close fresh migrated store: %v", err)
-		}
-	})
+	store := openPostgresTestStore(t)
 
 	version, err := store.SchemaVersion(context.Background())
 	if err != nil {
