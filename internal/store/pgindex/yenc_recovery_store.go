@@ -1391,6 +1391,7 @@ func (s *Store) applyYEncHeaderRecoveryBatch(ctx context.Context, records []YEnc
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("commit yenc recovery batch tx: %w", err)
 		}
+		s.clearInspectDiscoverySeedBackoff()
 		if stats != nil {
 			stats.CommitDuration += time.Since(started)
 		}
