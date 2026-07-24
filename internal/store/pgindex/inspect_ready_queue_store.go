@@ -181,10 +181,19 @@ func (s *Store) CountInspectionReadyQueue(ctx context.Context, stageName string)
 	var count int64
 	if err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*)
-		FROM binary_inspection_ready_queue
-		WHERE stage_name = $1
-		  AND status = 'ready'
-		  AND ready_at <= NOW()`, stageName).Scan(&count); err != nil {
+		FROM binary_inspection_ready_queue q
+		WHERE q.stage_name = $1
+		  AND q.status = 'ready'
+		  AND q.ready_at <= NOW()
+		  AND (
+			$1 <> 'inspect_discovery' OR EXISTS (
+				SELECT 1
+				FROM binary_parts bp
+				WHERE bp.source_posted_at = q.source_posted_at
+				  AND bp.binary_id = q.binary_id
+				  AND bp.part_number = 1
+			)
+		  )`, stageName).Scan(&count); err != nil {
 		return 0, fmt.Errorf("count %s ready queue: %w", stageName, err)
 	}
 	return count, nil
@@ -400,6 +409,14 @@ func (s *Store) listInspectionReadyQueueCandidates(ctx context.Context, q binary
 			  AND q.ready_at <= NOW()
 			  AND (
 				$1 <> 'inspect_discovery' OR (
+					EXISTS (
+						SELECT 1
+						FROM binary_parts bp
+						WHERE bp.source_posted_at = q.source_posted_at
+						  AND bp.binary_id = q.binary_id
+						  AND bp.part_number = 1
+					)
+					AND
 					NOT EXISTS (
 						SELECT 1
 						FROM binary_lifecycle bl

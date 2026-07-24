@@ -181,6 +181,7 @@ func TestInspectDiscoveryDefersToYEncAndBacksOffFailures(t *testing.T) {
 		"FROM yenc_recovery_work_items wi",
 		"wi.status IN ('ready', 'running')",
 		"bl.lifecycle_status = 'superseded'",
+		"bp.part_number = 1",
 		"(5 * time.Minute).Seconds()",
 	} {
 		if !strings.Contains(src, required) {
