@@ -1073,8 +1073,22 @@ func (s *Store) ListBinaryPartArticlesBatch(ctx context.Context, binaryIDs []int
 		}
 		rows, err := s.db.QueryContext(ctx, `
 			SELECT binary_id, article_header_id, part_number
-			FROM binary_parts
-			WHERE binary_id IN (`+strings.Join(placeholders, ",")+`)
+			FROM (
+				SELECT
+					binary_id,
+					article_header_id,
+					part_number,
+					ROW_NUMBER() OVER (
+						PARTITION BY
+							binary_id,
+							(part_number > 0),
+							CASE WHEN part_number > 0 THEN part_number::bigint ELSE article_header_id END
+						ORDER BY segment_bytes DESC, updated_at DESC, article_header_id DESC
+					) AS ordinal_rank
+				FROM binary_parts
+				WHERE binary_id IN (`+strings.Join(placeholders, ",")+`)
+			) ranked
+			WHERE ordinal_rank = 1
 			ORDER BY binary_id, part_number`, args...)
 		if err != nil {
 			return nil, fmt.Errorf("list binary part articles batch: %w", err)
