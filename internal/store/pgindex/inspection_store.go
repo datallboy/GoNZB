@@ -1548,6 +1548,13 @@ func (s *Store) listBinaryInspectionCandidatesRaw(ctx context.Context, q binaryI
 				 AND ay.binary_id = bic.binary_id
 				WHERE ay.binary_id IS NULL
 				  AND (bic.is_main_payload = TRUE OR bic.is_auxiliary = FALSE)
+				  AND EXISTS (
+					SELECT 1
+					FROM binary_parts bp
+					WHERE bp.source_posted_at = bic.source_posted_at
+					  AND bp.binary_id = bic.binary_id
+					  AND bp.part_number = 1
+				  )
 				  AND (
 					LOWER(COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '')) LIKE '%.bin' OR
 					COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '') !~ '\.[A-Za-z0-9]{1,8}$'

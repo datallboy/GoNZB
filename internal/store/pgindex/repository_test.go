@@ -11122,8 +11122,63 @@ func TestListBinaryInspectionCandidatesInspectDiscoveryIncludesStandaloneOpaqueB
 	if err != nil {
 		t.Fatalf("upsert binary: %v", err)
 	}
-
 	candidates, err := store.ListBinaryInspectionCandidates(ctx, "inspect_discovery", 20)
+	if err != nil {
+		t.Fatalf("list inspect discovery candidates without prefix part: %v", err)
+	}
+	for _, candidate := range candidates {
+		if candidate.BinaryID == binaryID {
+			t.Fatalf("did not expect opaque binary without part 1 to be discoverable")
+		}
+	}
+
+	messageID := fmt.Sprintf("<%s@example.test>", baseKey)
+	if _, err := store.InsertArticleHeaders(ctx, 1, newsgroupID, []ArticleHeader{{
+		ArticleNumber: 1,
+		MessageID:     messageID,
+		Subject:       "standalone opaque discovery candidate",
+		Poster:        fmt.Sprintf("poster-discovery-%d@example.com", time.Now().UnixNano()),
+		DateUTC:       &now,
+		Bytes:         1024,
+		Lines:         10,
+	}}); err != nil {
+		t.Fatalf("insert discovery article header: %v", err)
+	}
+	var articleID int64
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT id
+		FROM article_headers
+		WHERE newsgroup_id = $1
+		  AND message_id = $2`,
+		newsgroupID,
+		messageID,
+	).Scan(&articleID); err != nil {
+		t.Fatalf("load discovery article header: %v", err)
+	}
+	if err := upsertTestBinaryParts(t, store, ctx, []BinaryPartRecord{{
+		BinaryID:        binaryID,
+		ArticleHeaderID: articleID,
+		MessageID:       messageID,
+		PartNumber:      1,
+		TotalParts:      1,
+		SegmentBytes:    1024,
+		FileName:        "standalone-discovery.bin",
+	}}); err != nil {
+		t.Fatalf("upsert discovery binary part: %v", err)
+	}
+	if err := store.RefreshBinaryStats(ctx, binaryID); err != nil {
+		t.Fatalf("refresh discovery binary stats: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE yenc_recovery_work_items
+		SET status = 'done', updated_at = NOW()
+		WHERE binary_id = $1`,
+		binaryID,
+	); err != nil {
+		t.Fatalf("complete discovery yenc work: %v", err)
+	}
+
+	candidates, err = store.ListBinaryInspectionCandidates(ctx, "inspect_discovery", 20)
 	if err != nil {
 		t.Fatalf("list inspect discovery candidates: %v", err)
 	}

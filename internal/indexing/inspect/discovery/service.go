@@ -176,6 +176,7 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		ext             string
 		confidence      float64
 		sampledBinaries int
+		lastSampleErr   error
 	)
 	for _, target := range targets {
 		if err := ctx.Err(); err != nil {
@@ -185,6 +186,7 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		sample, sampleErr := inspectpkg.SampleBinaryPrefix(sampleCtx, s.repo, s.fetcher, target, minInt64(s.opts.MaxBytes, 4096))
 		cancel()
 		if sampleErr != nil {
+			lastSampleErr = sampleErr
 			continue
 		}
 		sampledBinaries++
@@ -203,11 +205,15 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		}
 	}
 	if bestSample == nil {
+		errorText := "no materializable opaque binaries found for discovery"
+		if lastSampleErr != nil {
+			errorText = fmt.Sprintf("sample opaque binary prefix: %v", lastSampleErr)
+		}
 		_ = s.repo.FailBinaryInspection(ctx, pgindex.BinaryInspectionRecord{
 			StageName:       stageName,
 			BinaryID:        candidate.BinaryID,
 			ReleaseID:       candidate.ReleaseID,
-			ErrorText:       "no materializable opaque binaries found for discovery",
+			ErrorText:       errorText,
 			SourceUpdatedAt: candidate.SourceUpdatedAt,
 		})
 		return nil
