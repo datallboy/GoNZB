@@ -375,19 +375,62 @@ func finishPosterMaterializationRows(ctx context.Context, tx *sql.Tx, rows []cla
 	if len(rows) == 0 {
 		return nil
 	}
-	args := make([]any, 0, len(rows))
-	var query strings.Builder
-	query.WriteString("UPDATE poster_materialization_queue SET status = 'done', lease_owner = '', lease_expires_at = NULL, last_error = '', updated_at = NOW() WHERE article_header_id IN (")
-	for idx, row := range rows {
-		if idx > 0 {
-			query.WriteString(",")
-		}
-		fmt.Fprintf(&query, "$%d::bigint", len(args)+1)
-		args = append(args, row.ArticleHeaderID)
+	type dayBatch struct {
+		dayStart         time.Time
+		sourcePostedAts  []time.Time
+		articleHeaderIDs []int64
 	}
-	query.WriteString(")")
-	if _, err := tx.ExecContext(ctx, query.String(), args...); err != nil {
-		return fmt.Errorf("finish poster materialization rows: %w", err)
+	byDay := make(map[string]*dayBatch)
+	for _, row := range rows {
+		if row.SourcePostedAt == nil || row.SourcePostedAt.IsZero() {
+			return fmt.Errorf("finish poster materialization row %d: source_posted_at is required", row.ArticleHeaderID)
+		}
+		sourcePostedAt := row.SourcePostedAt.UTC()
+		dayStart := time.Date(sourcePostedAt.Year(), sourcePostedAt.Month(), sourcePostedAt.Day(), 0, 0, 0, 0, time.UTC)
+		dayKey := dayStart.Format("2006-01-02")
+		batch := byDay[dayKey]
+		if batch == nil {
+			batch = &dayBatch{
+				dayStart:         dayStart,
+				sourcePostedAts:  make([]time.Time, 0, len(rows)),
+				articleHeaderIDs: make([]int64, 0, len(rows)),
+			}
+			byDay[dayKey] = batch
+		}
+		batch.sourcePostedAts = append(batch.sourcePostedAts, sourcePostedAt)
+		batch.articleHeaderIDs = append(batch.articleHeaderIDs, row.ArticleHeaderID)
+	}
+
+	dayKeys := make([]string, 0, len(byDay))
+	for dayKey := range byDay {
+		dayKeys = append(dayKeys, dayKey)
+	}
+	sort.Strings(dayKeys)
+	for _, dayKey := range dayKeys {
+		batch := byDay[dayKey]
+		if _, err := tx.ExecContext(ctx, `
+			WITH completed(source_posted_at, article_header_id) AS (
+				SELECT *
+				FROM UNNEST($3::timestamptz[], $4::bigint[])
+			)
+			UPDATE poster_materialization_queue q
+			SET status = 'done',
+			    lease_owner = '',
+			    lease_expires_at = NULL,
+			    last_error = '',
+			    updated_at = NOW()
+			FROM completed
+			WHERE q.source_posted_at >= $1
+			  AND q.source_posted_at < $2
+			  AND q.source_posted_at = completed.source_posted_at
+			  AND q.article_header_id = completed.article_header_id`,
+			batch.dayStart,
+			batch.dayStart.Add(24*time.Hour),
+			batch.sourcePostedAts,
+			batch.articleHeaderIDs,
+		); err != nil {
+			return fmt.Errorf("finish poster materialization rows for source day %s: %w", dayKey, err)
+		}
 	}
 	return nil
 }
