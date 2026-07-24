@@ -65,7 +65,7 @@ func (s *Store) RefreshInspectDiscoveryReadyQueue(ctx context.Context, limit int
 		}
 		out.Retired = retired
 
-		upserted, err := upsertInspectDiscoveryReadyRows(ctx, tx, limit)
+		upserted, err := upsertInspectionReadyQueueCandidates(ctx, tx, "inspect_discovery", preview)
 		if err != nil {
 			return err
 		}
@@ -122,11 +122,7 @@ func (s *Store) RefreshInspectionReadyQueue(ctx context.Context, stageName strin
 		}
 		out.Requeued = requeued
 
-		candidates, err := s.listBinaryInspectionCandidatesRaw(ctx, tx, stageName, limit, BinaryInspectionCandidateOptions{})
-		if err != nil {
-			return err
-		}
-		upserted, err := upsertInspectionReadyQueueCandidates(ctx, tx, stageName, candidates)
+		upserted, err := upsertInspectionReadyQueueCandidates(ctx, tx, stageName, preview)
 		if err != nil {
 			return err
 		}
@@ -241,154 +237,6 @@ func retireIneligibleInspectDiscoveryReadyRows(ctx context.Context, tx *sql.Tx) 
 	rows, err := res.RowsAffected()
 	if err != nil {
 		return 0, fmt.Errorf("retire ineligible inspect_discovery rows affected: %w", err)
-	}
-	return rows, nil
-}
-
-func upsertInspectDiscoveryReadyRows(ctx context.Context, tx *sql.Tx, limit int) (int64, error) {
-	res, err := tx.ExecContext(ctx, `
-		WITH eligible AS (
-			SELECT
-				bic.binary_id,
-				''::text AS release_id,
-					GREATEST(
-						bc.updated_at,
-						bic.updated_at,
-						bos.updated_at,
-						COALESCE(brc.updated_at, TIMESTAMPTZ 'epoch')
-					) AS source_updated_at,
-					COALESCE(bc.source_posted_at, bos.source_posted_at, bos.posted_at) AS source_posted_at
-			FROM binary_core bc
-			JOIN binary_identity_current bic
-			  ON bic.source_posted_at = bc.source_posted_at
-			 AND bic.binary_id = bc.binary_id
-			JOIN binary_observation_stats bos
-			  ON bos.source_posted_at = bc.source_posted_at
-			 AND bos.binary_id = bc.binary_id
-			LEFT JOIN binary_recovery_current brc
-			  ON brc.source_posted_at = bc.source_posted_at
-			 AND brc.binary_id = bc.binary_id
-			LEFT JOIN binary_lifecycle bl
-			  ON bl.source_posted_at = bc.source_posted_at
-			 AND bl.binary_id = bc.binary_id
-			LEFT JOIN binary_inspections bi
-				ON bi.stage_name = 'inspect_discovery'
-				AND bi.binary_id = bic.binary_id
-			WHERE COALESCE(brc.recovered_extension, '') = ''
-			  AND COALESCE(bl.lifecycle_status, 'active') <> 'superseded'
-			  AND NOT EXISTS (
-				SELECT 1
-				FROM yenc_recovery_work_items wi
-				WHERE wi.source_posted_at = bc.source_posted_at
-				  AND wi.binary_id = bc.binary_id
-				  AND wi.status IN ('ready', 'running')
-			  )
-			  AND (bic.is_main_payload = TRUE OR bic.is_auxiliary = FALSE)
-			  AND (
-				LOWER(COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '')) LIKE '%.bin' OR
-				COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '') !~ '\.[A-Za-z0-9]{1,8}$'
-			  )
-			  AND (
-				bi.id IS NULL OR
-				(bi.status = 'failed' AND bi.updated_at <= NOW() - INTERVAL '5 minutes') OR
-				(
-					bi.status = 'running' AND
-					(
-						bi.inspection_claimed_until IS NULL OR
-						bi.inspection_claimed_until < NOW()
-					)
-				) OR
-				GREATEST(
-					bc.updated_at,
-					bic.updated_at,
-					bos.updated_at,
-					COALESCE(brc.updated_at, TIMESTAMPTZ 'epoch')
-				) > bi.updated_at OR
-				COALESCE(bi.summary_json->>'probe_error', '') <> '' OR
-				COALESCE(bi.summary_json->>'ffprobe_error', '') <> '' OR
-				COALESCE(bi.summary_json->>'extract_error', '') <> '' OR
-				COALESCE(bi.summary_json->>'archive_extract_error', '') <> ''
-			  )
-			  AND (
-				bi.inspection_claimed_until IS NULL OR
-				bi.inspection_claimed_until < NOW()
-			  )
-			  AND NOT EXISTS (
-				SELECT 1
-				FROM binary_inspections cfi
-				WHERE cfi.stage_name = 'inspect_discovery'
-				  AND cfi.binary_id = bic.binary_id
-				  AND cfi.status = 'completed'
-				  AND COALESCE(cfi.summary_json->>'content_filtered', '') = 'true'
-			  )
-			ORDER BY bic.updated_at DESC, bic.binary_id DESC
-			LIMIT $1
-		)
-		INSERT INTO binary_inspection_ready_queue (
-			stage_name,
-			binary_id,
-			release_id,
-			status,
-				ready_at,
-				source_updated_at,
-				source_posted_at,
-				claimed_by,
-			claimed_until,
-			last_error,
-			updated_at
-		)
-		SELECT
-			'inspect_discovery',
-			e.binary_id,
-			e.release_id,
-				'ready',
-				NOW(),
-				e.source_updated_at,
-				e.source_posted_at,
-				'',
-			NULL,
-			'',
-			NOW()
-		FROM eligible e
-		WHERE to_regclass('public.binary_inspection_ready_queue_' || to_char(e.source_posted_at AT TIME ZONE 'UTC', 'YYYYMMDD')) IS NOT NULL
-			ON CONFLICT (source_posted_at, stage_name, binary_id) DO UPDATE
-			SET release_id = EXCLUDED.release_id,
-			    source_updated_at = EXCLUDED.source_updated_at,
-			    status = CASE
-		    	WHEN binary_inspection_ready_queue.status = 'running'
-		    	 AND binary_inspection_ready_queue.claimed_until IS NOT NULL
-		    	 AND binary_inspection_ready_queue.claimed_until >= NOW()
-		    	THEN binary_inspection_ready_queue.status
-		    	ELSE 'ready'
-		    END,
-		    ready_at = CASE
-		    	WHEN binary_inspection_ready_queue.status = 'running'
-		    	 AND binary_inspection_ready_queue.claimed_until IS NOT NULL
-		    	 AND binary_inspection_ready_queue.claimed_until >= NOW()
-		    	THEN binary_inspection_ready_queue.ready_at
-		    	ELSE NOW()
-		    END,
-		    claimed_by = CASE
-		    	WHEN binary_inspection_ready_queue.status = 'running'
-		    	 AND binary_inspection_ready_queue.claimed_until IS NOT NULL
-		    	 AND binary_inspection_ready_queue.claimed_until >= NOW()
-		    	THEN binary_inspection_ready_queue.claimed_by
-		    	ELSE ''
-		    END,
-		    claimed_until = CASE
-		    	WHEN binary_inspection_ready_queue.status = 'running'
-		    	 AND binary_inspection_ready_queue.claimed_until IS NOT NULL
-		    	 AND binary_inspection_ready_queue.claimed_until >= NOW()
-		    	THEN binary_inspection_ready_queue.claimed_until
-		    	ELSE NULL
-		    END,
-		    updated_at = NOW()`, limit)
-	if err != nil {
-		return 0, fmt.Errorf("upsert inspect_discovery ready rows: %w", err)
-	}
-	rows, err := res.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("upsert inspect_discovery ready rows affected: %w", err)
 	}
 	return rows, nil
 }

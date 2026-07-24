@@ -135,4 +135,46 @@ func TestInspectReadyQueueDefersDiscoveryAndBacksOffFailures(t *testing.T) {
 	if status != "ready" || readyAt.Before(time.Now().Add(4*time.Minute)) {
 		t.Fatalf("expected failed discovery to have a five-minute retry delay, got status=%q ready_at=%s", status, readyAt)
 	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE binary_inspection_ready_queue
+		SET ready_at = NOW()
+		WHERE stage_name = 'inspect_discovery'
+		  AND binary_id = $1`,
+		binaryID,
+	); err != nil {
+		t.Fatalf("make discovery queue row claimable: %v", err)
+	}
+
+	lockConn, err := store.DB().Conn(ctx)
+	if err != nil {
+		t.Fatalf("acquire refresh lock connection: %v", err)
+	}
+	defer lockConn.Close()
+	lockTx, err := lockConn.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin refresh lock transaction: %v", err)
+	}
+	defer lockTx.Rollback()
+	if _, err := lockTx.ExecContext(ctx,
+		`SELECT pg_advisory_xact_lock(hashtext($1))`,
+		"gonzb-inspect-discovery-ready-refresh",
+	); err != nil {
+		t.Fatalf("hold discovery refresh lock: %v", err)
+	}
+
+	claimCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	candidates, err := store.ClaimBinaryInspectionCandidates(claimCtx, BinaryInspectionClaimRequest{
+		StageName:     "inspect_discovery",
+		Limit:         1,
+		Owner:         "inspect-ready-queue-test",
+		LeaseDuration: time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("claim already-ready discovery candidate without refresh: %v", err)
+	}
+	if len(candidates) != 1 || candidates[0].BinaryID != binaryID {
+		t.Fatalf("expected existing ready candidate %d, got %+v", binaryID, candidates)
+	}
 }
