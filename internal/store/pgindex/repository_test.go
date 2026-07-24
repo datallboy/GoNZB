@@ -9945,6 +9945,33 @@ func TestListBinaryInspectionCandidatesInspectArchiveRetriesCompletedMetadataOnl
 	if !found {
 		t.Fatalf("expected metadata-only archive candidate without entries to be retried")
 	}
+
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE binary_inspections
+		SET release_id = $2,
+		    summary_json = '{"probe_strategy":"no_archive_family","archive_entries":null}'::jsonb,
+		    updated_at = NOW()
+		WHERE stage_name = 'inspect_archive'
+		  AND binary_id = $1`,
+		binaryID,
+		"stale-"+releaseID,
+	); err != nil {
+		t.Fatalf("mark archive inspection release link stale: %v", err)
+	}
+	candidates, err = store.listBinaryInspectionCandidatesRaw(ctx, store.db, "inspect_archive", 20, BinaryInspectionCandidateOptions{})
+	if err != nil {
+		t.Fatalf("list raw inspect archive candidates after release replacement: %v", err)
+	}
+	found = false
+	for _, candidate := range candidates {
+		if candidate.BinaryID == binaryID && candidate.ReleaseID == releaseID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected completed archive inspection linked to a stale release to rerun for current release %s", releaseID)
+	}
 }
 
 func TestCompleteBinaryInspectionCoercesRecoverableProbeErrorToFailed(t *testing.T) {

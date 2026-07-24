@@ -1418,6 +1418,7 @@ func (s *Store) listBinaryInspectionCandidatesRaw(ctx context.Context, q binaryI
 					) AS completed_zero_targets,
 					(
 						` + rerunPredicate + `
+						OR bi.release_id IS DISTINCT FROM b.release_id
 					) AS needs_rerun
 				FROM binary_state b
 				LEFT JOIN posters p ON p.id = b.poster_id
@@ -1634,7 +1635,8 @@ func (s *Store) listBinaryInspectionCandidatesRaw(ctx context.Context, q binaryI
 		 AND abi.binary_id = b.id
 		WHERE ` + filter + `
 		  AND (
-			` + rerunPredicate + `
+			` + rerunPredicate + ` OR
+			bi.release_id IS DISTINCT FROM r.release_id
 		  )
 		  AND (
 			bi.inspection_claimed_until IS NULL OR
@@ -1716,6 +1718,7 @@ func (s *Store) listBinaryInspectionCandidatesRaw(ctx context.Context, q binaryI
 						)
 					) OR
 					b.updated_at > bi.updated_at OR
+					bi.release_id IS DISTINCT FROM r.release_id OR
 					` + errorRerunPredicate + `
 				  )
 				  AND (
