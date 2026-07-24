@@ -245,12 +245,14 @@ func (s *Store) checkCriticalIndexerRelation(ctx context.Context, relation strin
 
 	var (
 		accessMethod sql.NullString
+		relkind      string
 		indisvalid   sql.NullBool
 		indisready   sql.NullBool
 	)
 	if err := s.db.QueryRowContext(ctx, `
 		SELECT
 			am.amname,
+			c.relkind::text,
 			COALESCE(i.indisvalid, FALSE),
 			COALESCE(i.indisready, FALSE)
 		FROM pg_class c
@@ -258,15 +260,18 @@ func (s *Store) checkCriticalIndexerRelation(ctx context.Context, relation strin
 		LEFT JOIN pg_am am ON am.oid = c.relam
 		WHERE c.oid = $1::regclass`,
 		relation,
-	).Scan(&accessMethod, &indisvalid, &indisready); err != nil {
+	).Scan(&accessMethod, &relkind, &indisvalid, &indisready); err != nil {
 		return check, fmt.Errorf("inspect critical index metadata %s: %w", relation, err)
 	}
 
 	check.AccessMethod = accessMethod.String
-	check.MetadataOK = indisvalid.Bool && indisready.Bool
+	check.MetadataOK = (relkind == "i" || relkind == "I") &&
+		accessMethod.String == "btree" &&
+		indisvalid.Bool &&
+		indisready.Bool
 	if !check.MetadataOK {
 		check.OK = false
-		check.Detail = "index metadata is not valid/ready"
+		check.Detail = "relation metadata is not a valid/ready B-tree index"
 		return check, nil
 	}
 
@@ -274,6 +279,10 @@ func (s *Store) checkCriticalIndexerRelation(ctx context.Context, relation strin
 		check.OK = true
 		check.Detail = "metadata-only check passed; amcheck extension unavailable"
 		return check, nil
+	}
+
+	if relkind == "I" {
+		return s.checkCriticalPartitionedIndexerRelation(ctx, relation, check)
 	}
 
 	if _, err := s.db.ExecContext(ctx, `SELECT bt_index_check($1::regclass, FALSE)`, relation); err != nil {
@@ -291,6 +300,69 @@ func (s *Store) checkCriticalIndexerRelation(ctx context.Context, relation strin
 	check.AmcheckRan = true
 	check.OK = true
 	check.Detail = "amcheck passed"
+	return check, nil
+}
+
+func (s *Store) checkCriticalPartitionedIndexerRelation(
+	ctx context.Context,
+	relation string,
+	check IndexerIntegrityCheck,
+) (IndexerIntegrityCheck, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		WITH RECURSIVE descendants AS (
+			SELECT c.oid, c.relkind
+			FROM pg_class c
+			WHERE c.oid = $1::regclass
+			UNION ALL
+			SELECT child.oid, child.relkind
+			FROM descendants parent
+			JOIN pg_inherits inheritance ON inheritance.inhparent = parent.oid
+			JOIN pg_class child ON child.oid = inheritance.inhrelid
+		)
+		SELECT oid::regclass::text
+		FROM descendants
+		WHERE relkind = 'i'
+		ORDER BY oid::regclass::text`,
+		relation,
+	)
+	if err != nil {
+		return check, fmt.Errorf("list physical index partitions for %s: %w", relation, err)
+	}
+	defer rows.Close()
+
+	children := make([]string, 0, 8)
+	for rows.Next() {
+		var child string
+		if err := rows.Scan(&child); err != nil {
+			return check, fmt.Errorf("scan physical index partition for %s: %w", relation, err)
+		}
+		children = append(children, child)
+	}
+	if err := rows.Err(); err != nil {
+		return check, fmt.Errorf("list physical index partitions for %s: %w", relation, err)
+	}
+
+	for _, child := range children {
+		if _, err := s.db.ExecContext(ctx, `SELECT bt_index_check($1::regclass, FALSE)`, child); err != nil {
+			if isPostgresInsufficientPrivilege(err) {
+				check.OK = true
+				check.Detail = "metadata-only check passed; amcheck index verification unavailable to current database role"
+				return check, nil
+			}
+			check.AmcheckRan = true
+			check.OK = false
+			check.Detail = fmt.Sprintf("physical index partition %s: %v", child, err)
+			return check, nil
+		}
+	}
+
+	check.AmcheckRan = len(children) > 0
+	check.OK = true
+	if len(children) == 0 {
+		check.Detail = "metadata-only check passed; partitioned index has no physical child indexes"
+	} else {
+		check.Detail = fmt.Sprintf("amcheck passed for %d physical index partitions", len(children))
+	}
 	return check, nil
 }
 
