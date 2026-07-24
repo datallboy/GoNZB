@@ -692,7 +692,7 @@ func (s *matchState) shouldPreferSubjectMultipartReleaseKey(explicitFileName str
 	if splitArchiveRE.MatchString(lower) || rarFamilyRE.MatchString(lower) || strings.HasSuffix(lower, ".rar") || parFileRE.MatchString(lower) {
 		return false
 	}
-	if s.fileIndex <= 0 || s.expectedFileCount <= 0 || s.partNumber <= 0 || s.totalParts <= 1 {
+	if s.partNumber <= 0 || s.totalParts <= 1 {
 		return false
 	}
 	return true
@@ -702,11 +702,14 @@ func subjectMultipartComplete(subject string, structured structuredData, fileInd
 	if extractQuotedFilename(subject) == "" && strings.TrimSpace(structured.Name) == "" {
 		return false
 	}
-	if fileIndex <= 0 || fileTotal <= 0 || partNumber <= 0 || totalParts <= 0 {
+	if partNumber <= 0 || totalParts <= 1 {
 		return false
 	}
 	if strings.Contains(strings.ToLower(subject), "yenc") {
 		return true
+	}
+	if fileIndex <= 0 || fileTotal <= 0 {
+		return false
 	}
 	return hasLeadingBracketFileCounter(subject) && bestParenthesizedCounterTotal(subject) > 0
 }
@@ -1032,8 +1035,8 @@ func hasLeadingBracketFileCounter(subject string) bool {
 }
 
 func bestCounterPair(subject string) (int, int) {
-	bestPart := 1
-	bestTotal := 1
+	bestPart := 0
+	bestTotal := 0
 
 	for _, pair := range parseCounterPairs(subject) {
 		if pair.Total > bestTotal || (pair.Total == bestTotal && pair.Part > bestPart) {

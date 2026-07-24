@@ -247,6 +247,50 @@ func TestMatchSubjectMultipartObfuscatedFileIgnoresRandomPosterContext(t *testin
 	}
 }
 
+func TestMatchUnquotedYEncMultipartFileIgnoresRandomPosterContext(t *testing.T) {
+	svc := NewService()
+	postedAt := time.Date(2026, 7, 24, 13, 33, 32, 0, time.UTC)
+	fileName := "bDR4SuKpS24cntCSUIWr1LOOdv8g4io43pYu3o7OUP0C3qNoLC.mkv"
+
+	first := svc.Match(Candidate{
+		ArticleNumber: 1828577370,
+		MessageID:     "<first@host.example>",
+		Subject:       fileName + ` yEnc (23170/33232)`,
+		Poster:        "random-poster-one",
+		PostedAt:      &postedAt,
+		RawOverview: map[string]any{
+			"name":  fileName,
+			"part":  23170,
+			"total": 33232,
+		},
+	})
+	second := svc.Match(Candidate{
+		ArticleNumber: 1828577392,
+		MessageID:     "<second@other.example>",
+		Subject:       fileName + ` yEnc (23149/33232)`,
+		Poster:        "random-poster-two",
+		PostedAt:      &postedAt,
+		RawOverview: map[string]any{
+			"name":  fileName,
+			"part":  23149,
+			"total": 33232,
+		},
+	})
+
+	if first.BinaryKey != second.BinaryKey {
+		t.Fatalf("expected unquoted yEnc segments to share one binary key, got %q vs %q", first.BinaryKey, second.BinaryKey)
+	}
+	if first.FileIndex != 0 || first.ExpectedFileCount != 0 {
+		t.Fatalf("expected no invented file-set counter, got %d/%d", first.FileIndex, first.ExpectedFileCount)
+	}
+	if first.PartNumber != 23170 || second.PartNumber != 23149 || first.TotalParts != 33232 || second.TotalParts != 33232 {
+		t.Fatalf("unexpected segment counters: first=%d/%d second=%d/%d", first.PartNumber, first.TotalParts, second.PartNumber, second.TotalParts)
+	}
+	if first.IdentityReason != "subject_multipart_obfuscated" || first.IdentityStrength == "weak" {
+		t.Fatalf("expected multipart identity, got strength=%q reason=%q", first.IdentityStrength, first.IdentityReason)
+	}
+}
+
 func TestMatchCanonicalizesReleaseKeyAcrossArchiveFamilies(t *testing.T) {
 	svc := NewService()
 
