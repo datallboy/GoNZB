@@ -124,4 +124,20 @@ func TestFreshBaselineMigration(t *testing.T) {
 			t.Fatalf("fresh schema must not retain redundant index %s", indexName)
 		}
 	}
+
+	var baseStemPredicate string
+	if err := store.DB().QueryRowContext(context.Background(), `
+		SELECT pg_get_expr(i.indpred, i.indrelid)
+		FROM pg_index i
+		JOIN pg_class c ON c.oid = i.indexrelid
+		JOIN pg_namespace n ON n.oid = c.relnamespace
+		WHERE n.nspname = 'public'
+		  AND c.relname = 'idx_binary_identity_base_stem_lookup'`,
+	).Scan(&baseStemPredicate); err != nil {
+		t.Fatalf("load release base-stem lookup predicate: %v", err)
+	}
+	if strings.Contains(baseStemPredicate, "expected_file_count") ||
+		strings.Contains(baseStemPredicate, "expected_archive_file_count") {
+		t.Fatalf("release base-stem lookup must cover singleton families, predicate=%q", baseStemPredicate)
+	}
 }
