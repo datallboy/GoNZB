@@ -175,6 +175,20 @@ func TestArticleCohortSchedulerDoesNotProbePartitionCatalogPerCandidate(t *testi
 	}
 }
 
+func TestInspectDiscoveryDefersToYEncAndBacksOffFailures(t *testing.T) {
+	src := readGuardrailSource(t, "inspect_ready_queue_store.go")
+	for _, required := range []string{
+		"FROM yenc_recovery_work_items wi",
+		"wi.status IN ('ready', 'running')",
+		"bl.lifecycle_status = 'superseded'",
+		"(5 * time.Minute).Seconds()",
+	} {
+		if !strings.Contains(src, required) {
+			t.Fatalf("inspect discovery queue must defer to active yEnc work and back off failures; missing %q", required)
+		}
+	}
+}
+
 func TestPartitionDefaultRehomeUsesUTCDayBoundaries(t *testing.T) {
 	src := readGuardrailSource(t, "maintenance_tasks_store.go")
 	for _, required := range []string{"source_posted_at AT TIME ZONE 'UTC'", "time.ParseInLocation(\"2006-01-02\", dayKey, time.UTC)", "dayStart.Format(time.RFC3339)", "dayEnd.Format(time.RFC3339)"} {

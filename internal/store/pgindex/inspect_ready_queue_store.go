@@ -196,6 +196,9 @@ func retireIneligibleInspectDiscoveryReadyRows(ctx context.Context, tx *sql.Tx) 
 			LEFT JOIN binary_recovery_current brc
 			  ON brc.source_posted_at = q.source_posted_at
 			 AND brc.binary_id = q.binary_id
+			LEFT JOIN binary_lifecycle bl
+			  ON bl.source_posted_at = q.source_posted_at
+			 AND bl.binary_id = q.binary_id
 			LEFT JOIN binary_inspections cfi
 				ON cfi.stage_name = 'inspect_discovery'
 				AND cfi.binary_id = q.binary_id
@@ -207,6 +210,14 @@ func retireIneligibleInspectDiscoveryReadyRows(ctx context.Context, tx *sql.Tx) 
 				bc.binary_id IS NULL OR
 				bic.binary_id IS NULL OR
 				COALESCE(brc.recovered_extension, '') <> '' OR
+				COALESCE(bl.lifecycle_status, 'active') = 'superseded' OR
+				EXISTS (
+					SELECT 1
+					FROM yenc_recovery_work_items wi
+					WHERE wi.source_posted_at = q.source_posted_at
+					  AND wi.binary_id = q.binary_id
+					  AND wi.status IN ('ready', 'running')
+				) OR
 				cfi.id IS NOT NULL OR
 				NOT (bic.is_main_payload = TRUE OR bic.is_auxiliary = FALSE) OR
 				NOT (
@@ -257,10 +268,21 @@ func upsertInspectDiscoveryReadyRows(ctx context.Context, tx *sql.Tx, limit int)
 			LEFT JOIN binary_recovery_current brc
 			  ON brc.source_posted_at = bc.source_posted_at
 			 AND brc.binary_id = bc.binary_id
+			LEFT JOIN binary_lifecycle bl
+			  ON bl.source_posted_at = bc.source_posted_at
+			 AND bl.binary_id = bc.binary_id
 			LEFT JOIN binary_inspections bi
 				ON bi.stage_name = 'inspect_discovery'
 				AND bi.binary_id = bic.binary_id
 			WHERE COALESCE(brc.recovered_extension, '') = ''
+			  AND COALESCE(bl.lifecycle_status, 'active') <> 'superseded'
+			  AND NOT EXISTS (
+				SELECT 1
+				FROM yenc_recovery_work_items wi
+				WHERE wi.source_posted_at = bc.source_posted_at
+				  AND wi.binary_id = bc.binary_id
+				  AND wi.status IN ('ready', 'running')
+			  )
 			  AND (bic.is_main_payload = TRUE OR bic.is_auxiliary = FALSE)
 			  AND (
 				LOWER(COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '')) LIKE '%.bin' OR
@@ -268,7 +290,7 @@ func upsertInspectDiscoveryReadyRows(ctx context.Context, tx *sql.Tx, limit int)
 			  )
 			  AND (
 				bi.id IS NULL OR
-				bi.status = 'failed' OR
+				(bi.status = 'failed' AND bi.updated_at <= NOW() - INTERVAL '5 minutes') OR
 				(
 					bi.status = 'running' AND
 					(
@@ -493,6 +515,24 @@ func (s *Store) listInspectionReadyQueueCandidates(ctx context.Context, q binary
 			WHERE q.stage_name = $1
 			  AND q.status = 'ready'
 			  AND q.ready_at <= NOW()
+			  AND (
+				$1 <> 'inspect_discovery' OR (
+					NOT EXISTS (
+						SELECT 1
+						FROM binary_lifecycle bl
+						WHERE bl.source_posted_at = q.source_posted_at
+						  AND bl.binary_id = q.binary_id
+						  AND bl.lifecycle_status = 'superseded'
+					)
+					AND NOT EXISTS (
+						SELECT 1
+						FROM yenc_recovery_work_items wi
+						WHERE wi.source_posted_at = q.source_posted_at
+						  AND wi.binary_id = q.binary_id
+						  AND wi.status IN ('ready', 'running')
+					)
+				)
+			  )
 			ORDER BY q.source_updated_at DESC NULLS LAST, q.binary_id DESC
 			LIMIT $2
 		)
@@ -640,11 +680,12 @@ func finishInspectReadyQueueRow(ctx context.Context, execer inspectionExecer, st
 		return nil
 	}
 	queueStatus := "completed"
-	readyAt := "NOW()"
+	retryDelaySeconds := float64(0)
 	if strings.TrimSpace(status) == "failed" {
 		queueStatus = "ready"
+		retryDelaySeconds = (5 * time.Minute).Seconds()
 	}
-	_, err := execer.ExecContext(ctx, fmt.Sprintf(`
+	_, err := execer.ExecContext(ctx, `
 		WITH target AS (
 			SELECT source_posted_at
 			FROM binary_core
@@ -653,7 +694,7 @@ func finishInspectReadyQueueRow(ctx context.Context, execer inspectionExecer, st
 		)
 		UPDATE binary_inspection_ready_queue
 		SET status = $3,
-		    ready_at = %s,
+		    ready_at = NOW() + ($5::double precision * INTERVAL '1 second'),
 		    claimed_by = '',
 		    claimed_until = NULL,
 		    last_error = $4,
@@ -661,11 +702,12 @@ func finishInspectReadyQueueRow(ctx context.Context, execer inspectionExecer, st
 		FROM target t
 		WHERE stage_name = $1
 		  AND binary_inspection_ready_queue.source_posted_at = t.source_posted_at
-		  AND binary_id = $2`, readyAt),
+		  AND binary_id = $2`,
 		stageName,
 		binaryID,
 		queueStatus,
 		strings.TrimSpace(lastError),
+		retryDelaySeconds,
 	)
 	if err != nil {
 		return fmt.Errorf("finish inspect ready queue row %s/%d: %w", stageName, binaryID, err)

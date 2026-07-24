@@ -1324,7 +1324,7 @@ func (s *Store) listBinaryInspectionCandidatesRaw(ctx context.Context, q binaryI
 		  )`
 	rerunPredicate := `
 			bi.id IS NULL OR
-			bi.status = 'failed' OR
+			(bi.status = 'failed' AND bi.updated_at <= NOW() - INTERVAL '5 minutes') OR
 			(
 				bi.status = 'running' AND
 				(
