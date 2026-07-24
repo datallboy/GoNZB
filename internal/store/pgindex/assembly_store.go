@@ -50,6 +50,15 @@ func assemblyClaimStructuredMatchSQL() string {
 	return assemblyClaimCompletionKeyExistsSQL()
 }
 
+func assemblyClaimUnownedArticleSQL(queueAlias string) string {
+	return fmt.Sprintf(`NOT EXISTS (
+		SELECT 1
+		FROM binary_parts bp
+		WHERE bp.source_posted_at = %s.source_posted_at
+		  AND bp.article_header_id = %s.article_header_id
+	)`, queueAlias, queueAlias)
+}
+
 // unassembled header row used by Milestone 6 assembly service.
 type AssemblyCandidate struct {
 	ID                              int64
@@ -287,6 +296,7 @@ func (s *Store) ListUnassembledArticleHeaders(ctx context.Context, limit int) ([
 				ROW_NUMBER() OVER (ORDER BY q.article_header_id DESC)::integer AS ord,
 				FALSE AS structured_identity_binary_matched
 			FROM article_header_assembly_queue q
+			WHERE `+assemblyClaimUnownedArticleSQL("q")+`
 			ORDER BY q.article_header_id DESC
 			LIMIT $1
 		)
@@ -362,6 +372,7 @@ func hasClaimableArticleCohortAssemblyRows(ctx context.Context, q assemblyQuerye
 			WHERE cq.status = 'ready'
 			  AND (ahq.claim_until IS NULL OR ahq.claim_until < NOW())
 			  AND ahq.queued_at <= NOW() - ($1::bigint * INTERVAL '1 second')
+			  AND `+assemblyClaimUnownedArticleSQL("ahq")+`
 			LIMIT 1
 		)`, int64(assembleClaimMinQueueAge/time.Second))
 	if err != nil {
@@ -461,6 +472,7 @@ func (s *Store) ClaimAssemblyQueueBatchWithStats(ctx context.Context, req Assemb
 			FROM article_header_assembly_queue q
 			WHERE (q.claim_until IS NULL OR q.claim_until < NOW())
 			  AND q.queued_at <= NOW() - ($5::bigint * INTERVAL '1 second')
+			  AND ` + assemblyClaimUnownedArticleSQL("q") + `
 			ORDER BY q.article_header_id DESC
 			LIMIT $1
 			FOR UPDATE OF q SKIP LOCKED
@@ -488,6 +500,7 @@ func (s *Store) ClaimAssemblyQueueBatchWithStats(ctx context.Context, req Assemb
 			WHERE cq.status = 'ready'
 			  AND (q.claim_until IS NULL OR q.claim_until < NOW())
 			  AND q.queued_at <= NOW() - ($5::bigint * INTERVAL '1 second')
+			  AND ` + assemblyClaimUnownedArticleSQL("q") + `
 			ORDER BY cq.priority_rank ASC, cq.score DESC, q.article_header_id DESC
 			LIMIT $1
 			FOR UPDATE OF q SKIP LOCKED
@@ -503,6 +516,7 @@ func (s *Store) ClaimAssemblyQueueBatchWithStats(ctx context.Context, req Assemb
 			FROM article_header_assembly_queue q
 			WHERE (q.claim_until IS NULL OR q.claim_until < NOW())
 			  AND q.queued_at <= NOW() - ($5::bigint * INTERVAL '1 second')
+			  AND ` + assemblyClaimUnownedArticleSQL("q") + `
 			  AND q.queue_kind = 'structured'
 			  AND ` + assemblyClaimCompletionKeyExistsSQL() + `
 			ORDER BY q.article_header_id DESC
@@ -524,6 +538,7 @@ func (s *Store) ClaimAssemblyQueueBatchWithStats(ctx context.Context, req Assemb
 			WHERE cq.status = 'ready'
 			  AND (q.claim_until IS NULL OR q.claim_until < NOW())
 			  AND q.queued_at <= NOW() - ($5::bigint * INTERVAL '1 second')
+			  AND ` + assemblyClaimUnownedArticleSQL("q") + `
 			ORDER BY cq.priority_rank ASC, cq.score DESC, q.article_header_id DESC
 			LIMIT $1
 			FOR UPDATE OF q SKIP LOCKED
@@ -537,6 +552,7 @@ func (s *Store) ClaimAssemblyQueueBatchWithStats(ctx context.Context, req Assemb
 			FROM article_header_assembly_queue q
 			WHERE (q.claim_until IS NULL OR q.claim_until < NOW())
 			  AND q.queued_at <= NOW() - ($5::bigint * INTERVAL '1 second')
+			  AND ` + assemblyClaimUnownedArticleSQL("q") + `
 			  AND (
 			    q.queue_kind <> 'structured'
 			    OR NOT ` + assemblyClaimCompletionKeyExistsSQL() + `
@@ -577,6 +593,7 @@ func (s *Store) ClaimAssemblyQueueBatchWithStats(ctx context.Context, req Assemb
 			WHERE cq.status = 'ready'
 			  AND (q.claim_until IS NULL OR q.claim_until < NOW())
 			  AND q.queued_at <= NOW() - ($5::bigint * INTERVAL '1 second')
+			  AND ` + assemblyClaimUnownedArticleSQL("q") + `
 			ORDER BY cq.priority_rank ASC, cq.score DESC, q.article_header_id DESC
 			LIMIT $1
 			FOR UPDATE OF q SKIP LOCKED
@@ -590,6 +607,7 @@ func (s *Store) ClaimAssemblyQueueBatchWithStats(ctx context.Context, req Assemb
 			FROM article_header_assembly_queue q
 			WHERE (q.claim_until IS NULL OR q.claim_until < NOW())
 			  AND q.queued_at <= NOW() - ($5::bigint * INTERVAL '1 second')
+			  AND ` + assemblyClaimUnownedArticleSQL("q") + `
 			  AND q.queue_kind = 'structured'
 			  AND ` + assemblyClaimCompletionKeyExistsSQL() + `
 			  AND NOT EXISTS (
@@ -611,6 +629,7 @@ func (s *Store) ClaimAssemblyQueueBatchWithStats(ctx context.Context, req Assemb
 			FROM article_header_assembly_queue q
 			WHERE (q.claim_until IS NULL OR q.claim_until < NOW())
 			  AND q.queued_at <= NOW() - ($5::bigint * INTERVAL '1 second')
+			  AND ` + assemblyClaimUnownedArticleSQL("q") + `
 			  AND NOT EXISTS (
 				SELECT 1
 				FROM lane_a a
