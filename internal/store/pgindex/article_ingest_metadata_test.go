@@ -29,3 +29,14 @@ func TestParseArticleIngestMetadataKeepsYEncSubjectCounters(t *testing.T) {
 		t.Fatalf("expected trailing file size, got %d", got.FileSize)
 	}
 }
+
+func TestParseArticleIngestMetadataDoesNotReuseYEncCounterAsFileSetCounter(t *testing.T) {
+	got := parseArticleIngestMetadata(`opaque-name.mkv yEnc (23170/33232)`)
+
+	if got.FileIndex != 0 || got.FileTotal != 0 {
+		t.Fatalf("expected no file-set counter, got %d/%d", got.FileIndex, got.FileTotal)
+	}
+	if got.YEncPart != 23170 || got.YEncTotalParts != 33232 {
+		t.Fatalf("expected yEnc counter 23170/33232, got %d/%d", got.YEncPart, got.YEncTotalParts)
+	}
+}

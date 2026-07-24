@@ -35,14 +35,14 @@ func parseArticleIngestMetadata(subject string) parsedArticleMetadata {
 
 	counters := parseIngestCounterPairs(subject)
 	if len(counters) > 0 {
-		if filePart, fileTotal := bestCounterBeforeYEncForIngest(subject, counters); fileTotal > 0 {
+		if filePart, fileTotal := bestCounterBeforeYEncForIngest(subject); fileTotal > 0 {
 			out.FileIndex = filePart
 			out.FileTotal = fileTotal
 		} else if filePart, fileTotal := bestBracketCounterForIngest(counters); fileTotal > 0 {
 			out.FileIndex = filePart
 			out.FileTotal = fileTotal
 		}
-		if yencPart, yencTotal := bestCounterAfterYEncForIngest(subject, counters); yencTotal > 0 {
+		if yencPart, yencTotal := bestCounterAfterYEncForIngest(subject); yencTotal > 0 {
 			out.YEncPart = yencPart
 			out.YEncTotalParts = yencTotal
 		} else if yencPart, yencTotal := bestParenthesizedCounterForIngest(counters); yencTotal > 0 {
@@ -100,34 +100,26 @@ func parseIngestCounterPairs(subject string) []ingestCounterPair {
 	return out
 }
 
-func bestCounterBeforeYEncForIngest(subject string, counters []ingestCounterPair) (int, int) {
+func bestCounterBeforeYEncForIngest(subject string) (int, int) {
 	idx := strings.LastIndex(strings.ToLower(subject), "yenc")
 	if idx <= 0 {
 		return 0, 0
 	}
-	return bestCounterForIngest(subject[:idx], counters)
+	return bestCounterForIngest(subject[:idx])
 }
 
-func bestCounterAfterYEncForIngest(subject string, counters []ingestCounterPair) (int, int) {
+func bestCounterAfterYEncForIngest(subject string) (int, int) {
 	idx := strings.LastIndex(strings.ToLower(subject), "yenc")
 	if idx < 0 || idx >= len(subject) {
 		return 0, 0
 	}
-	return bestCounterForIngest(subject[idx:], counters)
+	return bestCounterForIngest(subject[idx:])
 }
 
-func bestCounterForIngest(section string, counters []ingestCounterPair) (int, int) {
+func bestCounterForIngest(section string) (int, int) {
 	local := parseIngestCounterPairs(section)
 	best := ingestCounterPair{}
-	if len(local) > 0 {
-		for _, pair := range local {
-			if best.Total == 0 || pair.Total > best.Total || (pair.Total == best.Total && pair.Part > best.Part) {
-				best = pair
-			}
-		}
-		return best.Part, best.Total
-	}
-	for _, pair := range counters {
+	for _, pair := range local {
 		if best.Total == 0 || pair.Total > best.Total || (pair.Total == best.Total && pair.Part > best.Part) {
 			best = pair
 		}
