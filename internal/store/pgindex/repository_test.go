@@ -9069,6 +9069,121 @@ func TestClaimAssemblyQueueBatchSelectsStructuredLaneAFromQueueKeys(t *testing.T
 	}
 }
 
+func TestClaimAssemblyQueueBatchSkipsHeadersAlreadyOwnedByBinaryParts(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	groupName := fmt.Sprintf("alt.test.assemble.already-owned.%d", time.Now().UnixNano())
+	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)
+	if err != nil {
+		t.Fatalf("ensure newsgroup: %v", err)
+	}
+	posterName := fmt.Sprintf("poster-already-owned-%d@example.com", time.Now().UnixNano())
+	posterID, err := ensureTestPoster(t, store, ctx, posterName)
+	if err != nil {
+		t.Fatalf("ensure poster: %v", err)
+	}
+
+	t.Cleanup(func() {
+		cleanupCtx := context.Background()
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM article_headers WHERE newsgroup_id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup article headers: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM binary_core WHERE newsgroup_id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup binaries: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM posters WHERE id = $1`, posterID); err != nil {
+			t.Fatalf("cleanup poster: %v", err)
+		}
+		if _, err := store.DB().ExecContext(cleanupCtx, `DELETE FROM newsgroups WHERE id = $1`, newsgroupID); err != nil {
+			t.Fatalf("cleanup newsgroup: %v", err)
+		}
+	})
+
+	baseTime := time.Date(2026, 4, 21, 14, 0, 0, 0, time.UTC)
+	messageID := fmt.Sprintf("<already-owned-%d@test>", time.Now().UnixNano())
+	if _, err := store.InsertArticleHeaders(ctx, 1, newsgroupID, []ArticleHeader{{
+		ArticleNumber: 601,
+		MessageID:     messageID,
+		Subject:       `Already Owned - "already.owned.bin" yEnc`,
+		Poster:        posterName,
+		DateUTC:       &baseTime,
+		Bytes:         4096,
+		Lines:         40,
+	}}); err != nil {
+		t.Fatalf("insert article header: %v", err)
+	}
+	candidates, err := store.ListUnassembledArticleHeaders(ctx, 10)
+	if err != nil {
+		t.Fatalf("list unassembled article headers: %v", err)
+	}
+	var header AssemblyCandidate
+	for _, candidate := range candidates {
+		if candidate.NewsgroupID == newsgroupID {
+			header = candidate
+			break
+		}
+	}
+	if header.ID <= 0 {
+		t.Fatal("expected inserted article in assembly queue")
+	}
+
+	binaryID, err := upsertTestBinary(t, store, ctx, BinaryRecord{
+		ProviderID:       1,
+		NewsgroupID:      newsgroupID,
+		PosterID:         posterID,
+		FamilyKind:       "opaque_set",
+		IdentityStrength: "weak",
+		IdentityReason:   "opaque_subject_set",
+		IsMainPayload:    true,
+		ReleaseKey:       "already-owned",
+		BinaryKey:        "already-owned::binary",
+		BinaryName:       "already.owned.bin",
+		FileName:         "already.owned.bin",
+		TotalParts:       1,
+		PostedAt:         &baseTime,
+		MatchConfidence:  0.2,
+		MatchStatus:      "low_confidence",
+	})
+	if err != nil {
+		t.Fatalf("upsert binary: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO binary_parts (
+			binary_id, article_header_id, source_posted_at, message_id,
+			part_number, total_parts, segment_bytes, file_name
+		)
+		VALUES ($1, $2, $3, $4, 1, 1, 4096, 'already.owned.bin')`,
+		binaryID, header.ID, header.SourcePostedAt, messageID,
+	); err != nil {
+		t.Fatalf("seed existing binary part owner: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE article_header_assembly_queue
+		SET queued_at = NOW() - INTERVAL '30 seconds'
+		WHERE source_posted_at = $1
+		  AND article_header_id = $2`,
+		header.SourcePostedAt, header.ID,
+	); err != nil {
+		t.Fatalf("age assembly queue row: %v", err)
+	}
+
+	got, err := store.ClaimAssemblyQueueBatch(ctx, AssemblyClaimRequest{
+		Limit:         10,
+		Owner:         "test-already-owned",
+		LeaseDuration: time.Minute,
+		Lane:          AssemblyClaimLaneCombined,
+	})
+	if err != nil {
+		t.Fatalf("claim assembly queue batch: %v", err)
+	}
+	for _, candidate := range got {
+		if candidate.ID == header.ID && candidate.SourcePostedAt.Equal(header.SourcePostedAt) {
+			t.Fatalf("already-owned article header was reclaimed: %+v", candidate)
+		}
+	}
+}
+
 func TestListBinaryInspectionCandidatesInspectArchiveDedupesArchiveFamilies(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
