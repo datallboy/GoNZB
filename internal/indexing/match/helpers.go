@@ -472,6 +472,11 @@ func (s *matchState) sourceReleaseKey(releaseName, explicitFileName string) stri
 	if key := s.smallIndexedArchiveStemReleaseKey(explicitFileName); key != "" {
 		releaseKey = key
 	}
+	if releaseKey == "" && s.subjectMultipart {
+		if key := opaqueArchiveStemReleaseKey(explicitFileName); key != "" {
+			releaseKey = key
+		}
+	}
 	if s.shouldPreferSubjectMultipartReleaseKey(explicitFileName) {
 		releaseKey = canonicalReleaseKey(firstNonEmpty(releaseName, explicitFileName))
 	}
@@ -641,6 +646,26 @@ func (s *matchState) smallIndexedArchiveStemReleaseKey(explicitFileName string) 
 	}
 
 	key := canonicalReleaseKey(explicitFileName)
+	fields := strings.Fields(key)
+	if len(fields) != 1 || !opaqueTokenRE.MatchString(fields[0]) {
+		return ""
+	}
+	return key
+}
+
+func opaqueArchiveStemReleaseKey(explicitFileName string) string {
+	explicitFileName = sanitizeFileName(explicitFileName)
+	if explicitFileName == "" {
+		return ""
+	}
+	lower := strings.ToLower(explicitFileName)
+	if !splitArchiveRE.MatchString(lower) &&
+		!rarFamilyRE.MatchString(lower) &&
+		!strings.HasSuffix(lower, ".rar") &&
+		!parFileRE.MatchString(lower) {
+		return ""
+	}
+	key := canonicalReleaseKey(archiveFamilyBaseStem(explicitFileName))
 	fields := strings.Fields(key)
 	if len(fields) != 1 || !opaqueTokenRE.MatchString(fields[0]) {
 		return ""
