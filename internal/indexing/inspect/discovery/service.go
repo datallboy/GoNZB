@@ -177,6 +177,8 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		confidence      float64
 		sampledBinaries int
 		lastSampleErr   error
+		sampleErrCount  int
+		terminalErrs    int
 	)
 	for _, target := range targets {
 		if err := ctx.Err(); err != nil {
@@ -187,6 +189,10 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		cancel()
 		if sampleErr != nil {
 			lastSampleErr = sampleErr
+			sampleErrCount++
+			if discoveryTerminalSampleReason(sampleErr) != "" {
+				terminalErrs++
+			}
 			continue
 		}
 		sampledBinaries++
@@ -205,6 +211,22 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		}
 	}
 	if bestSample == nil {
+		if sampleErrCount > 0 && terminalErrs == sampleErrCount {
+			return s.repo.CompleteBinaryInspection(ctx, pgindex.BinaryInspectionRecord{
+				StageName:       stageName,
+				BinaryID:        candidate.BinaryID,
+				ReleaseID:       candidate.ReleaseID,
+				Status:          "completed",
+				ToolProvenance:  inspectpkg.ToolProvenance(s.opts, stageName),
+				SourceUpdatedAt: candidate.SourceUpdatedAt,
+				Summary: map[string]any{
+					"probe_skip_reason":  discoveryTerminalSampleReason(lastSampleErr),
+					"probe_error_detail": lastSampleErr.Error(),
+					"sampled_files":      0,
+					"release_scan_mode":  "opaque_release_family",
+				},
+			})
+		}
 		errorText := "no materializable opaque binaries found for discovery"
 		if lastSampleErr != nil {
 			errorText = fmt.Sprintf("sample opaque binary prefix: %v", lastSampleErr)
@@ -273,6 +295,21 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		Summary:           summary,
 		SourceUpdatedAt:   candidate.SourceUpdatedAt,
 	})
+}
+
+func discoveryTerminalSampleReason(err error) string {
+	if err == nil {
+		return ""
+	}
+	message := strings.ToLower(strings.TrimSpace(err.Error()))
+	switch {
+	case strings.Contains(message, " has no articles"):
+		return "candidate_no_longer_materializable"
+	case strings.Contains(message, " prefix starts at offset "):
+		return "prefix_not_available"
+	default:
+		return ""
+	}
 }
 
 func (s *Service) discoveryTargets(ctx context.Context, candidate pgindex.BinaryInspectionCandidate) ([]pgindex.BinaryInspectionCandidate, error) {
