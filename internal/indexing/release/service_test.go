@@ -2384,6 +2384,35 @@ func TestRunOnceFormsSingleCompletePayloadWithAuxiliaryEvidence(t *testing.T) {
 	}
 }
 
+func TestSingleCompleteArchivePayloadUsesAuxiliaryEvidence(t *testing.T) {
+	binaries := []pgindex.BinarySummary{
+		{
+			BinaryID:          1,
+			FileName:          "readable-release.rar",
+			ExpectedFileCount: 10,
+			IsMainPayload:     true,
+			TotalParts:        293,
+			ObservedParts:     293,
+		},
+		{
+			BinaryID:          2,
+			FileName:          "readable-release.par2",
+			ExpectedFileCount: 10,
+			IsAuxiliary:       true,
+			TotalParts:        1,
+			ObservedParts:     1,
+		},
+	}
+	if !allowsSingleCompletePayloadWithAuxiliaryEvidence(binaries) {
+		t.Fatal("expected a complete standalone archive with PAR2 evidence to be eligible")
+	}
+
+	binaries[0].FileName = "readable-release.part01.rar"
+	if allowsSingleCompletePayloadWithAuxiliaryEvidence(binaries) {
+		t.Fatal("expected a lone split-archive volume to remain ineligible")
+	}
+}
+
 func TestRunOnceSkipsSingleArticlePayloadWithAuxiliaryEvidence(t *testing.T) {
 	familyKey := "opaque-single-payload-family"
 	repo := &fakeReleaseRepository{
