@@ -376,6 +376,7 @@ func (s *Store) provisionReleasePartitionsForQueuedWork(ctx context.Context, lim
 				FROM binary_identity_current bic
 				WHERE bic.provider_id = q.provider_id
 				  AND bic.newsgroup_id = q.newsgroup_id
+				  AND BTRIM(bic.release_family_key) <> ''
 				  AND bic.release_family_key = q.family_key
 			) day
 			WHERE q.key_kind = 'release_family'
@@ -387,6 +388,7 @@ func (s *Store) provisionReleasePartitionsForQueuedWork(ctx context.Context, lim
 				FROM binary_identity_current bic
 				WHERE bic.provider_id = q.provider_id
 				  AND bic.newsgroup_id = q.newsgroup_id
+				  AND BTRIM(bic.base_stem) <> ''
 				  AND LOWER(BTRIM(bic.base_stem)) = q.family_key
 			) day
 			WHERE q.key_kind = 'base_stem'

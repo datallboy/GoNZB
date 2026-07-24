@@ -189,6 +189,18 @@ func TestInspectDiscoveryDefersToYEncAndBacksOffFailures(t *testing.T) {
 	}
 }
 
+func TestReleasePartitionPreflightCanUsePartialFamilyIndexes(t *testing.T) {
+	src := readGuardrailSource(t, "partition_provision.go")
+	for _, required := range []string{
+		"BTRIM(bic.release_family_key) <> ''",
+		"BTRIM(bic.base_stem) <> ''",
+	} {
+		if !strings.Contains(src, required) {
+			t.Fatalf("release partition preflight must imply its partial family-index predicate; missing %q", required)
+		}
+	}
+}
+
 func TestPartitionDefaultRehomeUsesUTCDayBoundaries(t *testing.T) {
 	src := readGuardrailSource(t, "maintenance_tasks_store.go")
 	for _, required := range []string{"source_posted_at AT TIME ZONE 'UTC'", "time.ParseInLocation(\"2006-01-02\", dayKey, time.UTC)", "dayStart.Format(time.RFC3339)", "dayEnd.Format(time.RFC3339)"} {
