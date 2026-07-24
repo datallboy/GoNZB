@@ -6,6 +6,30 @@ import (
 	"time"
 )
 
+func TestInspectDiscoverySeedBackoffResetsOnUsefulOrChangedWork(t *testing.T) {
+	store := &Store{}
+	now := time.Now()
+
+	store.recordInspectDiscoverySeedResult(now, 0)
+	if !store.shouldBackoffInspectDiscoverySeed(now.Add(30 * time.Second)) {
+		t.Fatal("expected empty discovery seed to back off")
+	}
+	if store.shouldBackoffInspectDiscoverySeed(now.Add(2 * time.Minute)) {
+		t.Fatal("expected first discovery seed backoff to expire after one minute")
+	}
+
+	store.recordInspectDiscoverySeedResult(now, 1)
+	if store.shouldBackoffInspectDiscoverySeed(now) {
+		t.Fatal("expected useful discovery seed to clear backoff")
+	}
+
+	store.recordInspectDiscoverySeedResult(now, 0)
+	store.clearInspectDiscoverySeedBackoff()
+	if store.shouldBackoffInspectDiscoverySeed(now) {
+		t.Fatal("expected changed binary work to clear discovery seed backoff")
+	}
+}
+
 func TestInspectReadyQueueDefersDiscoveryAndBacksOffFailures(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()

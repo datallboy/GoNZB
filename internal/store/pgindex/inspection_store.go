@@ -1247,12 +1247,20 @@ func (s *Store) listBinaryInspectionCandidates(ctx context.Context, q binaryInsp
 			return candidates, nil
 		}
 		if db, ok := q.(*sql.DB); ok && db == s.db {
+			now := time.Now()
+			if stageName == "inspect_discovery" && s.shouldBackoffInspectDiscoverySeed(now) {
+				return candidates, nil
+			}
 			refreshLimit := limit * 10
 			if refreshLimit < 1000 {
 				refreshLimit = 1000
 			}
-			if _, err := s.RefreshInspectionReadyQueue(ctx, stageName, refreshLimit); err != nil {
+			result, err := s.RefreshInspectionReadyQueue(ctx, stageName, refreshLimit)
+			if err != nil {
 				return nil, err
+			}
+			if stageName == "inspect_discovery" {
+				s.recordInspectDiscoverySeedResult(now, result.ReadyUpserted)
 			}
 			return s.listInspectionReadyQueueCandidates(ctx, q, stageName, limit)
 		}
@@ -1523,6 +1531,28 @@ func (s *Store) listBinaryInspectionCandidatesRaw(ctx context.Context, q binaryI
 
 	if stageName == "inspect_discovery" {
 		query := `
+			WITH active_yenc AS MATERIALIZED (
+				SELECT source_posted_at, binary_id
+				FROM yenc_recovery_work_items
+				WHERE status IN ('ready', 'running')
+			),
+			discovery_roots AS MATERIALIZED (
+				SELECT bic.*
+				FROM binary_identity_current bic
+				JOIN binary_lifecycle bl
+				  ON bl.source_posted_at = bic.source_posted_at
+				 AND bl.binary_id = bic.binary_id
+				 AND bl.lifecycle_status = 'active'
+				LEFT JOIN active_yenc ay
+				  ON ay.source_posted_at = bic.source_posted_at
+				 AND ay.binary_id = bic.binary_id
+				WHERE ay.binary_id IS NULL
+				  AND (bic.is_main_payload = TRUE OR bic.is_auxiliary = FALSE)
+				  AND (
+					LOWER(COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '')) LIKE '%.bin' OR
+					COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '') !~ '\.[A-Za-z0-9]{1,8}$'
+				  )
+			)
 			SELECT
 				$1 AS stage_name,
 				bic.binary_id AS binary_id,
@@ -1550,7 +1580,7 @@ func (s *Store) listBinaryInspectionCandidatesRaw(ctx context.Context, q binaryI
 				bi.updated_at AS current_updated_at,
 				COALESCE(bi.summary_json, '{}'::jsonb) AS current_summary_json,
 				'{}'::jsonb AS archive_summary_json
-			FROM binary_identity_current bic
+			FROM discovery_roots bic
 			JOIN binary_core bc
 			  ON bc.source_posted_at = bic.source_posted_at
 			 AND bc.binary_id = bic.binary_id
@@ -1560,28 +1590,12 @@ func (s *Store) listBinaryInspectionCandidatesRaw(ctx context.Context, q binaryI
 			LEFT JOIN binary_recovery_current brc
 			  ON brc.source_posted_at = bic.source_posted_at
 			 AND brc.binary_id = bic.binary_id
-			LEFT JOIN binary_lifecycle bl
-			  ON bl.source_posted_at = bic.source_posted_at
-			 AND bl.binary_id = bic.binary_id
 			LEFT JOIN posters p ON p.id = bc.poster_id
 			LEFT JOIN binary_inspections bi
 			  ON bi.source_posted_at = bic.source_posted_at
 			 AND bi.stage_name = $1
 			 AND bi.binary_id = bic.binary_id
 			WHERE COALESCE(brc.recovered_extension, '') = ''
-			  AND COALESCE(bl.lifecycle_status, 'active') <> 'superseded'
-			  AND NOT EXISTS (
-				SELECT 1
-				FROM yenc_recovery_work_items wi
-				WHERE wi.source_posted_at = bic.source_posted_at
-				  AND wi.binary_id = bic.binary_id
-				  AND wi.status IN ('ready', 'running')
-			  )
-			  AND (bic.is_main_payload = TRUE OR bic.is_auxiliary = FALSE)
-			  AND (
-				LOWER(COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '')) LIKE '%.bin' OR
-				COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '') !~ '\.[A-Za-z0-9]{1,8}$'
-			  )
 			  AND (
 				bi.id IS NULL OR
 				(bi.status = 'failed' AND bi.updated_at <= NOW() - INTERVAL '5 minutes') OR
@@ -1927,7 +1941,7 @@ func (s *Store) ClaimBinaryInspectionCandidates(ctx context.Context, req BinaryI
 		if err != nil {
 			return nil, err
 		}
-		if len(preview) < req.Limit {
+		if len(preview) == 0 {
 			refreshLimit := req.Limit * 10
 			if refreshLimit < 1000 {
 				refreshLimit = 1000

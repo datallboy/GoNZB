@@ -26,6 +26,41 @@ type BinaryInspectionReadyQueueRefreshResult struct {
 	Requeued      int64
 }
 
+func (s *Store) shouldBackoffInspectDiscoverySeed(now time.Time) bool {
+	s.inspectDiscoverySeedMu.Lock()
+	defer s.inspectDiscoverySeedMu.Unlock()
+	return !s.inspectDiscoverySeedBackoffUntil.IsZero() && now.Before(s.inspectDiscoverySeedBackoffUntil)
+}
+
+func (s *Store) clearInspectDiscoverySeedBackoff() {
+	s.inspectDiscoverySeedMu.Lock()
+	defer s.inspectDiscoverySeedMu.Unlock()
+	s.inspectDiscoverySeedConsecutiveEmpty = 0
+	s.inspectDiscoverySeedBackoffUntil = time.Time{}
+}
+
+func (s *Store) recordInspectDiscoverySeedResult(now time.Time, upserted int64) {
+	s.inspectDiscoverySeedMu.Lock()
+	defer s.inspectDiscoverySeedMu.Unlock()
+	if upserted > 0 {
+		s.inspectDiscoverySeedConsecutiveEmpty = 0
+		s.inspectDiscoverySeedBackoffUntil = time.Time{}
+		return
+	}
+
+	s.inspectDiscoverySeedConsecutiveEmpty++
+	var backoff time.Duration
+	switch s.inspectDiscoverySeedConsecutiveEmpty {
+	case 1:
+		backoff = time.Minute
+	case 2:
+		backoff = 5 * time.Minute
+	default:
+		backoff = 15 * time.Minute
+	}
+	s.inspectDiscoverySeedBackoffUntil = now.Add(backoff)
+}
+
 func (s *Store) RefreshInspectDiscoveryReadyQueue(ctx context.Context, limit int) (*BinaryInspectionReadyQueueRefreshResult, error) {
 	if s == nil || s.db == nil {
 		return nil, fmt.Errorf("pgindex store is not initialized")

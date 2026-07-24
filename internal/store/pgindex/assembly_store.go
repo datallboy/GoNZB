@@ -2912,6 +2912,7 @@ func (s *Store) refreshBinaryStatsChunk(ctx context.Context, binaryIDs []int64, 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit refresh binary stats batch tx: %w", err)
 	}
+	s.clearInspectDiscoverySeedBackoff()
 	return nil
 }
 
