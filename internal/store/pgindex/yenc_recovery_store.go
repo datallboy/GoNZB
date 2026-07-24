@@ -1196,7 +1196,7 @@ func (s *Store) ApplyYEncHeaderRecovery(ctx context.Context, in YEncHeaderRecove
 		var targetID int64
 		var keys []releaseFamilySummaryKey
 		supersededSources := []yencRecoverySupersededSource{}
-		result, targetID, keys, err = applyYEncHeaderRecoveryMutationInTx(ctx, tx, in, true, nil, &supersededSources, nil, nil)
+		result, targetID, keys, err = applyYEncHeaderRecoveryMutationInTx(ctx, tx, in, true, nil, &supersededSources, nil, nil, nil)
 		if err != nil {
 			return err
 		}
@@ -1320,12 +1320,13 @@ func (s *Store) applyYEncHeaderRecoveryBatch(ctx context.Context, records []YEnc
 		targetUpdates := make(map[int64]struct{}, len(orderedRowIDs))
 		supersededSources := make([]yencRecoverySupersededSource, 0, len(orderedRowIDs))
 		pendingMerges := make([]yencRecoveryMerge, 0, len(orderedRowIDs))
+		completedWorkItems := make([]yencRecoveryWorkItemDone, 0, len(orderedRowIDs))
 		for _, rowID := range orderedRowIDs {
 			if rowID < 0 || rowID >= len(records) {
 				continue
 			}
 			started = time.Now()
-			result, targetID, keys, err := applyYEncHeaderRecoveryMutationInTx(ctx, tx, records[rowID], false, targetUpdates, &supersededSources, &pendingMerges, stats)
+			result, targetID, keys, err := applyYEncHeaderRecoveryMutationInTx(ctx, tx, records[rowID], false, targetUpdates, &supersededSources, &pendingMerges, &completedWorkItems, stats)
 			if stats != nil {
 				stats.MutationDuration += time.Since(started)
 			}
@@ -1347,6 +1348,13 @@ func (s *Store) applyYEncHeaderRecoveryBatch(ctx context.Context, records []YEnc
 		if stats != nil {
 			stats.PartsMergeDuration += partsDuration
 			stats.ReleaseFilesMergeDuration += releaseFilesDuration
+		}
+		started = time.Now()
+		if err := markYEncRecoveryWorkItemsDoneBatch(ctx, tx, completedWorkItems); err != nil {
+			return err
+		}
+		if stats != nil {
+			stats.WorkItemDoneUpdateDuration += time.Since(started)
 		}
 		started = time.Now()
 		if err := recordArticleCohortYEncRecoveredInTx(ctx, tx, recoveredArticleIDs); err != nil {
@@ -1394,7 +1402,7 @@ func (s *Store) applyYEncHeaderRecoveryBatch(ctx context.Context, records []YEnc
 	return results, nil
 }
 
-func applyYEncHeaderRecoveryMutationInTx(ctx context.Context, tx *sql.Tx, in YEncHeaderRecoveryRecord, lockIdentity bool, targetUpdates map[int64]struct{}, supersededSources *[]yencRecoverySupersededSource, pendingMerges *[]yencRecoveryMerge, stats *YEncRecoveryApplyStats) (*YEncHeaderRecoveryResult, int64, []releaseFamilySummaryKey, error) {
+func applyYEncHeaderRecoveryMutationInTx(ctx context.Context, tx *sql.Tx, in YEncHeaderRecoveryRecord, lockIdentity bool, targetUpdates map[int64]struct{}, supersededSources *[]yencRecoverySupersededSource, pendingMerges *[]yencRecoveryMerge, completedWorkItems *[]yencRecoveryWorkItemDone, stats *YEncRecoveryApplyStats) (*YEncHeaderRecoveryResult, int64, []releaseFamilySummaryKey, error) {
 	started := time.Now()
 	seed, err := loadYEncRecoveryBinarySeed(ctx, tx, in.BinaryID)
 	if stats != nil {
@@ -1520,38 +1528,24 @@ func applyYEncHeaderRecoveryMutationInTx(ctx context.Context, tx *sql.Tx, in YEn
 		}
 	}
 
-	started = time.Now()
-	if _, err := tx.ExecContext(ctx, `
-		WITH target_sources AS (
-			SELECT binary_id, source_posted_at
-			FROM binary_core
-			WHERE binary_id IN ($1, $2)
-			  AND source_posted_at IS NOT NULL
-		)
-		UPDATE yenc_recovery_work_items
-		SET status = 'done',
-		    ready_at = NOW(),
-		    lease_owner = '',
-		    lease_expires_at = NULL,
-		    missing_count = 0,
-		    yenc_part_number = CASE WHEN article_header_id = $3 AND $4 > 0 THEN $4 ELSE yenc_part_number END,
-		    yenc_total_parts = GREATEST(yenc_total_parts, $5),
-		    yenc_file_size = GREATEST(yenc_file_size, $6),
-		    updated_at = NOW()
-		FROM target_sources ts
-		WHERE yenc_recovery_work_items.source_posted_at = ts.source_posted_at
-		  AND yenc_recovery_work_items.binary_id = ts.binary_id`,
-		in.BinaryID,
-		targetID,
-		in.ArticleHeaderID,
-		in.PartNumber,
-		in.TotalParts,
-		in.FileSize,
-	); err != nil {
-		return nil, 0, nil, fmt.Errorf("mark yenc recovery work items done binary=%d target=%d: %w", in.BinaryID, targetID, err)
+	done := yencRecoveryWorkItemDone{
+		SourceBinaryID:  in.BinaryID,
+		TargetBinaryID:  targetID,
+		ArticleHeaderID: in.ArticleHeaderID,
+		PartNumber:      in.PartNumber,
+		TotalParts:      in.TotalParts,
+		FileSize:        in.FileSize,
 	}
-	if stats != nil {
-		stats.WorkItemDoneUpdateDuration += time.Since(started)
+	if completedWorkItems != nil {
+		*completedWorkItems = append(*completedWorkItems, done)
+	} else {
+		started = time.Now()
+		if err := markYEncRecoveryWorkItemsDoneBatch(ctx, tx, []yencRecoveryWorkItemDone{done}); err != nil {
+			return nil, 0, nil, err
+		}
+		if stats != nil {
+			stats.WorkItemDoneUpdateDuration += time.Since(started)
+		}
 	}
 
 	keys := []releaseFamilySummaryKey{
@@ -1721,6 +1715,105 @@ type yencRecoveryMerge struct {
 	FileName            string
 	RecoveredPart       int
 	RecoveredTotalParts int
+}
+
+type yencRecoveryWorkItemDone struct {
+	SourceBinaryID  int64
+	TargetBinaryID  int64
+	ArticleHeaderID int64
+	PartNumber      int
+	TotalParts      int
+	FileSize        int64
+}
+
+func markYEncRecoveryWorkItemsDoneBatch(ctx context.Context, tx *sql.Tx, records []yencRecoveryWorkItemDone) error {
+	if len(records) == 0 {
+		return nil
+	}
+	values := make([]string, 0, len(records))
+	args := make([]any, 0, len(records)*6)
+	for _, record := range records {
+		base := len(args) + 1
+		values = append(values, fmt.Sprintf(
+			"($%d::bigint,$%d::bigint,$%d::bigint,$%d::integer,$%d::integer,$%d::bigint)",
+			base, base+1, base+2, base+3, base+4, base+5,
+		))
+		args = append(args,
+			record.SourceBinaryID,
+			record.TargetBinaryID,
+			record.ArticleHeaderID,
+			record.PartNumber,
+			record.TotalParts,
+			record.FileSize,
+		)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		WITH completed (
+			source_binary_id,
+			target_binary_id,
+			article_header_id,
+			part_number,
+			total_parts,
+			file_size
+		) AS (
+			VALUES `+strings.Join(values, ",")+`
+		),
+		completed_binaries AS (
+			SELECT source_binary_id AS binary_id, total_parts, file_size FROM completed
+			UNION ALL
+			SELECT target_binary_id AS binary_id, total_parts, file_size FROM completed
+		),
+		binary_updates AS (
+			SELECT
+				binary_id,
+				MAX(total_parts) AS total_parts,
+				MAX(file_size) AS file_size
+			FROM completed_binaries
+			WHERE binary_id > 0
+			GROUP BY binary_id
+		),
+		article_updates AS (
+			SELECT article_header_id, MAX(part_number) AS part_number
+			FROM completed
+			WHERE article_header_id > 0
+			  AND part_number > 0
+			GROUP BY article_header_id
+		),
+		target_sources AS (
+			SELECT
+				bu.binary_id,
+				bc.source_posted_at,
+				bu.total_parts,
+				bu.file_size
+			FROM binary_updates bu
+			JOIN binary_core bc ON bc.binary_id = bu.binary_id
+			WHERE bc.source_posted_at IS NOT NULL
+		)
+		UPDATE yenc_recovery_work_items ywi
+		SET status = 'done',
+		    ready_at = NOW(),
+		    lease_owner = '',
+		    lease_expires_at = NULL,
+		    missing_count = 0,
+		    yenc_part_number = COALESCE(
+		        (
+		            SELECT au.part_number
+		            FROM article_updates au
+		            WHERE au.article_header_id = ywi.article_header_id
+		        ),
+		        ywi.yenc_part_number
+		    ),
+		    yenc_total_parts = GREATEST(ywi.yenc_total_parts, ts.total_parts),
+		    yenc_file_size = GREATEST(ywi.yenc_file_size, ts.file_size),
+		    updated_at = NOW()
+		FROM target_sources ts
+		WHERE ywi.source_posted_at = ts.source_posted_at
+		  AND ywi.binary_id = ts.binary_id`,
+		args...,
+	); err != nil {
+		return fmt.Errorf("mark %d yenc recovery work items done: %w", len(records), err)
+	}
+	return nil
 }
 
 func loadYEncRecoveryBinarySeed(ctx context.Context, tx *sql.Tx, binaryID int64) (yencRecoveryBinarySeed, error) {
