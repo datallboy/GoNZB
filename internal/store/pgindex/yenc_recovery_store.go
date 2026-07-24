@@ -2227,12 +2227,13 @@ func mergeRecoveredBinariesBatch(ctx context.Context, tx *sql.Tx, merges []yencR
 	}
 	if _, err := tx.ExecContext(ctx, `
 		CREATE TEMP TABLE IF NOT EXISTS yenc_recovery_merge_batch (
-			source_binary_id bigint PRIMARY KEY,
+			source_binary_id bigint NOT NULL,
 			source_posted_at timestamptz NOT NULL,
 			target_binary_id bigint NOT NULL,
 			file_name text NOT NULL,
 			recovered_part_number integer NOT NULL,
-			recovered_total_parts integer NOT NULL
+			recovered_total_parts integer NOT NULL,
+			PRIMARY KEY (source_posted_at, source_binary_id)
 		) ON COMMIT DROP`); err != nil {
 		return 0, 0, fmt.Errorf("create yenc recovery merge batch: %w", err)
 	}
@@ -2277,9 +2278,8 @@ func mergeRecoveredBinariesBatch(ctx context.Context, tx *sql.Tx, merges []yencR
 				recovered_total_parts
 			)
 			VALUES `+strings.Join(values, ",")+`
-			ON CONFLICT (source_binary_id) DO UPDATE
-			SET source_posted_at = EXCLUDED.source_posted_at,
-			    target_binary_id = EXCLUDED.target_binary_id,
+			ON CONFLICT (source_posted_at, source_binary_id) DO UPDATE
+			SET target_binary_id = EXCLUDED.target_binary_id,
 			    file_name = EXCLUDED.file_name,
 			    recovered_part_number = EXCLUDED.recovered_part_number,
 			    recovered_total_parts = EXCLUDED.recovered_total_parts`,
