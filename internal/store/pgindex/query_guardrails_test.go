@@ -153,7 +153,7 @@ func TestActiveStagePartitionProvisioningUsesExactShortTransactions(t *testing.T
 func TestDownstreamPartitionedWritersProvisionTheirStageBundles(t *testing.T) {
 	cases := map[string][]string{
 		"assembly_store.go":                 {"provisionAssemblyPartitionsForBinaryRecords", "provisionAssemblyPartitionsForBinaryPartRecords", "partitionBundleAssemble", "partitionBundleYEnc"},
-		"article_cohort_scheduler_store.go": {"provisionSchedulerPartitionsForReadyWork", "article_cohort_candidates_"},
+		"article_cohort_scheduler_store.go": {"provisionSchedulerPartitionsForReadyWork"},
 		"inspect_ready_queue_store.go":      {"ensurePartitionBundleForBinaryIDs", "partitionBundleInspect", "binary_inspection_ready_queue_"},
 		"inspection_store.go":               {"ensurePartitionBundleForBinaryIDs", "partitionBundleInspect", "binary_inspections_"},
 		"release_family_summary_store.go":   {"provisionReleasePartitionsForQueuedWork"},
@@ -165,6 +165,13 @@ func TestDownstreamPartitionedWritersProvisionTheirStageBundles(t *testing.T) {
 				t.Fatalf("%s must provision and fail closed on its stage-owned partitions; missing %q", fileName, term)
 			}
 		}
+	}
+}
+
+func TestArticleCohortSchedulerDoesNotProbePartitionCatalogPerCandidate(t *testing.T) {
+	src := readGuardrailSource(t, "article_cohort_scheduler_store.go")
+	if strings.Contains(src, "to_regclass(") {
+		t.Fatalf("article cohort scheduling must rely on its pre-provisioned exact source-day partitions, not call to_regclass per candidate row")
 	}
 }
 
