@@ -191,13 +191,18 @@ func TestInspectDiscoveryDefersToYEncAndBacksOffFailures(t *testing.T) {
 }
 
 func TestReleasePartitionPreflightCanUsePartialFamilyIndexes(t *testing.T) {
-	src := readGuardrailSource(t, "partition_provision.go")
-	for _, required := range []string{
-		"BTRIM(bic.release_family_key) <> ''",
-		"BTRIM(bic.base_stem) <> ''",
-	} {
-		if !strings.Contains(src, required) {
-			t.Fatalf("release partition preflight must imply its partial family-index predicate; missing %q", required)
+	for _, fileName := range []string{"partition_provision.go", "release_family_summary_store.go"} {
+		src := readGuardrailSource(t, fileName)
+		for _, required := range []string{
+			"BTRIM(bic.release_family_key) <> ''",
+			"BTRIM(bic.base_stem) <> ''",
+		} {
+			if !strings.Contains(src, required) {
+				t.Fatalf("%s release partition lookup must imply its partial family-index predicate; missing %q", fileName, required)
+			}
+		}
+		if strings.Contains(src, "(r.key_kind = 'release_family' AND bic.release_family_key = r.family_key)") {
+			t.Fatalf("%s release partition lookup must not combine family-key indexes behind an OR join", fileName)
 		}
 	}
 }

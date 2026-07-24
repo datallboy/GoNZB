@@ -2177,23 +2177,42 @@ func verifyReleasePartitionBundleForKeys(ctx context.Context, conn *sql.Conn, ke
 	}
 	var missing int
 	err := conn.QueryRowContext(ctx, fmt.Sprintf(`
-		WITH requested(provider_id, newsgroup_id, key_kind, family_key) AS (
+		WITH requested(provider_id, newsgroup_id, key_kind, family_key) AS MATERIALIZED (
 			VALUES %s
 		), output_days AS (
-			SELECT COALESCE(MIN(bos.posted_at), NOW()) AS source_posted_at
+			SELECT COALESCE(day.source_posted_at, NOW()) AS source_posted_at
 			FROM requested r
-			LEFT JOIN binary_identity_current bic
-			  ON bic.provider_id = r.provider_id
-			 AND bic.newsgroup_id = r.newsgroup_id
-			 AND (
-			      (r.key_kind = 'release_family' AND bic.release_family_key = r.family_key)
-			      OR
-			      (r.key_kind = 'base_stem' AND LOWER(BTRIM(bic.base_stem)) = r.family_key)
-			 )
-			LEFT JOIN binary_observation_stats bos
-			  ON bos.source_posted_at = bic.source_posted_at
-			 AND bos.binary_id = bic.binary_id
-			GROUP BY r.provider_id, r.newsgroup_id, r.key_kind, r.family_key
+			CROSS JOIN LATERAL (
+				SELECT MIN(bos.posted_at) AS source_posted_at
+				FROM binary_identity_current bic
+				JOIN binary_observation_stats bos
+				  ON bos.source_posted_at = bic.source_posted_at
+				 AND bos.binary_id = bic.binary_id
+				WHERE bic.provider_id = r.provider_id
+				  AND bic.newsgroup_id = r.newsgroup_id
+				  AND BTRIM(bic.release_family_key) <> ''
+				  AND bic.release_family_key = r.family_key
+			) day
+			WHERE r.key_kind = 'release_family'
+			UNION ALL
+			SELECT COALESCE(day.source_posted_at, NOW()) AS source_posted_at
+			FROM requested r
+			CROSS JOIN LATERAL (
+				SELECT MIN(bos.posted_at) AS source_posted_at
+				FROM binary_identity_current bic
+				JOIN binary_observation_stats bos
+				  ON bos.source_posted_at = bic.source_posted_at
+				 AND bos.binary_id = bic.binary_id
+				WHERE bic.provider_id = r.provider_id
+				  AND bic.newsgroup_id = r.newsgroup_id
+				  AND BTRIM(bic.base_stem) <> ''
+				  AND LOWER(BTRIM(bic.base_stem)) = r.family_key
+			) day
+			WHERE r.key_kind = 'base_stem'
+			UNION ALL
+			SELECT NOW()
+			FROM requested r
+			WHERE r.key_kind NOT IN ('release_family', 'base_stem')
 		)
 		SELECT COUNT(*)
 		FROM output_days
