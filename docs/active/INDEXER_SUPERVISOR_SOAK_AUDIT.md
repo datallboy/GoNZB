@@ -1,6 +1,6 @@
 # Indexer Supervisor Soak Audit
 
-Status: planned, not started  
+Status: completed on 2026-07-24; see `INDEXER_SUPERVISOR_SOAK_FINDINGS.md`
 Branch: `audit/indexer-sustained-workload`
 
 ## Purpose
@@ -207,7 +207,7 @@ while leaving the normal supervisor and the rest of the stage graph active.
 
 ## Duration And Checkpoints
 
-Run:
+The intended certification run is:
 
 1. a 15-minute warm-up;
 2. at least four uninterrupted hours after warm-up;
@@ -223,6 +223,11 @@ If instability prevents a four-hour run, retain every completed checkpoint and
 report the longest verified-clean interval. Shorter runs can still establish
 query shapes and expose correctness or locking failures, but must not be
 described as sustained-workload certification.
+
+The completed audit used multiple clean, labeled measurement intervals because
+evidence-backed fixes were applied between runs. It is a functional, query-shape,
+and integrity audit, not a four-hour endurance or hardware certification. The
+achieved intervals and limitations are recorded in the findings document.
 
 ## Repair Policy During The Audit
 
