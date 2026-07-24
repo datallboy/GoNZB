@@ -6552,25 +6552,31 @@ func TestApplyYEncHeaderRecoveriesBatchMergesRecoveredMultipartArticles(t *testi
 
 	binaryOne := makeBinary("random-yenc-batch-one", "random-batch-one.bin")
 	binaryTwo := makeBinary("random-yenc-batch-two", "random-batch-two.bin")
+	binaryThree := makeBinary("random-yenc-batch-three", "random-batch-three.bin")
 	now := time.Date(2026, 6, 18, 14, 24, 11, 0, time.UTC)
 	if _, err := store.InsertArticleHeaders(ctx, 1, newsgroupID, []ArticleHeader{
 		{ArticleNumber: 3101, MessageID: "<random-yenc-batch-one@test>", Subject: "random-yenc-batch-one", Poster: "poster@test", DateUTC: &now, Bytes: 716800, Lines: 5693},
 		{ArticleNumber: 3102, MessageID: "<random-yenc-batch-two@test>", Subject: "random-yenc-batch-two", Poster: "poster@test", DateUTC: &now, Bytes: 716800, Lines: 5693},
+		{ArticleNumber: 3103, MessageID: "<random-yenc-batch-three@test>", Subject: "random-yenc-batch-three", Poster: "poster@test", DateUTC: &now, Bytes: 800000, Lines: 6300},
 	}); err != nil {
 		t.Fatalf("insert article headers: %v", err)
 	}
 
-	var articleOne, articleTwo int64
+	var articleOne, articleTwo, articleThree int64
 	if err := store.DB().QueryRowContext(ctx, `SELECT id FROM article_headers WHERE newsgroup_id = $1 AND message_id = '<random-yenc-batch-one@test>'`, newsgroupID).Scan(&articleOne); err != nil {
 		t.Fatalf("load article one: %v", err)
 	}
 	if err := store.DB().QueryRowContext(ctx, `SELECT id FROM article_headers WHERE newsgroup_id = $1 AND message_id = '<random-yenc-batch-two@test>'`, newsgroupID).Scan(&articleTwo); err != nil {
 		t.Fatalf("load article two: %v", err)
 	}
+	if err := store.DB().QueryRowContext(ctx, `SELECT id FROM article_headers WHERE newsgroup_id = $1 AND message_id = '<random-yenc-batch-three@test>'`, newsgroupID).Scan(&articleThree); err != nil {
+		t.Fatalf("load article three: %v", err)
+	}
 
 	if err := upsertTestBinaryParts(t, store, ctx, []BinaryPartRecord{
 		{BinaryID: binaryOne, ArticleHeaderID: articleOne, MessageID: "<random-yenc-batch-one@test>", PartNumber: 1, TotalParts: 1, SegmentBytes: 716800, FileName: "random-batch-one.bin"},
 		{BinaryID: binaryTwo, ArticleHeaderID: articleTwo, MessageID: "<random-yenc-batch-two@test>", PartNumber: 1, TotalParts: 1, SegmentBytes: 716800, FileName: "random-batch-two.bin"},
+		{BinaryID: binaryThree, ArticleHeaderID: articleThree, MessageID: "<random-yenc-batch-three@test>", PartNumber: 1, TotalParts: 1, SegmentBytes: 800000, FileName: "random-batch-three.bin"},
 	}); err != nil {
 		t.Fatalf("upsert binary parts: %v", err)
 	}
@@ -6606,12 +6612,13 @@ func TestApplyYEncHeaderRecoveriesBatchMergesRecoveredMultipartArticles(t *testi
 	results, err := store.ApplyYEncHeaderRecoveries(ctx, []YEncHeaderRecoveryRecord{
 		record(binaryOne, articleOne, 1),
 		record(binaryTwo, articleTwo, 2),
+		record(binaryThree, articleThree, 2),
 	})
 	if err != nil {
 		t.Fatalf("apply recovery batch: %v", err)
 	}
-	if len(results) != 2 || !results[1].Merged {
-		t.Fatalf("expected two batch results with second merged, got %+v", results)
+	if len(results) != 3 || !results[1].Merged || !results[2].Merged {
+		t.Fatalf("expected three batch results with two merged, got %+v", results)
 	}
 
 	var remainingSource int
@@ -6641,6 +6648,19 @@ func TestApplyYEncHeaderRecoveriesBatchMergesRecoveredMultipartArticles(t *testi
 	}
 	if mergedParts != 2 {
 		t.Fatalf("expected two merged parts on target, got %d", mergedParts)
+	}
+	var strongestPartArticleID int64
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT article_header_id
+		FROM binary_parts
+		WHERE binary_id = $1
+		  AND part_number = 2`,
+		binaryOne,
+	).Scan(&strongestPartArticleID); err != nil {
+		t.Fatalf("load strongest merged part: %v", err)
+	}
+	if strongestPartArticleID != articleThree {
+		t.Fatalf("expected larger duplicate part article %d to win, got %d", articleThree, strongestPartArticleID)
 	}
 	stats := store.LastYEncRecoveryApplyStats()
 	if stats.SourceDeleteDuration != 0 {
