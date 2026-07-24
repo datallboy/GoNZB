@@ -6662,6 +6662,78 @@ func TestApplyYEncHeaderRecoveriesBatchMergesRecoveredMultipartArticles(t *testi
 	if strongestPartArticleID != articleThree {
 		t.Fatalf("expected larger duplicate part article %d to win, got %d", articleThree, strongestPartArticleID)
 	}
+	var originalPartOneArticle int64
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT article_header_id
+		FROM binary_parts
+		WHERE binary_id = $1
+		  AND part_number = 1
+		ORDER BY segment_bytes DESC, updated_at DESC, article_header_id DESC
+		LIMIT 1`,
+		binaryOne,
+	).Scan(&originalPartOneArticle); err != nil {
+		t.Fatalf("load original part 1 article: %v", err)
+	}
+	duplicateTime := now.Add(time.Second)
+	if _, err := store.InsertArticleHeaders(ctx, 1, newsgroupID, []ArticleHeader{{
+		ArticleNumber: 3104,
+		MessageID:     "<random-yenc-batch-duplicate@test>",
+		Subject:       "random-yenc-batch-duplicate",
+		Poster:        "poster@test",
+		DateUTC:       &duplicateTime,
+		Bytes:         100,
+		Lines:         1,
+	}}); err != nil {
+		t.Fatalf("insert weaker duplicate article: %v", err)
+	}
+	var duplicateArticle int64
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT id
+		FROM article_headers
+		WHERE newsgroup_id = $1
+		  AND message_id = '<random-yenc-batch-duplicate@test>'`,
+		newsgroupID,
+	).Scan(&duplicateArticle); err != nil {
+		t.Fatalf("load weaker duplicate article: %v", err)
+	}
+	if err := upsertTestBinaryParts(t, store, ctx, []BinaryPartRecord{{
+		BinaryID:        binaryOne,
+		ArticleHeaderID: duplicateArticle,
+		MessageID:       "<random-yenc-batch-duplicate@test>",
+		PartNumber:      1,
+		TotalParts:      732,
+		SegmentBytes:    100,
+		FileName:        "5AzyRS4rfbOyP5fZH.part2.rar",
+	}}); err != nil {
+		t.Fatalf("insert weaker duplicate part: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE binary_parts
+		SET segment_bytes = CASE
+				WHEN article_header_id = $2 THEN 1000
+				WHEN article_header_id = $3 THEN 100
+				ELSE segment_bytes
+			END,
+		    updated_at = NOW()
+		WHERE binary_id = $1
+		  AND article_header_id IN ($2, $3)`,
+		binaryOne,
+		originalPartOneArticle,
+		duplicateArticle,
+	); err != nil {
+		t.Fatalf("force weaker duplicate part evidence: %v", err)
+	}
+	articlesByBinary, err := store.ListBinaryPartArticlesBatch(ctx, []int64{binaryOne})
+	if err != nil {
+		t.Fatalf("list deduplicated binary part articles: %v", err)
+	}
+	articles := articlesByBinary[binaryOne]
+	if len(articles) != 2 {
+		t.Fatalf("expected one strongest article per positive part ordinal, got %+v", articles)
+	}
+	if articles[0].PartNumber != 1 || articles[0].ArticleHeaderID != originalPartOneArticle {
+		t.Fatalf("expected stronger original part 1 article %d, got %+v", originalPartOneArticle, articles[0])
+	}
 	stats := store.LastYEncRecoveryApplyStats()
 	if stats.SourceDeleteDuration != 0 {
 		t.Fatalf("expected recover_yenc source delete duration to remain zero, got %s", stats.SourceDeleteDuration)
