@@ -68,6 +68,22 @@ func TestPartitionedSourceJoinsUseSourcePostedAt(t *testing.T) {
 	}
 }
 
+func TestPosterMaterializationCompletionUsesSourcePostedAt(t *testing.T) {
+	src := readGuardrailSource(t, "scrape_materializer_store.go")
+	required := []string{
+		"WITH completed(source_posted_at, article_header_id)",
+		"q.source_posted_at >= $1",
+		"q.source_posted_at < $2",
+		"q.source_posted_at = completed.source_posted_at",
+		"q.article_header_id = completed.article_header_id",
+	}
+	for _, term := range required {
+		if !strings.Contains(src, term) {
+			t.Fatalf("poster completion must use the partition key; missing %q", term)
+		}
+	}
+}
+
 func TestNativeSourceWorkPartitionTargetsMatchSprintScope(t *testing.T) {
 	want := []string{
 		"article_headers",
