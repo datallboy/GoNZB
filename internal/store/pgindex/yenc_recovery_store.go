@@ -2229,7 +2229,11 @@ func normalizeYEncHeaderRecoveryRecord(in *YEncHeaderRecoveryRecord) {
 	in.BinaryName = strings.TrimSpace(in.BinaryName)
 	in.FileName = strings.TrimSpace(in.FileName)
 	if strings.TrimSpace(in.FileName) != "" {
-		if fallbackFamily := recoveredYEncFallbackFamilyKey(in); fallbackFamily != "" && normalizeBinaryIdentityKey(firstNonBlank(in.FileSetKey, in.ReleaseFamilyKey, in.ReleaseKey, in.SourceReleaseKey)) == "" {
+		// A blank file-set key means the subject matcher deliberately deferred
+		// family identity. Do not retain that provisional, usually per-article
+		// subject key after the yEnc header supplies authoritative file identity:
+		// doing so prevents segments of the same recovered file from merging.
+		if fallbackFamily := recoveredYEncFallbackFamilyKey(in); fallbackFamily != "" && in.FileSetKey == "" {
 			in.SourceReleaseKey = fallbackFamily
 			in.ReleaseFamilyKey = fallbackFamily
 			in.FileSetKey = fallbackFamily
