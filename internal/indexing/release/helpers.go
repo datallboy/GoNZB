@@ -1109,7 +1109,7 @@ func allowsSingleCompletePayloadWithAuxiliaryEvidence(binaries []pgindex.BinaryS
 		return false
 	}
 	mainName := strings.ToLower(strings.TrimSpace(pickFileName(*main)))
-	if mainName == "" || isParFile(mainName) || isArchiveFile(mainName) || splitSevenZipRE.MatchString(mainName) || splitZipRE.MatchString(mainName) || rarPartRE.MatchString(mainName) {
+	if mainName == "" || isParFile(mainName) || splitSevenZipRE.MatchString(mainName) || splitZipRE.MatchString(mainName) || rarPartRE.MatchString(mainName) {
 		return false
 	}
 	return hasPARRelation(binaries) || hasAuxiliarySidecar(binaries)
