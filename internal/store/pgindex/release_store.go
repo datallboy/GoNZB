@@ -1403,6 +1403,12 @@ func (s *Store) DeleteStaleReleasesForSourceKey(ctx context.Context, providerID 
 	if keyKind == ReleaseCandidateKeyKindRecoveredFileSet {
 		return s.deleteStaleRecoveredFileSetReleases(ctx, providerID, releaseFamilyKey, keep)
 	}
+	// A base-stem candidate is a fallback grouping projection and can overlap a
+	// stronger release-family candidate. Without replacement groups of its own,
+	// it must not delete a release owned by that stronger projection.
+	if !canDeleteStaleReleasesForCandidate(keyKind, keep) {
+		return nil
+	}
 	if len(keep) == 0 {
 		_, err := s.db.ExecContext(ctx, `
 			DELETE FROM releases
@@ -1499,6 +1505,10 @@ func (s *Store) DeleteAuxiliaryOnlySiblingReleases(ctx context.Context, provider
 		return fmt.Errorf("delete auxiliary-only sibling releases for provider=%d group=%d base_stem=%q: %w", providerID, newsgroupID, baseStem, err)
 	}
 	return nil
+}
+
+func canDeleteStaleReleasesForCandidate(keyKind string, keepGroupNames []string) bool {
+	return strings.TrimSpace(keyKind) != ReleaseCandidateKeyKindBaseStem || len(keepGroupNames) > 0
 }
 
 func (s *Store) deleteStaleRecoveredFileSetReleases(ctx context.Context, providerID int64, fileSetKey string, keepGroupNames []string) error {
