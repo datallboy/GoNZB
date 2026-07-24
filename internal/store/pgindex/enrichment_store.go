@@ -306,7 +306,7 @@ func (s *Store) ListReleaseEnrichmentCandidates(ctx context.Context, stageName s
 			season_number,
 			episode_number,
 			posted_at,
-			size_bytes,
+			releases.size_bytes,
 			payload_size.size_bytes AS payload_size_bytes,
 			payload_size.size_source AS payload_size_source,
 			runtime_seconds,
