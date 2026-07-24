@@ -18,6 +18,7 @@ type parsedArticleMetadata struct {
 
 var (
 	ingestQuotedFilenameRE = regexp.MustCompile(`"([^"]+)"`)
+	ingestYEncFilenameRE   = regexp.MustCompile(`(?i)([^\s"]+)\s+yenc\b`)
 	ingestCounterPairRE    = regexp.MustCompile(`(?i)([\(\[])\s*(\d{1,5})\s*/\s*(\d{1,5})\s*[\)\]]`)
 	ingestYEncSizeRE       = regexp.MustCompile(`(?i)\byenc\s*\(\s*\d{1,5}\s*/\s*\d{1,5}\s*\)\s+(\d{1,18})\s*$`)
 )
@@ -31,6 +32,8 @@ func parseArticleIngestMetadata(subject string) parsedArticleMetadata {
 	out := parsedArticleMetadata{}
 	if match := ingestQuotedFilenameRE.FindStringSubmatch(subject); len(match) == 2 {
 		out.FileName = strings.TrimSpace(match[1])
+	} else if matches := ingestYEncFilenameRE.FindAllStringSubmatch(subject, -1); len(matches) > 0 {
+		out.FileName = strings.TrimSpace(matches[len(matches)-1][1])
 	}
 
 	counters := parseIngestCounterPairs(subject)

@@ -33,6 +33,9 @@ func TestParseArticleIngestMetadataKeepsYEncSubjectCounters(t *testing.T) {
 func TestParseArticleIngestMetadataDoesNotReuseYEncCounterAsFileSetCounter(t *testing.T) {
 	got := parseArticleIngestMetadata(`opaque-name.mkv yEnc (23170/33232)`)
 
+	if got.FileName != "opaque-name.mkv" {
+		t.Fatalf("expected unquoted yEnc filename, got %q", got.FileName)
+	}
 	if got.FileIndex != 0 || got.FileTotal != 0 {
 		t.Fatalf("expected no file-set counter, got %d/%d", got.FileIndex, got.FileTotal)
 	}
