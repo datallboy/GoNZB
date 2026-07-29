@@ -6,6 +6,24 @@ import (
 	"github.com/datallboy/gonzb/internal/infra/config"
 )
 
+func TestIndexingRecoveryProfileDefaultsAndNormalizes(t *testing.T) {
+	defaults := DefaultRuntimeSettings()
+	if defaults.Indexing == nil || defaults.Indexing.RecoveryProfile != IndexingRecoveryProfileBalanced {
+		t.Fatalf("expected balanced default recovery profile, got %+v", defaults.Indexing)
+	}
+	for input, want := range map[string]string{
+		"":            IndexingRecoveryProfileBalanced,
+		" BALANCED ":  IndexingRecoveryProfileBalanced,
+		"header_only": IndexingRecoveryProfileHeaderOnly,
+		"EXHAUSTIVE":  IndexingRecoveryProfileExhaustive,
+		"unknown":     IndexingRecoveryProfileBalanced,
+	} {
+		if got := NormalizeIndexingRecoveryProfile(input); got != want {
+			t.Fatalf("NormalizeIndexingRecoveryProfile(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
 func TestIndexingRuntimeFromConfigUsesExpandedSettings(t *testing.T) {
 	enabled := true
 	disabled := false

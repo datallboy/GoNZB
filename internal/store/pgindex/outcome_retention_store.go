@@ -308,7 +308,13 @@ func (s *Store) loadSourceBucketOutcomeFacts(ctx context.Context, candidate sour
 	var facts sourceBucketOutcomeFacts
 	var progress sql.NullTime
 	err := s.db.QueryRowContext(ctx, `
-		WITH progress AS (
+		WITH recovery_cfg AS (
+			SELECT COALESCE(
+				(SELECT recovery_profile FROM indexer_recovery_capacity_state WHERE id = true),
+				'balanced'
+			) AS profile
+		),
+		progress AS (
 			SELECT MAX(updated_at) AS at FROM article_header_assembly_queue
 			 WHERE provider_id = $1 AND newsgroup_id = $2 AND source_posted_at >= $3 AND source_posted_at < $4
 			UNION ALL
@@ -327,11 +333,19 @@ func (s *Store) loadSourceBucketOutcomeFacts(ctx context.Context, candidate sour
 				 WHERE q.provider_id = $1 AND q.newsgroup_id = $2 AND q.source_posted_at >= $3 AND q.source_posted_at < $4
 				   AND NOT EXISTS (SELECT 1 FROM binary_parts bp WHERE bp.source_posted_at = q.source_posted_at AND bp.article_header_id = q.article_header_id)) +
 				(SELECT COUNT(*) FROM yenc_recovery_work_items
-				 WHERE provider_id = $1 AND newsgroup_id = $2 AND source_posted_at >= $3 AND source_posted_at < $4 AND status IN ('ready', 'running')) +
+				 WHERE provider_id = $1 AND newsgroup_id = $2 AND source_posted_at >= $3 AND source_posted_at < $4 AND status IN ('ready', 'running')
+				   AND (
+				     (SELECT profile FROM recovery_cfg) = 'exhaustive'
+				     OR ((SELECT profile FROM recovery_cfg) = 'balanced' AND priority_rank = 0)
+				   )) +
 				(SELECT COUNT(*) FROM article_cohort_assembly_queue
 				 WHERE provider_id = $1 AND newsgroup_id = $2 AND source_posted_at >= $3 AND source_posted_at < $4 AND status IN ('ready', 'running')) +
 				(SELECT COUNT(*) FROM article_cohort_yenc_queue
-				 WHERE provider_id = $1 AND newsgroup_id = $2 AND source_posted_at >= $3 AND source_posted_at < $4 AND status IN ('ready', 'admitted')) +
+				 WHERE provider_id = $1 AND newsgroup_id = $2 AND source_posted_at >= $3 AND source_posted_at < $4 AND status IN ('ready', 'admitted')
+				   AND (
+				     (SELECT profile FROM recovery_cfg) = 'exhaustive'
+				     OR ((SELECT profile FROM recovery_cfg) = 'balanced' AND priority_rank = 0)
+				   )) +
 				(SELECT COUNT(*) FROM binary_inspection_ready_queue rq
 				 JOIN binary_core bc ON bc.binary_id = rq.binary_id
 				 WHERE bc.provider_id = $1 AND bc.newsgroup_id = $2 AND rq.source_posted_at >= $3 AND rq.source_posted_at < $4 AND rq.status IN ('ready', 'running')) +

@@ -16,6 +16,10 @@ type nntpStageBacklogReader interface {
 	CountPendingYEncRecoveryBinaries(ctx context.Context) (int64, error)
 }
 
+type nntpStageProfileBacklogReader interface {
+	CountPendingYEncRecoveryBinariesByMaxPriority(ctx context.Context, maxPriorityRank int) (int64, error)
+}
+
 type cachedNNTPTrafficGuard struct {
 	settingsStore app.SettingsStore
 	repo          nntpStageBacklogReader
@@ -110,11 +114,24 @@ func (g *cachedNNTPTrafficGuard) evaluate(ctx context.Context, runtime *app.Runt
 		return results, nil
 	}
 
-	yencBacklog, err := g.repo.CountPendingYEncRecoveryBinaries(ctx)
+	recoveryProfile := app.NormalizeIndexingRecoveryProfile(runtime.Indexing.RecoveryProfile)
+	yencBacklog := int64(0)
+	var err error
+	if recoveryProfile != app.IndexingRecoveryProfileHeaderOnly {
+		if profileRepo, ok := g.repo.(nntpStageProfileBacklogReader); ok {
+			maxPriorityRank := 2
+			if recoveryProfile == app.IndexingRecoveryProfileBalanced {
+				maxPriorityRank = 0
+			}
+			yencBacklog, err = profileRepo.CountPendingYEncRecoveryBinariesByMaxPriority(ctx, maxPriorityRank)
+		} else {
+			yencBacklog, err = g.repo.CountPendingYEncRecoveryBinaries(ctx)
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("count pending yenc recovery backlog for nntp guard: %w", err)
 	}
-	yencHot := runtime.Indexing.RecoverYEnc.Enabled && yencBacklog >= yencHotThreshold(runtime.Indexing)
+	yencHot := recoverYEncEnabled(runtime.Indexing) && yencBacklog >= yencHotThreshold(runtime.Indexing)
 
 	scopeActivity := make(map[string]app.NNTPScopeRuntimeStats, len(stats.Scopes))
 	for _, scope := range stats.Scopes {
