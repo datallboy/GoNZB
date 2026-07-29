@@ -1946,8 +1946,8 @@ func TestRunOncePrefersInspectArchiveEntryForObfuscatedTitles(t *testing.T) {
 	if got.DeobfuscatedTitle != "From.Russia.With.Love.1963.1080p.BluRay.x265-YAWNTiC" {
 		t.Fatalf("expected inspect-derived deobfuscated title, got %q", got.DeobfuscatedTitle)
 	}
-	if got.Title != "From Russia With Love 1963 1080p BluRay x265-YAWNTiC" {
-		t.Fatalf("expected display title to adopt inspect title, got title=%q deobf=%q", got.Title, got.DeobfuscatedTitle)
+	if got.Title != "From.Russia.With.Love.1963.1080p.BluRay.x265-YAWNTiC" {
+		t.Fatalf("expected release title to adopt inspect title, got title=%q deobf=%q", got.Title, got.DeobfuscatedTitle)
 	}
 	if got.TitleSource != "archive_entry" {
 		t.Fatalf("expected title_source archive_entry, got %q", got.TitleSource)
@@ -2013,7 +2013,7 @@ func TestRunOnceKeepsReadableSourceWhenArchiveEntryIsUnrelated(t *testing.T) {
 	}
 
 	got := repo.upsertedReleases[0]
-	if got.Title != "Steinberg Cubase Pro 15 0 21 (x64) Multilingual" {
+	if got.Title != "Steinberg.Cubase.Pro.15.0.21.(x64).Multilingual" {
 		t.Fatalf("expected readable source title to be retained, got %q", got.Title)
 	}
 	if got.SourceTitle != "Steinberg Cubase Pro 15 0 21 (x64) Multilingual" {
@@ -2124,7 +2124,7 @@ func TestRunOnceUsesPackageFilenameForWeakSourceAndSoftwarePayloadForCategory(t 
 	}
 
 	got := repo.upsertedReleases[0]
-	if got.Title != "Topaz Video AI Pro v7 1 6 X64 Multilingual Pre-Activated-FileCR" {
+	if got.Title != "Topaz.Video.AI.Pro.v7.1.6.X64.Multilingual.Pre-Activated-FileCR" {
 		t.Fatalf("expected package filename title, got %q", got.Title)
 	}
 	if got.TitleSource != "package_filename" {
@@ -2627,8 +2627,8 @@ func TestRunOnceAdoptsNFOTitleCandidateForObfuscatedSource(t *testing.T) {
 	if got.DeobfuscatedTitle != "Example.Feature.2026.1080p.BluRay.x265-GRP" {
 		t.Fatalf("expected deobfuscated title from nfo, got %q", got.DeobfuscatedTitle)
 	}
-	if got.Title != "Example Feature 2026 1080p BluRay x265-GRP" {
-		t.Fatalf("expected display title from nfo, got %q", got.Title)
+	if got.Title != "Example.Feature.2026.1080p.BluRay.x265-GRP" {
+		t.Fatalf("expected release title from nfo, got %q", got.Title)
 	}
 	if got.IdentityStatus != "identified" {
 		t.Fatalf("expected identified identity status, got %q", got.IdentityStatus)
@@ -2707,8 +2707,8 @@ func TestRunReformOnceUpdatesReleaseIdentityAfterNewEvidence(t *testing.T) {
 	if second.DeobfuscatedTitle != "Example.Feature.2026.1080p.BluRay.x265-GRP" {
 		t.Fatalf("expected deobfuscated title after reform, got %q", second.DeobfuscatedTitle)
 	}
-	if second.Title != "Example Feature 2026 1080p BluRay x265-GRP" {
-		t.Fatalf("expected display title after reform, got %q", second.Title)
+	if second.Title != "Example.Feature.2026.1080p.BluRay.x265-GRP" {
+		t.Fatalf("expected release title after reform, got %q", second.Title)
 	}
 	if second.IdentityStatus != "identified" {
 		t.Fatalf("expected identified status after reform, got %q", second.IdentityStatus)
@@ -2784,8 +2784,8 @@ func TestBuildReleaseRecordPopulatesDeobfuscatedTitleForReadableSource(t *testin
 	if record.DeobfuscatedTitle != "Show.S01E01.1080p.WEB-DL.x265" {
 		t.Fatalf("expected deobfuscated title for readable source, got %q", record.DeobfuscatedTitle)
 	}
-	if record.Title != "Show S01E01 1080p WEB-DL x265" {
-		t.Fatalf("expected humanized display title, got %q", record.Title)
+	if record.Title != "Show.S01E01.1080p.WEB-DL.x265" {
+		t.Fatalf("expected canonical release title, got %q", record.Title)
 	}
 	if record.IdentityStatus != "identified" {
 		t.Fatalf("expected readable source title to keep identified status, got %q", record.IdentityStatus)

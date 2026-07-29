@@ -1483,18 +1483,18 @@ func resolveReleaseTitle(sourceTitle string, binaries []pgindex.BinarySummary, i
 
 	switch {
 	case shouldAdoptLocalTitleCandidate(sourceTitle, bestLocal) && normalizeSearchTitle(bestLocal.DisplayTitle) != normalizeSearchTitle(sourceDisplay):
-		result.Title = bestLocal.DisplayTitle
+		result.Title = bestLocal.ReleaseTitle
 		result.DeobfuscatedTitle = bestLocal.ReleaseTitle
 		result.TitleSource = bestLocal.Source
 		result.TitleConfidence = bestLocal.Confidence
 	case strings.TrimSpace(fallbackDeobf) != "":
-		result.Title = displayTitleStyle(strings.TrimSpace(fallbackDeobf))
+		result.Title = releaseTitleStyle(strings.TrimSpace(fallbackDeobf))
 		result.DeobfuscatedTitle = strings.TrimSpace(fallbackDeobf)
 		result.TitleSource = "deobfuscated"
 		result.TitleConfidence = 0.68
 	case sourceTitle != "":
 		if looksReadableReleaseTitle(sourceDisplay) {
-			result.Title = sourceDisplay
+			result.Title = releaseTitleStyle(sourceTitle)
 			result.TitleSource = "source"
 			result.DeobfuscatedTitle = releaseTitleStyle(sourceTitle)
 			result.TitleConfidence = 0.55
@@ -1520,7 +1520,8 @@ func chooseBestLocalTitleCandidate(sourceTitle string, binaries []pgindex.Binary
 			Confidence: candidate.Confidence,
 		})
 	}
-	if item, ok := releasetitle.ChooseBestInspectionTitle(sourceTitle, inspectionInputs); ok {
+	if item, ok := releasetitle.ChooseBestInspectionTitle(sourceTitle, inspectionInputs); ok &&
+		releasetitle.ShouldAdoptInspectionTitle(sourceTitle, item) {
 		candidates = append(candidates, localTitleCandidate{
 			ReleaseTitle: item.ReleaseTitle,
 			DisplayTitle: item.DisplayTitle,

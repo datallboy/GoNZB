@@ -2561,7 +2561,7 @@ func (s *Store) applyDerivedInspectionTitleUpdate(ctx context.Context, releaseID
 		    updated_at = NOW()
 		WHERE release_id = $1`,
 		releaseID,
-		strings.TrimSpace(best.DisplayTitle),
+		strings.TrimSpace(best.ReleaseTitle),
 		strings.TrimSpace(best.ReleaseTitle),
 		strings.TrimSpace(best.Source),
 		best.Confidence,

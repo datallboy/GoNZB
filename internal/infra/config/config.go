@@ -429,7 +429,7 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("indexing.release.retain_require_par2", false)
 	v.SetDefault("indexing.release.retain_require_nfo", false)
 	v.SetDefault("indexing.release.retain_require_sfv", false)
-	v.SetDefault("indexing.release.reopen_archived_nzb_on_release_change", false)
+	v.SetDefault("indexing.release.reopen_archived_nzb_on_release_change", true)
 	v.SetDefault("indexing.inspect.require_expected_file_count", false)
 	v.SetDefault("indexing.release_generate_nzb.enabled", false)
 	v.SetDefault("indexing.release_generate_nzb.interval_minutes", 10.0)
