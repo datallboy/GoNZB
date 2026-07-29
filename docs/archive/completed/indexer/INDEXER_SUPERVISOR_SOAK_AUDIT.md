@@ -1,6 +1,7 @@
 # Indexer Supervisor Soak Audit
 
 Status: completed on 2026-07-24; see `INDEXER_SUPERVISOR_SOAK_FINDINGS.md`
+Archived after the audit branch was stabilized for merge.
 Branch: `audit/indexer-sustained-workload`
 
 ## Purpose
@@ -510,6 +511,48 @@ Preserve logs and database state before investigating.
 Stopping an affected run does not stop the overall audit. Apply the repair policy
 for a software problem, or the suspected-memory protocol for corruption, then
 continue with a new labeled interval or disposable cluster when it is safe.
+
+## Future GoNZBNet Distributed Indexing Coordination
+
+Preserve the cross-newsgroup shard findings from this audit as a future
+GoNZBNet design item. This is not part of the current soak-test implementation.
+
+A pool should be able to coordinate indexing work and exchange already-observed
+index evidence, rather than requiring every node to scrape every group:
+
+- publish signed, pool-scoped observations about useful newsgroups, shard
+  relationships, observed posting windows, release yield, completion rate, and
+  evidence confidence;
+- match an incomplete binary or release family on one node with complementary
+  segment and recovered-identity observations held by another node;
+- allow a peer to respond with the normalized article metadata needed to finish
+  grouping and an NZB—message ID, group, segment number, size, posted time, and
+  recovered file identity—without transferring article payloads or forcing a
+  duplicate NNTP request;
+- alternatively publish a targeted discovery hint containing the actual
+  newsgroups, a precise 24-hour UTC `[start, end)` window, and representative
+  Message-ID/Xref anchors when available, which an opted-in indexer can turn
+  into an ephemeral historical scrape and automatically retire after completion
+  or expiry;
+- aggregate group popularity and quality as bounded pool statistics, while
+  distinguishing direct observations from inferred shard relationships.
+
+The protocol needs capability grants, signatures, source provenance, confidence
+and quorum rules, deduplication, expiry, per-peer quotas, and validation against
+malicious or fabricated segment evidence. Nodes must opt in to remote work and
+retain local controls for provider limits, allowed groups, storage, bandwidth,
+and whether article observations may be shared.
+
+The intended result is collective coverage: operators can divide newsgroups
+among nodes, exchange complementary knowledge, and materialize complete release
+manifests without centralizing searches, grabs, provider credentials, or user
+activity.
+
+The receiving node should turn a discovery hint into one normal historical
+timeframe per newsgroup: the earliest observed segment time minus a small
+buffer through the latest observed segment time plus the same buffer. Any
+article-number lookup remains an internal NNTP implementation detail; the
+configured and operator-visible unit of work is the UTC timeframe.
 
 ## Deliverables
 

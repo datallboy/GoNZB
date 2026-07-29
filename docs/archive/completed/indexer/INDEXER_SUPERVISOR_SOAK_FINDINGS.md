@@ -1,6 +1,7 @@
 # Indexer Supervisor Soak Findings
 
-Status: continued production hardening on 2026-07-24
+Status: completed production-hardening record from 2026-07-24 through 2026-07-28
+Archived after the audit branch was stabilized for merge.
 Branch: `audit/indexer-sustained-workload`
 Base: `dev` at `c7e7dbc`
 
@@ -126,6 +127,49 @@ under the original binary and were later reassigned by a restarted assembly
 pass. They are retained as before-state evidence and are excluded from
 post-repair conclusions. A fresh deployment cannot create them through the
 repaired claim path.
+
+## Historical Known-Manifest Validation
+
+A later controlled validation used a supplied 43-file, 26,732-segment reference
+manifest as an oracle without importing its Message-IDs into the indexer. Exact
+UTC timeframe scraping independently discovered 24,567 segments (91.90%) by
+XOVER. The remaining 2,165 segments were distributed at roughly the same
+7-13% rate across all 25 source groups rather than clustering at a date
+boundary.
+
+The test established:
+
+- targeted assembly drained every independently discovered reference header;
+- scheduler-backed priority yEnc recovery completed all 700 selected
+  manifest-matched binary candidates without direct manifest ingestion;
+- a target-window cross-newsgroup regroup pass consolidated 47 files, moved
+  1,562 parts, and completed in 4.4 seconds;
+- the target family retained 43 active files and exactly 24,567 of 26,732
+  expected parts, with one complete auxiliary file and no complete main
+  payload;
+- release formation correctly refused the incomplete main payload;
+- Easynews, Newshosting, and Tweaknews XOVER scans all omitted the same sampled
+  missing set even though each provider could retrieve a missing sample
+  directly by Message-ID with HEAD.
+
+This is a provider overview/discoverability limit, not an unscanned time
+boundary and not pending yEnc work. A date-to-XOVER indexer cannot reproduce
+that exact manifest from those overview feeds alone. Completing it requires
+independently supplied header evidence, such as the planned GoNZBNet binary
+evidence exchange, or a provider whose group overview exposes the rows. The
+public release gate must not be weakened to hide that gap.
+
+The same validation found and repaired three production query/scheduling
+issues:
+
+- explicit assemble windows now prune both queue claims and cross-newsgroup
+  regroup scans, preventing historical work from starving behind newer global
+  backlog;
+- historical timeframe entries now honor configured concurrency instead of
+  running serially;
+- date-boundary probes and XOVER batches are pinned to the provider that
+  supplied the numeric group bounds, because article numbers are
+  provider-local.
 
 ## Correctness Checks
 
@@ -360,6 +404,40 @@ GOMAXPROCS=1 go vet ./...
 Both passed. The PostgreSQL store/query-soak package completed in 203.955
 seconds, including the inspection queue, assembly ownership, partition guard,
 and release-summary query changes.
+
+## 2026-07-28 Historical Backlog Continuation
+
+A later historical-timeframe run reused the disposable
+`gonzb_indexer_soak` database and accumulated roughly 3.7 million queued
+assembly headers. It exposed two backlog-scale coupling problems:
+
+- scrape backpressure repeatedly ran an exact anti-join count over the
+  partitioned assembly queue;
+- assembly refreshed binary projections and synchronously admitted yEnc work in
+  the same transaction, so a 15-second yEnc admission timeout marked assembly
+  failed after its binary parts had already been persisted.
+
+The backpressure guard now uses the summed child-partition row estimate, exact
+inventory reads count the assemble-owned queue directly, and assembly skips
+synchronous yEnc work-item synchronization. `recover_yenc` retains ownership of
+priority refill and generic bounded admission. The yEnc synchronization query
+also uses 250-binary chunks instead of 2,000-binary chunks, and optional subject
+multipart repair is skipped while normal assembly work is being processed.
+
+After restart, consecutive assembly passes completed 1,000-2,000 headers while
+refreshing 28-94 binaries per pass. Binary refresh reported zero yEnc admission
+time, and `recover_yenc` continued concurrently with useful merges. One
+assembly claim reached its 30-second timeout under peak concurrent load, then
+the next four claims completed in roughly 0.5-1.0 seconds; this remains a
+retryable monitoring item rather than a persistent stall.
+
+The continuation was then stopped immediately after PostgreSQL reported
+`XX001: invalid page in block 64318` for
+`poster_materialization_queue_20260724`. An immediate `pg_amcheck` pass read
+148,631 pages without an error, and `pageinspect` subsequently read block 64318
+as a valid 8 KiB PostgreSQL page. That non-reproduction does not clear the
+cluster: the run after the `XX001` event is untrusted and reinforces the
+suspected transient host-memory fault.
 
 ## Remaining Findings
 
