@@ -47,6 +47,8 @@ type YEncRecoverySelectionOptions struct {
 	TargetWindowEnd     *time.Time
 	TargetWindowPercent int
 	NewestPercent       int
+	Priority0Only       bool
+	DisableGenericSeed  bool
 }
 
 type YEncRecoverySelectionStats struct {
@@ -150,6 +152,10 @@ func (s *Store) ListYEncRecoveryCandidatesWithOptions(ctx context.Context, limit
 		return nil, err
 	}
 	stats.Priority0Ready = priority0Ready
+	if opts.Priority0Only {
+		readyCount = priority0Ready
+		stats.ReadyCount = priority0Ready
+	}
 	priority0Target := limit * s.yEncPriority0ReservoirBatches(ctx)
 	if priority0Target < limit {
 		priority0Target = limit
@@ -195,7 +201,7 @@ func (s *Store) ListYEncRecoveryCandidatesWithOptions(ctx context.Context, limit
 			s.clearYEncRecoverySeedScanBackoff()
 		}
 	}
-	if readyCount == 0 {
+	if readyCount == 0 && !opts.DisableGenericSeed {
 		seedStarted := time.Now()
 		upserted, retired, seedErr := s.maybeBackfillYEncRecoveryWorkItems(ctx, limit)
 		stats.SeedDuration += time.Since(seedStarted)
@@ -410,6 +416,38 @@ func (s *Store) listReadyYEncRecoveryCandidates(ctx context.Context, limit int, 
 		}
 
 		out = make([]YEncRecoveryCandidate, 0, limit)
+		if opts.Priority0Only {
+			if opts.HasTargetWindow() {
+				targetLimit := yencRecoveryPercentLimit(limit, opts.TargetWindowPercent)
+				stats.WindowedRequested = targetLimit
+				if targetLimit > 0 {
+					targeted, err := claimPriority0YEncRecoveryCandidatesInPostedRange(
+						ctx,
+						tx,
+						targetLimit,
+						*opts.TargetWindowStart,
+						*opts.TargetWindowEnd,
+						"target_window",
+					)
+					if err != nil {
+						return err
+					}
+					stats.SelectedWindowed += len(targeted)
+					out = append(out, targeted...)
+				}
+			}
+			remaining := limit - len(out)
+			stats.NewestRequested = remaining
+			if remaining > 0 {
+				priority, err := claimPriority0YEncRecoveryCandidates(ctx, tx, remaining)
+				if err != nil {
+					return err
+				}
+				stats.SelectedNewest += len(priority)
+				out = append(out, priority...)
+			}
+			return nil
+		}
 		latestReserve := yencRecoveryPercentLimit(limit, yEncLatestReservePercent(ctx, tx))
 		stats.NewestRequested = latestReserve
 		if latestReserve > 0 {
@@ -519,6 +557,32 @@ func claimPriority0YEncRecoveryCandidates(ctx context.Context, tx *sql.Tx, limit
 		return nil, err
 	}
 	return scanClaimedYEncRecoveryCandidates(rows, "priority0", nil, nil)
+}
+
+func claimPriority0YEncRecoveryCandidatesInPostedRange(
+	ctx context.Context,
+	tx *sql.Tx,
+	limit int,
+	start time.Time,
+	end time.Time,
+	lane string,
+) ([]YEncRecoveryCandidate, error) {
+	if limit <= 0 || !start.Before(end) {
+		return nil, nil
+	}
+	rows, err := tx.QueryContext(ctx, claimYEncRecoveryCandidatesSQL(`
+		WHERE wi.status = 'ready'
+		  AND wi.ready_at <= NOW()
+		  AND wi.priority_rank = 0
+		  AND BTRIM(COALESCE(wi.message_id, '')) <> ''
+		  AND wi.date_utc >= $2
+		  AND wi.date_utc < $3
+		ORDER BY wi.date_utc DESC NULLS LAST, wi.updated_at DESC, wi.binary_id
+		LIMIT $4`), limit, start, end, yencRecoveryReadyWindowLimit(limit))
+	if err != nil {
+		return nil, err
+	}
+	return scanClaimedYEncRecoveryCandidates(rows, lane, &start, &end)
 }
 
 func claimYEncRecoveryPostedWindowsBackward(ctx context.Context, tx *sql.Tx, limit int, start, end time.Time, lane string) ([]YEncRecoveryCandidate, int, int, error) {

@@ -120,6 +120,12 @@ func (g *cachedScrapeBacklogGuard) evaluate(ctx context.Context, runtime *app.Ru
 	if runtime == nil || runtime.Indexing == nil {
 		return allowed, nil
 	}
+	if err := g.repo.ConfigureYEncRecoveryAdmission(
+		ctx,
+		yencAdmissionConfigFromRuntime(runtime.Indexing.RecoveryAdmission, runtime.Indexing.RecoveryProfile),
+	); err != nil {
+		return nil, fmt.Errorf("configure yenc recovery admission: %w", err)
+	}
 	if !assembleEnabled(runtime.Indexing) && !recoverYEncEnabled(runtime.Indexing) {
 		g.mu.Lock()
 		g.assembleBlocked = false
@@ -164,9 +170,6 @@ func (g *cachedScrapeBacklogGuard) evaluate(ctx context.Context, runtime *app.Ru
 	}
 
 	if recoverYEncEnabled(runtime.Indexing) {
-		if err := g.repo.ConfigureYEncRecoveryAdmission(ctx, yencAdmissionConfigFromRuntime(runtime.Indexing.RecoveryAdmission)); err != nil {
-			return nil, fmt.Errorf("configure yenc recovery admission: %w", err)
-		}
 		snapshot, err := g.repo.RefreshYEncRecoveryAdmissionSnapshot(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("refresh yenc recovery admission snapshot: %w", err)
@@ -203,8 +206,9 @@ func (g *cachedScrapeBacklogGuard) evaluate(ctx context.Context, runtime *app.Ru
 	return allowed, nil
 }
 
-func yencAdmissionConfigFromRuntime(in app.IndexingRecoveryAdmissionRuntimeSettings) pgindex.YEncRecoveryAdmissionConfig {
+func yencAdmissionConfigFromRuntime(in app.IndexingRecoveryAdmissionRuntimeSettings, profile string) pgindex.YEncRecoveryAdmissionConfig {
 	return pgindex.YEncRecoveryAdmissionConfig{
+		RecoveryProfile:             app.NormalizeIndexingRecoveryProfile(profile),
 		SoftQueueHours:              in.SoftQueueHours,
 		HardQueueMultiplier:         in.HardQueueMultiplier,
 		AbsoluteHardQueueCap:        int64(in.AbsoluteHardQueueCap),
@@ -254,7 +258,7 @@ func recoverYEncEnabled(indexing *app.IndexingRuntimeSettings) bool {
 	if indexing == nil {
 		return false
 	}
-	return indexing.RecoverYEnc.Enabled
+	return indexing.RecoverYEnc.Enabled && app.IndexingRecoveryProfileUsesYEnc(indexing.RecoveryProfile)
 }
 
 func scrapeBacklogThresholds(indexing *app.IndexingRuntimeSettings) (highWater int64, lowWater int64) {
