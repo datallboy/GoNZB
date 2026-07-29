@@ -68,6 +68,22 @@ func TestPartitionedSourceJoinsUseSourcePostedAt(t *testing.T) {
 	}
 }
 
+func TestPosterMaterializationCompletionUsesSourcePostedAt(t *testing.T) {
+	src := readGuardrailSource(t, "scrape_materializer_store.go")
+	required := []string{
+		"WITH completed(source_posted_at, article_header_id)",
+		"q.source_posted_at >= $1",
+		"q.source_posted_at < $2",
+		"q.source_posted_at = completed.source_posted_at",
+		"q.article_header_id = completed.article_header_id",
+	}
+	for _, term := range required {
+		if !strings.Contains(src, term) {
+			t.Fatalf("poster completion must use the partition key; missing %q", term)
+		}
+	}
+}
+
 func TestNativeSourceWorkPartitionTargetsMatchSprintScope(t *testing.T) {
 	want := []string{
 		"article_headers",
@@ -137,7 +153,7 @@ func TestActiveStagePartitionProvisioningUsesExactShortTransactions(t *testing.T
 func TestDownstreamPartitionedWritersProvisionTheirStageBundles(t *testing.T) {
 	cases := map[string][]string{
 		"assembly_store.go":                 {"provisionAssemblyPartitionsForBinaryRecords", "provisionAssemblyPartitionsForBinaryPartRecords", "partitionBundleAssemble", "partitionBundleYEnc"},
-		"article_cohort_scheduler_store.go": {"provisionSchedulerPartitionsForReadyWork", "article_cohort_candidates_"},
+		"article_cohort_scheduler_store.go": {"provisionSchedulerPartitionsForReadyWork"},
 		"inspect_ready_queue_store.go":      {"ensurePartitionBundleForBinaryIDs", "partitionBundleInspect", "binary_inspection_ready_queue_"},
 		"inspection_store.go":               {"ensurePartitionBundleForBinaryIDs", "partitionBundleInspect", "binary_inspections_"},
 		"release_family_summary_store.go":   {"provisionReleasePartitionsForQueuedWork"},
@@ -148,6 +164,45 @@ func TestDownstreamPartitionedWritersProvisionTheirStageBundles(t *testing.T) {
 			if !strings.Contains(src, term) {
 				t.Fatalf("%s must provision and fail closed on its stage-owned partitions; missing %q", fileName, term)
 			}
+		}
+	}
+}
+
+func TestArticleCohortSchedulerDoesNotProbePartitionCatalogPerCandidate(t *testing.T) {
+	src := readGuardrailSource(t, "article_cohort_scheduler_store.go")
+	if strings.Contains(src, "to_regclass(") {
+		t.Fatalf("article cohort scheduling must rely on its pre-provisioned exact source-day partitions, not call to_regclass per candidate row")
+	}
+}
+
+func TestInspectDiscoveryDefersToYEncAndBacksOffFailures(t *testing.T) {
+	src := readGuardrailSource(t, "inspect_ready_queue_store.go")
+	for _, required := range []string{
+		"FROM yenc_recovery_work_items wi",
+		"wi.status IN ('ready', 'running')",
+		"bl.lifecycle_status = 'superseded'",
+		"bp.part_number = 1",
+		"(5 * time.Minute).Seconds()",
+	} {
+		if !strings.Contains(src, required) {
+			t.Fatalf("inspect discovery queue must defer to active yEnc work and back off failures; missing %q", required)
+		}
+	}
+}
+
+func TestReleasePartitionPreflightCanUsePartialFamilyIndexes(t *testing.T) {
+	for _, fileName := range []string{"partition_provision.go", "release_family_summary_store.go"} {
+		src := readGuardrailSource(t, fileName)
+		for _, required := range []string{
+			"BTRIM(bic.release_family_key) <> ''",
+			"BTRIM(bic.base_stem) <> ''",
+		} {
+			if !strings.Contains(src, required) {
+				t.Fatalf("%s release partition lookup must imply its partial family-index predicate; missing %q", fileName, required)
+			}
+		}
+		if strings.Contains(src, "(r.key_kind = 'release_family' AND bic.release_family_key = r.family_key)") {
+			t.Fatalf("%s release partition lookup must not combine family-key indexes behind an OR join", fileName)
 		}
 	}
 }

@@ -369,20 +369,29 @@ func (s *Store) provisionReleasePartitionsForQueuedWork(ctx context.Context, lim
 			ORDER BY queued_at, provider_id, newsgroup_id, key_kind, family_key
 			LIMIT $1
 		), queued_days AS (
-			SELECT COALESCE(MIN(bos.posted_at), NOW()) AS source_posted_at
+			SELECT day.source_posted_at
 			FROM queued q
-			LEFT JOIN binary_identity_current bic
-			  ON bic.provider_id = q.provider_id
-			 AND bic.newsgroup_id = q.newsgroup_id
-			 AND (
-			      (q.key_kind = 'release_family' AND bic.release_family_key = q.family_key)
-			      OR
-			      (q.key_kind = 'base_stem' AND LOWER(BTRIM(bic.base_stem)) = q.family_key)
-			 )
-			LEFT JOIN binary_observation_stats bos
-			  ON bos.source_posted_at = bic.source_posted_at
-			 AND bos.binary_id = bic.binary_id
-			GROUP BY q.provider_id, q.newsgroup_id, q.key_kind, q.family_key
+			CROSS JOIN LATERAL (
+				SELECT MIN(bic.source_posted_at) AS source_posted_at
+				FROM binary_identity_current bic
+				WHERE bic.provider_id = q.provider_id
+				  AND bic.newsgroup_id = q.newsgroup_id
+				  AND BTRIM(bic.release_family_key) <> ''
+				  AND bic.release_family_key = q.family_key
+			) day
+			WHERE q.key_kind = 'release_family'
+			UNION ALL
+			SELECT day.source_posted_at
+			FROM queued q
+			CROSS JOIN LATERAL (
+				SELECT MIN(bic.source_posted_at) AS source_posted_at
+				FROM binary_identity_current bic
+				WHERE bic.provider_id = q.provider_id
+				  AND bic.newsgroup_id = q.newsgroup_id
+				  AND BTRIM(bic.base_stem) <> ''
+				  AND LOWER(BTRIM(bic.base_stem)) = q.family_key
+			) day
+			WHERE q.key_kind = 'base_stem'
 		), candidate_days AS (
 			SELECT source_posted_at
 			FROM release_family_readiness_summaries s

@@ -236,6 +236,7 @@ type UsenetIndexStore interface {
 	RefreshIndexerGroupProfiles(ctx context.Context) (int64, error)
 	UpsertDeferredArticleRange(ctx context.Context, in pgindex.DeferredArticleRangeRecord) error
 	ExistingScrapeSourceDays(ctx context.Context, sourcePostedAt []time.Time) (map[string]bool, error)
+	FindScrapedArticleRangeForDateWindow(ctx context.Context, providerID, newsgroupID int64, windowStart, windowEnd time.Time) (int64, int64, bool, error)
 	EnsureScrapeTimeframeProgress(ctx context.Context, timeframeID string, providerID, newsgroupID int64, windowStart, windowEnd time.Time) (*pgindex.ScrapeTimeframeProgress, error)
 	ResolveScrapeTimeframeProgress(ctx context.Context, timeframeID string, providerID, newsgroupID, articleLow, articleHigh int64, empty bool) error
 	AdvanceScrapeTimeframeProgress(ctx context.Context, timeframeID string, providerID, newsgroupID, nextArticle int64, completed bool) error

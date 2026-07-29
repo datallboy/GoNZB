@@ -235,7 +235,7 @@ func defaultReleaseStage(enabled bool) IndexingReleaseRuntimeSettings {
 		PublicRequirePayloadComplete: true, PublicRequireExpectedFileCountComplete: false,
 		PublicRequirePAR2: false, PublicRequireNFO: false, PublicRequireSFV: false,
 		RetainUntilExpectedFileCountComplete: false, RetainRequirePAR2: false, RetainRequireNFO: false, RetainRequireSFV: false,
-		ReopenArchivedNZBOnReleaseChange: false,
+		ReopenArchivedNZBOnReleaseChange: true,
 	}
 }
 
@@ -375,7 +375,7 @@ func IndexingRuntimeFromConfig(cfg config.IndexingConfig) IndexingRuntimeSetting
 		RetainRequirePAR2:                               boolValue(cfg.Release.RetainRequirePAR2, false),
 		RetainRequireNFO:                                boolValue(cfg.Release.RetainRequireNFO, false),
 		RetainRequireSFV:                                boolValue(cfg.Release.RetainRequireSFV, false),
-		ReopenArchivedNZBOnReleaseChange:                boolValue(cfg.Release.ReopenArchivedNZBOnReleaseChange, false),
+		ReopenArchivedNZBOnReleaseChange:                boolValue(cfg.Release.ReopenArchivedNZBOnReleaseChange, true),
 	}
 	out.ReleaseGenerateNZB = indexStageRuntimeFromConfig(cfg.ReleaseGenerateNZB, false, 10, 100)
 	out.ReleaseArchiveNZB = indexStageRuntimeFromConfig(cfg.ReleaseArchiveNZB, false, 10, 100)
@@ -1370,7 +1370,9 @@ func normalizeIndexingScrapeConfig(indexing *IndexingRuntimeSettings) {
 		indexing.ScrapeTimeframes[i].ID = strings.TrimSpace(indexing.ScrapeTimeframes[i].ID)
 		indexing.ScrapeTimeframes[i].GroupName = strings.TrimSpace(indexing.ScrapeTimeframes[i].GroupName)
 		indexing.ScrapeTimeframes[i].StartDate = strings.TrimSpace(indexing.ScrapeTimeframes[i].StartDate)
+		indexing.ScrapeTimeframes[i].StartTime = strings.TrimSpace(indexing.ScrapeTimeframes[i].StartTime)
 		indexing.ScrapeTimeframes[i].EndDate = strings.TrimSpace(indexing.ScrapeTimeframes[i].EndDate)
+		indexing.ScrapeTimeframes[i].EndTime = strings.TrimSpace(indexing.ScrapeTimeframes[i].EndTime)
 	}
 	indexing.Newsgroups = EffectiveNewsgroupNames(indexing)
 	indexing.BackfillUntilDateByGroup = EffectiveBackfillUntilDateByGroup(indexing)

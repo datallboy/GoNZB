@@ -408,7 +408,9 @@ export function AdminScrapePage() {
                   id: `timeframe-${Date.now()}`,
                   group_name: '',
                   start_date: '',
+                  start_time: '',
                   end_date: '',
+                  end_time: '',
                   enabled: true,
                 }],
               }))}
@@ -421,7 +423,7 @@ export function AdminScrapePage() {
           </div>
         </div>
         <p className="muted-copy">
-          The indexer uses bounded XOVER probes to locate the first article on each date, then advances through that fixed article range in batches. Changing an entry's dates resets that entry's progress.
+          Times are optional and interpreted as UTC. Without times, the end date remains inclusive. With an end time, the range ends at that exact instant. Changing an entry's window resets that entry's progress.
         </p>
         <div className="table-shell scrape-table-shell">
           <table className="data-table data-table--compact">
@@ -430,7 +432,9 @@ export function AdminScrapePage() {
                 <th>ID</th>
                 <th>Newsgroup</th>
                 <th>Start date</th>
+                <th>Start time (UTC, 24h)</th>
                 <th>End date</th>
+                <th>End time (UTC, 24h)</th>
                 <th>Enabled</th>
                 <th>Progress</th>
                 <th>Article range</th>
@@ -443,7 +447,9 @@ export function AdminScrapePage() {
                   <td><InlineInput value={timeframe.id} onChange={(id) => updateTimeframe(index, { id })} /></td>
                   <td><InlineInput value={timeframe.group_name} placeholder="alt.binaries.example" onChange={(group_name) => updateTimeframe(index, { group_name })} /></td>
                   <td><input className="table-input" type="date" value={timeframe.start_date} onChange={(event) => updateTimeframe(index, { start_date: event.target.value })} /></td>
+                  <td><input className="table-input" type="text" inputMode="numeric" pattern="(?:[01][0-9]|2[0-3]):[0-5][0-9](?::[0-5][0-9])?" maxLength={8} placeholder="HH:MM:SS" autoComplete="off" value={timeframe.start_time ?? ''} onChange={(event) => updateTimeframe(index, { start_time: event.target.value })} /></td>
                   <td><input className="table-input" type="date" value={timeframe.end_date} onChange={(event) => updateTimeframe(index, { end_date: event.target.value })} /></td>
+                  <td><input className="table-input" type="text" inputMode="numeric" pattern="(?:[01][0-9]|2[0-3]):[0-5][0-9](?::[0-5][0-9])?" maxLength={8} placeholder="HH:MM:SS" autoComplete="off" value={timeframe.end_time ?? ''} onChange={(event) => updateTimeframe(index, { end_time: event.target.value })} /></td>
                   <td><InlineCheckbox checked={timeframe.enabled} onChange={(enabled) => updateTimeframe(index, { enabled })} /></td>
                   <td>{timeframeProgressLabel(data, timeframe)}</td>
                   <td>{timeframeArticleRangeLabel(data, timeframe)}</td>
@@ -454,7 +460,7 @@ export function AdminScrapePage() {
                   </td>
                 </tr>
               ))}
-              <EmptyRow visible={data.scrape_timeframes.length === 0} colSpan={8} message="No historical scrape timeframes configured." />
+              <EmptyRow visible={data.scrape_timeframes.length === 0} colSpan={10} message="No historical scrape timeframes configured." />
             </tbody>
           </table>
         </div>

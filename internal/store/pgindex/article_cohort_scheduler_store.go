@@ -22,9 +22,17 @@ const (
 )
 
 type ArticleCohortSchedulerRequest struct {
-	BatchSize        int
-	AssemblyQueueMax int
-	YEncQueueMax     int
+	BatchSize         int
+	AssemblyQueueMax  int
+	YEncQueueMax      int
+	TargetWindowStart *time.Time
+	TargetWindowEnd   *time.Time
+}
+
+func (r ArticleCohortSchedulerRequest) HasTargetWindow() bool {
+	return r.TargetWindowStart != nil &&
+		r.TargetWindowEnd != nil &&
+		r.TargetWindowStart.Before(*r.TargetWindowEnd)
 }
 
 type ArticleCohortSchedulerResult struct {
@@ -70,23 +78,28 @@ func (s *Store) RunArticleCohortScheduler(ctx context.Context, req ArticleCohort
 		return out, nil
 	}
 
-	subjectCohorts, assemblyQueued, err := runSubjectCompleteCohortSchedule(ctx, tx, req.BatchSize, req.AssemblyQueueMax)
+	subjectCohorts, assemblyQueued, err := runSubjectCompleteCohortSchedule(ctx, tx, req)
 	if err != nil {
 		return nil, err
 	}
 	out.SubjectCohortsUpserted = subjectCohorts
 	out.AssemblyQueued = assemblyQueued
 
-	bucketSeconds, err := yEncOpaqueCohortBucketSecondsInTx(ctx, tx)
-	if err != nil {
-		return nil, err
+	// Explicit assembly windows already have a matching target-aware yEnc
+	// selector. Do not let unrelated global opaque-queue capacity or scans
+	// prevent the scheduler from prioritizing structured historical work.
+	if !req.HasTargetWindow() {
+		bucketSeconds, err := yEncOpaqueCohortBucketSecondsInTx(ctx, tx)
+		if err != nil {
+			return nil, err
+		}
+		opaqueCohorts, yencQueued, err := runOpaqueYEncCohortSchedule(ctx, tx, req.BatchSize, req.YEncQueueMax, bucketSeconds)
+		if err != nil {
+			return nil, err
+		}
+		out.OpaqueCohortsUpserted = opaqueCohorts
+		out.YEncQueued = yencQueued
 	}
-	opaqueCohorts, yencQueued, err := runOpaqueYEncCohortSchedule(ctx, tx, req.BatchSize, req.YEncQueueMax, bucketSeconds)
-	if err != nil {
-		return nil, err
-	}
-	out.OpaqueCohortsUpserted = opaqueCohorts
-	out.YEncQueued = yencQueued
 
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit article cohort scheduler tx: %w", err)
@@ -95,13 +108,16 @@ func (s *Store) RunArticleCohortScheduler(ctx context.Context, req ArticleCohort
 	return out, nil
 }
 
-func runSubjectCompleteCohortSchedule(ctx context.Context, tx *sql.Tx, batchSize, queueLimit int) (int64, int64, error) {
+func runSubjectCompleteCohortSchedule(ctx context.Context, tx *sql.Tx, req ArticleCohortSchedulerRequest) (int64, int64, error) {
+	batchSize := req.BatchSize
+	queueLimit := req.AssemblyQueueMax
 	if batchSize <= 0 || queueLimit <= 0 {
 		return 0, 0, nil
 	}
-	if err := cleanupStaleArticleCohortAssemblyQueueInTx(ctx, tx, queueLimit); err != nil {
+	if err := cleanupStaleArticleCohortAssemblyQueueInTx(ctx, tx, queueLimit, req); err != nil {
 		return 0, 0, err
 	}
+	targetStart, targetEnd := articleCohortTargetWindowArgs(req)
 	var openQueued int
 	if err := tx.QueryRowContext(ctx, `
 		SELECT COUNT(*)
@@ -109,7 +125,13 @@ func runSubjectCompleteCohortSchedule(ctx context.Context, tx *sql.Tx, batchSize
 		JOIN article_header_assembly_queue q
 		  ON q.source_posted_at = cq.source_posted_at
 		 AND q.article_header_id = cq.article_header_id
-		WHERE cq.status IN ('ready', 'running')`).Scan(&openQueued); err != nil {
+		WHERE cq.status IN ('ready', 'running')
+		  AND (
+		    NOT $1::boolean
+		    OR (cq.source_posted_at >= $2 AND cq.source_posted_at < $3)
+		  )`,
+		req.HasTargetWindow(), targetStart, targetEnd,
+	).Scan(&openQueued); err != nil {
 		return 0, 0, fmt.Errorf("count open subject-complete cohort assembly queue rows: %w", err)
 	}
 	if openQueued >= queueLimit {
@@ -146,7 +168,10 @@ func runSubjectCompleteCohortSchedule(ctx context.Context, tx *sql.Tx, batchSize
 			  ON p.source_posted_at = q.source_posted_at
 			 AND p.article_header_id = q.article_header_id
 			WHERE (q.claim_until IS NULL OR q.claim_until < NOW())
-			  AND to_regclass('public.article_cohort_candidates_' || to_char(q.source_posted_at AT TIME ZONE 'UTC', 'YYYYMMDD')) IS NOT NULL
+			  AND (
+			    NOT $3::boolean
+			    OR (q.source_posted_at >= $4 AND q.source_posted_at < $5)
+			  )
 			  AND q.queue_kind = 'structured'
 			  AND BTRIM(COALESCE(p.subject_file_name, '')) <> ''
 			  AND COALESCE(p.subject_file_index, 0) > 0
@@ -160,7 +185,7 @@ func runSubjectCompleteCohortSchedule(ctx context.Context, tx *sql.Tx, batchSize
 				  AND cq.article_header_id = q.article_header_id
 				  AND cq.status IN ('ready', 'running', 'done')
 			  )
-			ORDER BY q.article_header_id DESC
+			ORDER BY q.source_posted_at DESC, q.article_header_id DESC
 			LIMIT $1
 		),
 		cohorts AS MATERIALIZED (
@@ -241,10 +266,19 @@ func runSubjectCompleteCohortSchedule(ctx context.Context, tx *sql.Tx, batchSize
 		)
 		SELECT
 			(SELECT COUNT(*) FROM upserted),
-			(SELECT COUNT(*) FROM inserted)`, scanLimit, queueLimit).Scan(&cohorts, &queued); err != nil {
+			(SELECT COUNT(*) FROM inserted)`,
+		scanLimit, queueLimit, req.HasTargetWindow(), targetStart, targetEnd,
+	).Scan(&cohorts, &queued); err != nil {
 		return 0, 0, fmt.Errorf("schedule subject-complete article cohorts: %w", err)
 	}
 	return cohorts, queued, nil
+}
+
+func articleCohortTargetWindowArgs(req ArticleCohortSchedulerRequest) (time.Time, time.Time) {
+	if !req.HasTargetWindow() {
+		return time.Time{}, time.Time{}
+	}
+	return req.TargetWindowStart.UTC(), req.TargetWindowEnd.UTC()
 }
 
 func subjectCohortRunLimit(queueCapacity int) int {
@@ -257,18 +291,28 @@ func subjectCohortRunLimit(queueCapacity int) int {
 	return queueCapacity
 }
 
-func cleanupStaleArticleCohortAssemblyQueueInTx(ctx context.Context, tx *sql.Tx, limit int) error {
+func cleanupStaleArticleCohortAssemblyQueueInTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	limit int,
+	req ArticleCohortSchedulerRequest,
+) error {
 	if tx == nil {
 		return fmt.Errorf("article cohort assembly cleanup tx is required")
 	}
 	if limit <= 0 {
 		limit = articleCohortDefaultAssemblyLimit
 	}
+	targetStart, targetEnd := articleCohortTargetWindowArgs(req)
 	_, err := tx.ExecContext(ctx, `
 		WITH stale AS MATERIALIZED (
 			SELECT cq.source_posted_at, cq.article_header_id
 			FROM article_cohort_assembly_queue cq
 			WHERE cq.status IN ('ready', 'running')
+			  AND (
+			    NOT $2::boolean
+			    OR (cq.source_posted_at >= $3 AND cq.source_posted_at < $4)
+			  )
 			  AND NOT EXISTS (
 				SELECT 1
 				FROM article_header_assembly_queue q
@@ -285,7 +329,7 @@ func cleanupStaleArticleCohortAssemblyQueueInTx(ctx context.Context, tx *sql.Tx,
 		FROM stale
 		WHERE cq.source_posted_at = stale.source_posted_at
 		  AND cq.article_header_id = stale.article_header_id`,
-		limit,
+		limit, req.HasTargetWindow(), targetStart, targetEnd,
 	)
 	if err != nil {
 		return fmt.Errorf("cleanup stale article cohort assembly queue rows: %w", err)
@@ -354,7 +398,6 @@ func runOpaqueYEncCohortSchedule(ctx context.Context, tx *sql.Tx, batchSize, que
 			FROM binary_observation_stats
 			WHERE total_parts <= 1
 			  AND observed_parts <= 1
-			  AND to_regclass('public.article_cohort_candidates_' || to_char(source_posted_at AT TIME ZONE 'UTC', 'YYYYMMDD')) IS NOT NULL
 			  AND posted_at IS NOT NULL
 			  AND source_posted_at >= $4
 			  AND source_posted_at < $5
@@ -457,7 +500,6 @@ func runOpaqueYEncCohortSchedule(ctx context.Context, tx *sql.Tx, batchSize, que
 			FROM binary_observation_stats
 			WHERE total_parts <= 1
 			  AND observed_parts <= 1
-			  AND to_regclass('public.article_cohort_candidates_' || to_char(source_posted_at AT TIME ZONE 'UTC', 'YYYYMMDD')) IS NOT NULL
 			  AND posted_at IS NOT NULL
 			  AND source_posted_at >= $5
 			  AND source_posted_at < $6
