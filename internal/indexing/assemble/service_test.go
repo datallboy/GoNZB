@@ -715,6 +715,9 @@ func TestRunOncePassesLaneSelectionIntoClaims(t *testing.T) {
 		BatchSize:              25,
 		Lane:                   pgindex.AssemblyClaimLaneB,
 		LaneATimeWindowMinutes: 9,
+		TargetWindowEnabled:    true,
+		TargetWindowStart:      "2026-07-24T13:46:55Z",
+		TargetWindowEnd:        "2026-07-24T13:47:30Z",
 	})
 
 	if _, err := svc.RunOnceWithMetrics(context.Background()); err != nil {
@@ -726,6 +729,12 @@ func TestRunOncePassesLaneSelectionIntoClaims(t *testing.T) {
 	}
 	if repo.lastClaimRequest.LaneATimeWindowMinutes != 9 {
 		t.Fatalf("expected lane A time window to be passed through, got %+v", repo.lastClaimRequest)
+	}
+	if repo.lastClaimRequest.TargetWindowStart == nil ||
+		!repo.lastClaimRequest.TargetWindowStart.Equal(time.Date(2026, 7, 24, 13, 46, 55, 0, time.UTC)) ||
+		repo.lastClaimRequest.TargetWindowEnd == nil ||
+		!repo.lastClaimRequest.TargetWindowEnd.Equal(time.Date(2026, 7, 24, 13, 47, 30, 0, time.UTC)) {
+		t.Fatalf("expected assembly target window to be passed through, got %+v", repo.lastClaimRequest)
 	}
 }
 

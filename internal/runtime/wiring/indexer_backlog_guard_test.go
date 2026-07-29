@@ -48,6 +48,9 @@ type fakeUnassembledBacklogReader struct {
 }
 
 func (f fakeUnassembledBacklogReader) EstimateUnassembledArticleHeaders(context.Context) (int64, error) {
+	if f.estimate == 0 {
+		return f.count, nil
+	}
 	return f.estimate, nil
 }
 

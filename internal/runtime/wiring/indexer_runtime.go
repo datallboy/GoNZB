@@ -334,6 +334,9 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			LaneATargetPct:          runtimeCfg.Assemble.LaneATargetPct,
 			LaneBMinPct:             runtimeCfg.Assemble.LaneBMinPct,
 			LaneATimeWindowMinutes:  runtimeCfg.Assemble.LaneATimeWindowMinutes,
+			TargetWindowEnabled:     runtimeCfg.Assemble.TargetWindowEnabled,
+			TargetWindowStart:       runtimeCfg.Assemble.TargetWindowStart,
+			TargetWindowEnd:         runtimeCfg.Assemble.TargetWindowEnd,
 		},
 	)
 	recoverYEncSvc := yencrecover.NewService(
@@ -408,6 +411,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		appCtx.PGIndexStore,
 		ingestmaterialize.Options{BatchSize: runtimeCfg.CrosspostPopularityRefresh.BatchSize},
 	)
+	cohortTargetStart, cohortTargetEnd := indexerStageTargetWindow(runtimeCfg.Assemble)
 	supervisorSvc := supervisor.New(appCtx.Logger, []supervisor.Stage{
 		{
 			Name:        supervisor.StageScrapeLatest,
@@ -484,7 +488,9 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			Backoff:     runtimeCfg.ArticleCohortSchedule.Backoff,
 			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
 				result, err := appCtx.PGIndexStore.RunArticleCohortScheduler(ctx, pgindex.ArticleCohortSchedulerRequest{
-					BatchSize: runtimeCfg.ArticleCohortSchedule.BatchSize,
+					BatchSize:         runtimeCfg.ArticleCohortSchedule.BatchSize,
+					TargetWindowStart: cohortTargetStart,
+					TargetWindowEnd:   cohortTargetEnd,
 				})
 				if result == nil {
 					return marshalStageMetrics(map[string]any{}, err)
@@ -1096,6 +1102,20 @@ func newIndexerStageConfig(in app.IndexingStageRuntimeSettings) indexerStageConf
 	}
 }
 
+func indexerStageTargetWindow(in indexerStageConfig) (*time.Time, *time.Time) {
+	if !in.TargetWindowEnabled {
+		return nil, nil
+	}
+	start, startErr := time.Parse(time.RFC3339, strings.TrimSpace(in.TargetWindowStart))
+	end, endErr := time.Parse(time.RFC3339, strings.TrimSpace(in.TargetWindowEnd))
+	if startErr != nil || endErr != nil || !start.Before(end) {
+		return nil, nil
+	}
+	start = start.UTC()
+	end = end.UTC()
+	return &start, &end
+}
+
 func scrapeTimeframesFromRuntime(in []app.IndexingScrapeTimeframeRuntimeSettings) []scrape.Timeframe {
 	out := make([]scrape.Timeframe, 0, len(in))
 	for _, item := range in {
@@ -1106,17 +1126,43 @@ func scrapeTimeframesFromRuntime(in []app.IndexingScrapeTimeframeRuntimeSettings
 		group := strings.TrimSpace(item.GroupName)
 		start, startErr := time.ParseInLocation("2006-01-02", strings.TrimSpace(item.StartDate), time.UTC)
 		end, endErr := time.ParseInLocation("2006-01-02", strings.TrimSpace(item.EndDate), time.UTC)
-		if id == "" || group == "" || startErr != nil || endErr != nil || end.Before(start) {
+		startClock, startClockErr := scrapeTimeframeClock(item.StartTime)
+		endClock, endClockErr := scrapeTimeframeClock(item.EndTime)
+		if id == "" || group == "" || startErr != nil || endErr != nil || startClockErr != nil || endClockErr != nil {
+			continue
+		}
+		start = start.Add(startClock)
+		end = end.Add(endClock)
+		if strings.TrimSpace(item.EndTime) == "" {
+			end = end.AddDate(0, 0, 1)
+		}
+		if !end.After(start) {
 			continue
 		}
 		out = append(out, scrape.Timeframe{
 			ID:    id,
 			Group: group,
 			Start: start,
-			End:   end.AddDate(0, 0, 1),
+			End:   end,
 		})
 	}
 	return out
+}
+
+func scrapeTimeframeClock(value string) (time.Duration, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, nil
+	}
+	for _, layout := range []string{"15:04", "15:04:05"} {
+		parsed, err := time.ParseInLocation(layout, value, time.UTC)
+		if err == nil {
+			return time.Duration(parsed.Hour())*time.Hour +
+				time.Duration(parsed.Minute())*time.Minute +
+				time.Duration(parsed.Second())*time.Second, nil
+		}
+	}
+	return 0, fmt.Errorf("invalid UTC time %q", value)
 }
 
 func recoverYEncFetchTimeout(in indexerStageConfig) time.Duration {

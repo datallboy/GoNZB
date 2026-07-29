@@ -18,7 +18,7 @@ const (
 )
 
 type unassembledBacklogReader interface {
-	CountUnassembledArticleHeaders(ctx context.Context) (int64, error)
+	EstimateUnassembledArticleHeaders(ctx context.Context) (int64, error)
 	CountBlockingYEncRecoveryBacklog(ctx context.Context) (int64, error)
 	ConfigureYEncRecoveryAdmission(ctx context.Context, cfg pgindex.YEncRecoveryAdmissionConfig) error
 	RefreshYEncRecoveryAdmissionSnapshot(ctx context.Context) (*pgindex.YEncRecoveryAdmissionSnapshot, error)
@@ -130,9 +130,9 @@ func (g *cachedScrapeBacklogGuard) evaluate(ctx context.Context, runtime *app.Ru
 
 	if assembleEnabled(runtime.Indexing) {
 		highWater, lowWater := scrapeBacklogThresholds(runtime.Indexing)
-		backlog, err := g.repo.CountUnassembledArticleHeaders(ctx)
+		backlog, err := g.repo.EstimateUnassembledArticleHeaders(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("count unassembled article header backlog: %w", err)
+			return nil, fmt.Errorf("estimate unassembled article header backlog: %w", err)
 		}
 
 		g.mu.Lock()

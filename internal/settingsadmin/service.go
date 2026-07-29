@@ -407,8 +407,23 @@ func validateIndexing(indexing *app.IndexingRuntimeSettings) []string {
 		if endErr != nil {
 			issues = append(issues, fmt.Sprintf("indexing.scrape_timeframes[%d].end_date must be YYYY-MM-DD", i))
 		}
-		if startErr == nil && endErr == nil && end.Before(start) {
-			issues = append(issues, fmt.Sprintf("indexing.scrape_timeframes[%d].end_date must be on or after start_date", i))
+		startClock, startTimeErr := parseScrapeTimeframeClock(timeframe.StartTime)
+		endClock, endTimeErr := parseScrapeTimeframeClock(timeframe.EndTime)
+		if startTimeErr != nil {
+			issues = append(issues, fmt.Sprintf("indexing.scrape_timeframes[%d].start_time must be HH:MM or HH:MM:SS", i))
+		}
+		if endTimeErr != nil {
+			issues = append(issues, fmt.Sprintf("indexing.scrape_timeframes[%d].end_time must be HH:MM or HH:MM:SS", i))
+		}
+		if startErr == nil && endErr == nil && startTimeErr == nil && endTimeErr == nil {
+			windowStart := start.Add(startClock)
+			windowEnd := end.Add(endClock)
+			if strings.TrimSpace(timeframe.EndTime) == "" {
+				windowEnd = windowEnd.AddDate(0, 0, 1)
+			}
+			if !windowEnd.After(windowStart) {
+				issues = append(issues, fmt.Sprintf("indexing.scrape_timeframes[%d].end date/time must be after start date/time", i))
+			}
 		}
 	}
 	for i, rule := range indexing.WildcardRules {
@@ -528,6 +543,22 @@ func validateIndexing(indexing *app.IndexingRuntimeSettings) []string {
 		}
 	}
 	return issues
+}
+
+func parseScrapeTimeframeClock(value string) (time.Duration, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, nil
+	}
+	for _, layout := range []string{"15:04", "15:04:05"} {
+		parsed, err := time.ParseInLocation(layout, value, time.UTC)
+		if err == nil {
+			return time.Duration(parsed.Hour())*time.Hour +
+				time.Duration(parsed.Minute())*time.Minute +
+				time.Duration(parsed.Second())*time.Second, nil
+		}
+	}
+	return 0, fmt.Errorf("invalid UTC time %q", value)
 }
 
 func validateYEncRecoveryTargetWindow(stage app.IndexingStageRuntimeSettings) []string {

@@ -167,7 +167,24 @@ func (s *Store) ListYEncRecoveryCandidatesWithOptions(ctx context.Context, limit
 		}
 		stats.PrioritySeedLimit = seedLimit
 		seedStarted := time.Now()
-		upserted, retired, seedErr := s.BackfillPriorityYEncRecoveryWorkItems(ctx, seedLimit)
+		var upserted, retired int64
+		var seedErr error
+		if opts.TargetWindowStart != nil && opts.TargetWindowEnd != nil &&
+			opts.TargetWindowEnd.After(*opts.TargetWindowStart) {
+			windowSeedLimit := seedLimit
+			if windowSeedLimit > limit {
+				windowSeedLimit = limit
+			}
+			upserted, retired, seedErr = s.backfillPriorityYEncRecoveryWorkItemsForWindow(
+				ctx,
+				windowSeedLimit,
+				opts.TargetWindowStart.UTC(),
+				opts.TargetWindowEnd.UTC(),
+			)
+		}
+		if seedErr == nil && upserted == 0 {
+			upserted, retired, seedErr = s.BackfillPriorityYEncRecoveryWorkItems(ctx, seedLimit)
+		}
 		stats.SeedDuration += time.Since(seedStarted)
 		stats.PrioritySeeded = upserted
 		stats.PriorityRetired = retired

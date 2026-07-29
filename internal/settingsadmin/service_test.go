@@ -53,10 +53,39 @@ func TestValidateRuntimeSettingsRejectsInvalidScrapeTimeframes(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected timeframe validation error")
 	}
-	for _, expected := range []string{"duplicates", "group_name", "start_date", "end_date must be on or after"} {
+	for _, expected := range []string{"duplicates", "group_name", "start_date", "end date/time must be after"} {
 		if !strings.Contains(err.Error(), expected) {
 			t.Fatalf("expected %q in validation error, got %v", expected, err)
 		}
+	}
+}
+
+func TestValidateRuntimeSettingsAcceptsHistoricalScrapeTimes(t *testing.T) {
+	runtime := app.DefaultRuntimeSettings()
+	runtime.Indexing.ScrapeTimeframes = []app.IndexingScrapeTimeframeRuntimeSettings{{
+		ID:        "upload-window",
+		GroupName: "alt.binaries.test",
+		StartDate: "2026-07-24",
+		StartTime: "14:47",
+		EndDate:   "2026-07-24",
+		EndTime:   "14:49:30",
+		Enabled:   true,
+	}}
+
+	if err := ValidateRuntimeSettings(&config.Config{}, runtime); err != nil {
+		t.Fatalf("expected exact historical timeframe to validate, got %v", err)
+	}
+
+	runtime.Indexing.ScrapeTimeframes[0].EndTime = "14:46"
+	err := ValidateRuntimeSettings(&config.Config{}, runtime)
+	if err == nil || !strings.Contains(err.Error(), "end date/time must be after") {
+		t.Fatalf("expected reversed time window validation error, got %v", err)
+	}
+
+	runtime.Indexing.ScrapeTimeframes[0].EndTime = "25:00"
+	err = ValidateRuntimeSettings(&config.Config{}, runtime)
+	if err == nil || !strings.Contains(err.Error(), "end_time must be HH:MM") {
+		t.Fatalf("expected invalid time validation error, got %v", err)
 	}
 }
 
