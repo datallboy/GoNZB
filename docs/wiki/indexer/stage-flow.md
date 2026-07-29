@@ -20,8 +20,20 @@ multiple inclusive UTC date windows, including multiple windows for the same
 newsgroup. Each entry has a stable ID and independent durable progress in
 `indexer_scrape_timeframe_progress`; it does not move latest or backfill
 checkpoints. The stage locates date boundaries with bounded XOVER probes,
-persists the resulting article-number range, and then consumes that fixed range
-in normal scrape batches. Changing an entry's dates resets only that entry.
+corrects both boundaries across a bounded article-number horizon for
+non-monotonic Date headers, persists the resulting article-number range, and
+then consumes that fixed range in normal scrape batches. Every fetched row is
+still filtered against the exact requested UTC window. Changing an entry's
+dates resets only that entry.
+
+Configured timeframe concurrency applies across independent entries. Article
+numbers remain provider-local: the provider that supplies `GROUP` bounds and
+date-boundary probes is pinned for every XOVER request in that entry. Capacity
+failover must not continue the same numeric range on another provider; a
+different provider requires its own boundary resolution and durable progress.
+Optional start/end times narrow a window within those UTC dates. A date-only
+end remains inclusive through the end of that UTC day; an end time is the exact
+exclusive boundary.
 
 XOVER may return source dates far outside the current calendar window. Scrape
 provisions only the exact observed days it will admit, never a continuous date
@@ -87,9 +99,23 @@ same claim. This keeps complete Subject multipart cohorts ahead of expensive
 general opaque work and avoids consuming the claim timeout before priority work
 is locked.
 
-Lane A extends incomplete binaries using `binary_completion_keys`. Lane B
-creates or updates general binary records, with scheduler-ranked cohorts ahead
-of raw newest unstructured rows.
+After scheduler-ranked work is exhausted, the combined claim path takes a
+bounded newest-first slice from `article_header_assembly_queue`. It classifies
+each selected row against `binary_completion_keys`: matching rows are Lane A
+extensions of incomplete binaries, while the remaining rows are Lane B general
+binary work. Candidate discovery is deliberately bounded by the batch size so
+a large queue cannot force the claim transaction to scan the entire backlog.
+
+An explicitly enabled RFC3339 assemble target window temporarily restricts
+cohort scheduling, assembly claims, and cross-newsgroup multipart regroup scans
+to that `source_posted_at` range. Target-window cohort capacity is counted
+inside the window, so an unrelated global cohort backlog cannot prevent
+structured historical work from being prioritized. Target assembly consumes
+those cohort rows before its bounded fallback scan. This lets a completed
+historical timeframe scrape reach assembly and regrouping without first
+draining an unrelated live backlog. Disable the window after the historical
+work completes to restore normal global scheduler-ranked and newest-first
+selection.
 
 Binary grouping evidence priority is documented in
 [Binary Grouping Evidence](./binary-grouping-evidence.md). In short, complete

@@ -1184,7 +1184,9 @@ export type ScrapeTimeframe = {
   id: string
   group_name: string
   start_date: string
+  start_time?: string
   end_date: string
+  end_time?: string
   enabled: boolean
 }
 

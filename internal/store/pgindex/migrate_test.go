@@ -103,4 +103,41 @@ func TestFreshBaselineMigration(t *testing.T) {
 			t.Fatalf("%s.id must have sequence default, got %q", table, columnDefault.String)
 		}
 	}
+
+	redundantIndexes := []string{
+		"idx_binary_grouping_evidence_source_posted",
+		"idx_federation_events_author_sequence",
+		"idx_release_archive_detail_subtitle_release",
+		"idx_release_family_readiness_source_posted",
+		"idx_release_ready_candidates_source_posted",
+		"idx_release_recovered_file_set_candidates_source_posted",
+		"idx_release_stage_dirty_families_source_posted",
+		"idx_scrape_checkpoints_provider_newsgroup",
+	}
+	for _, indexName := range redundantIndexes {
+		var exists bool
+		if err := store.DB().QueryRowContext(context.Background(), `
+			SELECT to_regclass('public.' || $1) IS NOT NULL`, indexName).Scan(&exists); err != nil {
+			t.Fatalf("check redundant index %s: %v", indexName, err)
+		}
+		if exists {
+			t.Fatalf("fresh schema must not retain redundant index %s", indexName)
+		}
+	}
+
+	var baseStemPredicate string
+	if err := store.DB().QueryRowContext(context.Background(), `
+		SELECT pg_get_expr(i.indpred, i.indrelid)
+		FROM pg_index i
+		JOIN pg_class c ON c.oid = i.indexrelid
+		JOIN pg_namespace n ON n.oid = c.relnamespace
+		WHERE n.nspname = 'public'
+		  AND c.relname = 'idx_binary_identity_base_stem_lookup'`,
+	).Scan(&baseStemPredicate); err != nil {
+		t.Fatalf("load release base-stem lookup predicate: %v", err)
+	}
+	if strings.Contains(baseStemPredicate, "expected_file_count") ||
+		strings.Contains(baseStemPredicate, "expected_archive_file_count") {
+		t.Fatalf("release base-stem lookup must cover singleton families, predicate=%q", baseStemPredicate)
+	}
 }

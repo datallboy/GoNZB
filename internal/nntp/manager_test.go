@@ -247,6 +247,30 @@ func TestManagerClientExposesIndexerStyleCalls(t *testing.T) {
 	}
 }
 
+func TestManagerClientPinsXOverToRequestedProvider(t *testing.T) {
+	first := &roleTestProvider{id: "easynews", priority: 0}
+	second := &roleTestProvider{id: "newshosting", priority: 1}
+	manager := newManagerWithProviders(nil, []*managedProvider{
+		newManagedProvider(first),
+		newManagedProvider(second),
+	}, ManagerOptions{CapacityPolicy: CapacityWaitQueue})
+	client := manager.ClientForScope("scrape")
+
+	_, providerID, err := client.XOverOnProvider(
+		context.Background(),
+		"newshosting",
+		"alt.binaries.test",
+		1,
+		1,
+	)
+	if err != nil {
+		t.Fatalf("provider-pinned xover: %v", err)
+	}
+	if providerID != "newshosting" {
+		t.Fatalf("expected newshosting, got %q", providerID)
+	}
+}
+
 func TestManagerReservationsCapIndexerWhenDownloaderHasDemand(t *testing.T) {
 	provider := newBlockingProvider(5)
 	manager := newManagerWithProviders(nil, []*managedProvider{newManagedProvider(provider)}, ManagerOptions{

@@ -50,6 +50,15 @@ func assemblyClaimStructuredMatchSQL() string {
 	return assemblyClaimCompletionKeyExistsSQL()
 }
 
+func assemblyClaimUnownedArticleSQL(queueAlias string) string {
+	return fmt.Sprintf(`NOT EXISTS (
+		SELECT 1
+		FROM binary_parts bp
+		WHERE bp.source_posted_at = %s.source_posted_at
+		  AND bp.article_header_id = %s.article_header_id
+	)`, queueAlias, queueAlias)
+}
+
 // unassembled header row used by Milestone 6 assembly service.
 type AssemblyCandidate struct {
 	ID                              int64
@@ -153,6 +162,8 @@ type AssemblyClaimRequest struct {
 	LaneATargetPct         int
 	LaneBMinPct            int
 	LaneATimeWindowMinutes int
+	TargetWindowStart      *time.Time
+	TargetWindowEnd        *time.Time
 }
 
 const (
@@ -287,6 +298,7 @@ func (s *Store) ListUnassembledArticleHeaders(ctx context.Context, limit int) ([
 				ROW_NUMBER() OVER (ORDER BY q.article_header_id DESC)::integer AS ord,
 				FALSE AS structured_identity_binary_matched
 			FROM article_header_assembly_queue q
+			WHERE `+assemblyClaimUnownedArticleSQL("q")+`
 			ORDER BY q.article_header_id DESC
 			LIMIT $1
 		)
@@ -362,6 +374,7 @@ func hasClaimableArticleCohortAssemblyRows(ctx context.Context, q assemblyQuerye
 			WHERE cq.status = 'ready'
 			  AND (ahq.claim_until IS NULL OR ahq.claim_until < NOW())
 			  AND ahq.queued_at <= NOW() - ($1::bigint * INTERVAL '1 second')
+			  AND `+assemblyClaimUnownedArticleSQL("ahq")+`
 			LIMIT 1
 		)`, int64(assembleClaimMinQueueAge/time.Second))
 	if err != nil {
@@ -441,9 +454,12 @@ func (s *Store) ClaimAssemblyQueueBatchWithStats(ctx context.Context, req Assemb
 	}
 	claimToken := uuid.NewString()
 	lane := strings.TrimSpace(strings.ToLower(req.Lane))
+	hasTargetWindow := req.TargetWindowStart != nil &&
+		req.TargetWindowEnd != nil &&
+		req.TargetWindowStart.Before(*req.TargetWindowEnd)
 
 	cohortOnly := false
-	if lane == AssemblyClaimLaneCombined || lane == AssemblyClaimLaneB {
+	if !hasTargetWindow && (lane == AssemblyClaimLaneCombined || lane == AssemblyClaimLaneB) {
 		available, err := hasClaimableArticleCohortAssemblyRows(ctx, tx)
 		if err != nil {
 			return nil, stats, err
@@ -461,6 +477,7 @@ func (s *Store) ClaimAssemblyQueueBatchWithStats(ctx context.Context, req Assemb
 			FROM article_header_assembly_queue q
 			WHERE (q.claim_until IS NULL OR q.claim_until < NOW())
 			  AND q.queued_at <= NOW() - ($5::bigint * INTERVAL '1 second')
+			  AND ` + assemblyClaimUnownedArticleSQL("q") + `
 			ORDER BY q.article_header_id DESC
 			LIMIT $1
 			FOR UPDATE OF q SKIP LOCKED
@@ -473,6 +490,58 @@ func (s *Store) ClaimAssemblyQueueBatchWithStats(ctx context.Context, req Assemb
 		int64(assembleClaimMinQueueAge / time.Second),
 	}
 	switch {
+	case hasTargetWindow:
+		selectionSQL = `
+		WITH cohort_lane AS MATERIALIZED (
+			SELECT
+				q.source_posted_at,
+				q.article_header_id,
+				TRUE AS structured_identity_binary_matched,
+				-3 AS lane_rank
+			FROM article_cohort_assembly_queue cq
+			JOIN article_header_assembly_queue q
+			  ON q.source_posted_at = cq.source_posted_at
+			 AND q.article_header_id = cq.article_header_id
+			WHERE cq.status = 'ready'
+			  AND q.source_posted_at >= $6
+			  AND q.source_posted_at < $7
+			  AND (q.claim_until IS NULL OR q.claim_until < NOW())
+			  AND q.queued_at <= NOW() - ($5::bigint * INTERVAL '1 second')
+			  AND ` + assemblyClaimUnownedArticleSQL("q") + `
+			ORDER BY cq.priority_rank ASC, cq.score DESC, q.source_posted_at DESC, q.article_header_id DESC
+			LIMIT $1
+			FOR UPDATE OF q SKIP LOCKED
+		),
+		fallback_lane AS MATERIALIZED (
+			SELECT
+				q.source_posted_at,
+				q.article_header_id,
+				` + assemblyClaimStructuredMatchSQL() + ` AS structured_identity_binary_matched,
+				-2 AS lane_rank
+			FROM article_header_assembly_queue q
+			WHERE q.source_posted_at >= $6
+			  AND q.source_posted_at < $7
+			  AND (q.claim_until IS NULL OR q.claim_until < NOW())
+			  AND q.queued_at <= NOW() - ($5::bigint * INTERVAL '1 second')
+			  AND ` + assemblyClaimUnownedArticleSQL("q") + `
+			  AND NOT EXISTS (
+				SELECT 1
+				FROM cohort_lane c
+				WHERE c.source_posted_at = q.source_posted_at
+				  AND c.article_header_id = q.article_header_id
+			  )
+			ORDER BY q.source_posted_at DESC, q.article_header_id DESC
+			LIMIT $1
+			FOR UPDATE OF q SKIP LOCKED
+		),
+		selected_targets AS MATERIALIZED (
+			SELECT * FROM cohort_lane
+			UNION ALL
+			SELECT * FROM fallback_lane
+			ORDER BY lane_rank ASC, source_posted_at DESC, article_header_id DESC
+			LIMIT $1
+		),`
+		queryArgs = append(queryArgs, req.TargetWindowStart.UTC(), req.TargetWindowEnd.UTC())
 	case cohortOnly:
 		selectionSQL = `
 		WITH selected_targets AS MATERIALIZED (
@@ -488,6 +557,7 @@ func (s *Store) ClaimAssemblyQueueBatchWithStats(ctx context.Context, req Assemb
 			WHERE cq.status = 'ready'
 			  AND (q.claim_until IS NULL OR q.claim_until < NOW())
 			  AND q.queued_at <= NOW() - ($5::bigint * INTERVAL '1 second')
+			  AND ` + assemblyClaimUnownedArticleSQL("q") + `
 			ORDER BY cq.priority_rank ASC, cq.score DESC, q.article_header_id DESC
 			LIMIT $1
 			FOR UPDATE OF q SKIP LOCKED
@@ -503,6 +573,7 @@ func (s *Store) ClaimAssemblyQueueBatchWithStats(ctx context.Context, req Assemb
 			FROM article_header_assembly_queue q
 			WHERE (q.claim_until IS NULL OR q.claim_until < NOW())
 			  AND q.queued_at <= NOW() - ($5::bigint * INTERVAL '1 second')
+			  AND ` + assemblyClaimUnownedArticleSQL("q") + `
 			  AND q.queue_kind = 'structured'
 			  AND ` + assemblyClaimCompletionKeyExistsSQL() + `
 			ORDER BY q.article_header_id DESC
@@ -524,6 +595,7 @@ func (s *Store) ClaimAssemblyQueueBatchWithStats(ctx context.Context, req Assemb
 			WHERE cq.status = 'ready'
 			  AND (q.claim_until IS NULL OR q.claim_until < NOW())
 			  AND q.queued_at <= NOW() - ($5::bigint * INTERVAL '1 second')
+			  AND ` + assemblyClaimUnownedArticleSQL("q") + `
 			ORDER BY cq.priority_rank ASC, cq.score DESC, q.article_header_id DESC
 			LIMIT $1
 			FOR UPDATE OF q SKIP LOCKED
@@ -537,6 +609,7 @@ func (s *Store) ClaimAssemblyQueueBatchWithStats(ctx context.Context, req Assemb
 			FROM article_header_assembly_queue q
 			WHERE (q.claim_until IS NULL OR q.claim_until < NOW())
 			  AND q.queued_at <= NOW() - ($5::bigint * INTERVAL '1 second')
+			  AND ` + assemblyClaimUnownedArticleSQL("q") + `
 			  AND (
 			    q.queue_kind <> 'structured'
 			    OR NOT ` + assemblyClaimCompletionKeyExistsSQL() + `
@@ -558,85 +631,6 @@ func (s *Store) ClaimAssemblyQueueBatchWithStats(ctx context.Context, req Assemb
 			ORDER BY lane_rank ASC, article_header_id DESC
 			LIMIT $1
 		),`
-	case lane == AssemblyClaimLaneCombined:
-		laneALimit := (limit * req.LaneATargetPct) / 100
-		if laneALimit < 1 && limit > 1 {
-			laneALimit = 1
-		}
-		selectionSQL = `
-		WITH cohort_lane AS MATERIALIZED (
-			SELECT
-				q.source_posted_at,
-				q.article_header_id,
-				TRUE AS structured_identity_binary_matched,
-				-1 AS lane_rank
-			FROM article_cohort_assembly_queue cq
-			JOIN article_header_assembly_queue q
-			  ON q.source_posted_at = cq.source_posted_at
-			 AND q.article_header_id = cq.article_header_id
-			WHERE cq.status = 'ready'
-			  AND (q.claim_until IS NULL OR q.claim_until < NOW())
-			  AND q.queued_at <= NOW() - ($5::bigint * INTERVAL '1 second')
-			ORDER BY cq.priority_rank ASC, cq.score DESC, q.article_header_id DESC
-			LIMIT $1
-			FOR UPDATE OF q SKIP LOCKED
-		),
-		lane_a AS MATERIALIZED (
-			SELECT
-				q.source_posted_at,
-				q.article_header_id,
-				TRUE AS structured_identity_binary_matched,
-				0 AS lane_rank
-			FROM article_header_assembly_queue q
-			WHERE (q.claim_until IS NULL OR q.claim_until < NOW())
-			  AND q.queued_at <= NOW() - ($5::bigint * INTERVAL '1 second')
-			  AND q.queue_kind = 'structured'
-			  AND ` + assemblyClaimCompletionKeyExistsSQL() + `
-			  AND NOT EXISTS (
-				SELECT 1
-				FROM cohort_lane c
-				WHERE c.source_posted_at = q.source_posted_at
-				  AND c.article_header_id = q.article_header_id
-			  )
-			ORDER BY q.article_header_id DESC
-			LIMIT $6
-			FOR UPDATE OF q SKIP LOCKED
-		),
-		lane_b AS MATERIALIZED (
-			SELECT
-				q.source_posted_at,
-				q.article_header_id,
-				FALSE AS structured_identity_binary_matched,
-				1 AS lane_rank
-			FROM article_header_assembly_queue q
-			WHERE (q.claim_until IS NULL OR q.claim_until < NOW())
-			  AND q.queued_at <= NOW() - ($5::bigint * INTERVAL '1 second')
-			  AND NOT EXISTS (
-				SELECT 1
-				FROM lane_a a
-				WHERE a.source_posted_at = q.source_posted_at
-				  AND a.article_header_id = q.article_header_id
-			  )
-			  AND NOT EXISTS (
-				SELECT 1
-				FROM cohort_lane c
-				WHERE c.source_posted_at = q.source_posted_at
-				  AND c.article_header_id = q.article_header_id
-			  )
-			ORDER BY q.article_header_id DESC
-			LIMIT $1
-			FOR UPDATE OF q SKIP LOCKED
-		),
-		selected_targets AS MATERIALIZED (
-			SELECT * FROM cohort_lane
-			UNION ALL
-			SELECT * FROM lane_a
-			UNION ALL
-			SELECT * FROM lane_b
-			ORDER BY lane_rank ASC, article_header_id DESC
-			LIMIT $1
-		),`
-		queryArgs = append(queryArgs, laneALimit)
 	}
 
 	rows, err := tx.QueryContext(ctx, selectionSQL+`
@@ -1053,9 +1047,10 @@ func (s *Store) CountUnassembledArticleHeaders(ctx context.Context) (int64, erro
 func (s *Store) EstimateUnassembledArticleHeaders(ctx context.Context) (int64, error) {
 	var estimated float64
 	if err := s.db.QueryRowContext(ctx, `
-		SELECT COALESCE(reltuples, 0)
-		FROM pg_class
-		WHERE oid = 'article_header_assembly_queue'::regclass`,
+		SELECT COALESCE(SUM(GREATEST(c.reltuples, 0)), 0)
+		FROM pg_partition_tree('article_header_assembly_queue'::regclass) tree
+		JOIN pg_class c ON c.oid = tree.relid
+		WHERE tree.isleaf`,
 	).Scan(&estimated); err != nil {
 		return 0, fmt.Errorf("estimate unassembled article headers: %w", err)
 	}
@@ -2912,6 +2907,7 @@ func (s *Store) refreshBinaryStatsChunk(ctx context.Context, binaryIDs []int64, 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit refresh binary stats batch tx: %w", err)
 	}
+	s.clearInspectDiscoverySeedBackoff()
 	return nil
 }
 
@@ -2982,15 +2978,15 @@ func refreshBinaryStatsIDsInTxForWindow(ctx context.Context, tx *sql.Tx, binaryI
 					bp.source_posted_at
 				FROM locked_binaries lb
 				JOIN binary_parts bp
+				  -- Existing min/max values describe the previous refresh. Widen
+				  -- them so a yEnc merge can extend a target across source times.
 				  ON bp.source_posted_at >= CASE
 						WHEN $4::boolean THEN $5
-						WHEN lb.part_source_posted_at_min IS NOT NULL THEN lb.part_source_posted_at_min
-						ELSE lb.source_posted_at - INTERVAL '1 day'
+						ELSE COALESCE(lb.part_source_posted_at_min, lb.source_posted_at) - INTERVAL '1 day'
 					END
 				 AND bp.source_posted_at <= CASE
 						WHEN $4::boolean THEN $6
-						WHEN lb.part_source_posted_at_max IS NOT NULL THEN lb.part_source_posted_at_max
-						ELSE lb.source_posted_at + INTERVAL '1 day'
+						ELSE COALESCE(lb.part_source_posted_at_max, lb.source_posted_at) + INTERVAL '1 day'
 					END
 				 AND bp.binary_id = lb.binary_id
 				WHERE ($4::boolean = FALSE OR (bp.source_posted_at >= $5 AND bp.source_posted_at < $6))

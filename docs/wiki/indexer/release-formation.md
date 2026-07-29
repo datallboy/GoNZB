@@ -107,10 +107,21 @@ Public/API catalog visibility is stricter than internal formation. The current
 runtime public policy includes `public_require_payload_complete`, public
 minimum completion, public minimum confidence, optional inspection/enrichment,
 optional expected-file-count completeness, and `public_require_clear_title`.
+The public release title preserves the canonical full release name, including
+year, source, resolution, codecs, and release group when known. Embedded media
+titles and external catalog titles are search/classification metadata; they
+must not replace a richer release name.
 When `public_require_clear_title` is enabled, public visibility, NZB
 generation, and archive claiming must reject placeholder titles such as
 `unknown-release`, weak labels such as `VIP ONLY`, long opaque tokens, and
 `source_obfuscated` titles until enrichment or inspection derives a real title.
+
+Archived NZBs are reopened for regeneration by default when release files,
+segments, or newsgroup lineage changes. This is required for late-arriving
+parts and cross-newsgroup regrouping: an older durable NZB must not remain
+authoritative after the release snapshot improves. Operators may disable
+`reopen_archived_nzb_on_release_change` only when immutable first-write archive
+behavior is explicitly preferred.
 
 For split archives, a leading-volume probe may return a valid archive listing
 and a partial-volume warning such as an unexpected end of archive. When the

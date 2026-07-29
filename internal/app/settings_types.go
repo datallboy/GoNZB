@@ -346,7 +346,9 @@ type IndexingScrapeTimeframeRuntimeSettings struct {
 	ID        string `json:"id,omitempty"`
 	GroupName string `json:"group_name,omitempty"`
 	StartDate string `json:"start_date,omitempty"`
+	StartTime string `json:"start_time,omitempty"`
 	EndDate   string `json:"end_date,omitempty"`
+	EndTime   string `json:"end_time,omitempty"`
 	Enabled   bool   `json:"enabled,omitempty"`
 }
 

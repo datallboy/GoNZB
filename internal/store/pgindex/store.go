@@ -24,6 +24,10 @@ type Store struct {
 	yencSeedScanBackoffUntil     time.Time
 	yencSeedScanConsecutiveEmpty int
 
+	inspectDiscoverySeedMu               sync.Mutex
+	inspectDiscoverySeedBackoffUntil     time.Time
+	inspectDiscoverySeedConsecutiveEmpty int
+
 	yencSelectionMu        sync.Mutex
 	yencLastSelectionStats YEncRecoverySelectionStats
 

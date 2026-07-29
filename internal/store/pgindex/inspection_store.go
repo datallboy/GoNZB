@@ -1247,12 +1247,20 @@ func (s *Store) listBinaryInspectionCandidates(ctx context.Context, q binaryInsp
 			return candidates, nil
 		}
 		if db, ok := q.(*sql.DB); ok && db == s.db {
+			now := time.Now()
+			if stageName == "inspect_discovery" && s.shouldBackoffInspectDiscoverySeed(now) {
+				return candidates, nil
+			}
 			refreshLimit := limit * 10
 			if refreshLimit < 1000 {
 				refreshLimit = 1000
 			}
-			if _, err := s.RefreshInspectionReadyQueue(ctx, stageName, refreshLimit); err != nil {
+			result, err := s.RefreshInspectionReadyQueue(ctx, stageName, refreshLimit)
+			if err != nil {
 				return nil, err
+			}
+			if stageName == "inspect_discovery" {
+				s.recordInspectDiscoverySeedResult(now, result.ReadyUpserted)
 			}
 			return s.listInspectionReadyQueueCandidates(ctx, q, stageName, limit)
 		}
@@ -1324,7 +1332,7 @@ func (s *Store) listBinaryInspectionCandidatesRaw(ctx context.Context, q binaryI
 		  )`
 	rerunPredicate := `
 			bi.id IS NULL OR
-			bi.status = 'failed' OR
+			(bi.status = 'failed' AND bi.updated_at <= NOW() - INTERVAL '5 minutes') OR
 			(
 				bi.status = 'running' AND
 				(
@@ -1418,6 +1426,7 @@ func (s *Store) listBinaryInspectionCandidatesRaw(ctx context.Context, q binaryI
 					) AS completed_zero_targets,
 					(
 						` + rerunPredicate + `
+						OR bi.release_id IS DISTINCT FROM b.release_id
 					) AS needs_rerun
 				FROM binary_state b
 				LEFT JOIN posters p ON p.id = b.poster_id
@@ -1522,6 +1531,35 @@ func (s *Store) listBinaryInspectionCandidatesRaw(ctx context.Context, q binaryI
 
 	if stageName == "inspect_discovery" {
 		query := `
+			WITH active_yenc AS MATERIALIZED (
+				SELECT source_posted_at, binary_id
+				FROM yenc_recovery_work_items
+				WHERE status IN ('ready', 'running')
+			),
+			discovery_roots AS MATERIALIZED (
+				SELECT bic.*
+				FROM binary_identity_current bic
+				JOIN binary_lifecycle bl
+				  ON bl.source_posted_at = bic.source_posted_at
+				 AND bl.binary_id = bic.binary_id
+				 AND bl.lifecycle_status = 'active'
+				LEFT JOIN active_yenc ay
+				  ON ay.source_posted_at = bic.source_posted_at
+				 AND ay.binary_id = bic.binary_id
+				WHERE ay.binary_id IS NULL
+				  AND (bic.is_main_payload = TRUE OR bic.is_auxiliary = FALSE)
+				  AND EXISTS (
+					SELECT 1
+					FROM binary_parts bp
+					WHERE bp.source_posted_at = bic.source_posted_at
+					  AND bp.binary_id = bic.binary_id
+					  AND bp.part_number = 1
+				  )
+				  AND (
+					LOWER(COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '')) LIKE '%.bin' OR
+					COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '') !~ '\.[A-Za-z0-9]{1,8}$'
+				  )
+			)
 			SELECT
 				$1 AS stage_name,
 				bic.binary_id AS binary_id,
@@ -1549,7 +1587,7 @@ func (s *Store) listBinaryInspectionCandidatesRaw(ctx context.Context, q binaryI
 				bi.updated_at AS current_updated_at,
 				COALESCE(bi.summary_json, '{}'::jsonb) AS current_summary_json,
 				'{}'::jsonb AS archive_summary_json
-			FROM binary_identity_current bic
+			FROM discovery_roots bic
 			JOIN binary_core bc
 			  ON bc.source_posted_at = bic.source_posted_at
 			 AND bc.binary_id = bic.binary_id
@@ -1565,14 +1603,9 @@ func (s *Store) listBinaryInspectionCandidatesRaw(ctx context.Context, q binaryI
 			 AND bi.stage_name = $1
 			 AND bi.binary_id = bic.binary_id
 			WHERE COALESCE(brc.recovered_extension, '') = ''
-			  AND (bic.is_main_payload = TRUE OR bic.is_auxiliary = FALSE)
-			  AND (
-				LOWER(COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '')) LIKE '%.bin' OR
-				COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '') !~ '\.[A-Za-z0-9]{1,8}$'
-			  )
 			  AND (
 				bi.id IS NULL OR
-				bi.status = 'failed' OR
+				(bi.status = 'failed' AND bi.updated_at <= NOW() - INTERVAL '5 minutes') OR
 				(
 					bi.status = 'running' AND
 					(
@@ -1591,6 +1624,15 @@ func (s *Store) listBinaryInspectionCandidatesRaw(ctx context.Context, q binaryI
 			  AND (
 				bi.inspection_claimed_until IS NULL OR
 				bi.inspection_claimed_until < NOW()
+			  )
+			  AND NOT EXISTS (
+				SELECT 1
+				FROM binary_inspections cfi
+				WHERE cfi.source_posted_at = bic.source_posted_at
+				  AND cfi.stage_name = 'inspect_discovery'
+				  AND cfi.binary_id = bic.binary_id
+				  AND cfi.status = 'completed'
+				  AND COALESCE(cfi.summary_json->>'content_filtered', '') = 'true'
 			  )
 			ORDER BY bic.updated_at DESC, bic.binary_id DESC
 			LIMIT $2`
@@ -1634,7 +1676,8 @@ func (s *Store) listBinaryInspectionCandidatesRaw(ctx context.Context, q binaryI
 		 AND abi.binary_id = b.id
 		WHERE ` + filter + `
 		  AND (
-			` + rerunPredicate + `
+			` + rerunPredicate + ` OR
+			bi.release_id IS DISTINCT FROM r.release_id
 		  )
 		  AND (
 			bi.inspection_claimed_until IS NULL OR
@@ -1716,6 +1759,7 @@ func (s *Store) listBinaryInspectionCandidatesRaw(ctx context.Context, q binaryI
 						)
 					) OR
 					b.updated_at > bi.updated_at OR
+					bi.release_id IS DISTINCT FROM r.release_id OR
 					` + errorRerunPredicate + `
 				  )
 				  AND (
@@ -1895,21 +1939,36 @@ func (s *Store) ClaimBinaryInspectionCandidates(ctx context.Context, req BinaryI
 	if _, err := inspectCandidateFilter(req.StageName, req.Options.RequireExpectedFileCount); err != nil {
 		return nil, err
 	}
-	preview, err := s.listBinaryInspectionCandidates(ctx, s.db, req.StageName, req.Limit, req.Options)
-	if err != nil {
-		return nil, err
+	var (
+		preview []BinaryInspectionCandidate
+		err     error
+	)
+	if isQueuedInspectionStage(req.StageName) {
+		preview, err = s.listInspectionReadyQueueCandidates(ctx, s.db, req.StageName, req.Limit)
+		if err != nil {
+			return nil, err
+		}
+		if len(preview) == 0 {
+			refreshLimit := req.Limit * 10
+			if refreshLimit < 1000 {
+				refreshLimit = 1000
+			}
+			if _, err := s.RefreshInspectionReadyQueue(ctx, req.StageName, refreshLimit); err != nil {
+				return nil, err
+			}
+			preview, err = s.listInspectionReadyQueueCandidates(ctx, s.db, req.StageName, req.Limit)
+			if err != nil {
+				return nil, err
+			}
+		}
+	} else {
+		preview, err = s.listBinaryInspectionCandidatesRaw(ctx, s.db, req.StageName, req.Limit, req.Options)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if err := s.ensurePartitionBundleForBinaryIDs(ctx, partitionBundleInspect, inspectionCandidateBinaryIDs(preview)); err != nil {
 		return nil, err
-	}
-	if isQueuedInspectionStage(req.StageName) {
-		refreshLimit := req.Limit * 10
-		if refreshLimit < 1000 {
-			refreshLimit = 1000
-		}
-		if _, err := s.RefreshInspectionReadyQueue(ctx, req.StageName, refreshLimit); err != nil {
-			return nil, err
-		}
 	}
 
 	var candidates []BinaryInspectionCandidate
@@ -2502,7 +2561,7 @@ func (s *Store) applyDerivedInspectionTitleUpdate(ctx context.Context, releaseID
 		    updated_at = NOW()
 		WHERE release_id = $1`,
 		releaseID,
-		strings.TrimSpace(best.DisplayTitle),
+		strings.TrimSpace(best.ReleaseTitle),
 		strings.TrimSpace(best.ReleaseTitle),
 		strings.TrimSpace(best.Source),
 		best.Confidence,

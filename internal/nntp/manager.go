@@ -331,6 +331,13 @@ func (c *ManagerClient) XOverWithProvider(ctx context.Context, group string, fro
 	return c.manager.xoverForScopeWithProvider(ctx, c.scope, c.policy, group, from, to)
 }
 
+func (c *ManagerClient) XOverOnProvider(ctx context.Context, providerID, group string, from, to int64) ([]OverviewHeader, string, error) {
+	if c == nil || c.manager == nil {
+		return nil, "", fmt.Errorf("nntp manager client is nil")
+	}
+	return c.manager.xoverForScopeOnProvider(ctx, c.scope, c.policy, providerID, group, from, to)
+}
+
 func (m *Manager) ID() string {
 	if m == nil || len(m.providers) == 0 {
 		return ""
@@ -702,6 +709,49 @@ func (m *Manager) xoverForScopeWithProvider(ctx context.Context, scope string, p
 	}
 	m.stats.busyReturns.Add(1)
 	return nil, "", ErrProviderBusy
+}
+
+func (m *Manager) xoverForScopeOnProvider(ctx context.Context, scope string, policy CapacityPolicy, providerID, group string, from, to int64) ([]OverviewHeader, string, error) {
+	m.stats.xover.Add(1)
+	scopeStats := m.scopeStats(scope)
+	scopeStats.xover.Add(1)
+	if err := ctx.Err(); err != nil {
+		return nil, "", err
+	}
+
+	var selected *managedProvider
+	for _, mp := range m.providers {
+		if mp != nil && strings.EqualFold(strings.TrimSpace(mp.ID()), strings.TrimSpace(providerID)) {
+			selected = mp
+			break
+		}
+	}
+	if selected == nil || !selected.allowsScope(scope) {
+		return nil, "", fmt.Errorf("nntp provider %q is not available for %s", providerID, scope)
+	}
+
+	acquired, err := m.acquire(ctx, scope, selected)
+	if err != nil {
+		return nil, "", err
+	}
+	if !acquired {
+		if policy != CapacityWaitQueue {
+			m.stats.busyReturns.Add(1)
+			return nil, "", ErrProviderBusy
+		}
+		selected, err = m.waitForProviderFromList(ctx, scope, []*managedProvider{selected})
+		if err != nil {
+			return nil, "", err
+		}
+	}
+
+	result, err := selected.Provider.XOver(ctx, group, from, to)
+	m.releaseForScope(scope, selected)
+	if err != nil {
+		m.recordOperationError(scope, err)
+		return nil, selected.ID(), err
+	}
+	return result, selected.ID(), nil
 }
 
 func (m *Manager) acquire(ctx context.Context, scope string, mp *managedProvider) (bool, error) {

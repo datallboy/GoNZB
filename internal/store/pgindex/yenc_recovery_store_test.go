@@ -49,3 +49,37 @@ func TestNormalizeYEncHeaderRecoveryRecordUsesRecoveredFileFallbackWhenFamilyMis
 		t.Fatalf("expected recovered fallback binary key, got %q", record.BinaryKey)
 	}
 }
+
+func TestNormalizeYEncHeaderRecoveryRecordReplacesProvisionalFamilyWithoutFileSet(t *testing.T) {
+	makeRecord := func(subjectKey string, partNumber int) YEncHeaderRecoveryRecord {
+		return YEncHeaderRecoveryRecord{
+			SourceReleaseKey: subjectKey,
+			ReleaseFamilyKey: subjectKey,
+			ReleaseKey:       subjectKey,
+			BinaryKey:        subjectKey + "::" + subjectKey,
+			BinaryName:       subjectKey + ".bin",
+			FileName:         "u2gQ8P9Sik.dat",
+			PartNumber:       partNumber,
+			TotalParts:       732,
+			FileSize:         524288000,
+			IdentityStrength: "provisional",
+			IdentityReason:   "opaque_subject_set",
+		}
+	}
+
+	first := makeRecord("random-subject-one", 636)
+	second := makeRecord("random-subject-two", 637)
+	normalizeYEncHeaderRecoveryRecord(&first)
+	normalizeYEncHeaderRecoveryRecord(&second)
+
+	wantFamily := "yenc u2gq8p9sik dat parts732 size524288000"
+	if first.SourceReleaseKey != wantFamily || first.ReleaseFamilyKey != wantFamily || first.FileSetKey != wantFamily {
+		t.Fatalf("expected recovered fallback family %q, got source=%q release=%q file_set=%q", wantFamily, first.SourceReleaseKey, first.ReleaseFamilyKey, first.FileSetKey)
+	}
+	if first.BinaryKey != wantFamily+"::u2gq8p9sik dat" {
+		t.Fatalf("expected recovered file binary key, got %q", first.BinaryKey)
+	}
+	if second.BinaryKey != first.BinaryKey || second.ReleaseFamilyKey != first.ReleaseFamilyKey {
+		t.Fatalf("expected different provisional subjects to converge, got first=%q/%q second=%q/%q", first.ReleaseFamilyKey, first.BinaryKey, second.ReleaseFamilyKey, second.BinaryKey)
+	}
+}

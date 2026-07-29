@@ -183,6 +183,217 @@ func TestRunTimeframesKeepsIndependentProgressForSameGroup(t *testing.T) {
 	}
 }
 
+func TestRunTimeframesUsesConfiguredWorkers(t *testing.T) {
+	start := time.Date(2026, 7, 24, 13, 47, 2, 0, time.UTC)
+	end := start.Add(21 * time.Second)
+	timeframes := []Timeframe{
+		{ID: "window-a", Group: "alt.binaries.a", Start: start, End: end},
+		{ID: "window-b", Group: "alt.binaries.b", Start: start, End: end},
+	}
+	repo := &fakeScrapeRepo{
+		providerIDsByKey: map[string]int64{"fake": 1},
+		groupNamesByID: map[int64]string{
+			1: timeframes[0].Group,
+			2: timeframes[1].Group,
+		},
+		nextNewsgroupID: 2,
+		timeframeProgress: map[string]*pgindex.ScrapeTimeframeProgress{
+			timeframeProgressKey(timeframes[0].ID, 1, 1): {
+				TimeframeID: timeframes[0].ID,
+				ProviderID:  1,
+				NewsgroupID: 1,
+				WindowStart: start,
+				WindowEnd:   end,
+				State:       "completed",
+			},
+			timeframeProgressKey(timeframes[1].ID, 1, 2): {
+				TimeframeID: timeframes[1].ID,
+				ProviderID:  1,
+				NewsgroupID: 2,
+				WindowStart: start,
+				WindowEnd:   end,
+				State:       "completed",
+			},
+		},
+	}
+	svc := NewService(repo, fakeScrapeProvider{}, testScrapeLogger{}, Options{
+		BatchSize:   100,
+		MaxBatches:  2,
+		Concurrency: 2,
+		Timeframes:  timeframes,
+	})
+
+	metrics, err := svc.RunTimeframesOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("RunTimeframesOnceWithMetrics() error = %v", err)
+	}
+	if got := metrics["workers_used"]; got != 2 {
+		t.Fatalf("expected two timeframe workers, got workers_used=%v", got)
+	}
+	if got := metrics["groups_processed"]; got != 2 {
+		t.Fatalf("expected both completed windows to be inspected, got groups_processed=%v", got)
+	}
+}
+
+func TestResolveAssignedWindowRangePrefersExistingDateWindowAnchor(t *testing.T) {
+	windowStart := time.Date(2026, 7, 24, 13, 39, 0, 0, time.UTC)
+	windowEnd := windowStart.Add(14 * time.Minute)
+	repo := &fakeScrapeRepo{
+		scrapedDateRangeLow:  1_000_000,
+		scrapedDateRangeHigh: 1_010_000,
+	}
+	provider := fakeScrapeProvider{
+		stats: GroupStats{Low: 1, High: 2_000_000},
+		xoverFn: func(context.Context, string, int64, int64) ([]OverviewHeader, error) {
+			t.Fatal("date probing should not run when scraped headers anchor the window")
+			return nil, nil
+		},
+	}
+	svc := NewService(repo, provider, testScrapeLogger{}, Options{})
+
+	low, high, ok, err := svc.resolveAssignedWindowRange(
+		context.Background(),
+		1,
+		1,
+		"alt.binaries.test",
+		provider.stats,
+		windowStart,
+		windowEnd,
+	)
+	if err != nil {
+		t.Fatalf("resolve assigned window: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected anchored range")
+	}
+	const horizon = assignedWindowCorrectionSpan * assignedWindowMaxCorrectionScans
+	if low != 1_000_000-horizon || high != 1_010_000+horizon {
+		t.Fatalf("unexpected anchored range %d-%d", low, high)
+	}
+}
+
+func TestFindFirstArticleAtOrAfterCorrectsNonMonotonicDateHeaders(t *testing.T) {
+	base := time.Date(2026, 7, 24, 14, 0, 0, 0, time.UTC)
+	target := base.Add(time.Hour)
+	provider := fakeScrapeProvider{
+		xoverFn: func(_ context.Context, _ string, from, to int64) ([]OverviewHeader, error) {
+			rows := make([]OverviewHeader, 0, to-from+1)
+			for article := from; article <= to; article++ {
+				postedAt := target.Add(-time.Minute)
+				if (article >= 300 && article < 400) || article >= 700 {
+					postedAt = target.Add(time.Minute)
+				}
+				rows = append(rows, OverviewHeader{ArticleNumber: article, DateUTC: &postedAt})
+			}
+			return rows, nil
+		},
+	}
+	svc := NewService(&fakeScrapeRepo{}, provider, testScrapeLogger{}, Options{})
+
+	got, ok, err := svc.findFirstArticleAtOrAfter(context.Background(), "", "alt.binaries.history", 1, 1000, target)
+	if err != nil {
+		t.Fatalf("findFirstArticleAtOrAfter() error = %v", err)
+	}
+	if !ok || got != 300 {
+		t.Fatalf("expected corrected first article 300, got article=%d ok=%t", got, ok)
+	}
+}
+
+func TestCorrectFirstArticleAtOrAfterCrossesCleanDateGap(t *testing.T) {
+	target := time.Date(2026, 7, 24, 14, 0, 0, 0, time.UTC)
+	provider := fakeScrapeProvider{
+		xoverFn: func(_ context.Context, _ string, from, to int64) ([]OverviewHeader, error) {
+			rows := make([]OverviewHeader, 0, to-from+1)
+			for article := from; article <= to; article++ {
+				postedAt := target.Add(-time.Minute)
+				if article <= 10 {
+					postedAt = target.Add(time.Minute)
+				}
+				rows = append(rows, OverviewHeader{ArticleNumber: article, DateUTC: &postedAt})
+			}
+			return rows, nil
+		},
+	}
+	svc := NewService(&fakeScrapeRepo{}, provider, testScrapeLogger{}, Options{})
+
+	got, ok, err := svc.correctFirstArticleAtOrAfter(context.Background(), "", "alt.binaries.history", 1, 60_001, target)
+	if err != nil {
+		t.Fatalf("correctFirstArticleAtOrAfter() error = %v", err)
+	}
+	if !ok || got != 1 {
+		t.Fatalf("expected correction to cross a clean gap and find article 1, got article=%d ok=%t", got, ok)
+	}
+}
+
+func TestCorrectLastArticleBeforeCrossesCleanDateGap(t *testing.T) {
+	target := time.Date(2026, 7, 24, 15, 0, 0, 0, time.UTC)
+	provider := fakeScrapeProvider{
+		xoverFn: func(_ context.Context, _ string, from, to int64) ([]OverviewHeader, error) {
+			rows := make([]OverviewHeader, 0, to-from+1)
+			for article := from; article <= to; article++ {
+				postedAt := target.Add(time.Minute)
+				if article >= 40_001 && article <= 40_010 {
+					postedAt = target.Add(-time.Minute)
+				}
+				rows = append(rows, OverviewHeader{ArticleNumber: article, DateUTC: &postedAt})
+			}
+			return rows, nil
+		},
+	}
+	svc := NewService(&fakeScrapeRepo{}, provider, testScrapeLogger{}, Options{})
+
+	got, ok, err := svc.correctLastArticleBefore(context.Background(), "", "alt.binaries.history", 1, 60_001, target)
+	if err != nil {
+		t.Fatalf("correctLastArticleBefore() error = %v", err)
+	}
+	if !ok || got != 40_010 {
+		t.Fatalf("expected correction to cross a clean gap and find article 40010, got article=%d ok=%t", got, ok)
+	}
+}
+
+func TestFetchInsertRangeFiltersExactHistoricalWindow(t *testing.T) {
+	start := time.Date(2026, 7, 24, 14, 47, 0, 0, time.UTC)
+	end := start.Add(2 * time.Minute)
+	rows := make([]OverviewHeader, 0, 4)
+	for article, postedAt := range []time.Time{
+		start.Add(-time.Second),
+		start,
+		start.Add(time.Minute),
+		end,
+	} {
+		date := postedAt
+		rows = append(rows, OverviewHeader{
+			ArticleNumber: int64(article + 1),
+			MessageID:     fmt.Sprintf("<window-%d>", article+1),
+			DateUTC:       &date,
+		})
+	}
+	repo := &fakeScrapeRepo{}
+	svc := NewService(repo, fakeScrapeProvider{headers: rows}, testScrapeLogger{}, Options{})
+
+	headers, inserted, _, filtered, _, _, err := svc.fetchInsertRange(
+		context.Background(),
+		"timeframe",
+		1,
+		1,
+		"alt.binaries.history",
+		1,
+		4,
+		nil,
+		&headerDateWindow{start: start, end: end},
+		"",
+	)
+	if err != nil {
+		t.Fatalf("fetchInsertRange() error = %v", err)
+	}
+	if len(headers) != 2 || inserted != 2 || filtered != 2 {
+		t.Fatalf("expected two in-window headers, got headers=%d inserted=%d filtered=%d", len(headers), inserted, filtered)
+	}
+	if headers[0].ArticleNumber != 2 || headers[1].ArticleNumber != 3 {
+		t.Fatalf("unexpected in-window articles: %+v", headers)
+	}
+}
+
 func TestRunDeferredClaimsAndCompletesDurableRange(t *testing.T) {
 	postedAt := time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC)
 	repo := &fakeScrapeRepo{
@@ -305,7 +516,7 @@ func TestRunLatestUsesProviderThatServedGroupStatsForCheckpointsAndInsert(t *tes
 	}
 }
 
-func TestRunLatestUsesProviderThatServedXOverWhenItDiffersFromStats(t *testing.T) {
+func TestRunLatestRejectsXOverProviderThatDiffersFromStats(t *testing.T) {
 	repo := &fakeScrapeRepo{providerIDsByKey: map[string]int64{"fake": 1, "easynews": 2, "newshosting": 3}}
 	provider := fakeScrapeProvider{
 		stats: GroupStats{Low: 1, High: 10, ProviderID: "easynews"},
@@ -319,14 +530,14 @@ func TestRunLatestUsesProviderThatServedXOverWhenItDiffersFromStats(t *testing.T
 		BatchSize:  1,
 	})
 
-	if _, err := svc.RunLatestOnceWithMetrics(context.Background()); err != nil {
-		t.Fatalf("RunLatestOnceWithMetrics() error = %v", err)
+	if _, err := svc.RunLatestOnceWithMetrics(context.Background()); err == nil || !strings.Contains(err.Error(), "article numbers are provider-local") {
+		t.Fatalf("expected provider-local article range error, got %v", err)
 	}
-	if len(repo.insertProviderIDs) != 1 || repo.insertProviderIDs[0] != 3 {
-		t.Fatalf("expected insert under xover provider 3, got %#v", repo.insertProviderIDs)
+	if len(repo.insertProviderIDs) != 0 {
+		t.Fatalf("mismatched provider rows must not be inserted, got %#v", repo.insertProviderIDs)
 	}
-	if len(repo.latestProviderIDs) != 1 || repo.latestProviderIDs[0] != 3 {
-		t.Fatalf("expected checkpoint under xover provider 3, got %#v", repo.latestProviderIDs)
+	if len(repo.latestProviderIDs) != 0 {
+		t.Fatalf("mismatched provider range must not advance checkpoints, got %#v", repo.latestProviderIDs)
 	}
 }
 
@@ -887,6 +1098,8 @@ type fakeScrapeRepo struct {
 	deferredRanges            []pgindex.DeferredArticleRangeRecord
 	observedRanges            []observedScrapeRange
 	existingScrapeDays        map[string]bool
+	scrapedDateRangeLow       int64
+	scrapedDateRangeHigh      int64
 	timeframeProgress         map[string]*pgindex.ScrapeTimeframeProgress
 	deferredClaims            []*pgindex.DeferredArticleRangeClaim
 	completedDeferredClaims   []int64
@@ -1035,6 +1248,13 @@ func (f *fakeScrapeRepo) ObserveScrapeRange(_ context.Context, providerID, newsg
 		observations: append([]pgindex.ScrapeRangeObservation(nil), observations...),
 	})
 	return nil
+}
+
+func (f *fakeScrapeRepo) FindScrapedArticleRangeForDateWindow(context.Context, int64, int64, time.Time, time.Time) (int64, int64, bool, error) {
+	if f.scrapedDateRangeLow <= 0 || f.scrapedDateRangeHigh < f.scrapedDateRangeLow {
+		return 0, 0, false, nil
+	}
+	return f.scrapedDateRangeLow, f.scrapedDateRangeHigh, true, nil
 }
 
 func (f *fakeScrapeRepo) RefreshYEncRecoveryAdmissionSnapshot(context.Context) (*pgindex.YEncRecoveryAdmissionSnapshot, error) {

@@ -167,7 +167,24 @@ func (s *Store) ListYEncRecoveryCandidatesWithOptions(ctx context.Context, limit
 		}
 		stats.PrioritySeedLimit = seedLimit
 		seedStarted := time.Now()
-		upserted, retired, seedErr := s.BackfillPriorityYEncRecoveryWorkItems(ctx, seedLimit)
+		var upserted, retired int64
+		var seedErr error
+		if opts.TargetWindowStart != nil && opts.TargetWindowEnd != nil &&
+			opts.TargetWindowEnd.After(*opts.TargetWindowStart) {
+			windowSeedLimit := seedLimit
+			if windowSeedLimit > limit {
+				windowSeedLimit = limit
+			}
+			upserted, retired, seedErr = s.backfillPriorityYEncRecoveryWorkItemsForWindow(
+				ctx,
+				windowSeedLimit,
+				opts.TargetWindowStart.UTC(),
+				opts.TargetWindowEnd.UTC(),
+			)
+		}
+		if seedErr == nil && upserted == 0 {
+			upserted, retired, seedErr = s.BackfillPriorityYEncRecoveryWorkItems(ctx, seedLimit)
+		}
 		stats.SeedDuration += time.Since(seedStarted)
 		stats.PrioritySeeded = upserted
 		stats.PriorityRetired = retired
@@ -1196,7 +1213,7 @@ func (s *Store) ApplyYEncHeaderRecovery(ctx context.Context, in YEncHeaderRecove
 		var targetID int64
 		var keys []releaseFamilySummaryKey
 		supersededSources := []yencRecoverySupersededSource{}
-		result, targetID, keys, err = applyYEncHeaderRecoveryMutationInTx(ctx, tx, in, true, nil, &supersededSources, nil)
+		result, targetID, keys, err = applyYEncHeaderRecoveryMutationInTx(ctx, tx, in, true, nil, &supersededSources, nil, nil, nil)
 		if err != nil {
 			return err
 		}
@@ -1319,12 +1336,14 @@ func (s *Store) applyYEncHeaderRecoveryBatch(ctx context.Context, records []YEnc
 		recoveredArticleIDs := make([]int64, 0, len(orderedRowIDs))
 		targetUpdates := make(map[int64]struct{}, len(orderedRowIDs))
 		supersededSources := make([]yencRecoverySupersededSource, 0, len(orderedRowIDs))
+		pendingMerges := make([]yencRecoveryMerge, 0, len(orderedRowIDs))
+		completedWorkItems := make([]yencRecoveryWorkItemDone, 0, len(orderedRowIDs))
 		for _, rowID := range orderedRowIDs {
 			if rowID < 0 || rowID >= len(records) {
 				continue
 			}
 			started = time.Now()
-			result, targetID, keys, err := applyYEncHeaderRecoveryMutationInTx(ctx, tx, records[rowID], false, targetUpdates, &supersededSources, stats)
+			result, targetID, keys, err := applyYEncHeaderRecoveryMutationInTx(ctx, tx, records[rowID], false, targetUpdates, &supersededSources, &pendingMerges, &completedWorkItems, stats)
 			if stats != nil {
 				stats.MutationDuration += time.Since(started)
 			}
@@ -1338,6 +1357,21 @@ func (s *Store) applyYEncHeaderRecoveryBatch(ctx context.Context, records []YEnc
 			recoveredArticleIDs = append(recoveredArticleIDs, records[rowID].ArticleHeaderID)
 			targetIDs = append(targetIDs, targetID)
 			summaryKeys = append(summaryKeys, keys...)
+		}
+		partsDuration, releaseFilesDuration, err := mergeRecoveredBinariesBatch(ctx, tx, pendingMerges)
+		if err != nil {
+			return err
+		}
+		if stats != nil {
+			stats.PartsMergeDuration += partsDuration
+			stats.ReleaseFilesMergeDuration += releaseFilesDuration
+		}
+		started = time.Now()
+		if err := markYEncRecoveryWorkItemsDoneBatch(ctx, tx, completedWorkItems); err != nil {
+			return err
+		}
+		if stats != nil {
+			stats.WorkItemDoneUpdateDuration += time.Since(started)
 		}
 		started = time.Now()
 		if err := recordArticleCohortYEncRecoveredInTx(ctx, tx, recoveredArticleIDs); err != nil {
@@ -1374,6 +1408,7 @@ func (s *Store) applyYEncHeaderRecoveryBatch(ctx context.Context, records []YEnc
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("commit yenc recovery batch tx: %w", err)
 		}
+		s.clearInspectDiscoverySeedBackoff()
 		if stats != nil {
 			stats.CommitDuration += time.Since(started)
 		}
@@ -1385,7 +1420,7 @@ func (s *Store) applyYEncHeaderRecoveryBatch(ctx context.Context, records []YEnc
 	return results, nil
 }
 
-func applyYEncHeaderRecoveryMutationInTx(ctx context.Context, tx *sql.Tx, in YEncHeaderRecoveryRecord, lockIdentity bool, targetUpdates map[int64]struct{}, supersededSources *[]yencRecoverySupersededSource, stats *YEncRecoveryApplyStats) (*YEncHeaderRecoveryResult, int64, []releaseFamilySummaryKey, error) {
+func applyYEncHeaderRecoveryMutationInTx(ctx context.Context, tx *sql.Tx, in YEncHeaderRecoveryRecord, lockIdentity bool, targetUpdates map[int64]struct{}, supersededSources *[]yencRecoverySupersededSource, pendingMerges *[]yencRecoveryMerge, completedWorkItems *[]yencRecoveryWorkItemDone, stats *YEncRecoveryApplyStats) (*YEncHeaderRecoveryResult, int64, []releaseFamilySummaryKey, error) {
 	started := time.Now()
 	seed, err := loadYEncRecoveryBinarySeed(ctx, tx, in.BinaryID)
 	if stats != nil {
@@ -1464,19 +1499,30 @@ func applyYEncHeaderRecoveryMutationInTx(ctx context.Context, tx *sql.Tx, in YEn
 		} else if stats != nil {
 			stats.TargetUpdateSkipped++
 		}
-		started = time.Now()
-		if err := mergeRecoveredBinaryParts(ctx, tx, in.BinaryID, targetID, in.FileName, in.PartNumber, in.TotalParts); err != nil {
-			return nil, 0, nil, err
-		}
-		if stats != nil {
-			stats.PartsMergeDuration += time.Since(started)
-		}
-		started = time.Now()
-		if err := mergeRecoveredReleaseFiles(ctx, tx, in.BinaryID, targetID, in.FileName); err != nil {
-			return nil, 0, nil, err
-		}
-		if stats != nil {
-			stats.ReleaseFilesMergeDuration += time.Since(started)
+		if pendingMerges != nil {
+			*pendingMerges = append(*pendingMerges, yencRecoveryMerge{
+				SourceBinaryID:      in.BinaryID,
+				SourcePostedAt:      seed.SourcePostedAt,
+				TargetBinaryID:      targetID,
+				FileName:            in.FileName,
+				RecoveredPart:       in.PartNumber,
+				RecoveredTotalParts: in.TotalParts,
+			})
+		} else {
+			started = time.Now()
+			if err := mergeRecoveredBinaryParts(ctx, tx, in.BinaryID, targetID, in.FileName, in.PartNumber, in.TotalParts); err != nil {
+				return nil, 0, nil, err
+			}
+			if stats != nil {
+				stats.PartsMergeDuration += time.Since(started)
+			}
+			started = time.Now()
+			if err := mergeRecoveredReleaseFiles(ctx, tx, in.BinaryID, targetID, in.FileName); err != nil {
+				return nil, 0, nil, err
+			}
+			if stats != nil {
+				stats.ReleaseFilesMergeDuration += time.Since(started)
+			}
 		}
 		record := yencRecoverySupersededSource{
 			SourceBinaryID:   in.BinaryID,
@@ -1500,38 +1546,24 @@ func applyYEncHeaderRecoveryMutationInTx(ctx context.Context, tx *sql.Tx, in YEn
 		}
 	}
 
-	started = time.Now()
-	if _, err := tx.ExecContext(ctx, `
-		WITH target_sources AS (
-			SELECT binary_id, source_posted_at
-			FROM binary_core
-			WHERE binary_id IN ($1, $2)
-			  AND source_posted_at IS NOT NULL
-		)
-		UPDATE yenc_recovery_work_items
-		SET status = 'done',
-		    ready_at = NOW(),
-		    lease_owner = '',
-		    lease_expires_at = NULL,
-		    missing_count = 0,
-		    yenc_part_number = CASE WHEN article_header_id = $3 AND $4 > 0 THEN $4 ELSE yenc_part_number END,
-		    yenc_total_parts = GREATEST(yenc_total_parts, $5),
-		    yenc_file_size = GREATEST(yenc_file_size, $6),
-		    updated_at = NOW()
-		FROM target_sources ts
-		WHERE yenc_recovery_work_items.source_posted_at = ts.source_posted_at
-		  AND yenc_recovery_work_items.binary_id = ts.binary_id`,
-		in.BinaryID,
-		targetID,
-		in.ArticleHeaderID,
-		in.PartNumber,
-		in.TotalParts,
-		in.FileSize,
-	); err != nil {
-		return nil, 0, nil, fmt.Errorf("mark yenc recovery work items done binary=%d target=%d: %w", in.BinaryID, targetID, err)
+	done := yencRecoveryWorkItemDone{
+		SourceBinaryID:  in.BinaryID,
+		TargetBinaryID:  targetID,
+		ArticleHeaderID: in.ArticleHeaderID,
+		PartNumber:      in.PartNumber,
+		TotalParts:      in.TotalParts,
+		FileSize:        in.FileSize,
 	}
-	if stats != nil {
-		stats.WorkItemDoneUpdateDuration += time.Since(started)
+	if completedWorkItems != nil {
+		*completedWorkItems = append(*completedWorkItems, done)
+	} else {
+		started = time.Now()
+		if err := markYEncRecoveryWorkItemsDoneBatch(ctx, tx, []yencRecoveryWorkItemDone{done}); err != nil {
+			return nil, 0, nil, err
+		}
+		if stats != nil {
+			stats.WorkItemDoneUpdateDuration += time.Since(started)
+		}
 	}
 
 	keys := []releaseFamilySummaryKey{
@@ -1692,6 +1724,114 @@ type yencRecoverySupersededSource struct {
 	NewsgroupID      int64
 	ReleaseFamilyKey string
 	SourceBinaryKey  string
+}
+
+type yencRecoveryMerge struct {
+	SourceBinaryID      int64
+	SourcePostedAt      time.Time
+	TargetBinaryID      int64
+	FileName            string
+	RecoveredPart       int
+	RecoveredTotalParts int
+}
+
+type yencRecoveryWorkItemDone struct {
+	SourceBinaryID  int64
+	TargetBinaryID  int64
+	ArticleHeaderID int64
+	PartNumber      int
+	TotalParts      int
+	FileSize        int64
+}
+
+func markYEncRecoveryWorkItemsDoneBatch(ctx context.Context, tx *sql.Tx, records []yencRecoveryWorkItemDone) error {
+	if len(records) == 0 {
+		return nil
+	}
+	values := make([]string, 0, len(records))
+	args := make([]any, 0, len(records)*6)
+	for _, record := range records {
+		base := len(args) + 1
+		values = append(values, fmt.Sprintf(
+			"($%d::bigint,$%d::bigint,$%d::bigint,$%d::integer,$%d::integer,$%d::bigint)",
+			base, base+1, base+2, base+3, base+4, base+5,
+		))
+		args = append(args,
+			record.SourceBinaryID,
+			record.TargetBinaryID,
+			record.ArticleHeaderID,
+			record.PartNumber,
+			record.TotalParts,
+			record.FileSize,
+		)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		WITH completed (
+			source_binary_id,
+			target_binary_id,
+			article_header_id,
+			part_number,
+			total_parts,
+			file_size
+		) AS (
+			VALUES `+strings.Join(values, ",")+`
+		),
+		completed_binaries AS (
+			SELECT source_binary_id AS binary_id, total_parts, file_size FROM completed
+			UNION ALL
+			SELECT target_binary_id AS binary_id, total_parts, file_size FROM completed
+		),
+		binary_updates AS (
+			SELECT
+				binary_id,
+				MAX(total_parts) AS total_parts,
+				MAX(file_size) AS file_size
+			FROM completed_binaries
+			WHERE binary_id > 0
+			GROUP BY binary_id
+		),
+		article_updates AS (
+			SELECT article_header_id, MAX(part_number) AS part_number
+			FROM completed
+			WHERE article_header_id > 0
+			  AND part_number > 0
+			GROUP BY article_header_id
+		),
+		target_sources AS (
+			SELECT
+				bu.binary_id,
+				bc.source_posted_at,
+				bu.total_parts,
+				bu.file_size
+			FROM binary_updates bu
+			JOIN binary_core bc ON bc.binary_id = bu.binary_id
+			WHERE bc.source_posted_at IS NOT NULL
+		)
+		UPDATE yenc_recovery_work_items ywi
+		SET status = 'done',
+		    ready_at = NOW(),
+		    lease_owner = '',
+		    lease_expires_at = NULL,
+		    missing_count = 0,
+		    yenc_part_number = COALESCE(
+		        (
+		            SELECT au.part_number
+		            FROM article_updates au
+		            WHERE au.article_header_id = ywi.article_header_id
+		        ),
+		        ywi.yenc_part_number
+		    ),
+		    yenc_total_parts = GREATEST(ywi.yenc_total_parts, ts.total_parts),
+		    yenc_file_size = GREATEST(ywi.yenc_file_size, ts.file_size),
+		    updated_at = NOW()
+		FROM target_sources ts
+		WHERE ywi.source_posted_at = ts.source_posted_at
+		  AND ywi.binary_id = ts.binary_id`,
+		args...,
+	); err != nil {
+		return fmt.Errorf("mark %d yenc recovery work items done: %w", len(records), err)
+	}
+	return nil
 }
 
 func loadYEncRecoveryBinarySeed(ctx context.Context, tx *sql.Tx, binaryID int64) (yencRecoveryBinarySeed, error) {
@@ -2099,6 +2239,213 @@ func strengthenRecoveredBinaryPart(ctx context.Context, tx *sql.Tx, binaryID, ar
 	return nil
 }
 
+func mergeRecoveredBinariesBatch(ctx context.Context, tx *sql.Tx, merges []yencRecoveryMerge) (time.Duration, time.Duration, error) {
+	if len(merges) == 0 {
+		return 0, 0, nil
+	}
+	if _, err := tx.ExecContext(ctx, `
+		CREATE TEMP TABLE IF NOT EXISTS yenc_recovery_merge_batch (
+			source_binary_id bigint NOT NULL,
+			source_posted_at timestamptz NOT NULL,
+			target_binary_id bigint NOT NULL,
+			file_name text NOT NULL,
+			recovered_part_number integer NOT NULL,
+			recovered_total_parts integer NOT NULL,
+			PRIMARY KEY (source_posted_at, source_binary_id)
+		) ON COMMIT DROP`); err != nil {
+		return 0, 0, fmt.Errorf("create yenc recovery merge batch: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `TRUNCATE yenc_recovery_merge_batch`); err != nil {
+		return 0, 0, fmt.Errorf("truncate yenc recovery merge batch: %w", err)
+	}
+
+	const chunkSize = 500
+	for start := 0; start < len(merges); start += chunkSize {
+		end := min(start+chunkSize, len(merges))
+		values := make([]string, 0, end-start)
+		args := make([]any, 0, (end-start)*6)
+		for i := start; i < end; i++ {
+			merge := merges[i]
+			if merge.SourceBinaryID <= 0 || merge.TargetBinaryID <= 0 || merge.SourceBinaryID == merge.TargetBinaryID {
+				continue
+			}
+			base := len(args) + 1
+			values = append(values, fmt.Sprintf(
+				"($%d::bigint,$%d::timestamptz,$%d::bigint,$%d::text,$%d::integer,$%d::integer)",
+				base, base+1, base+2, base+3, base+4, base+5,
+			))
+			args = append(args,
+				merge.SourceBinaryID,
+				merge.SourcePostedAt,
+				merge.TargetBinaryID,
+				merge.FileName,
+				merge.RecoveredPart,
+				merge.RecoveredTotalParts,
+			)
+		}
+		if len(values) == 0 {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO yenc_recovery_merge_batch (
+				source_binary_id,
+				source_posted_at,
+				target_binary_id,
+				file_name,
+				recovered_part_number,
+				recovered_total_parts
+			)
+			VALUES `+strings.Join(values, ",")+`
+			ON CONFLICT (source_posted_at, source_binary_id) DO UPDATE
+			SET target_binary_id = EXCLUDED.target_binary_id,
+			    file_name = EXCLUDED.file_name,
+			    recovered_part_number = EXCLUDED.recovered_part_number,
+			    recovered_total_parts = EXCLUDED.recovered_total_parts`,
+			args...,
+		); err != nil {
+			return 0, 0, fmt.Errorf("stage yenc recovery merges %d-%d: %w", start, end, err)
+		}
+	}
+
+	daySet := make(map[time.Time]struct{}, len(merges))
+	for _, merge := range merges {
+		if merge.SourcePostedAt.IsZero() {
+			continue
+		}
+		day := merge.SourcePostedAt.UTC().Truncate(24 * time.Hour)
+		daySet[day] = struct{}{}
+	}
+	days := make([]time.Time, 0, len(daySet))
+	for day := range daySet {
+		days = append(days, day)
+	}
+	sort.Slice(days, func(i, j int) bool { return days[i].Before(days[j]) })
+
+	partsStarted := time.Now()
+	for _, dayStart := range days {
+		if err := mergeRecoveredBinaryPartsBatchDay(ctx, tx, dayStart, dayStart.Add(24*time.Hour)); err != nil {
+			return 0, 0, err
+		}
+	}
+	partsDuration := time.Since(partsStarted)
+
+	releaseFilesStarted := time.Now()
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE release_files rf
+		SET binary_id = m.target_binary_id,
+		    file_name = m.file_name
+		FROM yenc_recovery_merge_batch m
+		WHERE rf.binary_id = m.source_binary_id`); err != nil {
+		return 0, 0, fmt.Errorf("move batched yenc release files: %w", err)
+	}
+	return partsDuration, time.Since(releaseFilesStarted), nil
+}
+
+func mergeRecoveredBinaryPartsBatchDay(ctx context.Context, tx *sql.Tx, dayStart, dayEnd time.Time) error {
+	if _, err := tx.ExecContext(ctx, `
+		WITH ranked AS MATERIALIZED (
+			SELECT
+				bp.id,
+				bp.source_posted_at,
+				ROW_NUMBER() OVER (
+					PARTITION BY
+						m.target_binary_id,
+						bp.source_posted_at,
+						CASE
+							WHEN m.recovered_part_number > 0 THEN m.recovered_part_number
+							ELSE bp.part_number
+						END
+					ORDER BY bp.segment_bytes DESC, bp.id
+				) AS source_rank
+			FROM yenc_recovery_merge_batch m
+			JOIN binary_parts bp
+			  ON bp.binary_id = m.source_binary_id
+			 AND bp.source_posted_at = m.source_posted_at
+			WHERE m.source_posted_at >= $1
+			  AND m.source_posted_at < $2
+			  AND bp.source_posted_at >= $1
+			  AND bp.source_posted_at < $2
+		)
+		DELETE FROM binary_parts bp
+		USING ranked r
+		WHERE r.source_rank > 1
+		  AND bp.source_posted_at = r.source_posted_at
+		  AND bp.id = r.id`,
+		dayStart,
+		dayEnd,
+	); err != nil {
+		return fmt.Errorf("delete duplicate batched yenc source parts for %s: %w", dayStart.Format(time.DateOnly), err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM binary_parts source
+		USING yenc_recovery_merge_batch m, binary_parts target
+		WHERE m.source_posted_at >= $1
+		  AND m.source_posted_at < $2
+		  AND source.source_posted_at >= $1
+		  AND source.source_posted_at < $2
+		  AND source.binary_id = m.source_binary_id
+		  AND source.source_posted_at = m.source_posted_at
+		  AND target.source_posted_at = source.source_posted_at
+		  AND target.binary_id = m.target_binary_id
+		  AND target.part_number = CASE
+		       WHEN m.recovered_part_number > 0 THEN m.recovered_part_number
+		       ELSE source.part_number
+		      END
+		  AND target.segment_bytes >= source.segment_bytes`,
+		dayStart,
+		dayEnd,
+	); err != nil {
+		return fmt.Errorf("delete weaker batched yenc source parts for %s: %w", dayStart.Format(time.DateOnly), err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM binary_parts target
+		USING yenc_recovery_merge_batch m, binary_parts source
+		WHERE m.source_posted_at >= $1
+		  AND m.source_posted_at < $2
+		  AND source.source_posted_at >= $1
+		  AND source.source_posted_at < $2
+		  AND source.binary_id = m.source_binary_id
+		  AND source.source_posted_at = m.source_posted_at
+		  AND target.source_posted_at = source.source_posted_at
+		  AND target.binary_id = m.target_binary_id
+		  AND target.part_number = CASE
+		       WHEN m.recovered_part_number > 0 THEN m.recovered_part_number
+		       ELSE source.part_number
+		      END
+		  AND source.segment_bytes > target.segment_bytes`,
+		dayStart,
+		dayEnd,
+	); err != nil {
+		return fmt.Errorf("delete weaker batched yenc target parts for %s: %w", dayStart.Format(time.DateOnly), err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE binary_parts bp
+		SET binary_id = m.target_binary_id,
+		    file_name = m.file_name,
+		    part_number = CASE
+		     WHEN m.recovered_part_number > 0 THEN m.recovered_part_number
+		     ELSE bp.part_number
+		    END,
+		    total_parts = GREATEST(bp.total_parts, m.recovered_total_parts),
+		    updated_at = NOW()
+		FROM yenc_recovery_merge_batch m
+		WHERE m.source_posted_at >= $1
+		  AND m.source_posted_at < $2
+		  AND bp.source_posted_at >= $1
+		  AND bp.source_posted_at < $2
+		  AND bp.binary_id = m.source_binary_id
+		  AND bp.source_posted_at = m.source_posted_at`,
+		dayStart,
+		dayEnd,
+	); err != nil {
+		return fmt.Errorf("move batched yenc source parts for %s: %w", dayStart.Format(time.DateOnly), err)
+	}
+	return nil
+}
+
 func mergeRecoveredBinaryParts(ctx context.Context, tx *sql.Tx, sourceID, targetID int64, fileName string, recoveredPartNumber, recoveredTotalParts int) error {
 	var sourcePostedAt time.Time
 	if err := tx.QueryRowContext(ctx, `
@@ -2229,7 +2576,11 @@ func normalizeYEncHeaderRecoveryRecord(in *YEncHeaderRecoveryRecord) {
 	in.BinaryName = strings.TrimSpace(in.BinaryName)
 	in.FileName = strings.TrimSpace(in.FileName)
 	if strings.TrimSpace(in.FileName) != "" {
-		if fallbackFamily := recoveredYEncFallbackFamilyKey(in); fallbackFamily != "" && normalizeBinaryIdentityKey(firstNonBlank(in.FileSetKey, in.ReleaseFamilyKey, in.ReleaseKey, in.SourceReleaseKey)) == "" {
+		// A blank file-set key means the subject matcher deliberately deferred
+		// family identity. Do not retain that provisional, usually per-article
+		// subject key after the yEnc header supplies authoritative file identity:
+		// doing so prevents segments of the same recovered file from merging.
+		if fallbackFamily := recoveredYEncFallbackFamilyKey(in); fallbackFamily != "" && in.FileSetKey == "" {
 			in.SourceReleaseKey = fallbackFamily
 			in.ReleaseFamilyKey = fallbackFamily
 			in.FileSetKey = fallbackFamily

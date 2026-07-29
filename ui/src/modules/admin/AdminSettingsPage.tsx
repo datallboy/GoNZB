@@ -259,7 +259,7 @@ function defaultSettings(): RuntimeSettings {
         retain_require_par2: false,
         retain_require_nfo: false,
         retain_require_sfv: false,
-        reopen_archived_nzb_on_release_change: false,
+        reopen_archived_nzb_on_release_change: true,
       },
       release_generate_nzb: stageDefaults(100),
       release_archive_nzb: stageDefaults(100),
