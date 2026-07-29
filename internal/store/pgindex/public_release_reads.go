@@ -387,7 +387,7 @@ func (s *Store) ListPublicIndexerReleases(ctx context.Context, params PublicInde
 			CASE WHEN COALESCE(ro.tmdb_id_override, 0) > 0 THEN ro.tmdb_id_override ELSE r.tmdb_id END,
 			CASE WHEN COALESCE(ro.tvdb_id_override, 0) > 0 THEN ro.tvdb_id_override ELSE r.tvdb_id END,
 			r.external_media_type,
-			COALESCE(NULLIF(ro.display_title, ''), NULLIF(r.original_media_title, ''), r.title),
+			COALESCE(NULLIF(ro.display_title, ''), r.title),
 			r.external_year,
 			COALESCE(ro.imdb_id_override, '') AS imdb_id,
 			r.metadata_updated_at
@@ -451,7 +451,7 @@ func (s *Store) GetPublicIndexerReleaseDetailWithPolicy(ctx context.Context, rel
 			CASE WHEN COALESCE(ro.tmdb_id_override, 0) > 0 THEN ro.tmdb_id_override ELSE r.tmdb_id END,
 			CASE WHEN COALESCE(ro.tvdb_id_override, 0) > 0 THEN ro.tvdb_id_override ELSE r.tvdb_id END,
 			r.external_media_type,
-			COALESCE(NULLIF(ro.display_title, ''), NULLIF(r.original_media_title, ''), r.title),
+			COALESCE(NULLIF(ro.display_title, ''), r.title),
 			r.external_year,
 			COALESCE(ro.imdb_id_override, '') AS imdb_id,
 			r.metadata_updated_at

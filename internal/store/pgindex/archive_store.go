@@ -911,7 +911,7 @@ func upsertReleaseArchiveDetailSnapshot(ctx context.Context, tx *sql.Tx, release
 			CASE WHEN COALESCE(ro.tvdb_id_override, 0) > 0 THEN ro.tvdb_id_override ELSE r.tvdb_id END,
 			COALESCE(ro.imdb_id_override, ''),
 			COALESCE(r.external_media_type, ''),
-			COALESCE(NULLIF(ro.display_title, ''), NULLIF(r.original_media_title, ''), r.title),
+			COALESCE(NULLIF(ro.display_title, ''), r.title),
 			r.external_year,
 			r.metadata_updated_at,
 			r.runtime_seconds,

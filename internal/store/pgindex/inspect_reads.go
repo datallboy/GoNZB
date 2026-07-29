@@ -3710,7 +3710,11 @@ func (s *Store) GetIndexerFileDetail(ctx context.Context, fileID int64) (*Indexe
 	}
 	item.Articles = make([]IndexerFileArticleSummary, 0, len(articles))
 	for _, article := range articles {
-		item.Articles = append(item.Articles, IndexerFileArticleSummary(article))
+		item.Articles = append(item.Articles, IndexerFileArticleSummary{
+			MessageID:  article.MessageID,
+			Bytes:      article.Bytes,
+			PartNumber: article.PartNumber,
+		})
 	}
 
 	return &item, nil

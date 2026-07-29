@@ -128,6 +128,8 @@ func (r *usenetIndexResolver) buildNZB(ctx context.Context, rel *domain.Release,
 		Files: make([]fileXML, 0, len(files)),
 	}
 
+	articlesByFile := make(map[int64][]pgindex.CatalogArticleRef, len(files))
+	shardedRelease := false
 	for _, f := range files {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -137,13 +139,32 @@ func (r *usenetIndexResolver) buildNZB(ctx context.Context, rel *domain.Release,
 		if err != nil {
 			return nil, fmt.Errorf("load release file articles %d: %w", f.ID, err)
 		}
+		articlesByFile[f.ID] = articles
+
+		fileGroups := make(map[string]struct{}, 2)
+		for _, article := range articles {
+			if group := strings.TrimSpace(article.GroupName); group != "" {
+				fileGroups[group] = struct{}{}
+			}
+		}
+		if len(fileGroups) > 1 {
+			shardedRelease = true
+		}
+	}
+
+	for _, f := range files {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		articles := articlesByFile[f.ID]
 		if len(articles) == 0 {
 			continue
 		}
 
 		segments := make([]segmentXML, 0, len(articles))
 		for _, article := range articles {
-			msgID := strings.TrimSpace(article.MessageID)
+			msgID := strings.Trim(strings.TrimSpace(article.MessageID), "<>")
 			if msgID == "" {
 				continue
 			}
@@ -178,8 +199,8 @@ func (r *usenetIndexResolver) buildNZB(ctx context.Context, rel *domain.Release,
 			dateUnix = f.PostedAt.UTC().Unix()
 		}
 
-		fileGroups := make([]groupXML, 0, 1)
-		if group := strings.TrimSpace(f.GroupName); group != "" {
+		fileGroups := make([]groupXML, 0, len(groups))
+		if group := strings.TrimSpace(f.GroupName); group != "" && !shardedRelease {
 			fileGroups = append(fileGroups, groupXML{Name: group})
 		} else {
 			for _, group := range groups {
