@@ -32,6 +32,11 @@ Work can enter the table from these paths:
 - refresh/maintenance paths that resync recovery work for changed binary
   projections.
 
+Assembly commits binary parts and aggregate projections without synchronously
+resyncing `yenc_recovery_work_items`. Priority refill and generic bounded
+backfill run under `recover_yenc`, so admission latency or a full recovery
+backlog cannot roll back or stall upstream assembly.
+
 Scheduler-backed rows are already ranked by the cohort scheduler and may bypass
 the generic weak-family filename filters when creating
 `yenc_recovery_work_items`. They still must resolve to a main-payload binary
@@ -176,5 +181,3 @@ zero merges are useful signal that selection/admission metrics should include
   and lane.
 - Add merge-yield metrics by admission reason.
 - Keep priority-0 refill independent of generic ready backlog.
-- Move or defer expensive yEnc admission sync out of assemble's binary stats
-  refresh when recovery is already over hard cap.

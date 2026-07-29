@@ -69,9 +69,13 @@ inspect the recorded error/provider availability.
 
 Use **Indexer > Newsgroups and Wildcards > Historical scrape timeframes** for
 bounded historical work. Give each row a unique stable ID, select an inclusive
-start/end date, save it, then enable the `scrape_timeframe` command under
+start/end date, optionally narrow either boundary with a UTC time, save it,
+then enable the `scrape_timeframe` command under
 **Settings > Indexer**. Multiple rows may use the same group. The command keeps
 separate progress for every row and never rewrites latest/backfill cursors.
+A time uses 24-hour UTC notation (`HH:MM` or `HH:MM:SS`).
+A date-only end includes that whole UTC day. When an end time is supplied, it
+is the exact exclusive end of the scrape window.
 Run one pass without starting the supervisor with:
 
 ```sh

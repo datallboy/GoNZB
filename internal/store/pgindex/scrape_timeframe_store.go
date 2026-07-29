@@ -31,6 +31,44 @@ type ScrapeTimeframeProgressSummary struct {
 	GroupName   string `json:"group_name"`
 }
 
+func (s *Store) FindScrapedArticleRangeForDateWindow(ctx context.Context, providerID, newsgroupID int64, windowStart, windowEnd time.Time) (int64, int64, bool, error) {
+	windowStart = windowStart.UTC()
+	windowEnd = windowEnd.UTC()
+	if providerID <= 0 || newsgroupID <= 0 || !windowEnd.After(windowStart) {
+		return 0, 0, false, nil
+	}
+
+	sourceStart := utcDayStart(windowStart)
+	sourceEnd := utcDayStart(windowEnd)
+	if !windowEnd.Equal(sourceEnd) {
+		sourceEnd = sourceEnd.Add(24 * time.Hour)
+	}
+
+	var low, high sql.NullInt64
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT MIN(article_number), MAX(article_number)
+		FROM article_headers
+		WHERE source_posted_at >= $1
+		  AND source_posted_at < $2
+		  AND provider_id = $3
+		  AND newsgroup_id = $4
+		  AND date_utc >= $5
+		  AND date_utc < $6`,
+		sourceStart,
+		sourceEnd,
+		providerID,
+		newsgroupID,
+		windowStart,
+		windowEnd,
+	).Scan(&low, &high); err != nil {
+		return 0, 0, false, fmt.Errorf("find scraped article range for date window: %w", err)
+	}
+	if !low.Valid || !high.Valid || low.Int64 <= 0 || high.Int64 < low.Int64 {
+		return 0, 0, false, nil
+	}
+	return low.Int64, high.Int64, true, nil
+}
+
 func (s *Store) EnsureScrapeTimeframeProgress(ctx context.Context, timeframeID string, providerID, newsgroupID int64, windowStart, windowEnd time.Time) (*ScrapeTimeframeProgress, error) {
 	timeframeID = strings.TrimSpace(timeframeID)
 	windowStart = windowStart.UTC()

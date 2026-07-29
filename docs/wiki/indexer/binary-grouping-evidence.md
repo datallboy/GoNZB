@@ -77,6 +77,30 @@ per part number instead of emitting both copies. Keeping the raw duplicate rows
 in `binary_parts` is useful for audit and repair, but they must not inflate
 completion or NZB segment counts.
 
+## Cross-Newsgroup Sharded Multipart Files
+
+Some uploaders distribute different part numbers from one multipart file
+across several newsgroups instead of cross-posting every Message-ID to every
+group. Assemble may merge those source binaries when all strong file evidence
+agrees:
+
+- provider, release-family key, normalized filename, file index, expected file
+  count, and expected article-part total match;
+- the combined distinct part-number set improves on every source binary;
+- no part-number or file-size evidence conflicts;
+- the source timestamps stay within the bounded active grouping window.
+
+The selected `binary_core.newsgroup_id` is only the representative anchor for
+the merged binary. Each retained `binary_part` continues to reference its
+original article header and source newsgroup. Release and NZB export must
+therefore derive the complete newsgroup set from the retained parts and release
+lineage rather than treating the anchor group as the only retrieval group.
+
+When any file proves that a release is sharded across groups, generated NZBs
+include the release's full observed group set on every file. This preserves
+retrieval fallback for small sidecars that may exist in only one group while
+keeping one segment per logical part number.
+
 `source_posted_at` may still be used to bound candidate scans. Any bounded scan
 must include a second evidence join against existing completion keys or binary
 identity rows so late/early parts can attach to an already-known binary outside

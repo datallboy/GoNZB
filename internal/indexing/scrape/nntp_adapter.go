@@ -2,6 +2,7 @@ package scrape
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/datallboy/gonzb/internal/nntp"
 )
@@ -15,6 +16,10 @@ type nntpClient interface {
 type providerAwareNNTPClient interface {
 	GroupStatsWithProvider(ctx context.Context, group string) (nntp.GroupStats, string, error)
 	XOverWithProvider(ctx context.Context, group string, from, to int64) ([]nntp.OverviewHeader, string, error)
+}
+
+type providerPinnedNNTPClient interface {
+	XOverOnProvider(ctx context.Context, providerID, group string, from, to int64) ([]nntp.OverviewHeader, string, error)
 }
 
 type NNTPAdapter struct {
@@ -72,6 +77,22 @@ func (a *NNTPAdapter) XOverWithProvider(ctx context.Context, group string, from,
 		return nil, "", err
 	}
 
+	return mapOverviewHeaders(rows), providerID, nil
+}
+
+func (a *NNTPAdapter) XOverOnProvider(ctx context.Context, providerID, group string, from, to int64) ([]OverviewHeader, string, error) {
+	pinned, ok := a.p.(providerPinnedNNTPClient)
+	if !ok {
+		return nil, "", fmt.Errorf("NNTP client does not support provider-pinned XOVER")
+	}
+	rows, actualProviderID, err := pinned.XOverOnProvider(ctx, providerID, group, from, to)
+	if err != nil {
+		return nil, actualProviderID, err
+	}
+	return mapOverviewHeaders(rows), actualProviderID, nil
+}
+
+func mapOverviewHeaders(rows []nntp.OverviewHeader) []OverviewHeader {
 	out := make([]OverviewHeader, 0, len(rows))
 	for _, r := range rows {
 		out = append(out, OverviewHeader{
@@ -86,5 +107,5 @@ func (a *NNTPAdapter) XOverWithProvider(ctx context.Context, group string, from,
 			RawOverview:   r.RawOverview,
 		})
 	}
-	return out, providerID, nil
+	return out
 }

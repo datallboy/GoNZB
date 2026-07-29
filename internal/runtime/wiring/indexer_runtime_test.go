@@ -294,6 +294,33 @@ func TestDeriveUsenetIndexerConfigUsesPersistedHistoricalScrapeSettings(t *testi
 	}
 }
 
+func TestDeriveUsenetIndexerConfigNarrowsHistoricalScrapeWithUTCTimes(t *testing.T) {
+	cfg := &config.Config{}
+	runtime := app.DefaultRuntimeSettings().Indexing
+	runtime.ScrapeTimeframes = []app.IndexingScrapeTimeframeRuntimeSettings{{
+		ID:        "upload-window",
+		GroupName: "alt.binaries.history",
+		StartDate: "2026-07-24",
+		StartTime: "14:47:00",
+		EndDate:   "2026-07-24",
+		EndTime:   "14:49:30",
+		Enabled:   true,
+	}}
+
+	got, err := deriveUsenetIndexerConfig(cfg, runtime)
+	if err != nil {
+		t.Fatalf("derive config: %v", err)
+	}
+	if len(got.ScrapeTimeframes) != 1 {
+		t.Fatalf("expected one historical timeframe, got %+v", got.ScrapeTimeframes)
+	}
+	wantStart := time.Date(2026, 7, 24, 14, 47, 0, 0, time.UTC)
+	wantEnd := time.Date(2026, 7, 24, 14, 49, 30, 0, time.UTC)
+	if !got.ScrapeTimeframes[0].Start.Equal(wantStart) || !got.ScrapeTimeframes[0].End.Equal(wantEnd) {
+		t.Fatalf("expected exact UTC window %s-%s, got %+v", wantStart, wantEnd, got.ScrapeTimeframes[0])
+	}
+}
+
 func TestScopedIndexerServersUsesSharedRuntimeServers(t *testing.T) {
 	appCtx := &app.Context{
 		BootstrapConfig: &config.Config{},
@@ -480,6 +507,32 @@ func handleTestNNTPConn(conn net.Conn) {
 		default:
 			_, _ = fmt.Fprintf(conn, "500 unsupported\r\n")
 		}
+	}
+}
+
+func TestIndexerStageTargetWindow(t *testing.T) {
+	start, end := indexerStageTargetWindow(indexerStageConfig{
+		TargetWindowEnabled: true,
+		TargetWindowStart:   "2026-07-24T14:05:00-04:00",
+		TargetWindowEnd:     "2026-07-24T14:21:00-04:00",
+	})
+	if start == nil || end == nil {
+		t.Fatal("expected valid target window")
+	}
+	if got := start.Format(time.RFC3339); got != "2026-07-24T18:05:00Z" {
+		t.Fatalf("start = %s", got)
+	}
+	if got := end.Format(time.RFC3339); got != "2026-07-24T18:21:00Z" {
+		t.Fatalf("end = %s", got)
+	}
+
+	start, end = indexerStageTargetWindow(indexerStageConfig{
+		TargetWindowEnabled: true,
+		TargetWindowStart:   "invalid",
+		TargetWindowEnd:     "2026-07-24T14:21:00Z",
+	})
+	if start != nil || end != nil {
+		t.Fatalf("expected invalid target window to be disabled, got %v..%v", start, end)
 	}
 }
 

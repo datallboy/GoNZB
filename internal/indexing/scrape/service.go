@@ -42,6 +42,7 @@ type repository interface {
 	UpsertIndexerGroupProfile(ctx context.Context, providerID, newsgroupID int64, tier, reason string) error
 	UpsertDeferredArticleRange(ctx context.Context, in pgindex.DeferredArticleRangeRecord) error
 	ExistingScrapeSourceDays(ctx context.Context, sourcePostedAt []time.Time) (map[string]bool, error)
+	FindScrapedArticleRangeForDateWindow(ctx context.Context, providerID, newsgroupID int64, windowStart, windowEnd time.Time) (int64, int64, bool, error)
 	EnsureScrapeTimeframeProgress(ctx context.Context, timeframeID string, providerID, newsgroupID int64, windowStart, windowEnd time.Time) (*pgindex.ScrapeTimeframeProgress, error)
 	ResolveScrapeTimeframeProgress(ctx context.Context, timeframeID string, providerID, newsgroupID, articleLow, articleHigh int64, empty bool) error
 	AdvanceScrapeTimeframeProgress(ctx context.Context, timeframeID string, providerID, newsgroupID, nextArticle int64, completed bool) error
@@ -59,6 +60,10 @@ type provider interface {
 
 type providerAwareXOver interface {
 	XOverWithProvider(ctx context.Context, group string, from, to int64) ([]OverviewHeader, string, error)
+}
+
+type providerPinnedXOver interface {
+	XOverOnProvider(ctx context.Context, providerID, group string, from, to int64) ([]OverviewHeader, string, error)
 }
 
 type GroupStats struct {
@@ -207,9 +212,20 @@ type groupRunOutcome struct {
 const (
 	assignedWindowProbeSpan      = 32
 	assignedWindowMaxDateProbes  = 96
-	assignedWindowProfileReason  = "gonzbnet_coverage_window_assignment"
-	assignedArticleProfileReason = "gonzbnet_coverage_assignment"
+	assignedWindowCorrectionSpan = 20_000
+	// Real provider overviews can contain delayed-date islands more than
+	// 100,000 article numbers away from the binary-search estimate. Cover a
+	// bounded 160,000-article disorder horizon without returning to the
+	// previous multi-million-header correction scan.
+	assignedWindowMaxCorrectionScans = 8
+	assignedWindowProfileReason      = "gonzbnet_coverage_window_assignment"
+	assignedArticleProfileReason     = "gonzbnet_coverage_assignment"
 )
+
+type headerDateWindow struct {
+	start time.Time
+	end   time.Time
+}
 
 func NewService(repo repository, p provider, log logger, opts Options) *Service {
 	if opts.BatchSize <= 0 {
@@ -391,6 +407,7 @@ func (s *Service) runDeferredRanges(ctx context.Context, metrics *runMetrics) er
 			claim.ArticleLow,
 			rangeEnd,
 			nil,
+			nil,
 			claim.ProviderKey,
 		)
 		if fetchErr != nil {
@@ -557,30 +574,86 @@ func (s *Service) runTimeframes(ctx context.Context, providerID int64, metrics *
 	if budget <= 0 {
 		budget = 1
 	}
+	timeframes := make([]Timeframe, 0, len(s.opts.Timeframes))
 	for _, timeframe := range s.opts.Timeframes {
-		if metrics.GroupsScheduled >= budget {
-			break
-		}
 		if strings.TrimSpace(timeframe.ID) == "" || strings.TrimSpace(timeframe.Group) == "" || !timeframe.End.After(timeframe.Start) {
 			continue
 		}
-		result, err := s.runTimeframe(ctx, providerID, timeframe)
+		timeframes = append(timeframes, timeframe)
+	}
+	if len(timeframes) == 0 {
+		return nil
+	}
+
+	workerCount := s.opts.Concurrency
+	if workerCount > budget {
+		workerCount = budget
+	}
+	if workerCount > len(timeframes) {
+		workerCount = len(timeframes)
+	}
+	if workerCount <= 0 {
+		workerCount = 1
+	}
+	metrics.WorkersUsed = workerCount
+
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	jobs := make(chan Timeframe, workerCount)
+	outcomes := make(chan groupRunOutcome, workerCount)
+	var wg sync.WaitGroup
+	for range workerCount {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for timeframe := range jobs {
+				result, err := s.runTimeframe(runCtx, providerID, timeframe)
+				outcomes <- groupRunOutcome{result: result, err: err}
+			}
+		}()
+	}
+
+	next := 0
+	inFlight := 0
+	stopping := false
+	dispatch := func() {
+		for !stopping &&
+			next < len(timeframes) &&
+			inFlight < workerCount &&
+			metrics.GroupsScheduled+inFlight < budget {
+			jobs <- timeframes[next]
+			next++
+			inFlight++
+		}
+	}
+	dispatch()
+
+	var firstErr error
+	for inFlight > 0 {
+		outcome := <-outcomes
+		inFlight--
 		metrics.GroupsProcessed++
-		if result.HadWork {
+		if outcome.result.HadWork {
 			metrics.GroupsScheduled++
 			metrics.GroupsWithWork++
 		}
-		metrics.RangesFetched += result.RangesFetched
-		metrics.ArticleHeadersSeen += result.ArticleHeadersSeen
-		metrics.ArticlesInserted += result.ArticlesInserted
-		metrics.CutoffFiltered += result.CutoffFiltered
-		metrics.CheckpointUpdates += result.CheckpointUpdates
-		metrics.DeferredRanges += result.DeferredRanges
-		if err != nil {
-			return err
+		metrics.RangesFetched += outcome.result.RangesFetched
+		metrics.ArticleHeadersSeen += outcome.result.ArticleHeadersSeen
+		metrics.ArticlesInserted += outcome.result.ArticlesInserted
+		metrics.CutoffFiltered += outcome.result.CutoffFiltered
+		metrics.CheckpointUpdates += outcome.result.CheckpointUpdates
+		metrics.DeferredRanges += outcome.result.DeferredRanges
+		if outcome.err != nil && !isContextCancellation(outcome.err) && firstErr == nil {
+			firstErr = outcome.err
+			stopping = true
+			cancel()
 		}
+		dispatch()
 	}
-	return nil
+	close(jobs)
+	wg.Wait()
+	return firstErr
 }
 
 func (s *Service) runTimeframe(ctx context.Context, fallbackProviderID int64, timeframe Timeframe) (groupRunResult, error) {
@@ -605,7 +678,7 @@ func (s *Service) runTimeframe(ctx context.Context, fallbackProviderID int64, ti
 		return groupRunResult{}, nil
 	}
 	if progress.ArticleLow <= 0 || progress.ArticleHigh < progress.ArticleLow {
-		low, high, ok, resolveErr := s.resolveAssignedWindowRange(ctx, group, stats, timeframe.Start, timeframe.End)
+		low, high, ok, resolveErr := s.resolveAssignedWindowRange(ctx, providerID, newsgroupID, group, stats, timeframe.Start, timeframe.End)
 		if resolveErr != nil {
 			_ = s.repo.FailScrapeTimeframeProgress(ctx, timeframe.ID, providerID, newsgroupID, resolveErr.Error())
 			return groupRunResult{}, resolveErr
@@ -644,7 +717,8 @@ func (s *Service) runTimeframe(ctx context.Context, fallbackProviderID int64, ti
 		return groupRunResult{HadWork: true, DeferredRanges: 1}, nil
 	}
 	progressProviderID := providerID
-	headers, inserted, _, cutoffFiltered, deferredRanges, actualProviderID, err := s.fetchInsertRange(ctx, "timeframe", providerID, newsgroupID, group, from, to, nil, stats.ProviderID)
+	window := &headerDateWindow{start: timeframe.Start.UTC(), end: timeframe.End.UTC()}
+	headers, inserted, _, cutoffFiltered, deferredRanges, actualProviderID, err := s.fetchInsertRange(ctx, "timeframe", providerID, newsgroupID, group, from, to, nil, window, stats.ProviderID)
 	if err != nil {
 		_ = s.repo.FailScrapeTimeframeProgress(ctx, timeframe.ID, providerID, newsgroupID, err.Error())
 		return groupRunResult{}, err
@@ -662,7 +736,7 @@ func (s *Service) runTimeframe(ctx context.Context, fallbackProviderID int64, ti
 		checkpointUpdates = 1
 	}
 	if s.log != nil {
-		s.log.Info("scrape timeframe: id=%s group=%s window=%s..%s range=%d-%d inserted=%d completed=%t", timeframe.ID, group, timeframe.Start.Format("2006-01-02"), timeframe.End.Add(-time.Nanosecond).Format("2006-01-02"), from, to, inserted, completed)
+		s.log.Info("scrape timeframe: id=%s group=%s window=%s..%s range=%d-%d inserted=%d completed=%t", timeframe.ID, group, timeframe.Start.Format(time.RFC3339), timeframe.End.Format(time.RFC3339), from, to, inserted, completed)
 	}
 	return groupRunResult{
 		HadWork:            true,
@@ -753,7 +827,7 @@ func (s *Service) runExplicitRange(ctx context.Context, providerID int64, mode s
 	if skipped {
 		return groupRunResult{HadWork: true, RangesSkipped: 1, AssignedRanges: 1}, nil
 	}
-	headers, inserted, _, cutoffFiltered, deferredRanges, actualProviderID, err := s.fetchInsertRange(ctx, mode, providerID, newsgroupID, group, request.RangeStart, request.RangeEnd, nil, "")
+	headers, inserted, _, cutoffFiltered, deferredRanges, actualProviderID, err := s.fetchInsertRange(ctx, mode, providerID, newsgroupID, group, request.RangeStart, request.RangeEnd, nil, nil, "")
 	if err != nil {
 		_ = s.failScrapeRange(ctx, decision, err)
 		return groupRunResult{}, err
@@ -797,7 +871,7 @@ func (s *Service) runExplicitWindow(ctx context.Context, providerID int64, mode 
 	if err := s.repo.UpsertIndexerGroupProfile(ctx, providerID, newsgroupID, "warm", assignedWindowProfileReason); err != nil {
 		return groupRunResult{}, err
 	}
-	from, to, ok, err := s.resolveAssignedWindowRange(ctx, group, stats, *request.WindowStart, *request.WindowEnd)
+	from, to, ok, err := s.resolveAssignedWindowRange(ctx, providerID, newsgroupID, group, stats, *request.WindowStart, *request.WindowEnd)
 	if err != nil {
 		return groupRunResult{}, err
 	}
@@ -818,7 +892,8 @@ func (s *Service) runExplicitWindow(ctx context.Context, providerID int64, mode 
 	if skipped {
 		return groupRunResult{HadWork: true, RangesSkipped: 1, AssignedRanges: 1}, nil
 	}
-	headers, inserted, _, cutoffFiltered, deferredRanges, actualProviderID, err := s.fetchInsertRange(ctx, mode, providerID, newsgroupID, group, from, to, nil, stats.ProviderID)
+	window := &headerDateWindow{start: request.WindowStart.UTC(), end: request.WindowEnd.UTC()}
+	headers, inserted, _, cutoffFiltered, deferredRanges, actualProviderID, err := s.fetchInsertRange(ctx, mode, providerID, newsgroupID, group, from, to, nil, window, stats.ProviderID)
 	if err != nil {
 		_ = s.failScrapeRange(ctx, decision, err)
 		return groupRunResult{}, err
@@ -845,19 +920,48 @@ func (s *Service) runExplicitWindow(ctx context.Context, providerID int64, mode 
 	}, nil
 }
 
-func (s *Service) resolveAssignedWindowRange(ctx context.Context, group string, stats GroupStats, windowStart, windowEnd time.Time) (int64, int64, bool, error) {
+func (s *Service) resolveAssignedWindowRange(ctx context.Context, providerID, newsgroupID int64, group string, stats GroupStats, windowStart, windowEnd time.Time) (int64, int64, bool, error) {
 	if stats.Low <= 0 || stats.High < stats.Low || !windowEnd.After(windowStart) {
 		return 0, 0, false, nil
 	}
-	startArticle, ok, err := s.findFirstArticleAtOrAfter(ctx, group, stats.Low, stats.High, windowStart.UTC())
+	if observedLow, observedHigh, ok, err := s.repo.FindScrapedArticleRangeForDateWindow(
+		ctx,
+		providerID,
+		newsgroupID,
+		windowStart.UTC(),
+		windowEnd.UTC(),
+	); err != nil {
+		return 0, 0, false, err
+	} else if ok {
+		correctionHorizon := int64(assignedWindowCorrectionSpan * assignedWindowMaxCorrectionScans)
+		startArticle := max(stats.Low, observedLow-correctionHorizon)
+		endArticle := min(stats.High, observedHigh+correctionHorizon)
+		if s.log != nil {
+			s.log.Info(
+				"historical date range anchored by scraped headers: group=%s observed=%d-%d resolved=%d-%d",
+				group,
+				observedLow,
+				observedHigh,
+				startArticle,
+				endArticle,
+			)
+		}
+		return startArticle, endArticle, true, nil
+	}
+	startArticle, ok, err := s.findFirstArticleAtOrAfter(ctx, stats.ProviderID, group, stats.Low, stats.High, windowStart.UTC())
 	if err != nil || !ok {
 		return 0, 0, false, err
 	}
 	endArticle := stats.High
-	if boundary, ok, err := s.findFirstArticleAtOrAfter(ctx, group, startArticle, stats.High, windowEnd.UTC()); err != nil {
+	if boundary, ok, err := s.findFirstArticleAtOrAfterApprox(ctx, stats.ProviderID, group, startArticle, stats.High, windowEnd.UTC()); err != nil {
 		return 0, 0, false, err
 	} else if ok {
 		endArticle = boundary - 1
+	}
+	if corrected, ok, err := s.correctLastArticleBefore(ctx, stats.ProviderID, group, endArticle, stats.High, windowEnd.UTC()); err != nil {
+		return 0, 0, false, err
+	} else if ok {
+		endArticle = corrected
 	}
 	if endArticle < startArticle {
 		return 0, 0, false, nil
@@ -865,7 +969,16 @@ func (s *Service) resolveAssignedWindowRange(ctx context.Context, group string, 
 	return startArticle, endArticle, true, nil
 }
 
-func (s *Service) findFirstArticleAtOrAfter(ctx context.Context, group string, low, high int64, target time.Time) (int64, bool, error) {
+func (s *Service) findFirstArticleAtOrAfter(ctx context.Context, providerID, group string, low, high int64, target time.Time) (int64, bool, error) {
+	absoluteLow := low
+	found, ok, err := s.findFirstArticleAtOrAfterApprox(ctx, providerID, group, low, high, target)
+	if err != nil || !ok {
+		return 0, false, err
+	}
+	return s.correctFirstArticleAtOrAfter(ctx, providerID, group, absoluteLow, found, target)
+}
+
+func (s *Service) findFirstArticleAtOrAfterApprox(ctx context.Context, providerID, group string, low, high int64, target time.Time) (int64, bool, error) {
 	if low <= 0 || high < low {
 		return 0, false, nil
 	}
@@ -875,7 +988,7 @@ func (s *Service) findFirstArticleAtOrAfter(ctx context.Context, group string, l
 	for low <= high && probes < assignedWindowMaxDateProbes {
 		probes++
 		mid := low + (high-low)/2
-		article, postedAt, ok, err := s.probeArticleDateAtOrAfter(ctx, group, mid, high)
+		article, postedAt, ok, err := s.probeArticleDateAtOrAfter(ctx, providerID, group, mid, high)
 		if err != nil {
 			return 0, false, err
 		}
@@ -896,7 +1009,74 @@ func (s *Service) findFirstArticleAtOrAfter(ctx context.Context, group string, l
 	return found, true, nil
 }
 
-func (s *Service) probeArticleDateAtOrAfter(ctx context.Context, group string, article, high int64) (int64, time.Time, bool, error) {
+// Date headers are only approximately ordered by article number. Delayed and
+// cross-posted articles can otherwise make a narrow historical window start
+// late, so correct the binary-search estimate using bounded backward scans.
+func (s *Service) correctFirstArticleAtOrAfter(ctx context.Context, providerID, group string, absoluteLow, candidate int64, target time.Time) (int64, bool, error) {
+	found := candidate
+	upper := candidate - 1
+	for scans := 0; upper >= absoluteLow && scans < assignedWindowMaxCorrectionScans; scans++ {
+		lower := upper - assignedWindowCorrectionSpan + 1
+		if lower < absoluteLow {
+			lower = absoluteLow
+		}
+		rows, _, err := s.xoverForProvider(ctx, providerID, group, lower, upper)
+		if err != nil {
+			return 0, false, fmt.Errorf("correct xover date %s %d-%d: %w", group, lower, upper, err)
+		}
+		for _, row := range rows {
+			if row.ArticleNumber < lower || row.ArticleNumber > upper || row.DateUTC == nil {
+				continue
+			}
+			if !row.DateUTC.UTC().Before(target) {
+				if row.ArticleNumber < found {
+					found = row.ArticleNumber
+				}
+			}
+		}
+		if lower == absoluteLow {
+			break
+		}
+		upper = lower - 1
+	}
+	return found, true, nil
+}
+
+// The same date disorder can place in-window articles after the approximate
+// end boundary. Scan a bounded forward horizon and let the normal timeframe
+// filter discard rows outside the requested UTC window.
+func (s *Service) correctLastArticleBefore(ctx context.Context, providerID, group string, candidate, absoluteHigh int64, target time.Time) (int64, bool, error) {
+	if candidate <= 0 || absoluteHigh < candidate {
+		return 0, false, nil
+	}
+	found := candidate
+	lower := candidate + 1
+	for scans := 0; lower <= absoluteHigh && scans < assignedWindowMaxCorrectionScans; scans++ {
+		upper := lower + assignedWindowCorrectionSpan - 1
+		if upper > absoluteHigh {
+			upper = absoluteHigh
+		}
+		rows, _, err := s.xoverForProvider(ctx, providerID, group, lower, upper)
+		if err != nil {
+			return 0, false, fmt.Errorf("correct xover end date %s %d-%d: %w", group, lower, upper, err)
+		}
+		for _, row := range rows {
+			if row.ArticleNumber < lower || row.ArticleNumber > upper || row.DateUTC == nil {
+				continue
+			}
+			if row.DateUTC.UTC().Before(target) && row.ArticleNumber > found {
+				found = row.ArticleNumber
+			}
+		}
+		if upper == absoluteHigh {
+			break
+		}
+		lower = upper + 1
+	}
+	return found, true, nil
+}
+
+func (s *Service) probeArticleDateAtOrAfter(ctx context.Context, providerID, group string, article, high int64) (int64, time.Time, bool, error) {
 	if article <= 0 || high < article {
 		return 0, time.Time{}, false, nil
 	}
@@ -904,7 +1084,7 @@ func (s *Service) probeArticleDateAtOrAfter(ctx context.Context, group string, a
 	if to > high {
 		to = high
 	}
-	rows, err := s.provider.XOver(ctx, group, article, to)
+	rows, _, err := s.xoverForProvider(ctx, providerID, group, article, to)
 	if err != nil {
 		return 0, time.Time{}, false, fmt.Errorf("probe xover date %s %d-%d: %w", group, article, to, err)
 	}
@@ -1024,7 +1204,7 @@ func (s *Service) runLatestGroup(ctx context.Context, providerID int64, group st
 		return result, nil
 	}
 
-	headers, inserted, _, _, deferredRanges, actualProviderID, err := s.fetchInsertRange(ctx, "latest", providerID, newsgroupID, group, start, to, nil, stats.ProviderID)
+	headers, inserted, _, _, deferredRanges, actualProviderID, err := s.fetchInsertRange(ctx, "latest", providerID, newsgroupID, group, start, to, nil, nil, stats.ProviderID)
 	if err != nil {
 		_ = s.failScrapeRange(ctx, decision, err)
 		return groupRunResult{}, err
@@ -1184,7 +1364,7 @@ func (s *Service) runBackfillGroup(ctx context.Context, providerID int64, group 
 		c := cutoffDate.UTC()
 		cutoff = &c
 	}
-	headers, inserted, oldestSeen, cutoffFiltered, deferredRanges, actualProviderID, err := s.fetchInsertRange(ctx, "backfill", providerID, newsgroupID, group, start, end, cutoff, stats.ProviderID)
+	headers, inserted, oldestSeen, cutoffFiltered, deferredRanges, actualProviderID, err := s.fetchInsertRange(ctx, "backfill", providerID, newsgroupID, group, start, end, cutoff, nil, stats.ProviderID)
 	if err != nil {
 		_ = s.failScrapeRange(ctx, decision, err)
 		return groupRunResult{}, err
@@ -1312,22 +1492,58 @@ func (s *Service) failScrapeRange(ctx context.Context, decision RangeDecision, c
 	return s.opts.RangeCoordinator.FailScrapeRange(ctx, decision, cause)
 }
 
-func (s *Service) fetchInsertRange(ctx context.Context, mode string, providerID, newsgroupID int64, group string, from, to int64, cutoff *time.Time, expectedProviderKey string) ([]pgindex.ArticleHeader, int64, *time.Time, int, int, int64, error) {
-	var (
-		rows      []OverviewHeader
-		actualKey string
-		err       error
-	)
-	if aware, ok := s.provider.(providerAwareXOver); ok {
-		rows, actualKey, err = aware.XOverWithProvider(ctx, group, from, to)
-	} else {
-		rows, err = s.provider.XOver(ctx, group, from, to)
-		actualKey = s.provider.ID()
+func (s *Service) xoverForProvider(ctx context.Context, expectedProviderKey, group string, from, to int64) ([]OverviewHeader, string, error) {
+	expectedProviderKey = strings.TrimSpace(expectedProviderKey)
+	if expectedProviderKey != "" {
+		if pinned, ok := s.provider.(providerPinnedXOver); ok {
+			rows, actualKey, err := pinned.XOverOnProvider(ctx, expectedProviderKey, group, from, to)
+			if err != nil {
+				return nil, actualKey, err
+			}
+			if actualKey = strings.TrimSpace(actualKey); actualKey != "" && !strings.EqualFold(actualKey, expectedProviderKey) {
+				return nil, actualKey, fmt.Errorf(
+					"xover provider changed from %q to %q for %s %d-%d; article numbers are provider-local",
+					expectedProviderKey,
+					actualKey,
+					group,
+					from,
+					to,
+				)
+			}
+			return rows, actualKey, nil
+		}
 	}
+
+	if aware, ok := s.provider.(providerAwareXOver); ok {
+		rows, actualKey, err := aware.XOverWithProvider(ctx, group, from, to)
+		if err != nil {
+			return nil, actualKey, err
+		}
+		if expectedProviderKey != "" &&
+			strings.TrimSpace(actualKey) != "" &&
+			!strings.EqualFold(actualKey, expectedProviderKey) {
+			return nil, actualKey, fmt.Errorf(
+				"xover provider changed from %q to %q for %s %d-%d; article numbers are provider-local",
+				expectedProviderKey,
+				actualKey,
+				group,
+				from,
+				to,
+			)
+		}
+		return rows, actualKey, nil
+	}
+
+	rows, err := s.provider.XOver(ctx, group, from, to)
+	return rows, s.provider.ID(), err
+}
+
+func (s *Service) fetchInsertRange(ctx context.Context, mode string, providerID, newsgroupID int64, group string, from, to int64, cutoff *time.Time, window *headerDateWindow, expectedProviderKey string) ([]pgindex.ArticleHeader, int64, *time.Time, int, int, int64, error) {
+	rows, actualKey, err := s.xoverForProvider(ctx, expectedProviderKey, group, from, to)
 	if err != nil {
 		return nil, 0, nil, 0, 0, 0, fmt.Errorf("xover %s %d-%d: %w", group, from, to, err)
 	}
-	if strings.TrimSpace(actualKey) != "" && strings.TrimSpace(expectedProviderKey) != "" && !strings.EqualFold(actualKey, expectedProviderKey) {
+	if strings.TrimSpace(actualKey) != "" && strings.TrimSpace(expectedProviderKey) == "" {
 		providerID, err = s.effectiveProviderID(ctx, providerID, actualKey)
 		if err != nil {
 			return nil, 0, nil, 0, 0, 0, err
@@ -1355,7 +1571,11 @@ func (s *Service) fetchInsertRange(ctx context.Context, mode string, providerID,
 				cutoffFiltered++
 				continue
 			}
-		} else if cutoff != nil {
+			if window != nil && (t.Before(window.start) || !t.Before(window.end)) {
+				cutoffFiltered++
+				continue
+			}
+		} else if cutoff != nil || window != nil {
 			cutoffFiltered++
 			continue
 		}
