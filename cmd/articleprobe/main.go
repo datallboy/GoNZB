@@ -59,6 +59,7 @@ func main() {
 		bodyBytes        int64
 		articleBytes     int64
 		headLines        int
+		locateMessageID  bool
 		releaseID        string
 		releaseFamilyKey string
 		binaryID         int64
@@ -82,6 +83,7 @@ func main() {
 	flag.Int64Var(&bodyBytes, "body-bytes", 4096, "max BODY bytes to print; 0 disables BODY")
 	flag.Int64Var(&articleBytes, "article-bytes", 8192, "max ARTICLE bytes to print; 0 disables ARTICLE")
 	flag.IntVar(&headLines, "head-lines", 200, "max HEAD lines to print")
+	flag.BoolVar(&locateMessageID, "locate-message-id", false, "use XPAT to locate --message-id within --group")
 	flag.StringVar(&releaseID, "release-id", "", "export an NZB for a formed indexer release id")
 	flag.StringVar(&releaseFamilyKey, "release-family-key", "", "export an NZB for binaries with this release_family_key")
 	flag.Int64Var(&binaryID, "binary-id", 0, "export an NZB for one binary id")
@@ -125,12 +127,17 @@ func main() {
 		stats, err := selectGroup(conn, group)
 		fatalIf(err)
 		fmt.Printf("group: %s count=%d low=%d high=%d\n", stats.group, stats.count, stats.low, stats.high)
+		if err := printStat(conn, ref); err != nil {
+			fmt.Printf("stat: %v\n", err)
+		}
 		if ref.articleNumber > 0 {
-			if err := printStat(conn, ref); err != nil {
-				fmt.Printf("stat: %v\n", err)
-			}
 			if err := printXOver(conn, ref.articleNumber); err != nil {
 				fmt.Printf("xover: %v\n", err)
+			}
+		}
+		if locateMessageID && ref.messageID != "" {
+			if err := printMessageIDLocation(conn, stats, ref.messageID); err != nil {
+				fmt.Printf("locate: %v\n", err)
 			}
 		}
 	}
@@ -898,6 +905,30 @@ func printStat(conn *textproto.Conn, ref articleRef) error {
 		return fmt.Errorf("STAT failed (code %d): %s", code, msg)
 	}
 	fmt.Printf("\n== STAT ==\n%s\n", msg)
+	return nil
+}
+
+func printMessageIDLocation(conn *textproto.Conn, stats groupStats, messageID string) error {
+	pattern := "*" + strings.Trim(strings.TrimSpace(messageID), "<>") + "*"
+	if _, err := conn.Cmd("XPAT Message-ID %d-%d %s", stats.low, stats.high, pattern); err != nil {
+		return err
+	}
+	code, msg, err := conn.ReadCodeLine(221)
+	if err != nil {
+		return fmt.Errorf("XPAT failed (code %d): %s", code, msg)
+	}
+	lines, err := conn.ReadDotLines()
+	if err != nil {
+		return fmt.Errorf("read XPAT response: %w", err)
+	}
+	fmt.Printf("\n== XPAT MESSAGE-ID ==\n")
+	if len(lines) == 0 {
+		fmt.Println("not found")
+		return nil
+	}
+	for _, line := range lines {
+		fmt.Println(line)
+	}
 	return nil
 }
 
