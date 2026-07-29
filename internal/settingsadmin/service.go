@@ -371,6 +371,11 @@ func validateIndexing(indexing *app.IndexingRuntimeSettings) []string {
 		return nil
 	}
 	issues := make([]string, 0)
+	switch strings.ToLower(strings.TrimSpace(indexing.RecoveryProfile)) {
+	case "", app.IndexingRecoveryProfileHeaderOnly, app.IndexingRecoveryProfileBalanced, app.IndexingRecoveryProfileExhaustive:
+	default:
+		issues = append(issues, "indexing.recovery_profile must be one of: header_only, balanced, exhaustive")
+	}
 	for i, group := range indexing.Newsgroups {
 		if strings.TrimSpace(group) == "" {
 			issues = append(issues, fmt.Sprintf("indexing.newsgroups[%d] is required", i))

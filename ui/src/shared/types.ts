@@ -149,6 +149,7 @@ export type IndexerBackfillProgress = {
 }
 
 export type IndexerRecoveryCapacity = {
+  recovery_profile: 'header_only' | 'balanced' | 'exhaustive'
   probes_per_hour_ewma: number
   soft_cap: number
   hard_cap: number
@@ -1251,6 +1252,7 @@ export type ScrapeCrosspostPopularityItem = {
 export type IndexingRuntimeSettings = {
   newsgroups: string[]
   backfill_until_date_by_group: Record<string, string>
+  recovery_profile: 'header_only' | 'balanced' | 'exhaustive'
   explicit_groups?: ScrapeExplicitGroup[]
   wildcard_rules?: ScrapeWildcardRule[]
   provider_group_inventory?: ScrapeProviderInventoryItem[]
