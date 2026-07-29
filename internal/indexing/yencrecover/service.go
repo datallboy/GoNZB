@@ -70,6 +70,7 @@ type Options struct {
 	MaxHeaderBytes      int64
 	FetchTimeout        time.Duration
 	Concurrency         int
+	RecoveryProfile     string
 	TargetWindowEnabled bool
 	TargetWindowStart   string
 	TargetWindowEnd     string
@@ -104,6 +105,7 @@ func NewService(repo repository, matcher matcher, fetcher bodyPrefixFetcher, log
 		opts.TargetWindowPercent = 60
 		opts.NewestPercent = 40
 	}
+	opts.RecoveryProfile = normalizeRecoveryProfile(opts.RecoveryProfile)
 	return &Service{repo: repo, matcher: matcher, fetcher: fetcher, log: log, opts: opts}
 }
 
@@ -117,6 +119,7 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 		return nil, fmt.Errorf("yenc recovery service is not configured")
 	}
 	metrics := map[string]any{
+		"recovery_profile":                  s.opts.RecoveryProfile,
 		"batch_size":                        s.opts.BatchSize,
 		"batch_requested":                   s.opts.BatchSize,
 		"max_header_bytes":                  s.opts.MaxHeaderBytes,
@@ -204,6 +207,10 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 		"target_window_end":                 s.opts.TargetWindowEnd,
 		"target_window_pct":                 s.opts.TargetWindowPercent,
 		"newest_pct":                        s.opts.NewestPercent,
+	}
+	if s.opts.RecoveryProfile == "header_only" {
+		metrics["disabled_by_profile"] = true
+		return metrics, nil
 	}
 	selectionStarted := time.Now()
 	selectionOpts, err := s.selectionOptions()
@@ -539,11 +546,14 @@ func (s *Service) selectionOptions() (pgindex.YEncRecoverySelectionOptions, erro
 	if s.opts.TargetWindowPercent < 0 || s.opts.TargetWindowPercent > 100 || s.opts.NewestPercent < 0 || s.opts.NewestPercent > 100 || s.opts.TargetWindowPercent+s.opts.NewestPercent != 100 {
 		return pgindex.YEncRecoverySelectionOptions{}, fmt.Errorf("recover_yenc target and newest percentages must be 0-100 and total 100")
 	}
+	base := pgindex.YEncRecoverySelectionOptions{
+		Priority0Only:      s.opts.RecoveryProfile == "balanced",
+		DisableGenericSeed: s.opts.RecoveryProfile != "exhaustive",
+	}
 	if !s.opts.TargetWindowEnabled {
-		return pgindex.YEncRecoverySelectionOptions{
-			TargetWindowPercent: s.opts.TargetWindowPercent,
-			NewestPercent:       s.opts.NewestPercent,
-		}, nil
+		base.TargetWindowPercent = s.opts.TargetWindowPercent
+		base.NewestPercent = s.opts.NewestPercent
+		return base, nil
 	}
 	start, err := time.Parse(time.RFC3339, strings.TrimSpace(s.opts.TargetWindowStart))
 	if err != nil {
@@ -556,12 +566,22 @@ func (s *Service) selectionOptions() (pgindex.YEncRecoverySelectionOptions, erro
 	if !start.Before(end) {
 		return pgindex.YEncRecoverySelectionOptions{}, fmt.Errorf("recover_yenc target window start must be before end")
 	}
-	return pgindex.YEncRecoverySelectionOptions{
-		TargetWindowStart:   &start,
-		TargetWindowEnd:     &end,
-		TargetWindowPercent: s.opts.TargetWindowPercent,
-		NewestPercent:       s.opts.NewestPercent,
-	}, nil
+	base.TargetWindowStart = &start
+	base.TargetWindowEnd = &end
+	base.TargetWindowPercent = s.opts.TargetWindowPercent
+	base.NewestPercent = s.opts.NewestPercent
+	return base, nil
+}
+
+func normalizeRecoveryProfile(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "header_only":
+		return "header_only"
+	case "exhaustive":
+		return "exhaustive"
+	default:
+		return "balanced"
+	}
 }
 
 func durationMillis(d time.Duration) float64 {

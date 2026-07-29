@@ -48,6 +48,19 @@ func TestFreshBaselineMigration(t *testing.T) {
 	if hasLegacyBinaries {
 		t.Fatalf("fresh v0.8.0 baseline must not create retired public.binaries")
 	}
+	var recoveryProfileDefault string
+	if err := store.DB().QueryRowContext(context.Background(), `
+		SELECT column_default
+		FROM information_schema.columns
+		WHERE table_schema = 'public'
+		  AND table_name = 'indexer_recovery_capacity_state'
+		  AND column_name = 'recovery_profile'`,
+	).Scan(&recoveryProfileDefault); err != nil {
+		t.Fatalf("check recovery profile migration: %v", err)
+	}
+	if !strings.Contains(recoveryProfileDefault, "balanced") {
+		t.Fatalf("recovery profile default = %q, want balanced", recoveryProfileDefault)
+	}
 	var hasFederationChainIssues bool
 	if err := store.DB().QueryRowContext(context.Background(), `
 		SELECT EXISTS (

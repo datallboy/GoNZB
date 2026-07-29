@@ -12,6 +12,63 @@ import (
 	"github.com/datallboy/gonzb/internal/store/pgindex"
 )
 
+func TestRunOnceHeaderOnlySkipsSelectionAndBodyFetch(t *testing.T) {
+	repo := &fakeRepo{
+		candidates: []pgindex.YEncRecoveryCandidate{{
+			BinaryID:        10,
+			ArticleHeaderID: 20,
+			MessageID:       "must-not-fetch@test",
+		}},
+	}
+	fetcher := &fakePrefixFetcher{body: []byte("=ybegin part=1 total=1 size=1 name=ignored.bin\r\n")}
+	svc := NewService(repo, match.NewService(), fetcher, nil, Options{
+		BatchSize:       10,
+		RecoveryProfile: "header_only",
+	})
+
+	metrics, err := svc.RunOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("RunOnceWithMetrics failed: %v", err)
+	}
+	if metrics["disabled_by_profile"] != true || metrics["recovery_profile"] != "header_only" {
+		t.Fatalf("expected header-only metrics, got %v", metrics)
+	}
+	if repo.selectionLimit != 0 {
+		t.Fatalf("header-only profile selected %d candidates", repo.selectionLimit)
+	}
+	if fetcher.maxBytes != 0 {
+		t.Fatalf("header-only profile issued a BODY fetch")
+	}
+}
+
+func TestRecoveryProfilesControlSelectionDepth(t *testing.T) {
+	tests := []struct {
+		profile            string
+		wantPriority0Only  bool
+		wantDisableGeneric bool
+	}{
+		{profile: "", wantPriority0Only: true, wantDisableGeneric: true},
+		{profile: "balanced", wantPriority0Only: true, wantDisableGeneric: true},
+		{profile: "exhaustive", wantPriority0Only: false, wantDisableGeneric: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.profile, func(t *testing.T) {
+			repo := &fakeRepo{}
+			svc := NewService(repo, match.NewService(), &fakePrefixFetcher{}, nil, Options{
+				BatchSize:       10,
+				RecoveryProfile: tt.profile,
+			})
+			if _, err := svc.RunOnceWithMetrics(context.Background()); err != nil {
+				t.Fatalf("RunOnceWithMetrics failed: %v", err)
+			}
+			if repo.selectionOpts.Priority0Only != tt.wantPriority0Only ||
+				repo.selectionOpts.DisableGenericSeed != tt.wantDisableGeneric {
+				t.Fatalf("profile %q selection options = %+v", tt.profile, repo.selectionOpts)
+			}
+		})
+	}
+}
+
 func TestRunOnceRecoversCandidateFromYEncHeaderPrefix(t *testing.T) {
 	repo := &fakeRepo{
 		candidates: []pgindex.YEncRecoveryCandidate{{

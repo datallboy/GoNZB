@@ -1396,13 +1396,26 @@ func (s *Store) CountPendingReleaseCandidateFamilies(ctx context.Context) (int64
 }
 
 func (s *Store) CountPendingYEncRecoveryBinaries(ctx context.Context) (int64, error) {
+	return s.CountPendingYEncRecoveryBinariesByMaxPriority(ctx, 2)
+}
+
+func (s *Store) CountPendingYEncRecoveryBinariesByMaxPriority(ctx context.Context, maxPriorityRank int) (int64, error) {
+	if maxPriorityRank < 0 {
+		return 0, nil
+	}
+	if maxPriorityRank > 2 {
+		maxPriorityRank = 2
+	}
 	var count int64
 	if err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*)
 		FROM yenc_recovery_work_items
 		WHERE status = 'ready'
 		  AND ready_at <= NOW()
-		  AND BTRIM(COALESCE(message_id, '')) <> ''`).Scan(&count); err != nil {
+		  AND priority_rank <= $1
+		  AND BTRIM(COALESCE(message_id, '')) <> ''`,
+		maxPriorityRank,
+	).Scan(&count); err != nil {
 		return 0, fmt.Errorf("count pending yenc recovery backlog: %w", err)
 	}
 	return count, nil

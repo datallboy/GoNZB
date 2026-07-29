@@ -70,6 +70,8 @@ type usenetIndexerConfig struct {
 	ArticleCohortSchedule                           indexerStageConfig
 	Assemble                                        indexerStageConfig
 	RecoverYEnc                                     indexerStageConfig
+	RecoveryProfile                                 string
+	RecoveryAdmission                               app.IndexingRecoveryAdmissionRuntimeSettings
 	ReleaseSummaryRefreshStage                      indexerStageConfig
 	ReleaseStage                                    indexerStageConfig
 	ReleaseGenerateNZBStage                         indexerStageConfig
@@ -140,6 +142,17 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 	runtimeCfg, err := deriveUsenetIndexerConfig(indexerConfig, runtimeIndexing)
 	if err != nil {
 		return nil, err
+	}
+	admissionCtx, cancelAdmission := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancelAdmission()
+	if err := appCtx.PGIndexStore.ConfigureYEncRecoveryAdmission(
+		admissionCtx,
+		yencAdmissionConfigFromRuntime(runtimeCfg.RecoveryAdmission, runtimeCfg.RecoveryProfile),
+	); err != nil {
+		return nil, fmt.Errorf("configure indexer recovery profile: %w", err)
+	}
+	if _, err := appCtx.PGIndexStore.RefreshYEncRecoveryAdmissionSnapshot(admissionCtx); err != nil {
+		return nil, fmt.Errorf("refresh indexer recovery capacity: %w", err)
 	}
 	if appCtx.DisableReleasePurgeArchivedSources {
 		runtimeCfg.ReleasePurgeArchivedSourcesStage.Enabled = false
@@ -349,6 +362,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			MaxHeaderBytes:      8192,
 			FetchTimeout:        recoverYEncFetchTimeout(runtimeCfg.RecoverYEnc),
 			Concurrency:         runtimeCfg.RecoverYEnc.Concurrency,
+			RecoveryProfile:     runtimeCfg.RecoveryProfile,
 			TargetWindowEnabled: runtimeCfg.RecoverYEnc.TargetWindowEnabled,
 			TargetWindowStart:   runtimeCfg.RecoverYEnc.TargetWindowStart,
 			TargetWindowEnd:     runtimeCfg.RecoverYEnc.TargetWindowEnd,
@@ -491,6 +505,7 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 					BatchSize:         runtimeCfg.ArticleCohortSchedule.BatchSize,
 					TargetWindowStart: cohortTargetStart,
 					TargetWindowEnd:   cohortTargetEnd,
+					DisableYEnc:       !app.IndexingRecoveryProfileUsesYEnc(runtimeCfg.RecoveryProfile),
 				})
 				if result == nil {
 					return marshalStageMetrics(map[string]any{}, err)
@@ -516,9 +531,12 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			}),
 		},
 		{
-			Name:        supervisor.StageRecoverYEnc,
-			Interval:    runtimeCfg.RecoverYEnc.Interval,
-			Enabled:     recoverYEncSvc != nil && recoverFetcher != nil && runtimeCfg.RecoverYEnc.Enabled,
+			Name:     supervisor.StageRecoverYEnc,
+			Interval: runtimeCfg.RecoverYEnc.Interval,
+			Enabled: recoverYEncSvc != nil &&
+				recoverFetcher != nil &&
+				runtimeCfg.RecoverYEnc.Enabled &&
+				app.IndexingRecoveryProfileUsesYEnc(runtimeCfg.RecoveryProfile),
 			BatchSize:   runtimeCfg.RecoverYEnc.BatchSize,
 			Concurrency: runtimeCfg.RecoverYEnc.Concurrency,
 			Backoff:     runtimeCfg.RecoverYEnc.Backoff,
@@ -998,6 +1016,8 @@ func deriveUsenetIndexerConfig(cfg *config.Config, runtimeIndexing ...*app.Index
 		ArticleCohortSchedule:      newIndexerStageConfig(indexingCfg.ArticleCohortSchedule),
 		Assemble:                   newIndexerStageConfig(indexingCfg.Assemble),
 		RecoverYEnc:                newIndexerStageConfig(indexingCfg.RecoverYEnc),
+		RecoveryProfile:            app.NormalizeIndexingRecoveryProfile(indexingCfg.RecoveryProfile),
+		RecoveryAdmission:          indexingCfg.RecoveryAdmission,
 		ReleaseSummaryRefreshStage: newIndexerStageConfig(indexingCfg.ReleaseSummaryRefresh),
 		ReleaseStage: newIndexerStageConfig(app.IndexingStageRuntimeSettings{
 			Enabled:         indexingCfg.Release.Enabled,
