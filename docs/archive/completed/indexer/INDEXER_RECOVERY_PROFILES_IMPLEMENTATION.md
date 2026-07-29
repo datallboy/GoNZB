@@ -1,6 +1,6 @@
 # Indexer Recovery Profiles
 
-Status: active
+Status: completed 2026-07-29
 Branch: `feat/indexer-recovery-profiles`
 Depends on: `audit/indexer-sustained-workload`
 
@@ -91,3 +91,14 @@ available.
 - `go test ./...`, UI tests/build, migration tests, and PostgreSQL repository
   tests pass.
 
+## Completion
+
+- Runtime settings, YAML configuration, validation, and the Web UI expose all
+  three profiles with Balanced as the default.
+- Selection, admission capacity, NNTP contention gates, cohort scheduling, and
+  outcome retention count only work executable by the active profile.
+- Profile changes preserve dormant lower-priority work and refresh the
+  operator-visible capacity snapshot immediately.
+- Focused unit tests, the full PostgreSQL repository suite on a disposable
+  checksummed PostgreSQL 17 database, UI lint, and the production UI build
+  passed.

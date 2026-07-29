@@ -97,3 +97,18 @@ buckets before running the retention dry-run.
 Use the admin API for runtime settings and maintenance tasks. Prefer `gonzb
 serve` for supervisor testing. Use one-shot commands only for explicit
 maintenance or cleanup tasks.
+
+Set **Settings > Indexer > Recovery effort** according to the workload:
+
+- **Balanced** is the normal unattended default. It spends BODY requests only
+  on priority-0 work likely to unlock a multipart binary or release.
+- **Header only** is the lowest-cost discovery mode and makes no yEnc recovery
+  BODY requests.
+- **Exhaustive** processes the full bounded recovery queue and is most useful
+  for targeted historical work.
+
+For Balanced or Exhaustive, also enable the advanced `recover_yenc` runtime
+stage. That switch is an independent circuit breaker; a selected profile does
+not force a disabled stage to run. The **Indexer Work** page reports the
+effective profile and only counts queue rows eligible under that profile
+toward recovery capacity.

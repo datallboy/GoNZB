@@ -261,6 +261,13 @@ when HEAD evidence cannot answer at least one required identity question:
 - file size;
 - confidence that a cohort is one binary rather than interleaved binaries.
 
+The recovery profile changes how much evidence the indexer is willing to fetch,
+not what counts as grouping proof. `header_only` fetches no BODY evidence,
+`balanced` processes only priority-0 recovery work, and `exhaustive` also
+processes lower-priority bounded work. None of the profiles may promote
+part/total, poster, Message-ID, article-number, or near-time similarity into
+binary identity by itself.
+
 Subject-complete posts should be assembled from HEAD first. Recovery may be
 used as validation, but recovered yEnc `name=` has lower grouping priority when
 it is random and conflicts with a complete, stable Subject identity.
