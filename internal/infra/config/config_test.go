@@ -80,6 +80,39 @@ func TestReleaseExpectedFileCoverageValidation(t *testing.T) {
 	}
 }
 
+func TestIndexerRecoveryProfileDefaultsToBalanced(t *testing.T) {
+	cfgPath := writeMinimalConfig(t, `
+modules:
+  downloader:
+    enabled: false
+  aggregator:
+    enabled: true
+  usenet_indexer:
+    enabled: false
+  api:
+    enabled: true
+  web_ui:
+    enabled: false
+`)
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.Indexing.RecoveryProfile != "balanced" {
+		t.Fatalf("recovery profile = %q, want balanced", cfg.Indexing.RecoveryProfile)
+	}
+}
+
+func TestIndexerRecoveryProfileRejectsUnknownValue(t *testing.T) {
+	cfg := minimalAggregatorConfig()
+	cfg.Indexing.RecoveryProfile = "maximum_magic"
+
+	if err := cfg.ValidateEffective(); err == nil {
+		t.Fatal("expected invalid recovery profile validation error")
+	}
+}
+
 func TestGoNZBNetBootstrapRequiresPostgres(t *testing.T) {
 	cfg := minimalAggregatorConfig()
 	cfg.Modules.GoNZBNet.Enabled = true

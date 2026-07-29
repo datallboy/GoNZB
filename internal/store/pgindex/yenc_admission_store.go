@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -20,6 +21,7 @@ const (
 )
 
 type YEncRecoveryAdmissionConfig struct {
+	RecoveryProfile             string
 	SoftQueueHours              int
 	HardQueueMultiplier         int
 	AbsoluteHardQueueCap        int64
@@ -32,6 +34,7 @@ type YEncRecoveryAdmissionConfig struct {
 }
 
 type YEncRecoveryAdmissionSnapshot struct {
+	RecoveryProfile   string     `json:"recovery_profile"`
 	ProbesPerHourEWMA float64    `json:"probes_per_hour_ewma"`
 	SoftCap           int64      `json:"soft_cap"`
 	HardCap           int64      `json:"hard_cap"`
@@ -52,6 +55,7 @@ func (s *Store) ConfigureYEncRecoveryAdmission(ctx context.Context, cfg YEncReco
 	if _, err := s.db.ExecContext(ctx, `
 		INSERT INTO indexer_recovery_capacity_state (
 			id,
+			recovery_profile,
 			soft_queue_hours,
 			hard_queue_multiplier,
 			absolute_hard_queue_cap,
@@ -63,9 +67,10 @@ func (s *Store) ConfigureYEncRecoveryAdmission(ctx context.Context, cfg YEncReco
 			latest_reserve_percent,
 			config_updated_at
 		)
-		VALUES (true, $1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+		VALUES (true, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
 		ON CONFLICT (id) DO UPDATE
-		SET soft_queue_hours = EXCLUDED.soft_queue_hours,
+		SET recovery_profile = EXCLUDED.recovery_profile,
+		    soft_queue_hours = EXCLUDED.soft_queue_hours,
 		    hard_queue_multiplier = EXCLUDED.hard_queue_multiplier,
 		    absolute_hard_queue_cap = EXCLUDED.absolute_hard_queue_cap,
 		    bootstrap_probes_per_hour = EXCLUDED.bootstrap_probes_per_hour,
@@ -75,6 +80,7 @@ func (s *Store) ConfigureYEncRecoveryAdmission(ctx context.Context, cfg YEncReco
 		    near_time_cohort_bucket_minutes = EXCLUDED.near_time_cohort_bucket_minutes,
 		    latest_reserve_percent = EXCLUDED.latest_reserve_percent,
 		    config_updated_at = NOW()`,
+		cfg.RecoveryProfile,
 		cfg.SoftQueueHours,
 		cfg.HardQueueMultiplier,
 		cfg.AbsoluteHardQueueCap,
@@ -91,6 +97,14 @@ func (s *Store) ConfigureYEncRecoveryAdmission(ctx context.Context, cfg YEncReco
 }
 
 func normalizeYEncAdmissionConfig(cfg YEncRecoveryAdmissionConfig) YEncRecoveryAdmissionConfig {
+	switch strings.ToLower(strings.TrimSpace(cfg.RecoveryProfile)) {
+	case "header_only":
+		cfg.RecoveryProfile = "header_only"
+	case "exhaustive":
+		cfg.RecoveryProfile = "exhaustive"
+	default:
+		cfg.RecoveryProfile = "balanced"
+	}
 	if cfg.SoftQueueHours <= 0 {
 		cfg.SoftQueueHours = defaultYEncAdmissionSoftQueueHours
 	}
@@ -193,6 +207,7 @@ func (s *Store) GetYEncRecoveryAdmissionSnapshot(ctx context.Context) (*YEncReco
 	)
 	if err := s.db.QueryRowContext(ctx, `
 		SELECT
+			recovery_profile,
 			probes_per_hour_ewma,
 			soft_cap,
 			hard_cap,
@@ -204,6 +219,7 @@ func (s *Store) GetYEncRecoveryAdmissionSnapshot(ctx context.Context) (*YEncReco
 		FROM indexer_recovery_capacity_state
 		WHERE id = true`,
 	).Scan(
+		&snapshot.RecoveryProfile,
 		&snapshot.ProbesPerHourEWMA,
 		&snapshot.SoftCap,
 		&snapshot.HardCap,
@@ -215,6 +231,7 @@ func (s *Store) GetYEncRecoveryAdmissionSnapshot(ctx context.Context) (*YEncReco
 	); err != nil {
 		if err == sql.ErrNoRows {
 			return &YEncRecoveryAdmissionSnapshot{
+				RecoveryProfile:   "balanced",
 				ProbesPerHourEWMA: defaultYEncAdmissionBootstrapProbesPerHour,
 				SoftCap:           defaultYEncAdmissionBootstrapProbesPerHour * defaultYEncAdmissionSoftQueueHours,
 				HardCap:           defaultYEncAdmissionAbsoluteHardQueueCap,
@@ -246,18 +263,23 @@ func (s *Store) RefreshYEncRecoveryAdmissionSnapshot(ctx context.Context) (*YEnc
 		return nil, fmt.Errorf("store is required")
 	}
 	var (
-		probesPerHour float64
-		softCap       int64
-		hardCap       int64
-		openReady     int64
-		openRunning   int64
-		oldestReady   sql.NullTime
-		newestReady   sql.NullTime
-		calculatedAt  time.Time
+		recoveryProfile string
+		probesPerHour   float64
+		softCap         int64
+		hardCap         int64
+		openReady       int64
+		openRunning     int64
+		oldestReady     sql.NullTime
+		newestReady     sql.NullTime
+		calculatedAt    time.Time
 	)
 	if err := s.db.QueryRowContext(ctx, `
 		WITH cfg AS (
 			SELECT
+				CASE
+					WHEN recovery_profile IN ('header_only', 'balanced', 'exhaustive') THEN recovery_profile
+					ELSE $6::text
+				END AS recovery_profile,
 				GREATEST(1, COALESCE(soft_queue_hours, $2::integer)) AS soft_queue_hours,
 				GREATEST(1, COALESCE(hard_queue_multiplier, $3::integer)) AS hard_queue_multiplier,
 				GREATEST(1, COALESCE(absolute_hard_queue_cap, $4::bigint)) AS absolute_hard_queue_cap,
@@ -266,7 +288,7 @@ func (s *Store) RefreshYEncRecoveryAdmissionSnapshot(ctx context.Context) (*YEnc
 			FROM indexer_recovery_capacity_state
 			WHERE id = true
 			UNION ALL
-			SELECT $2::integer, $3::integer, $4::bigint, $1::double precision, $5::integer
+			SELECT $6::text, $2::integer, $3::integer, $4::bigint, $1::double precision, $5::integer
 			WHERE NOT EXISTS (SELECT 1 FROM indexer_recovery_capacity_state WHERE id = true)
 			LIMIT 1
 		),
@@ -306,8 +328,13 @@ func (s *Store) RefreshYEncRecoveryAdmissionSnapshot(ctx context.Context) (*YEnc
 					  AND ready_at <= NOW()
 				) AS newest_ready_at
 			FROM yenc_recovery_work_items
+			CROSS JOIN cfg
 			WHERE status IN ('ready', 'running')
 			  AND BTRIM(COALESCE(message_id, '')) <> ''
+			  AND (
+			    cfg.recovery_profile = 'exhaustive'
+			    OR (cfg.recovery_profile = 'balanced' AND priority_rank = 0)
+			  )
 		),
 		calc AS (
 			SELECT
@@ -358,18 +385,23 @@ func (s *Store) RefreshYEncRecoveryAdmissionSnapshot(ctx context.Context) (*YEnc
 			    calculated_at = NOW()
 			RETURNING probes_per_hour_ewma, soft_cap, hard_cap, open_ready, open_running, oldest_ready_at, newest_ready_at, calculated_at
 		)
-		SELECT probes_per_hour_ewma, soft_cap, hard_cap, open_ready, open_running, oldest_ready_at, newest_ready_at, calculated_at
-		FROM upserted`,
+		SELECT cfg.recovery_profile, upserted.probes_per_hour_ewma, upserted.soft_cap, upserted.hard_cap,
+		       upserted.open_ready, upserted.open_running, upserted.oldest_ready_at,
+		       upserted.newest_ready_at, upserted.calculated_at
+		FROM upserted
+		CROSS JOIN cfg`,
 		defaultYEncAdmissionBootstrapProbesPerHour,
 		defaultYEncAdmissionSoftQueueHours,
 		defaultYEncAdmissionHardQueueMultiplier,
 		defaultYEncAdmissionAbsoluteHardQueueCap,
 		int(defaultYEncAdmissionEWMAWindow/time.Minute),
-	).Scan(&probesPerHour, &softCap, &hardCap, &openReady, &openRunning, &oldestReady, &newestReady, &calculatedAt); err != nil {
+		"balanced",
+	).Scan(&recoveryProfile, &probesPerHour, &softCap, &hardCap, &openReady, &openRunning, &oldestReady, &newestReady, &calculatedAt); err != nil {
 		return nil, fmt.Errorf("refresh yenc recovery admission snapshot: %w", err)
 	}
 
 	snapshot := &YEncRecoveryAdmissionSnapshot{
+		RecoveryProfile:   recoveryProfile,
 		ProbesPerHourEWMA: probesPerHour,
 		SoftCap:           softCap,
 		HardCap:           hardCap,

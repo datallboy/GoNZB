@@ -184,6 +184,7 @@ type GoNZBNetConfig struct {
 type IndexingConfig struct {
 	Newsgroups                  []string                   `mapstructure:"newsgroups" yaml:"newsgroups"`
 	BackfillUntilDateByGroup    map[string]string          `mapstructure:"backfill_until_date_by_group" yaml:"backfill_until_date_by_group"`
+	RecoveryProfile             string                     `mapstructure:"recovery_profile" yaml:"recovery_profile"`
 	ScrapeLatest                IndexingStageConfig        `mapstructure:"scrape_latest" yaml:"scrape_latest"`
 	ScrapeBackfill              IndexingStageConfig        `mapstructure:"scrape_backfill" yaml:"scrape_backfill"`
 	PosterMaterialize           IndexingStageConfig        `mapstructure:"poster_materialize" yaml:"poster_materialize"`
@@ -492,6 +493,7 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("indexing.inspect_media.concurrency", 1)
 	v.SetDefault("indexing.inspect_media.backoff_seconds", 0)
 	v.SetDefault("indexing.recover_yenc.enabled", false)
+	v.SetDefault("indexing.recovery_profile", "balanced")
 	v.SetDefault("indexing.recover_yenc.interval_minutes", 10.0)
 	v.SetDefault("indexing.recover_yenc.batch_size", 25)
 	v.SetDefault("indexing.recover_yenc.concurrency", 1)
@@ -756,6 +758,11 @@ func (c *Config) validate() error {
 	}
 	if err := validateIndexingStageConfig("indexing.recover_yenc", c.Indexing.RecoverYEnc); err != nil {
 		return err
+	}
+	switch strings.ToLower(strings.TrimSpace(c.Indexing.RecoveryProfile)) {
+	case "", "header_only", "balanced", "exhaustive":
+	default:
+		return errors.New("indexing.recovery_profile must be one of: header_only, balanced, exhaustive")
 	}
 	if err := validateIndexingStageConfig("indexing.release", IndexingStageConfig{
 		Enabled:         c.Indexing.Release.Enabled,

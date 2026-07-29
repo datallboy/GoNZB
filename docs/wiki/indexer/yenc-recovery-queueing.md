@@ -19,6 +19,29 @@ Recovery must keep retry and progress state in this table. It must not write
 retry state into `article_headers` or use upstream source rows as progress
 markers.
 
+## Recovery Profiles
+
+`indexing.recovery_profile` controls how much of this queue is executable:
+
+- `header_only` uses XOVER/HEAD evidence only. The scheduler does not admit
+  opaque yEnc cohorts, `recover_yenc` does not run, and recovery rows do not
+  apply scrape backpressure or block outcome retention. Existing rows are
+  preserved so a later profile change can resume them.
+- `balanced` is the default and recommended unattended mode. It refills and
+  claims only `priority_rank = 0` work likely to unlock a multipart binary or
+  release. Generic priority-1/2 seeding is disabled.
+- `exhaustive` enables priority ranks 0-2 and generic bounded seeding. Use it
+  for targeted historical work or when maximum recoverable coverage is worth
+  the additional BODY traffic.
+
+The `recover_yenc.enabled` stage switch remains an operational circuit breaker.
+The stage must be enabled for `balanced` or `exhaustive` to issue BODY requests;
+`header_only` overrides an enabled stage and still issues none.
+
+Changing profiles is non-destructive. Lower-priority rows remain in their
+current state while in a shallower profile and become eligible again when the
+profile is deepened.
+
 ## Admission Sources
 
 Work can enter the table from these paths:
@@ -118,7 +141,7 @@ Refill order is:
 2. fall back to the bounded opaque near-time projection scan;
 3. run generic bounded seeding only when the ready queue is empty.
 
-The selector then claims ready rows in two lanes:
+In `exhaustive`, the selector then claims ready rows in two lanes:
 
 - posted-time fairness lane: walks bounded posted-time buckets backward so one
   hot timeframe does not monopolize all probes;
@@ -127,6 +150,9 @@ The selector then claims ready rows in two lanes:
 With an explicit target window, the window lane replaces the normal fairness
 slice and newest work fills the rest of the batch. Without an explicit target,
 the runtime split controls fairness versus newest work.
+
+In `balanced`, both the target-window and newest selections are restricted to
+priority 0. Lower-priority rows cannot fill unused batch capacity.
 
 Inside each claim window, rows are ordered by:
 

@@ -27,6 +27,7 @@ type ArticleCohortSchedulerRequest struct {
 	YEncQueueMax      int
 	TargetWindowStart *time.Time
 	TargetWindowEnd   *time.Time
+	DisableYEnc       bool
 }
 
 func (r ArticleCohortSchedulerRequest) HasTargetWindow() bool {
@@ -88,7 +89,7 @@ func (s *Store) RunArticleCohortScheduler(ctx context.Context, req ArticleCohort
 	// Explicit assembly windows already have a matching target-aware yEnc
 	// selector. Do not let unrelated global opaque-queue capacity or scans
 	// prevent the scheduler from prioritizing structured historical work.
-	if !req.HasTargetWindow() {
+	if !req.DisableYEnc && !req.HasTargetWindow() {
 		bucketSeconds, err := yEncOpaqueCohortBucketSecondsInTx(ctx, tx)
 		if err != nil {
 			return nil, err
