@@ -25,6 +25,7 @@ func DefaultRuntimeSettings() *RuntimeSettings {
 		Indexing: &IndexingRuntimeSettings{
 			Newsgroups:                  []string{},
 			BackfillUntilDateByGroup:    map[string]string{},
+			RecoveryProfile:             IndexingRecoveryProfileBalanced,
 			ExplicitGroups:              []IndexingScrapeGroupRuntimeSettings{},
 			WildcardRules:               []IndexingWildcardRuleRuntimeSettings{},
 			ProviderGroupInventory:      []IndexingProviderGroupInventoryRuntimeSettings{},
@@ -321,6 +322,7 @@ func IndexingRuntimeFromConfig(cfg config.IndexingConfig) IndexingRuntimeSetting
 	out := IndexingRuntimeSettings{
 		Newsgroups:               append([]string(nil), cfg.Newsgroups...),
 		BackfillUntilDateByGroup: cloneStringMap(cfg.BackfillUntilDateByGroup),
+		RecoveryProfile:          NormalizeIndexingRecoveryProfile(cfg.RecoveryProfile),
 		ExplicitGroups:           legacyExplicitGroupsFromConfig(cfg.Newsgroups, cfg.BackfillUntilDateByGroup),
 		WildcardRules:            []IndexingWildcardRuleRuntimeSettings{},
 		ProviderGroupInventory:   []IndexingProviderGroupInventoryRuntimeSettings{},
@@ -725,6 +727,7 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 		indexing := cloneIndexing(runtime.Indexing)
 		effective.Indexing.Newsgroups = EffectiveNewsgroupNames(indexing)
 		effective.Indexing.BackfillUntilDateByGroup = EffectiveBackfillUntilDateByGroup(indexing)
+		effective.Indexing.RecoveryProfile = NormalizeIndexingRecoveryProfile(indexing.RecoveryProfile)
 
 		effective.Indexing.ScrapeLatest = toStageConfig(indexing.ScrapeLatest)
 		effective.Indexing.ScrapeBackfill = toStageConfig(indexing.ScrapeBackfill)
@@ -1178,6 +1181,7 @@ func cloneIndexing(in *IndexingRuntimeSettings) *IndexingRuntimeSettings {
 	out := &IndexingRuntimeSettings{
 		Newsgroups:                  append([]string(nil), in.Newsgroups...),
 		BackfillUntilDateByGroup:    cloneStringMap(in.BackfillUntilDateByGroup),
+		RecoveryProfile:             NormalizeIndexingRecoveryProfile(in.RecoveryProfile),
 		ExplicitGroups:              cloneExplicitGroups(in.ExplicitGroups),
 		WildcardRules:               cloneWildcardRules(in.WildcardRules),
 		ProviderGroupInventory:      cloneProviderGroupInventory(in.ProviderGroupInventory),
@@ -1337,6 +1341,7 @@ func normalizeIndexingScrapeConfig(indexing *IndexingRuntimeSettings) {
 	if indexing == nil {
 		return
 	}
+	indexing.RecoveryProfile = NormalizeIndexingRecoveryProfile(indexing.RecoveryProfile)
 	if indexing.ExplicitGroups == nil &&
 		indexing.WildcardRules == nil &&
 		indexing.ProviderGroupInventory == nil &&
@@ -1376,6 +1381,21 @@ func normalizeIndexingScrapeConfig(indexing *IndexingRuntimeSettings) {
 	}
 	indexing.Newsgroups = EffectiveNewsgroupNames(indexing)
 	indexing.BackfillUntilDateByGroup = EffectiveBackfillUntilDateByGroup(indexing)
+}
+
+func NormalizeIndexingRecoveryProfile(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case IndexingRecoveryProfileHeaderOnly:
+		return IndexingRecoveryProfileHeaderOnly
+	case IndexingRecoveryProfileExhaustive:
+		return IndexingRecoveryProfileExhaustive
+	default:
+		return IndexingRecoveryProfileBalanced
+	}
+}
+
+func IndexingRecoveryProfileUsesYEnc(value string) bool {
+	return NormalizeIndexingRecoveryProfile(value) != IndexingRecoveryProfileHeaderOnly
 }
 
 func cloneMaterializedGroups(in []IndexingMaterializedGroupRuntimeSettings) []IndexingMaterializedGroupRuntimeSettings {

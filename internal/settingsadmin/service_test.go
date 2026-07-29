@@ -89,6 +89,15 @@ func TestValidateRuntimeSettingsAcceptsHistoricalScrapeTimes(t *testing.T) {
 	}
 }
 
+func TestValidateRuntimeSettingsRejectsUnknownRecoveryProfile(t *testing.T) {
+	runtime := app.DefaultRuntimeSettings()
+	runtime.Indexing.RecoveryProfile = "maximum_magic"
+	err := ValidateRuntimeSettings(&config.Config{}, runtime)
+	if err == nil || !strings.Contains(err.Error(), "indexing.recovery_profile") {
+		t.Fatalf("expected recovery-profile validation error, got %v", err)
+	}
+}
+
 func TestValidateRuntimeSettingsReportsIncompleteNewznabSource(t *testing.T) {
 	runtime := app.DefaultRuntimeSettings()
 	runtime.Indexers = []app.IndexerRuntimeSettings{{ID: "external"}}

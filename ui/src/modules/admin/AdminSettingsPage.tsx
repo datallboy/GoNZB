@@ -201,6 +201,7 @@ function defaultSettings(): RuntimeSettings {
     indexing: {
       newsgroups: [],
       backfill_until_date_by_group: {},
+      recovery_profile: 'balanced',
       explicit_groups: [],
       wildcard_rules: [],
       provider_group_inventory: [],
@@ -379,6 +380,7 @@ function normalizeSettings(input?: RuntimeSettings): RuntimeSettings {
       ...indexing,
       newsgroups: indexing.newsgroups ?? [],
       backfill_until_date_by_group: indexing.backfill_until_date_by_group ?? {},
+      recovery_profile: indexing.recovery_profile ?? 'balanced',
       explicit_groups: indexing.explicit_groups ?? [],
       wildcard_rules: indexing.wildcard_rules ?? [],
       provider_group_inventory: indexing.provider_group_inventory ?? [],
@@ -1122,6 +1124,31 @@ export function AdminSettingsPage() {
                 Open scrape manager
               </Link>
             </div>
+          </SettingsSection>
+
+          <SettingsSection title="Recovery effort">
+            <div className="banner">
+              Choose how much NNTP BODY traffic the indexer may spend on weak or obfuscated articles. This controls recovery eligibility; the detailed stage, queue, retry, and retention settings below remain the safety limits.
+            </div>
+            <div className="toolbar-grid">
+              <SelectField
+                label="Recovery profile"
+                value={indexing.recovery_profile}
+                options={[
+                  { value: 'header_only', label: 'Header only — fastest' },
+                  { value: 'balanced', label: 'Balanced — recommended' },
+                  { value: 'exhaustive', label: 'Exhaustive — maximum effort' },
+                ]}
+                onChange={(value) => setIndexing({ ...indexing, recovery_profile: value as IndexingRuntimeSettings['recovery_profile'] })}
+                helpText="Header only uses XOVER/HEAD and makes no yEnc recovery BODY requests. Balanced recovers only priority-0 work likely to complete a multipart binary or release. Exhaustive also processes generic weak and provisional backlog."
+              />
+            </div>
+            {indexing.recovery_profile === 'header_only' ? (
+              <div className="banner">Recover yEnc is effectively paused in Header-only mode even if its stage switch remains enabled. Queued work is preserved for a later profile change.</div>
+            ) : null}
+            {indexing.recovery_profile !== 'header_only' && !indexing.recover_yenc.enabled ? (
+              <div className="banner">This profile permits yEnc recovery, but the Recover yEnc runtime stage is disabled. Enable that stage below before expecting BODY recovery work.</div>
+            ) : null}
           </SettingsSection>
 
         <SettingsSection title="Runtime stage controls">

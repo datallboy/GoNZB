@@ -1,5 +1,11 @@
 package app
 
+const (
+	IndexingRecoveryProfileHeaderOnly = "header_only"
+	IndexingRecoveryProfileBalanced   = "balanced"
+	IndexingRecoveryProfileExhaustive = "exhaustive"
+)
+
 type RuntimeSettings struct {
 	Servers           []ServerRuntimeSettings         `json:"servers,omitempty"`
 	DownloaderServers []ServerRuntimeSettings         `json:"downloader_servers,omitempty"`
@@ -379,6 +385,7 @@ type IndexingMaterializedGroupRuntimeSettings struct {
 type IndexingRuntimeSettings struct {
 	Newsgroups                  []string                                          `json:"newsgroups,omitempty"`
 	BackfillUntilDateByGroup    map[string]string                                 `json:"backfill_until_date_by_group,omitempty"`
+	RecoveryProfile             string                                            `json:"recovery_profile,omitempty"`
 	ExplicitGroups              []IndexingScrapeGroupRuntimeSettings              `json:"explicit_groups"`
 	WildcardRules               []IndexingWildcardRuleRuntimeSettings             `json:"wildcard_rules"`
 	ProviderGroupInventory      []IndexingProviderGroupInventoryRuntimeSettings   `json:"provider_group_inventory"`

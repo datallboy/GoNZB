@@ -33,6 +33,17 @@ function formatTime(value?: string) {
   return new Date(value).toLocaleString()
 }
 
+function formatRecoveryProfile(value?: IndexerRecoveryCapacity['recovery_profile']) {
+  switch (value) {
+    case 'header_only':
+      return 'Header only'
+    case 'exhaustive':
+      return 'Exhaustive'
+    default:
+      return 'Balanced'
+  }
+}
+
 export function AdminIndexerWorkPage() {
   const [capacity, setCapacity] = useState<IndexerRecoveryCapacity | null>(null)
   const [profiles, setProfiles] = useState<IndexerGroupProfileResponse | null>(null)
@@ -84,7 +95,7 @@ export function AdminIndexerWorkPage() {
           <div className="stat-card">
             <span>yEnc open</span>
             <strong>{formatNumber(capacity?.open_total)}</strong>
-            <small>{formatNumber(capacity?.remaining_to_hard)} until hard cap</small>
+            <small>{formatRecoveryProfile(capacity?.recovery_profile)} · {formatNumber(capacity?.remaining_to_hard)} until hard cap</small>
           </div>
           <div className="stat-card">
             <span>Recovery rate</span>
