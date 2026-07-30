@@ -165,6 +165,14 @@ function defaultGoNZBNetSettings(): GoNZBNetRuntimeSettings {
     gossip_ttl: 4,
     gossip_fanout: 4,
     peer_exchange_enabled: false,
+    binary_evidence_consume_enabled: true,
+    binary_evidence_serve_enabled: false,
+    binary_evidence_peer_timeout_seconds: 3,
+    binary_evidence_peer_fanout: 3,
+    binary_evidence_yenc_batch_size: 1000,
+    binary_evidence_segment_limit: 5000,
+    binary_evidence_max_response_bytes: 10 * 1024 * 1024,
+    binary_evidence_circuit_breaker_cooldown_minutes: 5,
     relay_enabled: false,
     max_event_bytes: 262144,
     max_manifest_bytes: 10485760,
@@ -1089,6 +1097,20 @@ export function AdminSettingsPage() {
               <NumberField label="Gossip TTL" min={1} value={gonzbnet.gossip_ttl} onChange={(value) => setGoNZBNet({ gossip_ttl: value })} />
               <NumberField label="Gossip fanout" min={1} value={gonzbnet.gossip_fanout} onChange={(value) => setGoNZBNet({ gossip_fanout: value })} />
               <CheckboxField label="Peer exchange" checked={gonzbnet.peer_exchange_enabled} onChange={(value) => setGoNZBNet({ peer_exchange_enabled: value })} helpText="Allows authenticated members of a shared pool to exchange peer endpoints. It does not grant membership or trust." />
+            </div>
+          </SettingsSection>
+
+          <SettingsSection title="Binary evidence exchange">
+            <p className="settings-section-copy">Reuses signed yEnc headers and missing binary segments from authorized pool peers before spending NNTP BODY requests. Pool policy must also opt in.</p>
+            <div className="toolbar-grid">
+              <CheckboxField label="Consume peer evidence" checked={gonzbnet.binary_evidence_consume_enabled} onChange={(value) => setGoNZBNet({ binary_evidence_consume_enabled: value })} helpText="Checks the local evidence cache and authorized pool peers before NNTP BODY recovery." />
+              <CheckboxField label="Serve local evidence" checked={gonzbnet.binary_evidence_serve_enabled} onChange={(value) => setGoNZBNet({ binary_evidence_serve_enabled: value })} helpText="Serves only locally acquired evidence. Imported evidence is never relayed." />
+              <NumberField label="Peer timeout (seconds)" min={1} value={gonzbnet.binary_evidence_peer_timeout_seconds} onChange={(value) => setGoNZBNet({ binary_evidence_peer_timeout_seconds: value })} />
+              <NumberField label="Peer fanout" min={1} max={20} value={gonzbnet.binary_evidence_peer_fanout} onChange={(value) => setGoNZBNet({ binary_evidence_peer_fanout: value })} />
+              <NumberField label="yEnc query batch" min={1} max={1000} value={gonzbnet.binary_evidence_yenc_batch_size} onChange={(value) => setGoNZBNet({ binary_evidence_yenc_batch_size: value })} />
+              <NumberField label="Segment response limit" min={1} max={5000} value={gonzbnet.binary_evidence_segment_limit} onChange={(value) => setGoNZBNet({ binary_evidence_segment_limit: value })} />
+              <NumberField label="Max response bytes" min={1024} value={gonzbnet.binary_evidence_max_response_bytes} onChange={(value) => setGoNZBNet({ binary_evidence_max_response_bytes: value })} />
+              <NumberField label="Failure cooldown (minutes)" min={1} value={gonzbnet.binary_evidence_circuit_breaker_cooldown_minutes} onChange={(value) => setGoNZBNet({ binary_evidence_circuit_breaker_cooldown_minutes: value })} />
             </div>
           </SettingsSection>
 
