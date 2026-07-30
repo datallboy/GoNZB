@@ -192,17 +192,20 @@ func defaultPartitionSettings() IndexingPartitionRuntimeSettings {
 
 func defaultRecoveryAdmissionSettings() IndexingRecoveryAdmissionRuntimeSettings {
 	return IndexingRecoveryAdmissionRuntimeSettings{
-		TargetHotLagHours:           4,
-		TargetWarmLagHours:          24,
-		SoftQueueHours:              4,
-		HardQueueMultiplier:         2,
-		AbsoluteHardQueueCap:        250000,
-		EWMAWindowMinutes:           30,
-		BootstrapProbesPerHour:      25000,
-		Priority0OverflowCap:        25000,
-		Priority0ReservoirBatches:   5,
-		NearTimeCohortBucketMinutes: 5,
-		LatestReservePercent:        10,
+		TargetHotLagHours:             4,
+		TargetWarmLagHours:            24,
+		SoftQueueHours:                4,
+		HardQueueMultiplier:           2,
+		AbsoluteHardQueueCap:          250000,
+		EWMAWindowMinutes:             30,
+		BootstrapProbesPerHour:        25000,
+		Priority0OverflowCap:          25000,
+		Priority0ReservoirBatches:     5,
+		NearTimeCohortBucketMinutes:   5,
+		LatestReservePercent:          10,
+		BalancedBodyRequestsPerHour:   25000,
+		ExhaustiveBodyRequestsPerHour: 100000,
+		DiscoveryBodyRequestsPerHour:  1000,
 	}
 }
 
@@ -1604,6 +1607,15 @@ func mergeRecoveryAdmissionRuntimeSettings(base, override IndexingRecoveryAdmiss
 	}
 	if override.LatestReservePercent > 0 {
 		base.LatestReservePercent = override.LatestReservePercent
+	}
+	if override.BalancedBodyRequestsPerHour > 0 {
+		base.BalancedBodyRequestsPerHour = override.BalancedBodyRequestsPerHour
+	}
+	if override.ExhaustiveBodyRequestsPerHour > 0 {
+		base.ExhaustiveBodyRequestsPerHour = override.ExhaustiveBodyRequestsPerHour
+	}
+	if override.DiscoveryBodyRequestsPerHour > 0 {
+		base.DiscoveryBodyRequestsPerHour = override.DiscoveryBodyRequestsPerHour
 	}
 	if base.LatestReservePercent > 50 {
 		base.LatestReservePercent = 50

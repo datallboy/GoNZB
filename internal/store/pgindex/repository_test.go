@@ -4905,9 +4905,14 @@ func TestListYEncRecoveryCandidatesSeedsWhenWorkTableIsNonEmpty(t *testing.T) {
 	}
 }
 
-func TestBackfillPriorityYEncRecoveryWorkItemsRefillsOpaqueCohortsWhenGenericQueueIsSaturated(t *testing.T) {
+func TestExhaustiveBackfillPriorityYEncRecoveryWorkItemsRefillsOpaqueCohortsWhenGenericQueueIsSaturated(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
+	if err := store.ConfigureYEncRecoveryAdmission(ctx, YEncRecoveryAdmissionConfig{
+		RecoveryProfile: "exhaustive",
+	}); err != nil {
+		t.Fatalf("configure exhaustive recovery profile: %v", err)
+	}
 
 	groupName := fmt.Sprintf("alt.test.yenc-recovery.priority-cohort.%d", time.Now().UnixNano())
 	newsgroupID, err := store.EnsureNewsgroup(ctx, groupName)

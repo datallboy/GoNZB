@@ -20,9 +20,12 @@ type Store struct {
 	partitionPolicyMu     sync.RWMutex
 	partitionDDLLockLimit time.Duration
 
-	yencSeedScanMu               sync.Mutex
-	yencSeedScanBackoffUntil     time.Time
-	yencSeedScanConsecutiveEmpty int
+	yencSeedScanMu                       sync.Mutex
+	yencSeedScanBackoffUntil             time.Time
+	yencSeedScanConsecutiveEmpty         int
+	yencPrioritySeedScanMu               sync.Mutex
+	yencPrioritySeedScanBackoffUntil     time.Time
+	yencPrioritySeedScanConsecutiveEmpty int
 
 	inspectDiscoverySeedMu               sync.Mutex
 	inspectDiscoverySeedBackoffUntil     time.Time
