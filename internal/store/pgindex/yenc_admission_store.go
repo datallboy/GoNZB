@@ -18,33 +18,44 @@ const (
 	defaultYEncAdmissionPriority0Reservoir     = 5
 	defaultYEncAdmissionNearTimeBucketMinutes  = 5
 	defaultYEncAdmissionLatestReservePercent   = 10
+	defaultBalancedBodyRequestsPerHour         = 25000
+	defaultExhaustiveBodyRequestsPerHour       = 100000
+	defaultDiscoveryBodyRequestsPerHour        = 1000
 )
 
 type YEncRecoveryAdmissionConfig struct {
-	RecoveryProfile             string
-	SoftQueueHours              int
-	HardQueueMultiplier         int
-	AbsoluteHardQueueCap        int64
-	BootstrapProbesPerHour      float64
-	EWMAWindowMinutes           int
-	Priority0OverflowCap        int64
-	Priority0ReservoirBatches   int
-	NearTimeCohortBucketMinutes int
-	LatestReservePercent        int
+	RecoveryProfile               string
+	SoftQueueHours                int
+	HardQueueMultiplier           int
+	AbsoluteHardQueueCap          int64
+	BootstrapProbesPerHour        float64
+	EWMAWindowMinutes             int
+	Priority0OverflowCap          int64
+	Priority0ReservoirBatches     int
+	NearTimeCohortBucketMinutes   int
+	LatestReservePercent          int
+	BalancedBodyRequestsPerHour   int64
+	ExhaustiveBodyRequestsPerHour int64
+	DiscoveryBodyRequestsPerHour  int64
 }
 
 type YEncRecoveryAdmissionSnapshot struct {
-	RecoveryProfile   string     `json:"recovery_profile"`
-	ProbesPerHourEWMA float64    `json:"probes_per_hour_ewma"`
-	SoftCap           int64      `json:"soft_cap"`
-	HardCap           int64      `json:"hard_cap"`
-	OpenReady         int64      `json:"open_ready"`
-	OpenRunning       int64      `json:"open_running"`
-	OpenTotal         int64      `json:"open_total"`
-	RemainingToHard   int64      `json:"remaining_to_hard"`
-	OldestReadyAt     *time.Time `json:"oldest_ready_at,omitempty"`
-	NewestReadyAt     *time.Time `json:"newest_ready_at,omitempty"`
-	CalculatedAt      time.Time  `json:"calculated_at"`
+	RecoveryProfile     string     `json:"recovery_profile"`
+	ProbesPerHourEWMA   float64    `json:"probes_per_hour_ewma"`
+	SoftCap             int64      `json:"soft_cap"`
+	HardCap             int64      `json:"hard_cap"`
+	OpenReady           int64      `json:"open_ready"`
+	OpenRunning         int64      `json:"open_running"`
+	OpenTotal           int64      `json:"open_total"`
+	RemainingToHard     int64      `json:"remaining_to_hard"`
+	OldestReadyAt       *time.Time `json:"oldest_ready_at,omitempty"`
+	NewestReadyAt       *time.Time `json:"newest_ready_at,omitempty"`
+	CalculatedAt        time.Time  `json:"calculated_at"`
+	BodyBudgetKey       string     `json:"body_budget_key"`
+	BodyRequestsPerHour int64      `json:"body_requests_per_hour"`
+	BodyRequestsUsed    int64      `json:"body_requests_used"`
+	BodyRequestsRemain  int64      `json:"body_requests_remaining"`
+	BodyBudgetStartedAt *time.Time `json:"body_budget_started_at,omitempty"`
 }
 
 func (s *Store) ConfigureYEncRecoveryAdmission(ctx context.Context, cfg YEncRecoveryAdmissionConfig) error {
@@ -65,9 +76,12 @@ func (s *Store) ConfigureYEncRecoveryAdmission(ctx context.Context, cfg YEncReco
 			priority0_reservoir_batches,
 			near_time_cohort_bucket_minutes,
 			latest_reserve_percent,
+			balanced_body_requests_per_hour,
+			exhaustive_body_requests_per_hour,
+			discovery_body_requests_per_hour,
 			config_updated_at
 		)
-		VALUES (true, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+		VALUES (true, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW())
 		ON CONFLICT (id) DO UPDATE
 		SET recovery_profile = EXCLUDED.recovery_profile,
 		    soft_queue_hours = EXCLUDED.soft_queue_hours,
@@ -79,6 +93,9 @@ func (s *Store) ConfigureYEncRecoveryAdmission(ctx context.Context, cfg YEncReco
 		    priority0_reservoir_batches = EXCLUDED.priority0_reservoir_batches,
 		    near_time_cohort_bucket_minutes = EXCLUDED.near_time_cohort_bucket_minutes,
 		    latest_reserve_percent = EXCLUDED.latest_reserve_percent,
+		    balanced_body_requests_per_hour = EXCLUDED.balanced_body_requests_per_hour,
+		    exhaustive_body_requests_per_hour = EXCLUDED.exhaustive_body_requests_per_hour,
+		    discovery_body_requests_per_hour = EXCLUDED.discovery_body_requests_per_hour,
 		    config_updated_at = NOW()`,
 		cfg.RecoveryProfile,
 		cfg.SoftQueueHours,
@@ -90,6 +107,9 @@ func (s *Store) ConfigureYEncRecoveryAdmission(ctx context.Context, cfg YEncReco
 		cfg.Priority0ReservoirBatches,
 		cfg.NearTimeCohortBucketMinutes,
 		cfg.LatestReservePercent,
+		cfg.BalancedBodyRequestsPerHour,
+		cfg.ExhaustiveBodyRequestsPerHour,
+		cfg.DiscoveryBodyRequestsPerHour,
 	); err != nil {
 		return fmt.Errorf("configure yenc recovery admission: %w", err)
 	}
@@ -134,6 +154,15 @@ func normalizeYEncAdmissionConfig(cfg YEncRecoveryAdmissionConfig) YEncRecoveryA
 	}
 	if cfg.LatestReservePercent > 50 {
 		cfg.LatestReservePercent = 50
+	}
+	if cfg.BalancedBodyRequestsPerHour <= 0 {
+		cfg.BalancedBodyRequestsPerHour = defaultBalancedBodyRequestsPerHour
+	}
+	if cfg.ExhaustiveBodyRequestsPerHour <= 0 {
+		cfg.ExhaustiveBodyRequestsPerHour = defaultExhaustiveBodyRequestsPerHour
+	}
+	if cfg.DiscoveryBodyRequestsPerHour <= 0 {
+		cfg.DiscoveryBodyRequestsPerHour = defaultDiscoveryBodyRequestsPerHour
 	}
 	return cfg
 }
@@ -230,14 +259,18 @@ func (s *Store) GetYEncRecoveryAdmissionSnapshot(ctx context.Context) (*YEncReco
 		&snapshot.CalculatedAt,
 	); err != nil {
 		if err == sql.ErrNoRows {
-			return &YEncRecoveryAdmissionSnapshot{
+			snapshot := &YEncRecoveryAdmissionSnapshot{
 				RecoveryProfile:   "balanced",
 				ProbesPerHourEWMA: defaultYEncAdmissionBootstrapProbesPerHour,
 				SoftCap:           defaultYEncAdmissionBootstrapProbesPerHour * defaultYEncAdmissionSoftQueueHours,
 				HardCap:           defaultYEncAdmissionAbsoluteHardQueueCap,
 				RemainingToHard:   defaultYEncAdmissionAbsoluteHardQueueCap,
 				CalculatedAt:      time.Now().UTC(),
-			}, nil
+			}
+			if err := s.populateYEncBodyBudgetSnapshot(ctx, snapshot); err != nil {
+				return nil, err
+			}
+			return snapshot, nil
 		}
 		return nil, fmt.Errorf("get yenc recovery admission snapshot: %w", err)
 	}
@@ -254,6 +287,9 @@ func (s *Store) GetYEncRecoveryAdmissionSnapshot(ctx context.Context) (*YEncReco
 	if newestReady.Valid {
 		t := newestReady.Time.UTC()
 		snapshot.NewestReadyAt = &t
+	}
+	if err := s.populateYEncBodyBudgetSnapshot(ctx, &snapshot); err != nil {
+		return nil, err
 	}
 	return &snapshot, nil
 }
@@ -422,5 +458,58 @@ func (s *Store) RefreshYEncRecoveryAdmissionSnapshot(ctx context.Context) (*YEnc
 		t := newestReady.Time.UTC()
 		snapshot.NewestReadyAt = &t
 	}
+	if err := s.populateYEncBodyBudgetSnapshot(ctx, snapshot); err != nil {
+		return nil, err
+	}
 	return snapshot, nil
+}
+
+func (s *Store) populateYEncBodyBudgetSnapshot(ctx context.Context, snapshot *YEncRecoveryAdmissionSnapshot) error {
+	if s == nil || s.db == nil || snapshot == nil {
+		return nil
+	}
+	if snapshot.RecoveryProfile == "header_only" {
+		return nil
+	}
+	budgetKey := "recover_yenc_balanced"
+	limitColumn := "balanced_body_requests_per_hour"
+	if snapshot.RecoveryProfile == "exhaustive" {
+		budgetKey = "recover_yenc_exhaustive"
+		limitColumn = "exhaustive_body_requests_per_hour"
+	}
+	snapshot.BodyBudgetKey = budgetKey
+	query := `
+		SELECT
+			COALESCE((SELECT ` + limitColumn + ` FROM indexer_recovery_capacity_state WHERE id = true), $2),
+			CASE
+				WHEN b.window_started_at >= date_trunc('hour', NOW()) THEN COALESCE(b.requests_used, 0)
+				ELSE 0
+			END,
+			CASE
+				WHEN b.window_started_at >= date_trunc('hour', NOW()) THEN b.window_started_at
+				ELSE date_trunc('hour', NOW())
+			END
+		FROM (SELECT 1) seed
+		LEFT JOIN indexer_body_request_budget_state b ON b.budget_key = $1`
+	var started sql.NullTime
+	defaultLimit := int64(defaultBalancedBodyRequestsPerHour)
+	if snapshot.RecoveryProfile == "exhaustive" {
+		defaultLimit = defaultExhaustiveBodyRequestsPerHour
+	}
+	if err := s.db.QueryRowContext(ctx, query, budgetKey, defaultLimit).Scan(
+		&snapshot.BodyRequestsPerHour,
+		&snapshot.BodyRequestsUsed,
+		&started,
+	); err != nil {
+		return fmt.Errorf("load %s body request budget: %w", budgetKey, err)
+	}
+	snapshot.BodyRequestsRemain = snapshot.BodyRequestsPerHour - snapshot.BodyRequestsUsed
+	if snapshot.BodyRequestsRemain < 0 {
+		snapshot.BodyRequestsRemain = 0
+	}
+	if started.Valid {
+		value := started.Time.UTC()
+		snapshot.BodyBudgetStartedAt = &value
+	}
+	return nil
 }

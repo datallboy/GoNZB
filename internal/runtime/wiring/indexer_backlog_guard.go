@@ -208,16 +208,19 @@ func (g *cachedScrapeBacklogGuard) evaluate(ctx context.Context, runtime *app.Ru
 
 func yencAdmissionConfigFromRuntime(in app.IndexingRecoveryAdmissionRuntimeSettings, profile string) pgindex.YEncRecoveryAdmissionConfig {
 	return pgindex.YEncRecoveryAdmissionConfig{
-		RecoveryProfile:             app.NormalizeIndexingRecoveryProfile(profile),
-		SoftQueueHours:              in.SoftQueueHours,
-		HardQueueMultiplier:         in.HardQueueMultiplier,
-		AbsoluteHardQueueCap:        int64(in.AbsoluteHardQueueCap),
-		BootstrapProbesPerHour:      float64(in.BootstrapProbesPerHour),
-		EWMAWindowMinutes:           in.EWMAWindowMinutes,
-		Priority0OverflowCap:        int64(in.Priority0OverflowCap),
-		Priority0ReservoirBatches:   in.Priority0ReservoirBatches,
-		NearTimeCohortBucketMinutes: in.NearTimeCohortBucketMinutes,
-		LatestReservePercent:        in.LatestReservePercent,
+		RecoveryProfile:               app.NormalizeIndexingRecoveryProfile(profile),
+		SoftQueueHours:                in.SoftQueueHours,
+		HardQueueMultiplier:           in.HardQueueMultiplier,
+		AbsoluteHardQueueCap:          int64(in.AbsoluteHardQueueCap),
+		BootstrapProbesPerHour:        float64(in.BootstrapProbesPerHour),
+		EWMAWindowMinutes:             in.EWMAWindowMinutes,
+		Priority0OverflowCap:          int64(in.Priority0OverflowCap),
+		Priority0ReservoirBatches:     in.Priority0ReservoirBatches,
+		NearTimeCohortBucketMinutes:   in.NearTimeCohortBucketMinutes,
+		LatestReservePercent:          in.LatestReservePercent,
+		BalancedBodyRequestsPerHour:   int64(in.BalancedBodyRequestsPerHour),
+		ExhaustiveBodyRequestsPerHour: int64(in.ExhaustiveBodyRequestsPerHour),
+		DiscoveryBodyRequestsPerHour:  int64(in.DiscoveryBodyRequestsPerHour),
 	}
 }
 

@@ -217,17 +217,20 @@ type IndexingPartitionRuntimeSettings struct {
 }
 
 type IndexingRecoveryAdmissionRuntimeSettings struct {
-	TargetHotLagHours           int `json:"target_hot_lag_hours,omitempty"`
-	TargetWarmLagHours          int `json:"target_warm_lag_hours,omitempty"`
-	SoftQueueHours              int `json:"soft_queue_hours,omitempty"`
-	HardQueueMultiplier         int `json:"hard_queue_multiplier,omitempty"`
-	AbsoluteHardQueueCap        int `json:"absolute_hard_queue_cap,omitempty"`
-	EWMAWindowMinutes           int `json:"ewma_window_minutes,omitempty"`
-	BootstrapProbesPerHour      int `json:"bootstrap_probes_per_hour,omitempty"`
-	Priority0OverflowCap        int `json:"priority0_overflow_cap,omitempty"`
-	Priority0ReservoirBatches   int `json:"priority0_reservoir_batches,omitempty"`
-	NearTimeCohortBucketMinutes int `json:"near_time_cohort_bucket_minutes,omitempty"`
-	LatestReservePercent        int `json:"latest_reserve_percent,omitempty"`
+	TargetHotLagHours             int `json:"target_hot_lag_hours,omitempty"`
+	TargetWarmLagHours            int `json:"target_warm_lag_hours,omitempty"`
+	SoftQueueHours                int `json:"soft_queue_hours,omitempty"`
+	HardQueueMultiplier           int `json:"hard_queue_multiplier,omitempty"`
+	AbsoluteHardQueueCap          int `json:"absolute_hard_queue_cap,omitempty"`
+	EWMAWindowMinutes             int `json:"ewma_window_minutes,omitempty"`
+	BootstrapProbesPerHour        int `json:"bootstrap_probes_per_hour,omitempty"`
+	Priority0OverflowCap          int `json:"priority0_overflow_cap,omitempty"`
+	Priority0ReservoirBatches     int `json:"priority0_reservoir_batches,omitempty"`
+	NearTimeCohortBucketMinutes   int `json:"near_time_cohort_bucket_minutes,omitempty"`
+	LatestReservePercent          int `json:"latest_reserve_percent,omitempty"`
+	BalancedBodyRequestsPerHour   int `json:"balanced_body_requests_per_hour,omitempty"`
+	ExhaustiveBodyRequestsPerHour int `json:"exhaustive_body_requests_per_hour,omitempty"`
+	DiscoveryBodyRequestsPerHour  int `json:"discovery_body_requests_per_hour,omitempty"`
 }
 
 type IndexingScrapeTierRuntimeSettings struct {

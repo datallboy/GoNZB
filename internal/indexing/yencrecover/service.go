@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -39,10 +38,6 @@ type repositoryWithBatchHeaderRecovery interface {
 	ApplyYEncHeaderRecoveries(ctx context.Context, in []pgindex.YEncHeaderRecoveryRecord) ([]pgindex.YEncHeaderRecoveryResult, error)
 }
 
-type repositoryWithPrioritySiblingAdmission interface {
-	BackfillPriorityYEncRecoveryWorkItemsForBinaries(ctx context.Context, binaryIDs []int64) (int64, int64, error)
-}
-
 type repositoryWithBatchRecoveryBackoff interface {
 	RecordYEncRecoveryNotFoundBatch(ctx context.Context, articleHeaderIDs []int64) error
 	RecordYEncRecoveryNoopBatch(ctx context.Context, articleHeaderIDs []int64) error
@@ -66,16 +61,18 @@ type matcher interface {
 }
 
 type Options struct {
-	BatchSize           int
-	MaxHeaderBytes      int64
-	FetchTimeout        time.Duration
-	Concurrency         int
-	RecoveryProfile     string
-	TargetWindowEnabled bool
-	TargetWindowStart   string
-	TargetWindowEnd     string
-	TargetWindowPercent int
-	NewestPercent       int
+	BatchSize                     int
+	MaxHeaderBytes                int64
+	FetchTimeout                  time.Duration
+	Concurrency                   int
+	RecoveryProfile               string
+	TargetWindowEnabled           bool
+	TargetWindowStart             string
+	TargetWindowEnd               string
+	TargetWindowPercent           int
+	NewestPercent                 int
+	BalancedBodyRequestsPerHour   int64
+	ExhaustiveBodyRequestsPerHour int64
 }
 
 const yencRecoveryStreamFlushSize = 250
@@ -106,6 +103,12 @@ func NewService(repo repository, matcher matcher, fetcher bodyPrefixFetcher, log
 		opts.NewestPercent = 40
 	}
 	opts.RecoveryProfile = normalizeRecoveryProfile(opts.RecoveryProfile)
+	if opts.BalancedBodyRequestsPerHour <= 0 {
+		opts.BalancedBodyRequestsPerHour = 25000
+	}
+	if opts.ExhaustiveBodyRequestsPerHour <= 0 {
+		opts.ExhaustiveBodyRequestsPerHour = 100000
+	}
 	return &Service{repo: repo, matcher: matcher, fetcher: fetcher, log: log, opts: opts}
 }
 
@@ -171,10 +174,6 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 		"write_apply_stats_refresh_ms":      float64(0),
 		"write_apply_summary_dirty_ms":      float64(0),
 		"write_apply_commit_ms":             float64(0),
-		"sibling_admission_ms":              float64(0),
-		"sibling_admission_attempts":        0,
-		"sibling_admission_upserted":        0,
-		"sibling_admission_failures":        0,
 		"not_found_write_ms":                float64(0),
 		"recovered":                         0,
 		"merged":                            0,
@@ -207,6 +206,9 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 		"target_window_end":                 s.opts.TargetWindowEnd,
 		"target_window_pct":                 s.opts.TargetWindowPercent,
 		"newest_pct":                        s.opts.NewestPercent,
+		"body_budget_limit":                 int64(0),
+		"body_budget_used":                  int64(0),
+		"body_budget_remaining":             int64(0),
 	}
 	if s.opts.RecoveryProfile == "header_only" {
 		metrics["disabled_by_profile"] = true
@@ -254,6 +256,9 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 			metrics["selection_seed_ms"] = durationMillis(stats.SeedDuration)
 			metrics["selection_windowed_requested"] = stats.WindowedRequested
 			metrics["selection_newest_requested"] = stats.NewestRequested
+			metrics["body_budget_limit"] = stats.BodyBudgetLimit
+			metrics["body_budget_used"] = stats.BodyBudgetUsed
+			metrics["body_budget_remaining"] = stats.BodyBudgetRemain
 		}
 	}
 	for _, candidate := range candidates {
@@ -550,6 +555,14 @@ func (s *Service) selectionOptions() (pgindex.YEncRecoverySelectionOptions, erro
 		Priority0Only:      s.opts.RecoveryProfile == "balanced",
 		DisableGenericSeed: s.opts.RecoveryProfile != "exhaustive",
 	}
+	switch s.opts.RecoveryProfile {
+	case "exhaustive":
+		base.BodyBudgetKey = "recover_yenc_exhaustive"
+		base.BodyRequestsPerHour = s.opts.ExhaustiveBodyRequestsPerHour
+	default:
+		base.BodyBudgetKey = "recover_yenc_balanced"
+		base.BodyRequestsPerHour = s.opts.BalancedBodyRequestsPerHour
+	}
 	if !s.opts.TargetWindowEnabled {
 		base.TargetWindowPercent = s.opts.TargetWindowPercent
 		base.NewestPercent = s.opts.NewestPercent
@@ -669,34 +682,6 @@ func (s *Service) runStreamingRecoveryWriter(ctx context.Context, repo repositor
 			return
 		}
 		rows := len(batch)
-		if siblingRepo, ok := repo.(repositoryWithPrioritySiblingAdmission); ok {
-			binaryIDs := make([]int64, 0, rows)
-			seen := make(map[int64]struct{}, rows)
-			for _, record := range batch {
-				if record.BinaryID <= 0 {
-					continue
-				}
-				if _, ok := seen[record.BinaryID]; ok {
-					continue
-				}
-				seen[record.BinaryID] = struct{}{}
-				binaryIDs = append(binaryIDs, record.BinaryID)
-			}
-			if len(binaryIDs) > 0 {
-				sort.Slice(binaryIDs, func(i, j int) bool { return binaryIDs[i] < binaryIDs[j] })
-				started := time.Now()
-				upserted, _, err := siblingRepo.BackfillPriorityYEncRecoveryWorkItemsForBinaries(ctx, binaryIDs)
-				elapsed := time.Since(started)
-				mu.Lock()
-				addYEncDurationMetric(metrics, "sibling_admission_ms", elapsed)
-				metrics["sibling_admission_attempts"] = metrics["sibling_admission_attempts"].(int) + 1
-				metrics["sibling_admission_upserted"] = metrics["sibling_admission_upserted"].(int) + int(upserted)
-				if err != nil {
-					metrics["sibling_admission_failures"] = metrics["sibling_admission_failures"].(int) + 1
-				}
-				mu.Unlock()
-			}
-		}
 		started := time.Now()
 		results, err := repo.ApplyYEncHeaderRecoveries(ctx, batch)
 		elapsed := time.Since(started)
