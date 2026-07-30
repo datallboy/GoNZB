@@ -171,6 +171,8 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 			fed.GET("/pools/:pool_id/checkpoint", gonzbnetCtrl.PoolCheckpoint)
 			fed.GET("/pools/:pool_id/members", gonzbnetCtrl.PoolMembers)
 			fed.GET("/peers", gonzbnetCtrl.Peers)
+			fed.POST("/evidence/yenc/query", gonzbnetCtrl.QueryYEncEvidence, federationRateLimit)
+			fed.POST("/evidence/segments/query", gonzbnetCtrl.QueryBinarySegments, federationRateLimit)
 			fed.GET("/ws", gonzbnetCtrl.GossipWS)
 		}
 
@@ -216,6 +218,7 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		v1AdminGoNZBNet.GET("/diagnostics/rejected-events", gonzbnetAdminCtrl.RejectedEventDiagnostics)
 		v1AdminGoNZBNet.GET("/diagnostics/deliveries", gonzbnetAdminCtrl.PeerDeliveryDiagnostics)
 		v1AdminGoNZBNet.GET("/diagnostics/validation-tasks", gonzbnetAdminCtrl.ValidationTaskDiagnostics)
+		v1AdminGoNZBNet.GET("/diagnostics/binary-evidence", gonzbnetAdminCtrl.BinaryEvidenceDiagnostics)
 		v1AdminGoNZBNet.GET("/diagnostics/release-sources", gonzbnetAdminCtrl.ReleaseSourceDiagnostics)
 		v1AdminGoNZBNet.GET("/diagnostics/manifest-sources", gonzbnetAdminCtrl.ManifestSourceDiagnostics)
 		v1AdminGoNZBNet.GET("/diagnostics/article-availability", gonzbnetAdminCtrl.ArticleAvailabilityDiagnostics)

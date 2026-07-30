@@ -165,6 +165,14 @@ type GoNZBNetConfig struct {
 	GossipTTL                      int      `mapstructure:"gossip_ttl" yaml:"gossip_ttl"`
 	GossipFanout                   int      `mapstructure:"gossip_fanout" yaml:"gossip_fanout"`
 	PeerExchangeEnabled            bool     `mapstructure:"peer_exchange_enabled" yaml:"peer_exchange_enabled"`
+	BinaryEvidenceConsumeEnabled   bool     `mapstructure:"binary_evidence_consume_enabled" yaml:"binary_evidence_consume_enabled"`
+	BinaryEvidenceServeEnabled     bool     `mapstructure:"binary_evidence_serve_enabled" yaml:"binary_evidence_serve_enabled"`
+	BinaryEvidencePeerTimeoutSecs  int      `mapstructure:"binary_evidence_peer_timeout_seconds" yaml:"binary_evidence_peer_timeout_seconds"`
+	BinaryEvidencePeerFanout       int      `mapstructure:"binary_evidence_peer_fanout" yaml:"binary_evidence_peer_fanout"`
+	BinaryEvidenceYEncBatchSize    int      `mapstructure:"binary_evidence_yenc_batch_size" yaml:"binary_evidence_yenc_batch_size"`
+	BinaryEvidenceSegmentLimit     int      `mapstructure:"binary_evidence_segment_limit" yaml:"binary_evidence_segment_limit"`
+	BinaryEvidenceMaxResponseBytes int      `mapstructure:"binary_evidence_max_response_bytes" yaml:"binary_evidence_max_response_bytes"`
+	BinaryEvidenceCooldownMinutes  int      `mapstructure:"binary_evidence_circuit_breaker_cooldown_minutes" yaml:"binary_evidence_circuit_breaker_cooldown_minutes"`
 	RelayEnabled                   bool     `mapstructure:"relay_enabled" yaml:"relay_enabled"`
 	RelayAPIKey                    string   `mapstructure:"relay_api_key" yaml:"relay_api_key"`
 	MaxEventBytes                  int      `mapstructure:"max_event_bytes" yaml:"max_event_bytes"`
@@ -598,6 +606,14 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("gonzbnet.gossip_ttl", 4)
 	v.SetDefault("gonzbnet.gossip_fanout", 4)
 	v.SetDefault("gonzbnet.peer_exchange_enabled", false)
+	v.SetDefault("gonzbnet.binary_evidence_consume_enabled", true)
+	v.SetDefault("gonzbnet.binary_evidence_serve_enabled", false)
+	v.SetDefault("gonzbnet.binary_evidence_peer_timeout_seconds", 3)
+	v.SetDefault("gonzbnet.binary_evidence_peer_fanout", 3)
+	v.SetDefault("gonzbnet.binary_evidence_yenc_batch_size", 1000)
+	v.SetDefault("gonzbnet.binary_evidence_segment_limit", 5000)
+	v.SetDefault("gonzbnet.binary_evidence_max_response_bytes", 10485760)
+	v.SetDefault("gonzbnet.binary_evidence_circuit_breaker_cooldown_minutes", 5)
 	v.SetDefault("gonzbnet.relay_enabled", false)
 	v.SetDefault("gonzbnet.relay_api_key", "")
 	v.SetDefault("gonzbnet.max_event_bytes", 262144)
@@ -1025,6 +1041,13 @@ func validateGoNZBNetConfig(cfg GoNZBNetConfig, moduleEnabled bool) error {
 	}
 	if cfg.ManifestCacheTTLDays < 0 {
 		return errors.New("gonzbnet.manifest_cache_ttl_days must be greater than or equal to 0")
+	}
+	if (cfg.BinaryEvidenceConsumeEnabled || cfg.BinaryEvidenceServeEnabled) &&
+		(cfg.BinaryEvidencePeerTimeoutSecs <= 0 || cfg.BinaryEvidencePeerFanout <= 0 || cfg.BinaryEvidencePeerFanout > 20 ||
+			cfg.BinaryEvidenceYEncBatchSize <= 0 || cfg.BinaryEvidenceYEncBatchSize > 1000 ||
+			cfg.BinaryEvidenceSegmentLimit <= 0 || cfg.BinaryEvidenceSegmentLimit > 5000 ||
+			cfg.BinaryEvidenceMaxResponseBytes <= 0 || cfg.BinaryEvidenceCooldownMinutes <= 0) {
+		return errors.New("gonzbnet binary evidence limits are invalid")
 	}
 	if !moduleEnabled {
 		return nil
