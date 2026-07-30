@@ -11206,7 +11206,7 @@ func TestListBinaryInspectionCandidatesInspectPAR2SkipsCompletedZeroTargetVolume
 	}
 }
 
-func TestListBinaryInspectionCandidatesInspectDiscoveryIncludesStandaloneOpaqueBinary(t *testing.T) {
+func TestListBinaryInspectionCandidatesInspectDiscoveryRequiresReleaseEvent(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
 
@@ -11302,6 +11302,30 @@ func TestListBinaryInspectionCandidatesInspectDiscoveryIncludesStandaloneOpaqueB
 	); err != nil {
 		t.Fatalf("complete discovery yenc work: %v", err)
 	}
+	releaseID := baseKey + "-release"
+	if _, err := store.PersistReleaseSnapshot(ctx, ReleaseRecord{
+		ReleaseID:         releaseID,
+		GUID:              releaseID,
+		ProviderID:        1,
+		SourceReleaseKey:  baseKey,
+		ReleaseFamilyKey:  baseKey,
+		ReleaseKey:        baseKey,
+		GroupName:         baseKey,
+		Title:             baseKey,
+		SearchTitle:       baseKey,
+		FileCount:         1,
+		ExpectedFileCount: 1,
+		CompletionPct:     100,
+		PostedAt:          &now,
+		MetadataUpdatedAt: &now,
+	}, []ReleaseFileRecord{{
+		BinaryID:  binaryID,
+		FileName:  "standalone-discovery.bin",
+		FileIndex: 1,
+		PostedAt:  &now,
+	}}, []int64{newsgroupID}); err != nil {
+		t.Fatalf("persist discovery release: %v", err)
+	}
 
 	candidates, err = store.ListBinaryInspectionCandidates(ctx, "inspect_discovery", 20)
 	if err != nil {
@@ -11314,8 +11338,8 @@ func TestListBinaryInspectionCandidatesInspectDiscoveryIncludesStandaloneOpaqueB
 			continue
 		}
 		found = true
-		if candidate.ReleaseID != "" {
-			t.Fatalf("expected standalone discovery candidate to have empty release id, got %+v", candidate)
+		if candidate.ReleaseID != releaseID {
+			t.Fatalf("expected release-linked discovery candidate %q, got %+v", releaseID, candidate)
 		}
 		if candidate.FileName != "standalone-discovery.bin" {
 			t.Fatalf("expected standalone file name, got %+v", candidate)
