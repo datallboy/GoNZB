@@ -288,6 +288,10 @@ func validMessageID(value string) bool {
 		!strings.ContainsAny(value, " \t\r\n")
 }
 
+func ValidMessageID(value string) bool {
+	return validMessageID(strings.TrimSpace(value))
+}
+
 func validateCreatedAt(value string, now time.Time) error {
 	created, err := time.Parse(time.RFC3339, strings.TrimSpace(value))
 	if err != nil {

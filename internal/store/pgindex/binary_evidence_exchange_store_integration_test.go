@@ -177,4 +177,30 @@ func TestPeerSegmentsCompleteEffectiveBinaryWithoutArticleHeaderWrites(t *testin
 	if contentIdentities != 1 {
 		t.Fatalf("expected one content identity, got %d", contentIdentities)
 	}
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO binary_exchange_identities
+			(binary_id, scheme, match_id, identity_json, confidence)
+		VALUES ($1, 'yenc_v1', 'yenc_v1:test', '{"scheme":"yenc_v1"}', 0.99)
+		ON CONFLICT (binary_id, scheme) DO NOTHING`, binaryID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE binary_observation_stats
+		SET total_parts = 3, observed_parts = 2, updated_at = NOW()
+		WHERE binary_id = $1`, binaryID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SeedBinaryEvidenceRepairWork(ctx, 10); err != nil {
+		t.Fatal(err)
+	}
+	var repairScheme string
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT scheme
+		FROM binary_evidence_repair_work_items
+		WHERE binary_id = $1`, binaryID).Scan(&repairScheme); err != nil {
+		t.Fatal(err)
+	}
+	if repairScheme != "yenc_v1" {
+		t.Fatalf("expected strongest yenc repair identity, got %q", repairScheme)
+	}
 }
