@@ -132,6 +132,9 @@ limits are:
 
 The selector locks and consumes the active recovery budget in the same
 transaction that claims work, so concurrent workers cannot oversubscribe it.
+When accepted local-cache or GoNZBNet peer evidence satisfies a claimed row,
+the reservation is refunded before processing. Only unresolved rows consume
+the BODY allowance.
 Changing a limit takes effect on the next claim without clearing queue state.
 The **Indexer Work** page reports used and remaining requests for the active
 recovery profile.
@@ -208,6 +211,16 @@ states: `sample`, `promoted`, and `no_yield`.
 
 This feedback loop keeps productive opaque cohorts hot while stopping random or
 low-yield cohorts from repeatedly filling priority-0 capacity.
+
+When GoNZBNet evidence consumption is active, per-batch recovery order is:
+
+1. accepted local raw-evidence cache;
+2. up to the configured number of authorized pool peers;
+3. local matcher/application of accepted evidence;
+4. NNTP BODY for unresolved Message-IDs only.
+
+Peer miss, timeout, conflict, disabled exchange, or ambiguous evidence does not
+fail the stage and falls through to normal BODY behavior.
 
 Opaque projection discovery reads one bounded page at a time. Its durable
 window cursor advances by `(posted_at, binary_id)` and wraps only after reaching

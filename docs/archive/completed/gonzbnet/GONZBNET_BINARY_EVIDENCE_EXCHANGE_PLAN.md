@@ -1,5 +1,7 @@
 # GoNZBNet Binary Evidence Exchange
 
+Status: implemented on `feature/gonzbnet-binary-evidence-exchange` (2026-07-30).
+
 ## Summary
 
 Use direct, authenticated peer requests rather than pool-wide events. Delivery

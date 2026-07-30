@@ -28,6 +28,16 @@ These tables stay unpartitioned:
 - `indexer_inspection_reconcile_state`
 - `indexer_body_request_budget_state`
 - `indexer_article_cohort_scan_state`
+- `yenc_header_evidence`
+- `binary_exchange_identities`
+- `binary_peer_segments`
+- `binary_evidence_repair_work_items`
+- `binary_evidence_exchange_diagnostics`
+
+`binary_exchange_identities` holds versioned portable subject/yEnc match IDs
+and the authoritative `content_v1` ID for a complete binary. The content ID is
+SHA-256 over the ordered `(part_number, message_id)` list and does not contain
+local database, provider, or article-number identifiers.
 
 ## Partitioned Source And Work Tables
 
@@ -125,3 +135,7 @@ inherit local indexes for the hot query shapes:
 
 If a DBO query changes shape, update the matching parent index or document why
 an existing index still supports it before merging.
+
+`binary_effective_parts` is a read-only local-first projection over
+`binary_parts` and accepted `binary_peer_segments`. Peer rows never enter
+scrape-owned headers or assemble-owned local parts.

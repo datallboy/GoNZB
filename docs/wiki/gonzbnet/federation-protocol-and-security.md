@@ -20,6 +20,7 @@ Node-authenticated federation routes include:
 - pool membership and checkpoint reads;
 - coverage plans, work, claims, and checkpoints;
 - validation requests, node capabilities, and optional peer exchange;
+- bounded yEnc and missing-segment evidence queries;
 - WebSocket gossip when enabled.
 
 Admission has a deliberately narrow candidate-authenticated surface for join
@@ -60,6 +61,17 @@ window.
 Discovery metadata remains public, but event streams, pool membership, pool
 checkpoints, manifests, coverage mutation, and optional peer exchange require
 the appropriate authenticated node and pool relationship.
+
+Binary evidence routes are `POST /evidence/yenc/query` and
+`POST /evidence/segments/query`. In addition to signed-request and replay
+checks, both require an active pool membership carrying
+`binary_evidence_exchange`, an enabled pool policy, and the serving node's
+local opt-in. Responses are canonicalized Ed25519-signed bundles bound to the
+pool, request ID, recipient, source node, creation time, and expiry. A responder
+serves only evidence acquired locally through XOVER/BODY; imported evidence is
+not relayed. Missing-segment requests require at least one exact Message-ID
+anchor, and the responder serves a portable match ID only when it resolves to a
+single local binary.
 
 ## Event Log And Chain Continuity
 
@@ -171,6 +183,8 @@ account identity.
 
 Search always uses the home node's local federated projection. Live remote
 querying and user-context forwarding are rejected by configuration validation.
+Missing-part lists and Message-ID evidence use targeted authenticated requests;
+they are not published into the append-only event stream or normal logs.
 
 ## Transport Limits
 
