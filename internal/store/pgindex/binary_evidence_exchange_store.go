@@ -111,7 +111,16 @@ func (s *Store) SeedBinaryEvidenceRepairWork(ctx context.Context, limit int) (in
 		), incomplete AS (
 			SELECT stats.binary_id, identity.scheme, identity.match_id
 			FROM latest_stats stats
-			JOIN binary_exchange_identities identity ON identity.binary_id = stats.binary_id
+			JOIN LATERAL (
+				SELECT candidate.scheme, candidate.match_id, candidate.confidence
+				FROM binary_exchange_identities candidate
+				WHERE candidate.binary_id = stats.binary_id
+				  AND candidate.scheme IN ('yenc_v1', 'subject_multipart_v1')
+				ORDER BY CASE candidate.scheme WHEN 'yenc_v1' THEN 0 ELSE 1 END,
+				         candidate.confidence DESC,
+				         candidate.updated_at DESC
+				LIMIT 1
+			) identity ON TRUE
 			WHERE identity.confidence >= 0.70
 			  AND stats.total_parts > (
 			    SELECT COUNT(DISTINCT part.part_number)
@@ -353,7 +362,7 @@ func (s *Store) UpsertYEncHeaderEvidence(ctx context.Context, records []YEncEvid
 		if state == "" {
 			state = "accepted"
 		}
-		if record.SourcePostedAt.IsZero() || record.MessageID == "" || record.FileName == "" ||
+		if record.SourcePostedAt.IsZero() || !evidence.ValidMessageID(record.MessageID) || record.FileName == "" ||
 			(record.Provenance != "local_body" && record.Provenance != "peer") ||
 			(state != "accepted" && state != "quarantined" && state != "rejected") {
 			return 0, 0, fmt.Errorf("invalid yenc evidence record")
@@ -567,7 +576,15 @@ func (s *Store) RefreshBinaryExchangeIdentities(ctx context.Context, limit int) 
 			WHERE NOT EXISTS (
 				SELECT 1 FROM binary_exchange_identities bei
 				WHERE bei.binary_id = bic.binary_id
-				  AND bei.updated_at >= bic.updated_at
+				  AND bei.scheme = CASE
+				    WHEN COALESCE(brc.recovered_file_name, '') <> '' THEN 'yenc_v1'
+				    ELSE 'subject_multipart_v1'
+				  END
+				  AND bei.updated_at >= GREATEST(
+				    bic.updated_at,
+				    COALESCE(brc.updated_at, bic.updated_at),
+				    COALESCE(bos.updated_at, bic.updated_at)
+				  )
 			)
 			ORDER BY bic.binary_id, bic.updated_at DESC
 			LIMIT $1
@@ -878,7 +895,7 @@ func (s *Store) ImportPeerSegments(ctx context.Context, binaryID int64, poolID, 
 	for _, segment := range segments {
 		sourcePostedAt, err := time.Parse(time.RFC3339, segment.SourcePostedAt)
 		if err != nil || segment.PartNumber <= 0 || segment.TotalParts < segment.PartNumber ||
-			strings.TrimSpace(segment.MessageID) == "" {
+			!evidence.ValidMessageID(segment.MessageID) || segment.Bytes < 0 || segment.FileSize < 0 {
 			return 0, 0, fmt.Errorf("invalid peer segment")
 		}
 		if _, duplicate := seenParts[segment.PartNumber]; duplicate {
