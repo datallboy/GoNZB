@@ -1476,6 +1476,14 @@ export type GoNZBNetRuntimeSettings = {
   gossip_ttl: number
   gossip_fanout: number
   peer_exchange_enabled: boolean
+  binary_evidence_consume_enabled: boolean
+  binary_evidence_serve_enabled: boolean
+  binary_evidence_peer_timeout_seconds: number
+  binary_evidence_peer_fanout: number
+  binary_evidence_yenc_batch_size: number
+  binary_evidence_segment_limit: number
+  binary_evidence_max_response_bytes: number
+  binary_evidence_circuit_breaker_cooldown_minutes: number
   relay_enabled: boolean
   max_event_bytes: number
   max_manifest_bytes: number
@@ -1899,6 +1907,7 @@ export type GoNZBNetTrustPoolRequest = {
   visibility?: string
   join_mode?: string
   admission_enabled?: boolean
+  allow_binary_evidence_exchange?: boolean
 }
 
 export type GoNZBNetAdmissionPool = {
@@ -2183,6 +2192,24 @@ export type GoNZBNetMetrics = {
   counters: Record<string, number>
   durations: Record<string, { count: number; sum_seconds: number }>
   gauges: Record<string, number>
+}
+
+export type GoNZBNetBinaryEvidenceDiagnostic = {
+  diagnostic_id: number
+  pool_id: string
+  peer_node_id: string
+  direction: 'consume' | 'serve'
+  evidence_kind: 'yenc' | 'segments'
+  request_count: number
+  hit_count: number
+  item_count: number
+  body_requests_avoided: number
+  response_bytes: number
+  conflicts: number
+  quarantines: number
+  latency_ms: number
+  error_text?: string
+  created_at: string
 }
 
 export type GoNZBNetActivityStatus = 'off' | 'starting' | 'ready' | 'working' | 'degraded' | 'blocked'

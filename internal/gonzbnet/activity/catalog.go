@@ -23,6 +23,7 @@ type Configuration struct {
 	WebSocketGossipEnabled      bool
 	RelayEnabled                bool
 	PeerExchangeEnabled         bool
+	BinaryEvidenceEnabled       bool
 	CoverageMode                string
 	PublishReleaseCardsInterval time.Duration
 	HealthAttestationsInterval  time.Duration
@@ -62,5 +63,6 @@ func Definitions(cfg Configuration) []Definition {
 		definition(ComponentManifestCache, JobConsume, "Manifest cache", "Stores and serves verified manifests under local policy.", OnDemand, 0, cfg.ManifestCacheEnabled),
 		definition(ComponentRelay, JobConnection, "Event relay", "Forwards eligible signed events without changing their authorship.", EventDriven, 0, cfg.RelayEnabled),
 		definition(ComponentPeerExchange, JobConnection, "Peer exchange", "Learns authenticated peer endpoints during gossip.", EventDriven, 0, cfg.PeerExchangeEnabled),
+		definition(ComponentBinaryEvidenceRepair, JobConsume, "Binary evidence repair", "Imports signed yEnc and missing-segment evidence from authorized pool peers before NNTP recovery.", Scheduled, time.Minute, cfg.BinaryEvidenceEnabled),
 	}
 }

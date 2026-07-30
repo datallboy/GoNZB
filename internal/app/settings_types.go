@@ -137,6 +137,14 @@ type GoNZBNetRuntimeSettings struct {
 	GossipTTL                      int      `json:"gossip_ttl"`
 	GossipFanout                   int      `json:"gossip_fanout"`
 	PeerExchangeEnabled            bool     `json:"peer_exchange_enabled"`
+	BinaryEvidenceConsumeEnabled   bool     `json:"binary_evidence_consume_enabled"`
+	BinaryEvidenceServeEnabled     bool     `json:"binary_evidence_serve_enabled"`
+	BinaryEvidencePeerTimeoutSecs  int      `json:"binary_evidence_peer_timeout_seconds"`
+	BinaryEvidencePeerFanout       int      `json:"binary_evidence_peer_fanout"`
+	BinaryEvidenceYEncBatchSize    int      `json:"binary_evidence_yenc_batch_size"`
+	BinaryEvidenceSegmentLimit     int      `json:"binary_evidence_segment_limit"`
+	BinaryEvidenceMaxResponseBytes int      `json:"binary_evidence_max_response_bytes"`
+	BinaryEvidenceCooldownMinutes  int      `json:"binary_evidence_circuit_breaker_cooldown_minutes"`
 	RelayEnabled                   bool     `json:"relay_enabled"`
 	MaxEventBytes                  int      `json:"max_event_bytes"`
 	MaxManifestBytes               int      `json:"max_manifest_bytes"`

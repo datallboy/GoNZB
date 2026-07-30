@@ -37,6 +37,7 @@ import type {
   GoNZBNetAdmissionRemote,
   GoNZBNetAssignmentRequest,
   GoNZBNetArticleAvailabilityDiagnostic,
+  GoNZBNetBinaryEvidenceDiagnostic,
   GoNZBNetClaimRequest,
   GoNZBNetCoverageDashboard,
   GoNZBNetCoveragePlan,
@@ -619,6 +620,12 @@ export function getGoNZBNetPeerDeliveryDiagnostics(limit = 100) {
 export function getGoNZBNetValidationTaskDiagnostics(limit = 100) {
   return apiRequest<GoNZBNetListResponse<GoNZBNetValidationTaskDiagnostic>>(
     `/api/v1/admin/gonzbnet/diagnostics/validation-tasks${goNZBNetQuery({ limit })}`,
+  )
+}
+
+export function getGoNZBNetBinaryEvidenceDiagnostics(poolID?: string, limit = 100) {
+  return apiRequest<GoNZBNetListResponse<GoNZBNetBinaryEvidenceDiagnostic>>(
+    `/api/v1/admin/gonzbnet/diagnostics/binary-evidence${goNZBNetQuery({ pool_id: poolID, limit })}`,
   )
 }
 

@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/datallboy/gonzb/internal/gonzbnet/evidenceclient"
+	gonzbnetmetrics "github.com/datallboy/gonzb/internal/gonzbnet/metrics"
 	"github.com/datallboy/gonzb/internal/indexing/match"
 	"github.com/datallboy/gonzb/internal/nntp"
 	"github.com/datallboy/gonzb/internal/nzb"
@@ -52,6 +54,15 @@ type repositoryWithApplyStats interface {
 	LastYEncRecoveryApplyStats() pgindex.YEncRecoveryApplyStats
 }
 
+type repositoryWithEvidencePersistence interface {
+	UpsertYEncHeaderEvidence(context.Context, []pgindex.YEncEvidenceRecord) (int, int, error)
+	RefundBodyRequestBudget(context.Context, string, int) error
+}
+
+type evidenceLookup interface {
+	LookupYEnc(context.Context, []string) (evidenceclient.LookupResult, error)
+}
+
 type bodyPrefixFetcher interface {
 	FetchBodyPrefix(ctx context.Context, msgID string, groups []string, maxBytes int64) ([]byte, error)
 }
@@ -78,11 +89,18 @@ type Options struct {
 const yencRecoveryStreamFlushSize = 250
 
 type Service struct {
-	repo    repository
-	matcher matcher
-	fetcher bodyPrefixFetcher
-	log     logger
-	opts    Options
+	repo     repository
+	matcher  matcher
+	fetcher  bodyPrefixFetcher
+	log      logger
+	opts     Options
+	evidence evidenceLookup
+}
+
+func (s *Service) SetEvidenceLookup(lookup evidenceLookup) {
+	if s != nil {
+		s.evidence = lookup
+	}
 }
 
 func NewService(repo repository, matcher matcher, fetcher bodyPrefixFetcher, log logger, opts Options) *Service {
@@ -209,6 +227,10 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 		"body_budget_limit":                 int64(0),
 		"body_budget_used":                  int64(0),
 		"body_budget_remaining":             int64(0),
+		"evidence_cache_hits":               0,
+		"evidence_peer_hits":                0,
+		"evidence_peer_requests":            0,
+		"body_requests_avoided":             0,
 	}
 	if s.opts.RecoveryProfile == "header_only" {
 		metrics["disabled_by_profile"] = true
@@ -284,6 +306,36 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 			s.log.Debug("recover_yenc: no recovery candidates available")
 		}
 		return metrics, nil
+	}
+
+	peerEvidence := make(map[string]pgindex.YEncEvidenceRecord)
+	if s.evidence != nil {
+		messageIDs := make([]string, 0, len(candidates))
+		for _, candidate := range candidates {
+			if strings.TrimSpace(candidate.MessageID) != "" {
+				messageIDs = append(messageIDs, candidate.MessageID)
+			}
+		}
+		lookup, lookupErr := s.evidence.LookupYEnc(ctx, messageIDs)
+		if lookupErr != nil {
+			if s.log != nil {
+				s.log.Warn("recover_yenc: peer evidence lookup failed; falling back to BODY: %v", lookupErr)
+			}
+		} else {
+			peerEvidence = lookup.Headers
+			metrics["evidence_cache_hits"] = lookup.CacheHits
+			metrics["evidence_peer_hits"] = lookup.PeerHits
+			metrics["evidence_peer_requests"] = lookup.PeerRequests
+			metrics["body_requests_avoided"] = len(peerEvidence)
+			if len(peerEvidence) > 0 {
+				gonzbnetmetrics.Default.Add(gonzbnetmetrics.BinaryEvidenceBodyAvoidedTotal, uint64(len(peerEvidence)))
+				if repo, ok := s.repo.(repositoryWithEvidencePersistence); ok {
+					if refundErr := repo.RefundBodyRequestBudget(ctx, selectionOpts.BodyBudgetKey, len(peerEvidence)); refundErr != nil && s.log != nil {
+						s.log.Warn("recover_yenc: failed to refund BODY budget for peer evidence hits: %v", refundErr)
+					}
+				}
+			}
+		}
 	}
 
 	workerCount := s.opts.Concurrency
@@ -430,7 +482,8 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 					recordResult(candidate, nil, "noop", yencCandidateTimings{}, ctx.Err())
 					continue
 				}
-				outcome, kind, timings, err := s.recoverCandidate(ctx, candidate, batchWrites)
+				cached, hasCached := peerEvidence[candidate.MessageID]
+				outcome, kind, timings, err := s.recoverCandidate(ctx, candidate, batchWrites, cached, hasCached)
 				recordResult(candidate, outcome, kind, timings, err)
 				if err == nil && outcome != nil && outcome.Record != nil {
 					if queueErr := queueRecoveryRecord(*outcome.Record); queueErr != nil {
@@ -787,58 +840,83 @@ type yencCandidateOutcome struct {
 	ArticleHeaderID int64
 }
 
-func (s *Service) recoverCandidate(ctx context.Context, candidate pgindex.YEncRecoveryCandidate, batchWrites bool) (*yencCandidateOutcome, string, yencCandidateTimings, error) {
+func (s *Service) recoverCandidate(ctx context.Context, candidate pgindex.YEncRecoveryCandidate, batchWrites bool, cached pgindex.YEncEvidenceRecord, hasCached bool) (*yencCandidateOutcome, string, yencCandidateTimings, error) {
 	var timings yencCandidateTimings
 	groups := candidate.FetchGroups()
 	if candidate.MessageID == "" || len(groups) == 0 {
 		return nil, "noop", timings, nil
 	}
 
-	fetchCtx, cancel := context.WithTimeout(ctx, s.opts.FetchTimeout)
-	defer cancel()
-
+	var header nzb.YencHeader
 	started := time.Now()
-	prefix, err := s.fetcher.FetchBodyPrefix(fetchCtx, candidate.MessageID, groups, s.opts.MaxHeaderBytes)
-	timings.Fetch = time.Since(started)
-	if err != nil {
-		if errors.Is(err, nntp.ErrArticleNotFound) {
+	if hasCached {
+		header = nzb.YencHeader{
+			FileName: cached.FileName, PartNumber: cached.PartNumber,
+			TotalParts: cached.TotalParts, FileSize: cached.FileSize,
+			PartOffset: cached.PartBegin, PartEnd: cached.PartEnd,
+		}
+	} else {
+		fetchCtx, cancel := context.WithTimeout(ctx, s.opts.FetchTimeout)
+		defer cancel()
+		prefix, err := s.fetcher.FetchBodyPrefix(fetchCtx, candidate.MessageID, groups, s.opts.MaxHeaderBytes)
+		timings.Fetch = time.Since(started)
+		if err != nil {
+			if errors.Is(err, nntp.ErrArticleNotFound) {
+				if batchWrites {
+					return &yencCandidateOutcome{ArticleHeaderID: candidate.ArticleHeaderID}, "not_found", timings, nil
+				}
+				started = time.Now()
+				if markErr := s.repo.RecordYEncRecoveryNotFound(ctx, candidate.ArticleHeaderID); markErr != nil && s.log != nil {
+					s.log.Warn("recover_yenc: failed to persist not_found backoff article=%d err=%v", candidate.ArticleHeaderID, markErr)
+				}
+				timings.NotFoundWrite = time.Since(started)
+				return nil, "not_found", timings, nil
+			}
+			if s.log != nil {
+				s.log.Warn("recover_yenc: fetch prefix failed article=%d binary=%d err=%v", candidate.ArticleHeaderID, candidate.BinaryID, err)
+			}
 			if batchWrites {
-				return &yencCandidateOutcome{ArticleHeaderID: candidate.ArticleHeaderID}, "not_found", timings, nil
+				return &yencCandidateOutcome{ArticleHeaderID: candidate.ArticleHeaderID}, "fetch_failure", timings, nil
+			}
+			started = time.Now()
+			if markErr := s.repo.RecordYEncRecoveryTransientFailure(ctx, candidate.ArticleHeaderID); markErr != nil && s.log != nil {
+				s.log.Warn("recover_yenc: failed to persist transient backoff article=%d err=%v", candidate.ArticleHeaderID, markErr)
+			}
+			timings.NotFoundWrite = time.Since(started)
+			return nil, "fetch_failure", timings, nil
+		}
+
+		started = time.Now()
+		parsed, err := nzb.ReadYencHeader(bytes.NewReader(prefix))
+		timings.Parse = time.Since(started)
+		if err != nil {
+			if batchWrites {
+				return &yencCandidateOutcome{ArticleHeaderID: candidate.ArticleHeaderID}, "parse_failure", timings, nil
 			}
 			started = time.Now()
 			if markErr := s.repo.RecordYEncRecoveryNotFound(ctx, candidate.ArticleHeaderID); markErr != nil && s.log != nil {
-				s.log.Warn("recover_yenc: failed to persist not_found backoff article=%d err=%v", candidate.ArticleHeaderID, markErr)
+				s.log.Warn("recover_yenc: failed to persist parse backoff article=%d err=%v", candidate.ArticleHeaderID, markErr)
 			}
 			timings.NotFoundWrite = time.Since(started)
-			return nil, "not_found", timings, nil
+			return nil, "parse_failure", timings, nil
 		}
-		if s.log != nil {
-			s.log.Warn("recover_yenc: fetch prefix failed article=%d binary=%d err=%v", candidate.ArticleHeaderID, candidate.BinaryID, err)
+		header = parsed
+		if repo, ok := s.repo.(repositoryWithEvidencePersistence); ok {
+			sourcePostedAt := time.Now().UTC()
+			if candidate.DateUTC != nil {
+				sourcePostedAt = candidate.DateUTC.UTC()
+			}
+			_, _, persistErr := repo.UpsertYEncHeaderEvidence(ctx, []pgindex.YEncEvidenceRecord{{
+				SourcePostedAt: sourcePostedAt, MessageID: candidate.MessageID,
+				FileName: header.FileName, PartNumber: header.PartNumber,
+				TotalParts: header.TotalParts, FileSize: header.FileSize,
+				PartBegin: header.PartOffset, PartEnd: header.PartEnd,
+				Provenance: "local_body", AcceptanceState: "accepted",
+			}})
+			if persistErr != nil && s.log != nil {
+				s.log.Warn("recover_yenc: failed to cache local yenc evidence article=%d: %v", candidate.ArticleHeaderID, persistErr)
+			}
 		}
-		if batchWrites {
-			return &yencCandidateOutcome{ArticleHeaderID: candidate.ArticleHeaderID}, "fetch_failure", timings, nil
-		}
-		started = time.Now()
-		if markErr := s.repo.RecordYEncRecoveryTransientFailure(ctx, candidate.ArticleHeaderID); markErr != nil && s.log != nil {
-			s.log.Warn("recover_yenc: failed to persist transient backoff article=%d err=%v", candidate.ArticleHeaderID, markErr)
-		}
-		timings.NotFoundWrite = time.Since(started)
-		return nil, "fetch_failure", timings, nil
-	}
-
-	started = time.Now()
-	header, err := nzb.ReadYencHeader(bytes.NewReader(prefix))
-	timings.Parse = time.Since(started)
-	if err != nil {
-		if batchWrites {
-			return &yencCandidateOutcome{ArticleHeaderID: candidate.ArticleHeaderID}, "parse_failure", timings, nil
-		}
-		started = time.Now()
-		if markErr := s.repo.RecordYEncRecoveryNotFound(ctx, candidate.ArticleHeaderID); markErr != nil && s.log != nil {
-			s.log.Warn("recover_yenc: failed to persist parse backoff article=%d err=%v", candidate.ArticleHeaderID, markErr)
-		}
-		timings.NotFoundWrite = time.Since(started)
-		return nil, "parse_failure", timings, nil
 	}
 	if strings.TrimSpace(header.FileName) == "" {
 		if batchWrites {

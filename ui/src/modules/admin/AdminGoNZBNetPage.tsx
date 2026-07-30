@@ -19,6 +19,7 @@ import {
   getGoNZBNetAdmissions,
   getGoNZBNetActivity,
   getGoNZBNetArticleAvailability,
+  getGoNZBNetBinaryEvidenceDiagnostics,
   getGoNZBNetCoverageDashboard,
   getGoNZBNetCoverageGroups,
   getGoNZBNetCoveragePlan,
@@ -70,6 +71,7 @@ import type {
   GoNZBNetActivityReport,
   GoNZBNetAdmissionRemote,
   GoNZBNetArticleAvailabilityDiagnostic,
+  GoNZBNetBinaryEvidenceDiagnostic,
   GoNZBNetCoverageAssignment,
   GoNZBNetCoverageClaim,
   GoNZBNetConfigValidation,
@@ -151,6 +153,7 @@ type PoolForm = {
   min_node_trust_score: string
   accepted_event_types: string
   enabled: boolean
+  allow_binary_evidence_exchange: boolean
 }
 
 type MemberForm = {
@@ -251,6 +254,7 @@ const defaultPoolForm: PoolForm = {
   min_node_trust_score: '0',
   accepted_event_types: '',
   enabled: true,
+  allow_binary_evidence_exchange: false,
 }
 
 const defaultMemberForm: MemberForm = {
@@ -602,6 +606,7 @@ export function AdminGoNZBNetPage() {
   const [reportingActivity, setReportingActivity] = useState<GoNZBNetActivityReport | null>(null)
   const [poolHealth, setPoolHealth] = useState<GoNZBNetPoolHealthReport | null>(null)
   const [articleAvailability, setArticleAvailability] = useState<GoNZBNetArticleAvailabilityDiagnostic[]>([])
+  const [binaryEvidenceDiagnostics, setBinaryEvidenceDiagnostics] = useState<GoNZBNetBinaryEvidenceDiagnostic[]>([])
   const [activityWindow, setActivityWindow] = useState(() => reportingWindow(searchParams.get('window')))
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -674,6 +679,7 @@ export function AdminGoNZBNetPage() {
         nextReportingActivity,
         nextPoolHealth,
         nextArticleAvailability,
+        nextBinaryEvidenceDiagnostics,
       ] =
         await Promise.all([
           getGoNZBNetNodeCapabilities(),
@@ -705,6 +711,7 @@ export function AdminGoNZBNetPage() {
           getGoNZBNetActivity({ window: activityWindow, pool_id: effectivePoolID }),
           getGoNZBNetPoolHealth(effectivePoolID).catch(() => null),
           getGoNZBNetArticleAvailability(effectivePoolID, 100).catch(() => ({ items: [], count: 0 })),
+          getGoNZBNetBinaryEvidenceDiagnostics(effectivePoolID, 100).catch(() => ({ items: [], count: 0 })),
         ])
       setNodes(nextNodes.items ?? [])
       setNodeProfile(nextNodeProfile)
@@ -736,6 +743,7 @@ export function AdminGoNZBNetPage() {
       setReportingActivity(nextReportingActivity)
       setPoolHealth(nextPoolHealth)
       setArticleAvailability(nextArticleAvailability.items ?? [])
+      setBinaryEvidenceDiagnostics(nextBinaryEvidenceDiagnostics.items ?? [])
       setError(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load GoNZBNet admin state')
@@ -778,6 +786,7 @@ export function AdminGoNZBNetPage() {
         visibility: 'unlisted',
         join_mode: 'approval',
         admission_enabled: true,
+        allow_binary_evidence_exchange: false,
       })
       setPoolID(id)
       setCreatePoolID('')
@@ -879,6 +888,7 @@ export function AdminGoNZBNetPage() {
         min_node_trust_score: optionalNumber(poolForm.min_node_trust_score),
         accepted_event_types: csvList(poolForm.accepted_event_types),
         enabled: poolForm.enabled,
+        allow_binary_evidence_exchange: poolForm.allow_binary_evidence_exchange,
       })
       setActionStatus(`Pool saved ${response.status}`)
       await refresh()
@@ -1399,6 +1409,10 @@ export function AdminGoNZBNetPage() {
         <StatCard label="Manifest requests" value={formatNumber(protocolMetrics?.counters.gonzbnet_manifest_requests_total ?? 0)} detail={`${formatNumber(protocolMetrics?.counters.gonzbnet_manifest_request_failures_total ?? 0)} failures`} />
         <StatCard label="Health attestations" value={formatNumber(protocolMetrics?.counters.gonzbnet_health_attestations_total ?? 0)} detail="projected" />
         <StatCard label="Active tombstones" value={formatNumber(protocolMetrics?.gauges.gonzbnet_tombstones_active_total ?? 0)} detail="current database state" />
+        <StatCard label="Evidence peer hits" value={formatNumber(protocolMetrics?.counters.gonzbnet_binary_evidence_yenc_hits_total ?? 0)} detail={`${formatNumber(protocolMetrics?.counters.gonzbnet_binary_evidence_peer_requests_total ?? 0)} requests`} />
+        <StatCard label="BODY requests avoided" value={formatNumber(protocolMetrics?.counters.gonzbnet_binary_evidence_body_requests_avoided_total ?? 0)} detail="from accepted evidence" />
+        <StatCard label="Peer segments" value={formatNumber(protocolMetrics?.counters.gonzbnet_binary_evidence_segments_imported_total ?? 0)} detail={`${formatNumber(protocolMetrics?.counters.gonzbnet_binary_evidence_completed_binaries_total ?? 0)} binaries completed`} />
+        <StatCard label="Evidence safety" value={formatNumber(protocolMetrics?.counters.gonzbnet_binary_evidence_quarantines_total ?? 0)} detail={`${formatNumber(protocolMetrics?.counters.gonzbnet_binary_evidence_conflicts_total ?? 0)} conflicts · ${formatNumber(protocolMetrics?.counters.gonzbnet_binary_evidence_timeouts_total ?? 0)} timeouts`} />
       </div>
 
       <div className="two-column-grid">
@@ -1583,6 +1597,10 @@ export function AdminGoNZBNetPage() {
             <label className="checkbox-inline align-end">
               <input type="checkbox" checked={poolForm.enabled} onChange={(event) => setPoolForm({ ...poolForm, enabled: event.target.checked })} />
               <span>Enabled</span>
+            </label>
+            <label className="checkbox-inline align-end">
+              <input type="checkbox" checked={poolForm.allow_binary_evidence_exchange} onChange={(event) => setPoolForm({ ...poolForm, allow_binary_evidence_exchange: event.target.checked })} />
+              <span>Allow binary evidence exchange</span>
             </label>
           </div>
           <button className="primary-button align-end" type="submit">Save pool</button>
@@ -2061,6 +2079,40 @@ export function AdminGoNZBNetPage() {
                     Remove
                   </button>
                 </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </SectionTable>
+
+      <SectionTable title="Binary evidence exchange" count={binaryEvidenceDiagnostics.length}>
+        <table className="data-table data-table--compact">
+          <thead>
+            <tr>
+              <th>Peer</th>
+              <th>Flow</th>
+              <th>Evidence</th>
+              <th>Hits</th>
+              <th>Bytes</th>
+              <th>Latency</th>
+              <th>Safety</th>
+              <th>Time</th>
+            </tr>
+          </thead>
+          <tbody>
+            {binaryEvidenceDiagnostics.map((item) => (
+              <tr key={item.diagnostic_id}>
+                <td className="mono-cell breakable-value" title={item.peer_node_id}>{shortID(item.peer_node_id)}</td>
+                <td>{item.direction}</td>
+                <td>{item.evidence_kind}</td>
+                <td>{formatNumber(item.hit_count)} / {formatNumber(item.item_count)}</td>
+                <td>{formatNumber(item.response_bytes)}</td>
+                <td>{formatNumber(item.latency_ms)} ms</td>
+                <td>
+                  {formatNumber(item.conflicts)} conflicts · {formatNumber(item.quarantines)} quarantined
+                  {item.error_text ? <div className="muted-copy breakable-value">{item.error_text}</div> : null}
+                </td>
+                <td>{formatDateTime(item.created_at)}</td>
               </tr>
             ))}
           </tbody>
