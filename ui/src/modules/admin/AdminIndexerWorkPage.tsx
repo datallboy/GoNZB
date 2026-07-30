@@ -98,9 +98,9 @@ export function AdminIndexerWorkPage() {
             <small>{formatRecoveryProfile(capacity?.recovery_profile)} · {formatNumber(capacity?.remaining_to_hard)} until hard cap</small>
           </div>
           <div className="stat-card">
-            <span>Recovery rate</span>
-            <strong>{formatRate(capacity?.probes_per_hour_ewma)}</strong>
-            <small>EWMA probe throughput</small>
+            <span>BODY budget</span>
+            <strong>{formatNumber(capacity?.body_requests_remaining)}</strong>
+            <small>{formatNumber(capacity?.body_requests_used)} of {formatNumber(capacity?.body_requests_per_hour)} used this UTC hour</small>
           </div>
           <div className="stat-card">
             <span>Queue caps</span>
@@ -108,9 +108,9 @@ export function AdminIndexerWorkPage() {
             <small>soft {formatNumber(capacity?.soft_cap)}</small>
           </div>
           <div className="stat-card">
-            <span>Ready age</span>
-            <strong>{formatTime(capacity?.oldest_ready_at)}</strong>
-            <small>oldest ready work item</small>
+            <span>Recovery rate / age</span>
+            <strong>{formatRate(capacity?.probes_per_hour_ewma)}</strong>
+            <small>oldest ready {formatTime(capacity?.oldest_ready_at)}</small>
           </div>
         </div>
       </div>

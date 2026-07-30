@@ -237,6 +237,9 @@ function defaultSettings(): RuntimeSettings {
       },
       recovery_admission: {
         latest_reserve_percent: 10,
+        balanced_body_requests_per_hour: 25000,
+        exhaustive_body_requests_per_hour: 100000,
+        discovery_body_requests_per_hour: 1000,
       },
       release_summary_refresh: stageDefaults(10000, 0, { max_batches: 10 }),
       release: {
@@ -418,6 +421,9 @@ function normalizeSettings(input?: RuntimeSettings): RuntimeSettings {
       recovery_admission: {
         ...indexing.recovery_admission,
         latest_reserve_percent: indexing.recovery_admission?.latest_reserve_percent ?? 10,
+        balanced_body_requests_per_hour: indexing.recovery_admission?.balanced_body_requests_per_hour ?? 25000,
+        exhaustive_body_requests_per_hour: indexing.recovery_admission?.exhaustive_body_requests_per_hour ?? 100000,
+        discovery_body_requests_per_hour: indexing.recovery_admission?.discovery_body_requests_per_hour ?? 1000,
       },
       release_summary_refresh: { ...defaults.indexing!.release_summary_refresh, ...indexing.release_summary_refresh },
       release: { ...defaults.indexing!.release, ...indexing.release },
@@ -1605,6 +1611,27 @@ export function AdminSettingsPage() {
               value={indexing.recovery_admission?.latest_reserve_percent ?? 10}
               helpText="Reserves this share of each yEnc recovery claim for the newest available work before older fairness lanes are selected."
               onChange={(value) => setIndexing({ ...indexing, recovery_admission: { ...indexing.recovery_admission!, latest_reserve_percent: value } })}
+            />
+            <NumberField
+              label="Balanced BODY requests/hour"
+              min={1}
+              value={indexing.recovery_admission?.balanced_body_requests_per_hour ?? 25000}
+              helpText="Durable hourly NNTP BODY cap in Balanced mode. Balanced samples small opaque cohorts and expands only when repeated recovered evidence is useful."
+              onChange={(value) => setIndexing({ ...indexing, recovery_admission: { ...indexing.recovery_admission!, balanced_body_requests_per_hour: value } })}
+            />
+            <NumberField
+              label="Exhaustive BODY requests/hour"
+              min={1}
+              value={indexing.recovery_admission?.exhaustive_body_requests_per_hour ?? 100000}
+              helpText="Durable hourly NNTP BODY cap in Exhaustive mode. Exhaustive explores more opaque cohorts, but still stops cohorts that produce no grouping evidence."
+              onChange={(value) => setIndexing({ ...indexing, recovery_admission: { ...indexing.recovery_admission!, exhaustive_body_requests_per_hour: value } })}
+            />
+            <NumberField
+              label="Discovery BODY requests/hour"
+              min={1}
+              value={indexing.recovery_admission?.discovery_body_requests_per_hour ?? 1000}
+              helpText="Durable hourly cap for inspection signature probes. Discovery samples one representative release file instead of scanning every binary globally."
+              onChange={(value) => setIndexing({ ...indexing, recovery_admission: { ...indexing.recovery_admission!, discovery_body_requests_per_hour: value } })}
             />
             <CheckboxField
               label="Enable destructive outcome purge"

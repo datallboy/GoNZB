@@ -131,6 +131,13 @@ projection rows. Priority admission first consumes
 `article_cohort_yenc_queue`; retry and backoff state stays in the recovery
 work table.
 
+Opaque cohorts use sample-and-promote admission. Balanced samples 16 candidates
+and Exhaustive samples 32. Repeated stable recovered identity promotes bounded
+additional work; an exhausted random/no-identity sample becomes durable
+`no_yield`. Candidate claims are limited by a persistent UTC-hour BODY budget.
+Latest XOVER traffic has priority when the NNTP pool is hot; recovery and
+inspection discovery yield instead of disabling upstream scrape/assembly.
+
 Subject-complete posts do not need yEnc recovery for initial binary assembly.
 Recovery should be admitted when HEAD evidence is incomplete, ambiguous, or
 needs validation, not merely because the Subject token is obfuscated.
@@ -156,6 +163,18 @@ Inspect stages consume `binary_inspection_ready_queue` and write inspection
 history/evidence tables. Inspection results can improve archive, media, text,
 and PAR2 visibility without using upstream source tables as progress state.
 
+Release persistence enqueues eligible discovery, PAR2, archive, and media work
+immediately. A bounded release cursor reconciles missed events in
+`(updated_at, release_id)` order. Candidate selection therefore reads a ready
+queue; it does not perform a global binary eligibility scan.
+
+Discovery is deliberately narrow: one representative opaque main-payload file
+per complete release is sampled up to 4 KiB. A useful probe either recovers a
+known archive/media/PAR2/NFO signature or applies an operator content filter.
+Stage metrics report recovered signatures, filtered files, terminal skips,
+retryable failures, sampled files, and bytes. Discovery has its own low hourly
+probe budget and yields to scrape or yEnc traffic on a hot NNTP pool.
+
 Direct media inspection is prefix-bounded. Matroska/WebM binaries are decoded
 from their EBML `Info` and `Tracks` elements and parsing stops before media
 clusters, retaining duration, embedded title, dimensions, codecs, audio tracks,
@@ -178,7 +197,6 @@ If the selected member or enough compressed data falls outside the populated
 ranges, inspection records an explicit inconclusive/extraction result rather
 than downloading the entire archive family.
 
-Ready-queue population is an internal part of inspection candidate selection,
-not a separately scheduled supervisor stage. Queued inspection stages perform
-bounded, advisory-locked top-ups when they need claimable work; operators only
-configure and schedule the inspection consumers themselves.
+Ready-queue reconciliation is an internal repair path, not a separately
+scheduled supervisor stage. Operators only configure and schedule the
+inspection consumers themselves.

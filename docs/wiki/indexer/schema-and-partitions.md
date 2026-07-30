@@ -25,6 +25,9 @@ These tables stay unpartitioned:
 - `release_archive_lineage_*`
 - `nzb_cache`
 - enrichment and override tables
+- `indexer_inspection_reconcile_state`
+- `indexer_body_request_budget_state`
+- `indexer_article_cohort_scan_state`
 
 ## Partitioned Source And Work Tables
 
@@ -37,6 +40,8 @@ These tables stay unpartitioned:
   `binary_completion_keys`, `binary_grouping_evidence`,
   `binary_superseded_sources`
 - yEnc/inspect work and evidence: `yenc_recovery_work_items`,
+  `article_cohort_candidates`, `article_cohort_assembly_queue`,
+  `article_cohort_yenc_queue`,
   `binary_inspection_ready_queue`, `binary_inspections`,
   `binary_inspection_artifacts`, `binary_archive_entries`,
   `binary_text_evidence`, `binary_media_streams`, `binary_par2_sets`,

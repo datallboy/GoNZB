@@ -160,6 +160,11 @@ export type IndexerRecoveryCapacity = {
   oldest_ready_at?: string
   newest_ready_at?: string
   calculated_at?: string
+  body_budget_key: string
+  body_requests_per_hour: number
+  body_requests_used: number
+  body_requests_remaining: number
+  body_budget_started_at?: string
 }
 
 export type IndexerGroupProfile = {
@@ -1289,6 +1294,9 @@ export type IndexingRuntimeSettings = {
   }
   recovery_admission?: {
     latest_reserve_percent: number
+    balanced_body_requests_per_hour: number
+    exhaustive_body_requests_per_hour: number
+    discovery_body_requests_per_hour: number
     [key: string]: number
   }
   release_summary_refresh: AdminStageConfigPatch

@@ -314,20 +314,18 @@ the priority-0 lane. Admission should refill priority-0 cohorts whenever the
 ready priority-0 pool is below the current recovery batch target, subject to
 the configured hard cap and priority-0 overflow cap.
 
-When a BODY probe inside an opaque near-time cohort succeeds and exposes a
-multi-part yEnc identity, that success is proof that the surrounding burst is
-worth more probes. The recovery stage should immediately admit sibling
-singletons from the same provider/newsgroup/near-time bucket as priority-0
-work. This still does not trust the cohort as a binary; it only follows proven
-BODY evidence so the remaining articles for that file can be recovered and
-merged.
+Opaque near-time cohorts use bounded BODY samples. One recovered name is not
+enough to expand a cohort because a random-per-article uploader can make every
+probe look superficially successful. Two matching recovered stable signals
+promote more siblings. Exhaustive may also promote after two actual merge
+gains. Balanced samples 16 rows and caps a promoted cohort at 2,048 probes;
+Exhaustive samples 32 and caps it at 20,000. Expansion occurs in chunks of at
+most 256 per scheduler pass.
 
-Do not rely on article number order or near-time bucketing to probe only a
-handful of articles in this class. Article number order and near-time
-clustering are scheduling and diagnostic hints only. Until a separate
-sampled-yEnc promotion workflow exists, every admitted singleton that needs
-BODY identity remains eligible for yEnc recovery; the prioritization decides
-which BODY probes happen first.
+If the initial sample completes without that evidence, the cohort becomes
+`no_yield` and stops consuming BODY capacity. Later source growth reopens it.
+Article number order and near-time clustering remain scheduling hints only and
+never become binary identity proof.
 
 ## Confidence Labels
 
