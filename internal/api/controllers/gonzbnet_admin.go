@@ -83,23 +83,25 @@ type gonzbnetAdminStore interface {
 	ListFederatedManifestSourceDiagnostics(ctx context.Context, poolID string, limit int) ([]pgindex.FederatedManifestSourceDiagnostic, error)
 	ListHealthAttestationDiagnostics(ctx context.Context, poolID string, limit int) ([]pgindex.HealthAttestationDiagnostic, error)
 	ListReputationDiagnostics(ctx context.Context, limit int) ([]pgindex.ReputationDiagnostic, error)
+	ListBinaryEvidenceDiagnostics(ctx context.Context, poolID string, limit int) ([]pgindex.BinaryEvidenceDiagnosticRecord, error)
 	RecomputeFederatedScores(ctx context.Context, poolID string) (pgindex.FederatedScoreRecomputeResult, error)
 }
 
 type trustPoolRequest struct {
-	PoolID                     string   `json:"pool_id"`
-	DisplayName                string   `json:"display_name"`
-	Description                string   `json:"description"`
-	MembershipThreshold        int      `json:"membership_threshold"`
-	ModerationThreshold        int      `json:"moderation_threshold"`
-	CheckpointWitnessThreshold int      `json:"checkpoint_witness_threshold"`
-	AcceptMode                 string   `json:"accept_mode"`
-	MinNodeTrustScore          float64  `json:"min_node_trust_score"`
-	AcceptedEventTypes         []string `json:"accepted_event_types"`
-	Enabled                    *bool    `json:"enabled"`
-	Visibility                 string   `json:"visibility"`
-	JoinMode                   string   `json:"join_mode"`
-	AdmissionEnabled           *bool    `json:"admission_enabled"`
+	PoolID                      string   `json:"pool_id"`
+	DisplayName                 string   `json:"display_name"`
+	Description                 string   `json:"description"`
+	MembershipThreshold         int      `json:"membership_threshold"`
+	ModerationThreshold         int      `json:"moderation_threshold"`
+	CheckpointWitnessThreshold  int      `json:"checkpoint_witness_threshold"`
+	AcceptMode                  string   `json:"accept_mode"`
+	MinNodeTrustScore           float64  `json:"min_node_trust_score"`
+	AcceptedEventTypes          []string `json:"accepted_event_types"`
+	Enabled                     *bool    `json:"enabled"`
+	Visibility                  string   `json:"visibility"`
+	JoinMode                    string   `json:"join_mode"`
+	AdmissionEnabled            *bool    `json:"admission_enabled"`
+	AllowBinaryEvidenceExchange *bool    `json:"allow_binary_evidence_exchange"`
 }
 
 func (ctrl *GoNZBNetAdminController) Metrics(c *echo.Context) error {
@@ -646,12 +648,13 @@ func (ctrl *GoNZBNetAdminController) UpsertPool(c *echo.Context) error {
 		}
 	}
 	policy := pools.Policy{
-		MembershipThreshold:        req.MembershipThreshold,
-		ModerationThreshold:        req.ModerationThreshold,
-		CheckpointWitnessThreshold: req.CheckpointWitnessThreshold,
-		AcceptMode:                 req.AcceptMode,
-		MinNodeTrustScore:          req.MinNodeTrustScore,
-		AcceptedEventTypes:         acceptedTypes,
+		MembershipThreshold:         req.MembershipThreshold,
+		ModerationThreshold:         req.ModerationThreshold,
+		CheckpointWitnessThreshold:  req.CheckpointWitnessThreshold,
+		AcceptMode:                  req.AcceptMode,
+		MinNodeTrustScore:           req.MinNodeTrustScore,
+		AcceptedEventTypes:          acceptedTypes,
+		AllowBinaryEvidenceExchange: boolDefault(req.AllowBinaryEvidenceExchange, false),
 	}
 	policy = pools.NormalizePolicy(policy, req.MembershipThreshold)
 	policyJSON, _ := json.Marshal(policy)
@@ -1987,6 +1990,21 @@ func (ctrl *GoNZBNetAdminController) ValidationTaskDiagnostics(c *echo.Context) 
 		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
 	}
 	items, err := store.ListValidationTaskDiagnostics(c.Request().Context(), parseIntDefault(queryParamTrimmed(c, "limit"), 100))
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
+func (ctrl *GoNZBNetAdminController) BinaryEvidenceDiagnostics(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	items, err := store.ListBinaryEvidenceDiagnostics(
+		c.Request().Context(), queryParamTrimmed(c, "pool_id"),
+		parseIntDefault(queryParamTrimmed(c, "limit"), 100),
+	)
 	if err != nil {
 		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}

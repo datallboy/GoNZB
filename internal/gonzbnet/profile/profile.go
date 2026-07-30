@@ -59,24 +59,25 @@ type Endpoints struct {
 }
 
 type Capabilities struct {
-	ReleaseCards        bool `json:"release_cards"`
-	ResolutionManifests bool `json:"resolution_manifests"`
-	HealthAttestations  bool `json:"health_attestations"`
-	TrustPools          bool `json:"trust_pools"`
-	PoolWitness         bool `json:"pool_witness"`
-	WebSocketGossip     bool `json:"websocket_gossip"`
-	PeerExchange        bool `json:"peer_exchange"`
-	RelayMode           bool `json:"relay_mode"`
-	Consumer            bool `json:"consumer"`
-	Scanner             bool `json:"scanner"`
-	Indexer             bool `json:"indexer"`
-	ManifestBuilder     bool `json:"manifest_builder"`
-	ManifestCache       bool `json:"manifest_cache"`
-	Validator           bool `json:"validator"`
-	HealthChecker       bool `json:"health_checker"`
-	Coverage            bool `json:"coverage"`
-	Scheduler           bool `json:"scheduler"`
-	AdmissionRelay      bool `json:"admission_relay"`
+	ReleaseCards           bool `json:"release_cards"`
+	ResolutionManifests    bool `json:"resolution_manifests"`
+	HealthAttestations     bool `json:"health_attestations"`
+	TrustPools             bool `json:"trust_pools"`
+	PoolWitness            bool `json:"pool_witness"`
+	WebSocketGossip        bool `json:"websocket_gossip"`
+	PeerExchange           bool `json:"peer_exchange"`
+	RelayMode              bool `json:"relay_mode"`
+	Consumer               bool `json:"consumer"`
+	Scanner                bool `json:"scanner"`
+	Indexer                bool `json:"indexer"`
+	ManifestBuilder        bool `json:"manifest_builder"`
+	ManifestCache          bool `json:"manifest_cache"`
+	Validator              bool `json:"validator"`
+	HealthChecker          bool `json:"health_checker"`
+	Coverage               bool `json:"coverage"`
+	Scheduler              bool `json:"scheduler"`
+	AdmissionRelay         bool `json:"admission_relay"`
+	BinaryEvidenceExchange bool `json:"binary_evidence_exchange"`
 }
 
 type ModuleStatus struct {
@@ -161,6 +162,7 @@ type Config struct {
 	Visibility                    string
 	AcceptsJoinRequests           bool
 	AdmissionRelay                bool
+	BinaryEvidenceExchange        bool
 	ScannerMaxGroups              int
 	ScannerMaxArticlesPerHour     int64
 	ValidationMaxManifestsPerHour int
@@ -265,24 +267,25 @@ func NodeProfileFor(ctx context.Context, identity Identity, cfg Config, now time
 			WS:        webSocketEndpoint,
 		},
 		Capabilities: Capabilities{
-			ReleaseCards:        cfg.Scanner && cfg.PublishReleaseCards,
-			ResolutionManifests: cfg.ManifestCache,
-			HealthAttestations:  cfg.HealthChecker && cfg.PublishHealthAttestations,
-			TrustPools:          true,
-			PoolWitness:         false,
-			WebSocketGossip:     cfg.WebSocketGossip,
-			PeerExchange:        cfg.PeerExchange,
-			RelayMode:           cfg.RelayMode,
-			Consumer:            cfg.Consumer,
-			Scanner:             cfg.Scanner,
-			Indexer:             cfg.Indexer,
-			ManifestBuilder:     cfg.ManifestBuilder && cfg.Scanner && cfg.PublishReleaseCards,
-			ManifestCache:       cfg.ManifestCache,
-			Validator:           cfg.Validator,
-			HealthChecker:       cfg.HealthChecker,
-			Coverage:            cfg.Coverage,
-			Scheduler:           cfg.Scheduler,
-			AdmissionRelay:      cfg.AdmissionRelay,
+			ReleaseCards:           cfg.Scanner && cfg.PublishReleaseCards,
+			ResolutionManifests:    cfg.ManifestCache,
+			HealthAttestations:     cfg.HealthChecker && cfg.PublishHealthAttestations,
+			TrustPools:             true,
+			PoolWitness:            false,
+			WebSocketGossip:        cfg.WebSocketGossip,
+			PeerExchange:           cfg.PeerExchange,
+			RelayMode:              cfg.RelayMode,
+			Consumer:               cfg.Consumer,
+			Scanner:                cfg.Scanner,
+			Indexer:                cfg.Indexer,
+			ManifestBuilder:        cfg.ManifestBuilder && cfg.Scanner && cfg.PublishReleaseCards,
+			ManifestCache:          cfg.ManifestCache,
+			Validator:              cfg.Validator,
+			HealthChecker:          cfg.HealthChecker,
+			Coverage:               cfg.Coverage,
+			Scheduler:              cfg.Scheduler,
+			AdmissionRelay:         cfg.AdmissionRelay,
+			BinaryEvidenceExchange: cfg.BinaryEvidenceExchange,
 		},
 		ModuleStatus: ModuleStatus{
 			Scanner:         enabledStatus(cfg.Scanner),

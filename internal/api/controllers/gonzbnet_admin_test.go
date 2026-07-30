@@ -1070,6 +1070,10 @@ func (s *fakeGoNZBNetAdminStore) ListReputationDiagnostics(context.Context, int)
 	return nil, nil
 }
 
+func (s *fakeGoNZBNetAdminStore) ListBinaryEvidenceDiagnostics(context.Context, string, int) ([]pgindex.BinaryEvidenceDiagnosticRecord, error) {
+	return nil, nil
+}
+
 func (s *fakeGoNZBNetAdminStore) RecomputeFederatedScores(_ context.Context, poolID string) (pgindex.FederatedScoreRecomputeResult, error) {
 	s.scorePoolID = poolID
 	if s.scoreResult.PoolID == "" {

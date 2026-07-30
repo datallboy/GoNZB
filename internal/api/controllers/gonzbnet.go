@@ -17,9 +17,11 @@ import (
 	"github.com/datallboy/gonzb/internal/gonzbnet/activity"
 	"github.com/datallboy/gonzb/internal/gonzbnet/admission"
 	"github.com/datallboy/gonzb/internal/gonzbnet/canonical"
+	"github.com/datallboy/gonzb/internal/gonzbnet/capability"
 	"github.com/datallboy/gonzb/internal/gonzbnet/coverage"
 	"github.com/datallboy/gonzb/internal/gonzbnet/eventbody"
 	"github.com/datallboy/gonzb/internal/gonzbnet/events"
+	"github.com/datallboy/gonzb/internal/gonzbnet/evidence"
 	"github.com/datallboy/gonzb/internal/gonzbnet/gossip"
 	"github.com/datallboy/gonzb/internal/gonzbnet/health"
 	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
@@ -92,6 +94,11 @@ type gonzbnetStore interface {
 	ListFederationApprovalFragments(ctx context.Context, proposalEventID string) ([]admission.ApprovalFragment, error)
 	FinalizeFederationAdmission(ctx context.Context, proposalEventID, finalEventID, status, reason string) error
 	ListActivePoolMemberEndpoints(ctx context.Context, poolID string) ([]admission.MemberEndpoint, error)
+	IsActivePoolMemberWithCapability(ctx context.Context, poolID, nodeID, required string) (bool, error)
+	FindAcceptedYEncEvidence(ctx context.Context, messageIDs []string, localOnly bool, limit int) ([]pgindex.YEncEvidenceRecord, error)
+	RefreshBinaryExchangeIdentities(ctx context.Context, limit int) (int, error)
+	FindLocalBinarySegments(ctx context.Context, scheme, matchID string, parts []int, anchors []string, limit int) ([]evidence.Segment, error)
+	RecordBinaryEvidenceDiagnostic(ctx context.Context, item pgindex.BinaryEvidenceDiagnostic) error
 }
 
 type gonzbnetTransactionalProjectionStore interface {
@@ -1522,6 +1529,195 @@ func (ctrl *GoNZBNetController) RequestManifest(c *echo.Context) error {
 	})
 }
 
+func (ctrl *GoNZBNetController) QueryYEncEvidence(c *echo.Context) error {
+	started := time.Now()
+	store, body, verified, ok := ctrl.authorizeEvidenceQuery(c)
+	if !ok {
+		return nil
+	}
+	var query evidence.YEncQuery
+	if err := decodeFederationJSON(body, &query); err != nil {
+		return federationJSONError(c, http.StatusBadRequest, "invalid_json", "invalid yenc evidence query")
+	}
+	if err := evidence.ValidateYEncQuery(query, time.Now().UTC()); err != nil {
+		return federationJSONError(c, http.StatusBadRequest, "invalid_schema", err.Error())
+	}
+	if query.RequestingNodeID != verified.NodeID {
+		return federationJSONError(c, http.StatusForbidden, "requesting_node_mismatch", "requesting node does not match request signature")
+	}
+	if allowed, err := ctrl.evidenceExchangeAllowed(c.Request().Context(), store, query.PoolID, verified.NodeID); err != nil {
+		return federationJSONError(c, http.StatusInternalServerError, "internal_error", err.Error())
+	} else if !allowed {
+		return federationJSONError(c, http.StatusForbidden, "evidence_exchange_disabled", "binary evidence exchange is not enabled for this pool and node")
+	}
+	items, err := store.FindAcceptedYEncEvidence(c.Request().Context(), query.MessageIDs, true, ctrl.appCtx.Config.GoNZBNet.BinaryEvidenceYEncBatchSize)
+	if err != nil {
+		return federationJSONError(c, http.StatusInternalServerError, "internal_error", err.Error())
+	}
+	headers := make([]evidence.YEncHeader, 0, len(items))
+	for _, item := range items {
+		headers = append(headers, evidence.YEncHeader{
+			MessageID: item.MessageID, SourcePostedAt: item.SourcePostedAt.UTC().Format(time.RFC3339),
+			FileName: item.FileName, PartNumber: item.PartNumber, TotalParts: item.TotalParts,
+			FileSize: item.FileSize, PartBegin: item.PartBegin, PartEnd: item.PartEnd,
+		})
+	}
+	bundle := evidence.Bundle{
+		PoolID: query.PoolID, RequestID: query.RequestID,
+		RequestingNodeID: verified.NodeID, YEncHeaders: headers,
+	}
+	id, err := ctrl.localIdentity()
+	if err != nil {
+		return federationJSONError(c, http.StatusServiceUnavailable, "internal_error", err.Error())
+	}
+	if err := evidence.SignBundle(c.Request().Context(), id, &bundle); err != nil {
+		return federationJSONError(c, http.StatusInternalServerError, "internal_error", err.Error())
+	}
+	payload, err := json.Marshal(bundle)
+	if err != nil {
+		return federationJSONError(c, http.StatusInternalServerError, "internal_error", err.Error())
+	}
+	if len(payload) > ctrl.appCtx.Config.GoNZBNet.BinaryEvidenceMaxResponseBytes {
+		return federationJSONError(c, http.StatusRequestEntityTooLarge, "response_too_large", "evidence response exceeds configured limit")
+	}
+	_ = store.RecordBinaryEvidenceDiagnostic(c.Request().Context(), pgindex.BinaryEvidenceDiagnostic{
+		PoolID: query.PoolID, PeerNodeID: verified.NodeID, Direction: "serve",
+		EvidenceKind: "yenc", RequestCount: 1, HitCount: len(headers),
+		ItemCount: len(headers), ResponseBytes: int64(len(payload)),
+		LatencyMS: time.Since(started).Milliseconds(),
+	})
+	return c.Blob(http.StatusOK, "application/gonzbnet+json", payload)
+}
+
+func (ctrl *GoNZBNetController) QueryBinarySegments(c *echo.Context) error {
+	started := time.Now()
+	store, body, verified, ok := ctrl.authorizeEvidenceQuery(c)
+	if !ok {
+		return nil
+	}
+	var query evidence.SegmentQuery
+	if err := decodeFederationJSON(body, &query); err != nil {
+		return federationJSONError(c, http.StatusBadRequest, "invalid_json", "invalid binary segment query")
+	}
+	if err := evidence.ValidateSegmentQuery(query, time.Now().UTC()); err != nil {
+		return federationJSONError(c, http.StatusBadRequest, "invalid_schema", err.Error())
+	}
+	if query.RequestingNodeID != verified.NodeID {
+		return federationJSONError(c, http.StatusForbidden, "requesting_node_mismatch", "requesting node does not match request signature")
+	}
+	if allowed, err := ctrl.evidenceExchangeAllowed(c.Request().Context(), store, query.PoolID, verified.NodeID); err != nil {
+		return federationJSONError(c, http.StatusInternalServerError, "internal_error", err.Error())
+	} else if !allowed {
+		return federationJSONError(c, http.StatusForbidden, "evidence_exchange_disabled", "binary evidence exchange is not enabled for this pool and node")
+	}
+	if _, err := store.RefreshBinaryExchangeIdentities(c.Request().Context(), 1000); err != nil {
+		return federationJSONError(c, http.StatusInternalServerError, "internal_error", err.Error())
+	}
+	parts := expandEvidencePartRanges(query.Missing, ctrl.appCtx.Config.GoNZBNet.BinaryEvidenceSegmentLimit)
+	items, err := store.FindLocalBinarySegments(
+		c.Request().Context(), query.Scheme, query.MatchID, parts, query.Anchors,
+		ctrl.appCtx.Config.GoNZBNet.BinaryEvidenceSegmentLimit,
+	)
+	if err != nil {
+		return federationJSONError(c, http.StatusInternalServerError, "internal_error", err.Error())
+	}
+	bundle := evidence.Bundle{
+		PoolID: query.PoolID, RequestID: query.RequestID,
+		RequestingNodeID: verified.NodeID, Segments: items,
+	}
+	id, err := ctrl.localIdentity()
+	if err != nil {
+		return federationJSONError(c, http.StatusServiceUnavailable, "internal_error", err.Error())
+	}
+	if err := evidence.SignBundle(c.Request().Context(), id, &bundle); err != nil {
+		return federationJSONError(c, http.StatusInternalServerError, "internal_error", err.Error())
+	}
+	payload, err := json.Marshal(bundle)
+	if err != nil {
+		return federationJSONError(c, http.StatusInternalServerError, "internal_error", err.Error())
+	}
+	if len(payload) > ctrl.appCtx.Config.GoNZBNet.BinaryEvidenceMaxResponseBytes {
+		return federationJSONError(c, http.StatusRequestEntityTooLarge, "response_too_large", "evidence response exceeds configured limit")
+	}
+	_ = store.RecordBinaryEvidenceDiagnostic(c.Request().Context(), pgindex.BinaryEvidenceDiagnostic{
+		PoolID: query.PoolID, PeerNodeID: verified.NodeID, Direction: "serve",
+		EvidenceKind: "segments", RequestCount: 1, HitCount: len(items),
+		ItemCount: len(items), ResponseBytes: int64(len(payload)),
+		LatencyMS: time.Since(started).Milliseconds(),
+	})
+	return c.Blob(http.StatusOK, "application/gonzbnet+json", payload)
+}
+
+func (ctrl *GoNZBNetController) authorizeEvidenceQuery(c *echo.Context) (gonzbnetStore, []byte, requestauth.VerificationResult, bool) {
+	var empty requestauth.VerificationResult
+	store, ok := ctrl.appCtx.PGIndexStore.(gonzbnetStore)
+	if !ok {
+		_ = federationJSONError(c, http.StatusServiceUnavailable, "internal_error", "gonzbnet store is unavailable")
+		return nil, nil, empty, false
+	}
+	body, err := io.ReadAll(c.Request().Body)
+	if err != nil {
+		_ = federationJSONError(c, http.StatusBadRequest, federationBodyReadErrorCode(err), "read evidence query body")
+		return nil, nil, empty, false
+	}
+	cfg := ctrl.appCtx.Config.GoNZBNet
+	verified, err := requestauth.Verify(
+		c.Request().Context(), store, requestauth.HeaderFromRequest(c.Request()),
+		c.Request().Method, c.Request().URL.Path, c.Request().URL.RawQuery, body,
+		time.Now(), time.Duration(cfg.TimeToleranceSeconds)*time.Second,
+		time.Duration(cfg.NonceTTLSeconds)*time.Second,
+	)
+	if err != nil {
+		_ = federationJSONError(c, http.StatusUnauthorized, federationAuthErrorCode(err), err.Error())
+		return nil, nil, empty, false
+	}
+	return store, body, verified, true
+}
+
+func (ctrl *GoNZBNetController) evidenceExchangeAllowed(ctx context.Context, store gonzbnetStore, poolID, nodeID string) (bool, error) {
+	if !ctrl.appCtx.Config.GoNZBNet.BinaryEvidenceServeEnabled {
+		return false, nil
+	}
+	policy, err := store.GetTrustPoolPolicy(ctx, poolID)
+	if err != nil {
+		return false, err
+	}
+	if !policy.AllowBinaryEvidenceExchange {
+		return false, nil
+	}
+	remoteAllowed, err := store.IsActivePoolMemberWithCapability(ctx, poolID, nodeID, capability.BinaryEvidenceExchange)
+	if err != nil || !remoteAllowed {
+		return false, err
+	}
+	localIdentity, err := ctrl.localIdentity()
+	if err != nil {
+		return false, err
+	}
+	localNodeID, err := localIdentity.NodeID(ctx)
+	if err != nil {
+		return false, err
+	}
+	return store.IsActivePoolMemberWithCapability(ctx, poolID, localNodeID, capability.BinaryEvidenceExchange)
+}
+
+func expandEvidencePartRanges(ranges []evidence.PartRange, limit int) []int {
+	if limit <= 0 || limit > evidence.MaxSegmentItems {
+		limit = evidence.MaxSegmentItems
+	}
+	out := make([]int, 0, limit)
+	seen := make(map[int]struct{}, limit)
+	for _, item := range ranges {
+		for part := item.Start; part <= item.End && len(out) < limit; part++ {
+			if _, ok := seen[part]; ok {
+				continue
+			}
+			seen[part] = struct{}{}
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
 func (ctrl *GoNZBNetController) GetManifest(c *echo.Context) error {
 	store, ok := ctrl.appCtx.PGIndexStore.(gonzbnetStore)
 	if !ok {
@@ -2055,6 +2251,7 @@ func (ctrl *GoNZBNetController) profileConfig(c *echo.Context) profile.Config {
 		Visibility:                    cfg.Visibility,
 		AcceptsJoinRequests:           cfg.AllowJoinRequests,
 		AdmissionRelay:                cfg.AdmissionRelayEnabled,
+		BinaryEvidenceExchange:        cfg.BinaryEvidenceConsumeEnabled || cfg.BinaryEvidenceServeEnabled,
 		ScannerMaxGroups:              cfg.ScannerMaxGroups,
 		ScannerMaxArticlesPerHour:     cfg.ScannerMaxArticlesPerHour,
 		ValidationMaxManifestsPerHour: cfg.ValidationMaxManifestsPerHour,
