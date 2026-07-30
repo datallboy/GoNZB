@@ -1529,116 +1529,6 @@ func (s *Store) listBinaryInspectionCandidatesRaw(ctx context.Context, q binaryI
 		return scanBinaryInspectionCandidates(ctx, q, query, stageName, limit)
 	}
 
-	if stageName == "inspect_discovery" {
-		query := `
-			WITH active_yenc AS MATERIALIZED (
-				SELECT source_posted_at, binary_id
-				FROM yenc_recovery_work_items
-				WHERE status IN ('ready', 'running')
-			),
-			discovery_roots AS MATERIALIZED (
-				SELECT bic.*
-				FROM binary_identity_current bic
-				JOIN binary_lifecycle bl
-				  ON bl.source_posted_at = bic.source_posted_at
-				 AND bl.binary_id = bic.binary_id
-				 AND bl.lifecycle_status = 'active'
-				LEFT JOIN active_yenc ay
-				  ON ay.source_posted_at = bic.source_posted_at
-				 AND ay.binary_id = bic.binary_id
-				WHERE ay.binary_id IS NULL
-				  AND (bic.is_main_payload = TRUE OR bic.is_auxiliary = FALSE)
-				  AND EXISTS (
-					SELECT 1
-					FROM binary_parts bp
-					WHERE bp.source_posted_at = bic.source_posted_at
-					  AND bp.binary_id = bic.binary_id
-					  AND bp.part_number = 1
-				  )
-				  AND (
-					LOWER(COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '')) LIKE '%.bin' OR
-					COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '') !~ '\.[A-Za-z0-9]{1,8}$'
-				  )
-			)
-			SELECT
-				$1 AS stage_name,
-				bic.binary_id AS binary_id,
-				'' AS release_id,
-				bc.provider_id,
-				'' AS title,
-				'' AS source_title,
-				'' AS deobfuscated_title,
-				COALESCE(NULLIF(bic.release_family_key, ''), NULLIF(bic.base_stem, ''), '') AS group_name,
-				COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '') AS file_name,
-				bic.binary_name,
-				bic.release_name,
-				COALESCE(p.poster_name, '') AS poster,
-				bos.posted_at,
-				bos.total_bytes,
-				bos.total_parts,
-				bic.match_confidence,
-				GREATEST(
-					bc.updated_at,
-					bic.updated_at,
-					bos.updated_at,
-					COALESCE(brc.updated_at, TIMESTAMPTZ 'epoch')
-				) AS source_updated_at,
-				COALESCE(bi.status, '') AS current_status,
-				bi.updated_at AS current_updated_at,
-				COALESCE(bi.summary_json, '{}'::jsonb) AS current_summary_json,
-				'{}'::jsonb AS archive_summary_json
-			FROM discovery_roots bic
-			JOIN binary_core bc
-			  ON bc.source_posted_at = bic.source_posted_at
-			 AND bc.binary_id = bic.binary_id
-			JOIN binary_observation_stats bos
-			  ON bos.source_posted_at = bic.source_posted_at
-			 AND bos.binary_id = bic.binary_id
-			LEFT JOIN binary_recovery_current brc
-			  ON brc.source_posted_at = bic.source_posted_at
-			 AND brc.binary_id = bic.binary_id
-			LEFT JOIN posters p ON p.id = bc.poster_id
-			LEFT JOIN binary_inspections bi
-			  ON bi.source_posted_at = bic.source_posted_at
-			 AND bi.stage_name = $1
-			 AND bi.binary_id = bic.binary_id
-			WHERE COALESCE(brc.recovered_extension, '') = ''
-			  AND (
-				bi.id IS NULL OR
-				(bi.status = 'failed' AND bi.updated_at <= NOW() - INTERVAL '5 minutes') OR
-				(
-					bi.status = 'running' AND
-					(
-						bi.inspection_claimed_until IS NULL OR
-						bi.inspection_claimed_until < NOW()
-					)
-				) OR
-				GREATEST(
-					bc.updated_at,
-					bic.updated_at,
-					bos.updated_at,
-					COALESCE(brc.updated_at, TIMESTAMPTZ 'epoch')
-				) > bi.updated_at OR
-				` + errorRerunPredicate + `
-			  )
-			  AND (
-				bi.inspection_claimed_until IS NULL OR
-				bi.inspection_claimed_until < NOW()
-			  )
-			  AND NOT EXISTS (
-				SELECT 1
-				FROM binary_inspections cfi
-				WHERE cfi.source_posted_at = bic.source_posted_at
-				  AND cfi.stage_name = 'inspect_discovery'
-				  AND cfi.binary_id = bic.binary_id
-				  AND cfi.status = 'completed'
-				  AND COALESCE(cfi.summary_json->>'content_filtered', '') = 'true'
-			  )
-			ORDER BY bic.updated_at DESC, bic.binary_id DESC
-			LIMIT $2`
-		return scanBinaryInspectionCandidates(ctx, q, query, stageName, limit)
-	}
-
 	query := `
 		WITH ` + binaryInspectionCandidateStateCTE + `
 		SELECT
@@ -3507,6 +3397,9 @@ func (s *Store) finishBinaryInspectionWithDB(ctx context.Context, execer inspect
 		if err := finishInspectReadyQueueRow(ctx, execer, in.StageName, in.BinaryID, status, in.ErrorText); err != nil {
 			return err
 		}
+		if err := enqueueInspectionSuccessor(ctx, execer, in, status); err != nil {
+			return err
+		}
 		return nil
 	}
 
@@ -3583,8 +3476,32 @@ func (s *Store) finishBinaryInspectionWithDB(ctx context.Context, execer inspect
 	if err := finishInspectReadyQueueRow(ctx, execer, in.StageName, in.BinaryID, status, in.ErrorText); err != nil {
 		return err
 	}
+	if err := enqueueInspectionSuccessor(ctx, execer, in, status); err != nil {
+		return err
+	}
 
 	return nil
+}
+
+func enqueueInspectionSuccessor(ctx context.Context, execer inspectionExecer, in BinaryInspectionRecord, status string) error {
+	if status != "completed" || strings.TrimSpace(in.ReleaseID) == "" {
+		return nil
+	}
+	if isQueuedInspectionStage(in.StageName) {
+		if _, err := enqueueInspectionReadyForReleases(ctx, execer, in.StageName, []string{in.ReleaseID}); err != nil {
+			return err
+		}
+	}
+	nextStage := ""
+	switch strings.TrimSpace(in.StageName) {
+	case "inspect_archive":
+		nextStage = "inspect_media"
+	}
+	if nextStage == "" {
+		return nil
+	}
+	_, err := enqueueInspectionReadyForReleases(ctx, execer, nextStage, []string{in.ReleaseID})
+	return err
 }
 
 func normalizeBinaryInspectionTerminalState(stageName, status, errorText string, summary map[string]any) (string, string) {
