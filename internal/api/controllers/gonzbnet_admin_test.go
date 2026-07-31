@@ -707,6 +707,39 @@ func TestPoolMemberOverviewGroupsRolesByUniqueNode(t *testing.T) {
 	}
 }
 
+func TestGoNZBNetProductionChecksDistinguishFailuresFromWarnings(t *testing.T) {
+	checks, ready := goNZBNetProductionChecks(config.GoNZBNetConfig{
+		HTTPEnabled:  true,
+		AdvertiseURL: "https://node.example/gonzbnet/v1",
+		KeyPassword:  "configured",
+		NodeAlias:    "Indexer North",
+	}, 0)
+	if !ready {
+		t.Fatalf("expected secure configuration with only a pool warning to be production ready: %+v", checks)
+	}
+	if len(checks) == 0 {
+		t.Fatal("expected production checks")
+	}
+
+	checks, ready = goNZBNetProductionChecks(config.GoNZBNetConfig{
+		HTTPEnabled:           true,
+		AdvertiseURL:          "http://public.example/gonzbnet/v1",
+		AllowInsecurePeerHTTP: true,
+	}, 1)
+	if ready {
+		t.Fatalf("expected plaintext transport and unencrypted identity to fail readiness: %+v", checks)
+	}
+	failures := 0
+	for _, check := range checks {
+		if check.Status == "fail" {
+			failures++
+		}
+	}
+	if failures < 2 {
+		t.Fatalf("expected transport and identity failures, got %+v", checks)
+	}
+}
+
 func TestGoNZBNetAdminReportingPoolHealthReturnsSharedEvidence(t *testing.T) {
 	store := &fakeGoNZBNetAdminStore{poolHealth: pgindex.FederationPoolHealthReport{
 		PoolID:              "pool.remote",

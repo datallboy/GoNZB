@@ -2272,6 +2272,30 @@ export type GoNZBNetPoolMemberOverview = {
   local: boolean
 }
 
+export type GoNZBNetProductionCheck = {
+  key: string
+  label: string
+  status: 'pass' | 'warning' | 'fail'
+  details: string
+}
+
+export type GoNZBNetStorageRelation = {
+  name: string
+  category: 'protocol' | 'projection' | 'evidence'
+  estimated_rows: number
+  total_bytes: number
+}
+
+export type GoNZBNetStorageReport = {
+  available: boolean
+  database_bytes: number
+  gonzbnet_bytes: number
+  protocol_bytes: number
+  projection_bytes: number
+  evidence_bytes: number
+  relations: GoNZBNetStorageRelation[]
+}
+
 export type GoNZBNetOverviewReport = {
   generated_at: string
   node_id: string
@@ -2287,6 +2311,9 @@ export type GoNZBNetOverviewReport = {
   article_evidence: GoNZBNetEvidenceSummary
   warnings: string[]
   jobs: GoNZBNetRoleJob[]
+  production_ready: boolean
+  production_checks: GoNZBNetProductionCheck[]
+  storage: GoNZBNetStorageReport
 }
 
 export type GoNZBNetActivityRollup = {
