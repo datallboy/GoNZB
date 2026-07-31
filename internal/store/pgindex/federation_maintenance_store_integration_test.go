@@ -28,8 +28,8 @@ func TestCompactFederationProtocolStateRemovesOnlyExpiredEphemera(t *testing.T) 
 	if _, err := store.DB().ExecContext(ctx, `
 		UPDATE federation_nodes
 		SET last_seen_at = CASE
-		  WHEN node_id = 'node_stale_handshake' THEN $1
-		  ELSE $2
+		  WHEN node_id = 'node_stale_handshake' THEN $1::timestamptz
+		  ELSE $2::timestamptz
 		END
 		WHERE node_id IN ('node_stale_handshake', 'node_recent_handshake')`,
 		now.Add(-48*time.Hour), now.Add(-time.Hour)); err != nil {
