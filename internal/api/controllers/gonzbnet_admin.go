@@ -729,10 +729,7 @@ func (ctrl *GoNZBNetAdminController) UpsertPool(c *echo.Context) error {
 	if err := store.ValidateFederationPoolControlEvent(c.Request().Context(), event); err != nil {
 		return jsonError(c, http.StatusBadRequest, err.Error())
 	}
-	if err := store.AppendVerifiedFederationEvent(c.Request().Context(), event, validation); err != nil {
-		return jsonError(c, http.StatusInternalServerError, err.Error())
-	}
-	if err := store.ProjectFederationPoolEvent(c.Request().Context(), event); err != nil {
+	if err := appendAndProjectFederationPoolEvent(c.Request().Context(), store, event, validation); err != nil {
 		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}
 	_ = store.UpsertFederationRolePoolAccess(c.Request().Context(), pgindex.FederationRolePoolAccessRecord{RoleID: "admin", PoolID: req.PoolID, CanSearch: true, CanGet: true, CanResolveManifest: true})
@@ -817,6 +814,10 @@ func (ctrl *GoNZBNetAdminController) JoinAdmissionPool(c *echo.Context) error {
 	if invitation != nil && invitation.GenesisEventID != descriptor.GenesisEventID {
 		return jsonError(c, http.StatusBadRequest, "invitation pool fingerprint does not match remote pool")
 	}
+	invitationLocator := ""
+	if invitation != nil {
+		invitationLocator = strings.TrimSpace(req.Locator)
+	}
 	store, ok := ctrl.store()
 	if !ok {
 		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
@@ -844,11 +845,10 @@ func (ctrl *GoNZBNetAdminController) JoinAdmissionPool(c *echo.Context) error {
 		if err := store.ValidateFederationPoolControlEvent(c.Request().Context(), genesis); err != nil {
 			return jsonError(c, http.StatusBadGateway, err.Error())
 		}
-		if err := store.AppendVerifiedFederationEvent(c.Request().Context(), genesis, genesisValidation); err != nil {
+		if err := appendAndProjectFederationPoolEvent(c.Request().Context(), store, genesis, genesisValidation); err != nil {
 			return jsonError(c, http.StatusInternalServerError, err.Error())
 		}
-	}
-	if err := store.ProjectFederationPoolEvent(c.Request().Context(), genesis); err != nil {
+	} else if err := store.ProjectFederationPoolEvent(c.Request().Context(), genesis); err != nil {
 		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}
 	nodeID, _ := nodeIdentity.NodeID(c.Request().Context())
@@ -878,7 +878,7 @@ func (ctrl *GoNZBNetAdminController) JoinAdmissionPool(c *echo.Context) error {
 			if err != nil || existing == nil {
 				continue
 			}
-			if err := client.SubmitJoin(c.Request().Context(), remote.WellKnown.BaseURL, descriptor.PoolID, existing); err != nil {
+			if err := client.SubmitJoin(c.Request().Context(), remote.WellKnown.BaseURL, descriptor.PoolID, invitationLocator, existing); err != nil {
 				return jsonError(c, http.StatusBadGateway, err.Error())
 			}
 			return c.JSON(http.StatusAccepted, map[string]any{"status": "pending", "proposal_event_id": existing.EventID, "pool_id": descriptor.PoolID, "relay_url": remote.WellKnown.BaseURL})
@@ -902,13 +902,10 @@ func (ctrl *GoNZBNetAdminController) JoinAdmissionPool(c *echo.Context) error {
 	if err != nil {
 		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}
-	if err := store.AppendVerifiedFederationEvent(c.Request().Context(), event, validation); err != nil {
+	if err := appendAndProjectFederationPoolEvent(c.Request().Context(), store, event, validation); err != nil {
 		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}
-	if err := store.ProjectFederationPoolEvent(c.Request().Context(), event); err != nil {
-		return jsonError(c, http.StatusInternalServerError, err.Error())
-	}
-	if err := client.SubmitJoin(c.Request().Context(), remote.WellKnown.BaseURL, descriptor.PoolID, event); err != nil {
+	if err := client.SubmitJoin(c.Request().Context(), remote.WellKnown.BaseURL, descriptor.PoolID, invitationLocator, event); err != nil {
 		return jsonError(c, http.StatusBadGateway, err.Error())
 	}
 	return c.JSON(http.StatusAccepted, map[string]any{"status": "pending", "proposal_event_id": event.EventID, "pool_id": descriptor.PoolID, "relay_url": remote.WellKnown.BaseURL})
@@ -978,10 +975,7 @@ func (ctrl *GoNZBNetAdminController) RefreshAdmission(c *echo.Context) error {
 		if err := store.ValidateFederationPoolControlEvent(c.Request().Context(), event); err != nil {
 			return jsonError(c, http.StatusBadGateway, err.Error())
 		}
-		if err := store.AppendVerifiedFederationEvent(c.Request().Context(), event, validation); err != nil {
-			return jsonError(c, http.StatusInternalServerError, err.Error())
-		}
-		if err := store.ProjectFederationPoolEvent(c.Request().Context(), event); err != nil {
+		if err := appendAndProjectFederationPoolEvent(c.Request().Context(), store, event, validation); err != nil {
 			return jsonError(c, http.StatusInternalServerError, err.Error())
 		}
 	}
@@ -1330,10 +1324,7 @@ func (ctrl *GoNZBNetAdminController) ApprovePoolMember(c *echo.Context) error {
 	if err := store.ValidateFederationPoolControlEvent(c.Request().Context(), event); err != nil {
 		return jsonError(c, http.StatusBadRequest, err.Error())
 	}
-	if err := store.AppendVerifiedFederationEvent(c.Request().Context(), event, validation); err != nil {
-		return jsonError(c, http.StatusInternalServerError, err.Error())
-	}
-	if err := store.ProjectFederationPoolEvent(c.Request().Context(), event); err != nil {
+	if err := appendAndProjectFederationPoolEvent(c.Request().Context(), store, event, validation); err != nil {
 		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}
 	return c.JSON(http.StatusOK, poolMemberApprovalResponse{
@@ -1434,10 +1425,7 @@ func (ctrl *GoNZBNetAdminController) CreatePoolMemberRevocation(c *echo.Context)
 	if err := store.ValidateFederationPoolControlEvent(c.Request().Context(), event); err != nil {
 		return jsonError(c, http.StatusBadRequest, err.Error())
 	}
-	if err := store.AppendVerifiedFederationEvent(c.Request().Context(), event, validation); err != nil {
-		return jsonError(c, http.StatusInternalServerError, err.Error())
-	}
-	if err := store.ProjectFederationPoolEvent(c.Request().Context(), event); err != nil {
+	if err := appendAndProjectFederationPoolEvent(c.Request().Context(), store, event, validation); err != nil {
 		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}
 	return c.JSON(http.StatusOK, poolMemberRevocationResponse{

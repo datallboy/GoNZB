@@ -3,10 +3,12 @@ package controllers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/gonzbnet/admission"
@@ -80,6 +82,43 @@ func TestGoNZBNetHandshakeInvalidJSONUsesStableErrorCode(t *testing.T) {
 	}
 	if body.Code != "invalid_json" || body.Error != "invalid_json" {
 		t.Fatalf("expected invalid_json response, got %+v", body)
+	}
+}
+
+func TestGoNZBNetHandshakeRejectsStaleTimestampBeforePersistence(t *testing.T) {
+	e := echo.New()
+	body := fmt.Sprintf(`{
+		"schema_version":"1.0",
+		"type":"HandshakeRequest",
+		"node_id":"node_stale",
+		"public_key":"ignored",
+		"nonce":"ignored",
+		"supported_versions":["gonzbnet/1.0"],
+		"requested_pools":[],
+		"created_at":%q,
+		"signature":"present"
+	}`, time.Now().UTC().Add(-10*time.Minute).Format(time.RFC3339))
+	req := httptest.NewRequest(http.MethodPost, "/gonzbnet/v1/handshake", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	ctrl := NewGoNZBNetController(&app.Context{
+		Config: &config.Config{GoNZBNet: config.GoNZBNetConfig{
+			KeysDir:              t.TempDir(),
+			TimeToleranceSeconds: 30,
+		}},
+	})
+
+	if err := ctrl.Handshake(e.NewContext(req, rec)); err != nil {
+		t.Fatalf("Handshake returned error: %v", err)
+	}
+	if rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), `"code":"expired_event"`) {
+		t.Fatalf("expected expired_event status 401, got status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestFederationGossipReadLimitIsBoundedFromConfiguration(t *testing.T) {
+	cfg := config.GoNZBNetConfig{MaxEventBytes: 1024, GossipBatchSize: 5}
+	if got, want := federationGossipReadLimit(cfg), int64(5*1024+64*1024); got != want {
+		t.Fatalf("expected read limit %d, got %d", want, got)
 	}
 }
 
