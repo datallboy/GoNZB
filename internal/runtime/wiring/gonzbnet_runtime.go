@@ -51,6 +51,9 @@ type gonzbnetRuntimeModule struct {
 	evidenceMaintenance interface {
 		CompactBinaryEvidenceDiagnostics(context.Context, time.Time) error
 	}
+	protocolMaintenance interface {
+		CompactFederationProtocolState(context.Context, time.Time, time.Time, time.Time) (pgindex.FederationProtocolCompactionResult, error)
+	}
 	activityStore interface {
 		UpsertFederationActivityRollups(context.Context, []activity.Rollup) error
 		CompactFederationActivityRollups(context.Context, time.Time) error
@@ -76,6 +79,7 @@ func (m *gonzbnetRuntimeModule) Build(ctx context.Context) error {
 	m.pullSync = nil
 	m.evidenceRepair = nil
 	m.evidenceMaintenance = nil
+	m.protocolMaintenance = nil
 	m.activityStore = nil
 	if !m.Enabled() {
 		return nil
@@ -151,6 +155,11 @@ func (m *gonzbnetRuntimeModule) Build(ctx context.Context) error {
 		return fmt.Errorf("pgindex store does not support gonzbnet admission polling")
 	}
 	m.admissionStore = admissionStore
+	if protocolMaintenance, ok := m.appCtx.PGIndexStore.(interface {
+		CompactFederationProtocolState(context.Context, time.Time, time.Time, time.Time) (pgindex.FederationProtocolCompactionResult, error)
+	}); ok {
+		m.protocolMaintenance = protocolMaintenance
+	}
 	if evidenceMaintenance, ok := m.appCtx.PGIndexStore.(interface {
 		CompactBinaryEvidenceDiagnostics(context.Context, time.Time) error
 	}); ok && (m.appCtx.Config.GoNZBNet.BinaryEvidenceConsumeEnabled ||
@@ -225,6 +234,9 @@ func (m *gonzbnetRuntimeModule) Start(ctx context.Context) error {
 	}
 	if m.evidenceMaintenance != nil {
 		go m.runEvidenceCompaction(childCtx, 6*time.Hour)
+	}
+	if m.protocolMaintenance != nil {
+		go m.runProtocolCompaction(childCtx, 6*time.Hour)
 	}
 
 	if publishEnabled {
@@ -364,6 +376,35 @@ func (m *gonzbnetRuntimeModule) runEvidenceCompaction(ctx context.Context, inter
 			ctx, time.Now().UTC().Add(-90*24*time.Hour),
 		); err != nil && ctx.Err() == nil {
 			m.appCtx.Logger.Warn("gonzbnet binary evidence compaction failed: %v", err)
+		}
+		timer := time.NewTimer(interval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+	}
+}
+
+func (m *gonzbnetRuntimeModule) runProtocolCompaction(ctx context.Context, interval time.Duration) {
+	for {
+		now := time.Now().UTC()
+		result, err := m.protocolMaintenance.CompactFederationProtocolState(
+			ctx,
+			now,
+			now.Add(-24*time.Hour),
+			now.Add(-90*24*time.Hour),
+		)
+		if err != nil && ctx.Err() == nil {
+			m.appCtx.Logger.Warn("gonzbnet protocol compaction failed: %v", err)
+		} else if err == nil && (result.ExpiredNonces > 0 || result.RejectedEvents > 0 || result.StaleHandshakeNodes > 0) {
+			m.appCtx.Logger.Info(
+				"gonzbnet protocol compaction expired_nonces=%d rejected_events=%d stale_handshake_nodes=%d",
+				result.ExpiredNonces,
+				result.RejectedEvents,
+				result.StaleHandshakeNodes,
+			)
 		}
 		timer := time.NewTimer(interval)
 		select {
