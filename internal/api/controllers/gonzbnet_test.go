@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -12,7 +13,11 @@ import (
 
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/gonzbnet/admission"
+	"github.com/datallboy/gonzb/internal/gonzbnet/capability"
+	"github.com/datallboy/gonzb/internal/gonzbnet/evidence"
+	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
 	"github.com/datallboy/gonzb/internal/gonzbnet/pools"
+	"github.com/datallboy/gonzb/internal/gonzbnet/requestauth"
 	"github.com/datallboy/gonzb/internal/infra/config"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
 	"github.com/labstack/echo/v5"
@@ -20,6 +25,56 @@ import (
 
 type invitationAdminStore struct {
 	active bool
+}
+
+type evidenceEndpointStore struct {
+	keys       map[string]ed25519.PublicKey
+	members    map[string]bool
+	nonces     map[string]struct{}
+	headers    []pgindex.YEncEvidenceRecord
+	diagnostic pgindex.BinaryEvidenceDiagnostic
+}
+
+func (s *evidenceEndpointStore) GetFederationNodePublicKey(_ context.Context, nodeID string) (ed25519.PublicKey, error) {
+	key := s.keys[nodeID]
+	if len(key) == 0 {
+		return nil, fmt.Errorf("unknown node")
+	}
+	return key, nil
+}
+
+func (s *evidenceEndpointStore) StoreFederationNonce(_ context.Context, nodeID, nonce string, _ time.Time) (bool, error) {
+	key := nodeID + "\x00" + nonce
+	if _, exists := s.nonces[key]; exists {
+		return false, nil
+	}
+	s.nonces[key] = struct{}{}
+	return true, nil
+}
+
+func (*evidenceEndpointStore) GetTrustPoolPolicy(context.Context, string) (pools.PoolPolicy, error) {
+	return pools.PoolPolicy{AllowBinaryEvidenceExchange: true}, nil
+}
+
+func (s *evidenceEndpointStore) IsActivePoolMemberWithCapability(_ context.Context, _ string, nodeID, required string) (bool, error) {
+	return required == capability.BinaryEvidenceExchange && s.members[nodeID], nil
+}
+
+func (s *evidenceEndpointStore) FindAcceptedYEncEvidence(context.Context, []string, bool, int) ([]pgindex.YEncEvidenceRecord, error) {
+	return append([]pgindex.YEncEvidenceRecord(nil), s.headers...), nil
+}
+
+func (*evidenceEndpointStore) RefreshBinaryExchangeIdentities(context.Context, int) (int, error) {
+	return 0, nil
+}
+
+func (*evidenceEndpointStore) FindLocalBinarySegments(context.Context, string, string, []int, []string, int) ([]evidence.Segment, error) {
+	return nil, nil
+}
+
+func (s *evidenceEndpointStore) RecordBinaryEvidenceDiagnostic(_ context.Context, item pgindex.BinaryEvidenceDiagnostic) error {
+	s.diagnostic = item
+	return nil
 }
 
 func (s invitationAdminStore) IsActivePoolAdmin(context.Context, string, string) (bool, error) {
@@ -119,6 +174,139 @@ func TestFederationGossipReadLimitIsBoundedFromConfiguration(t *testing.T) {
 	cfg := config.GoNZBNetConfig{MaxEventBytes: 1024, GossipBatchSize: 5}
 	if got, want := federationGossipReadLimit(cfg), int64(5*1024+64*1024); got != want {
 		t.Fatalf("expected read limit %d, got %d", want, got)
+	}
+}
+
+func TestYEncEvidenceEndpointExchangesSignedDataAndRejectsReplay(t *testing.T) {
+	ctx := context.Background()
+	keysDir := t.TempDir()
+	local, err := identity.LoadOrCreate(keysDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requester, err := identity.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	localID, _ := local.NodeID(ctx)
+	requesterID, _ := requester.NodeID(ctx)
+	requesterKey, _ := requester.PublicKey(ctx)
+	now := time.Now().UTC()
+	store := &evidenceEndpointStore{
+		keys:    map[string]ed25519.PublicKey{requesterID: requesterKey},
+		members: map[string]bool{localID: true, requesterID: true},
+		nonces:  map[string]struct{}{},
+		headers: []pgindex.YEncEvidenceRecord{{
+			SourcePostedAt: now, MessageID: "<part@example>",
+			FileName: "movie.mkv", PartNumber: 2, TotalParts: 10, FileSize: 1234,
+		}},
+	}
+	ctrl := NewGoNZBNetController(&app.Context{
+		Config: &config.Config{GoNZBNet: config.GoNZBNetConfig{
+			KeysDir:                        keysDir,
+			BinaryEvidenceServeEnabled:     true,
+			BinaryEvidenceYEncBatchSize:    100,
+			BinaryEvidenceMaxResponseBytes: 1024 * 1024,
+		}},
+	})
+	ctrl.evidenceStoreOverride = store
+	query := evidence.YEncQuery{
+		SchemaVersion: evidence.SchemaVersion, Type: evidence.YEncQueryType,
+		RequestID: "req_endpoint_test", PoolID: "pool.test",
+		RequestingNodeID: requesterID, MessageIDs: []string{"<part@example>"},
+		CreatedAt: now.Format(time.RFC3339),
+	}
+	payload, err := json.Marshal(query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const path = "/gonzbnet/v1/evidence/yenc/query"
+	authorization, err := requestauth.Sign(ctx, requester, http.MethodPost, path, "", payload, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invoke := func(body []byte, auth string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(string(body)))
+		req.Header.Set("Authorization", auth)
+		rec := httptest.NewRecorder()
+		if err := ctrl.QueryYEncEvidence(echo.New().NewContext(req, rec)); err != nil {
+			t.Fatalf("query evidence: %v", err)
+		}
+		return rec
+	}
+
+	rec := invoke(payload, authorization)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected evidence response 200, got status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var bundle evidence.Bundle
+	if err := json.Unmarshal(rec.Body.Bytes(), &bundle); err != nil {
+		t.Fatal(err)
+	}
+	localKey, _ := local.PublicKey(ctx)
+	if err := evidence.VerifyBundle(bundle, localKey, query.PoolID, query.RequestID, requesterID, time.Now().UTC()); err != nil {
+		t.Fatalf("verify response bundle: %v", err)
+	}
+	if len(bundle.YEncHeaders) != 1 || bundle.YEncHeaders[0].MessageID != "<part@example>" {
+		t.Fatalf("unexpected evidence bundle: %+v", bundle)
+	}
+	if store.diagnostic.HitCount != 1 || store.diagnostic.PeerNodeID != requesterID {
+		t.Fatalf("unexpected serve diagnostic: %+v", store.diagnostic)
+	}
+
+	rec = invoke(payload, authorization)
+	if rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), `"code":"replayed_nonce"`) {
+		t.Fatalf("expected replay rejection, got status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestYEncEvidenceEndpointRequiresPoolCapability(t *testing.T) {
+	ctx := context.Background()
+	keysDir := t.TempDir()
+	local, err := identity.LoadOrCreate(keysDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requester, err := identity.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	localID, _ := local.NodeID(ctx)
+	requesterID, _ := requester.NodeID(ctx)
+	requesterKey, _ := requester.PublicKey(ctx)
+	store := &evidenceEndpointStore{
+		keys: map[string]ed25519.PublicKey{requesterID: requesterKey},
+		// The local node may serve evidence, but the requester lacks the
+		// explicit pool capability.
+		members: map[string]bool{localID: true},
+		nonces:  map[string]struct{}{},
+	}
+	ctrl := NewGoNZBNetController(&app.Context{
+		Config: &config.Config{GoNZBNet: config.GoNZBNetConfig{
+			KeysDir: keysDir, BinaryEvidenceServeEnabled: true,
+		}},
+	})
+	ctrl.evidenceStoreOverride = store
+	query := evidence.YEncQuery{
+		SchemaVersion: evidence.SchemaVersion, Type: evidence.YEncQueryType,
+		RequestID: "req_forbidden", PoolID: "pool.test",
+		RequestingNodeID: requesterID, MessageIDs: []string{"<part@example>"},
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	payload, _ := json.Marshal(query)
+	const path = "/gonzbnet/v1/evidence/yenc/query"
+	authorization, err := requestauth.Sign(ctx, requester, http.MethodPost, path, "", payload, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(string(payload)))
+	req.Header.Set("Authorization", authorization)
+	rec := httptest.NewRecorder()
+	if err := ctrl.QueryYEncEvidence(echo.New().NewContext(req, rec)); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), `"code":"evidence_exchange_disabled"`) {
+		t.Fatalf("expected capability rejection, got status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
 
