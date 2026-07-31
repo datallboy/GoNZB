@@ -8,7 +8,6 @@ import (
 	"time"
 )
 
-const inspectDiscoveryReadyQueueSeedLimit = 10000
 const inspectReadyQueueSeedLimit = 10000
 
 func isQueuedInspectionStage(stageName string) bool {
@@ -364,113 +363,6 @@ func retireIneligibleInspectDiscoveryReadyRows(ctx context.Context, tx *sql.Tx) 
 	rows, err := res.RowsAffected()
 	if err != nil {
 		return 0, fmt.Errorf("retire ineligible inspect_discovery rows affected: %w", err)
-	}
-	return rows, nil
-}
-
-func upsertInspectionReadyQueueCandidates(ctx context.Context, tx *sql.Tx, stageName string, candidates []BinaryInspectionCandidate) (int64, error) {
-	stageName = strings.TrimSpace(stageName)
-	if len(candidates) == 0 {
-		return 0, nil
-	}
-
-	args := make([]any, 0, len(candidates)*4+1)
-	args = append(args, stageName)
-	values := make([]string, 0, len(candidates))
-	for _, candidate := range candidates {
-		base := len(args)
-		var sourceUpdated any
-		if candidate.SourceUpdatedAt != nil {
-			sourceUpdated = candidate.SourceUpdatedAt.UTC()
-		}
-		args = append(args, candidate.BinaryID, strings.TrimSpace(candidate.ReleaseID), sourceUpdated)
-		values = append(values, fmt.Sprintf("($1,$%d::bigint,$%d::text,'ready'::text,NOW(),$%d::timestamptz,''::text,NULL::timestamptz,''::text,NOW())", base+1, base+2, base+3))
-	}
-
-	res, err := tx.ExecContext(ctx, fmt.Sprintf(`
-		WITH staged(
-			stage_name,
-			binary_id,
-			release_id,
-			status,
-			ready_at,
-			source_updated_at,
-			claimed_by,
-			claimed_until,
-			last_error,
-			updated_at
-		) AS (
-			VALUES %s
-		)
-		INSERT INTO binary_inspection_ready_queue (
-			stage_name,
-			binary_id,
-			release_id,
-			status,
-			ready_at,
-			source_updated_at,
-			source_posted_at,
-			claimed_by,
-			claimed_until,
-			last_error,
-			updated_at
-		)
-		SELECT
-			s.stage_name,
-			s.binary_id,
-			s.release_id,
-			s.status,
-			s.ready_at,
-			s.source_updated_at,
-			COALESCE(bc.source_posted_at, bos.source_posted_at, bos.posted_at),
-			s.claimed_by,
-			s.claimed_until,
-			s.last_error,
-			s.updated_at
-		FROM staged s
-		LEFT JOIN binary_core bc ON bc.binary_id = s.binary_id
-			LEFT JOIN binary_observation_stats bos
-			  ON bos.binary_id = s.binary_id
-			 AND bos.source_posted_at = COALESCE(bc.source_posted_at, bos.source_posted_at)
-		WHERE to_regclass('public.binary_inspection_ready_queue_' || to_char(COALESCE(bc.source_posted_at, bos.source_posted_at, bos.posted_at) AT TIME ZONE 'UTC', 'YYYYMMDD')) IS NOT NULL
-			ON CONFLICT (source_posted_at, stage_name, binary_id) DO UPDATE
-			SET release_id = EXCLUDED.release_id,
-			    source_updated_at = EXCLUDED.source_updated_at,
-			    status = CASE
-		    	WHEN binary_inspection_ready_queue.status = 'running'
-		    	 AND binary_inspection_ready_queue.claimed_until IS NOT NULL
-		    	 AND binary_inspection_ready_queue.claimed_until >= NOW()
-		    	THEN binary_inspection_ready_queue.status
-		    	ELSE 'ready'
-		    END,
-		    ready_at = CASE
-		    	WHEN binary_inspection_ready_queue.status = 'running'
-		    	 AND binary_inspection_ready_queue.claimed_until IS NOT NULL
-		    	 AND binary_inspection_ready_queue.claimed_until >= NOW()
-		    	THEN binary_inspection_ready_queue.ready_at
-		    	ELSE NOW()
-		    END,
-		    claimed_by = CASE
-		    	WHEN binary_inspection_ready_queue.status = 'running'
-		    	 AND binary_inspection_ready_queue.claimed_until IS NOT NULL
-		    	 AND binary_inspection_ready_queue.claimed_until >= NOW()
-		    	THEN binary_inspection_ready_queue.claimed_by
-		    	ELSE ''
-		    END,
-		    claimed_until = CASE
-		    	WHEN binary_inspection_ready_queue.status = 'running'
-		    	 AND binary_inspection_ready_queue.claimed_until IS NOT NULL
-		    	 AND binary_inspection_ready_queue.claimed_until >= NOW()
-		    	THEN binary_inspection_ready_queue.claimed_until
-		    	ELSE NULL
-		    END,
-		    updated_at = NOW()`, strings.Join(values, ",")), args...)
-	if err != nil {
-		return 0, fmt.Errorf("upsert %s ready queue candidates: %w", stageName, err)
-	}
-	rows, err := res.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("upsert %s ready queue candidates rows affected: %w", stageName, err)
 	}
 	return rows, nil
 }

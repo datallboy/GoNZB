@@ -397,53 +397,6 @@ func (s *Store) listCatalogEffectiveArticles(ctx context.Context, binaryID int64
 	return out, rows.Err()
 }
 
-func (s *Store) listCatalogArticlesForBinarySpan(ctx context.Context, span binaryPartSourceSpan) ([]CatalogArticleRef, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		WITH ranked_parts AS (
-			SELECT
-				ah.message_id,
-				ah.bytes,
-				bp.part_number,
-				ng.group_name,
-				ROW_NUMBER() OVER (
-					PARTITION BY bp.part_number
-					ORDER BY bp.source_posted_at, ah.article_number, bp.id
-				) AS keep_rank
-			FROM binary_parts bp
-			JOIN article_headers ah
-			  ON ah.source_posted_at = bp.source_posted_at
-			 AND ah.id = bp.article_header_id
-			 AND ah.source_posted_at >= $1
-			 AND ah.source_posted_at <= $2
-			JOIN newsgroups ng ON ng.id = ah.newsgroup_id
-			WHERE bp.source_posted_at >= $1
-			  AND bp.source_posted_at <= $2
-			  AND bp.binary_id = $3
-		)
-		SELECT message_id, bytes, part_number, group_name
-		FROM ranked_parts
-		WHERE keep_rank = 1
-		ORDER BY part_number`, span.Min, span.Max, span.BinaryID)
-	if err != nil {
-		return nil, fmt.Errorf("list catalog articles for binary %d span %s..%s: %w", span.BinaryID, span.Min, span.Max, err)
-	}
-	defer rows.Close()
-
-	out := make([]CatalogArticleRef, 0, 128)
-	for rows.Next() {
-		var item CatalogArticleRef
-		if err := rows.Scan(&item.MessageID, &item.Bytes, &item.PartNumber, &item.GroupName); err != nil {
-			return nil, fmt.Errorf("scan catalog article ref: %w", err)
-		}
-		out = append(out, item)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate catalog article refs: %w", err)
-	}
-	return out, nil
-}
-
 func (s *Store) ListCatalogBinaryNewsgroups(ctx context.Context, binaryID int64) ([]string, error) {
 	if binaryID <= 0 {
 		return nil, fmt.Errorf("binary id is required")
