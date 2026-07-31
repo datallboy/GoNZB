@@ -42,8 +42,9 @@ import (
 )
 
 type GoNZBNetController struct {
-	appCtx   *app.Context
-	identity *identity.Identity
+	appCtx                *app.Context
+	identity              *identity.Identity
+	evidenceStoreOverride gonzbnetEvidenceStore
 }
 
 var admissionFinalizeMu sync.Mutex
@@ -133,6 +134,17 @@ type gonzbnetTransactionalProjectionStore interface {
 
 type gonzbnetHandshakeStore interface {
 	RegisterFederationHandshake(context.Context, pgindex.FederationNodeRecord, string, time.Time) (bool, error)
+}
+
+type gonzbnetEvidenceStore interface {
+	GetFederationNodePublicKey(context.Context, string) (ed25519.PublicKey, error)
+	StoreFederationNonce(context.Context, string, string, time.Time) (bool, error)
+	GetTrustPoolPolicy(context.Context, string) (pools.PoolPolicy, error)
+	IsActivePoolMemberWithCapability(context.Context, string, string, string) (bool, error)
+	FindAcceptedYEncEvidence(context.Context, []string, bool, int) ([]pgindex.YEncEvidenceRecord, error)
+	RefreshBinaryExchangeIdentities(context.Context, int) (int, error)
+	FindLocalBinarySegments(context.Context, string, string, []int, []string, int) ([]evidence.Segment, error)
+	RecordBinaryEvidenceDiagnostic(context.Context, pgindex.BinaryEvidenceDiagnostic) error
 }
 
 type poolEventProjectionStore interface {
@@ -1736,12 +1748,16 @@ func (ctrl *GoNZBNetController) QueryBinarySegments(c *echo.Context) error {
 	return c.Blob(http.StatusOK, "application/gonzbnet+json", payload)
 }
 
-func (ctrl *GoNZBNetController) authorizeEvidenceQuery(c *echo.Context) (gonzbnetStore, []byte, requestauth.VerificationResult, bool) {
+func (ctrl *GoNZBNetController) authorizeEvidenceQuery(c *echo.Context) (gonzbnetEvidenceStore, []byte, requestauth.VerificationResult, bool) {
 	var empty requestauth.VerificationResult
-	store, ok := ctrl.appCtx.PGIndexStore.(gonzbnetStore)
-	if !ok {
-		_ = federationJSONError(c, http.StatusServiceUnavailable, "internal_error", "gonzbnet store is unavailable")
-		return nil, nil, empty, false
+	store := ctrl.evidenceStoreOverride
+	if store == nil {
+		var ok bool
+		store, ok = ctrl.appCtx.PGIndexStore.(gonzbnetEvidenceStore)
+		if !ok {
+			_ = federationJSONError(c, http.StatusServiceUnavailable, "internal_error", "gonzbnet store is unavailable")
+			return nil, nil, empty, false
+		}
 	}
 	body, err := io.ReadAll(c.Request().Body)
 	if err != nil {
@@ -1762,7 +1778,7 @@ func (ctrl *GoNZBNetController) authorizeEvidenceQuery(c *echo.Context) (gonzbne
 	return store, body, verified, true
 }
 
-func (ctrl *GoNZBNetController) evidenceExchangeAllowed(ctx context.Context, store gonzbnetStore, poolID, nodeID string) (bool, error) {
+func (ctrl *GoNZBNetController) evidenceExchangeAllowed(ctx context.Context, store gonzbnetEvidenceStore, poolID, nodeID string) (bool, error) {
 	if !ctrl.appCtx.Config.GoNZBNet.BinaryEvidenceServeEnabled {
 		return false, nil
 	}

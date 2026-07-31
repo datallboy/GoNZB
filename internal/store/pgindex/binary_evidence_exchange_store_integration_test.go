@@ -73,6 +73,44 @@ func TestYEncEvidencePersistencePrefersLocalAndQuarantinesConflicts(t *testing.T
 	}
 }
 
+func TestYEncEvidenceLookupRemainsBoundedAtProtocolBatchScale(t *testing.T) {
+	store := openPostgresTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	const totalEvidence = 10_000
+	records := make([]YEncEvidenceRecord, 0, totalEvidence)
+	requested := make([]string, 0, evidence.MaxYEncQueryItems)
+	for i := 0; i < totalEvidence; i++ {
+		messageID := fmt.Sprintf("<load-evidence-%05d@example>", i)
+		records = append(records, YEncEvidenceRecord{
+			SourcePostedAt: now, MessageID: messageID,
+			FileName:   fmt.Sprintf("load-file-%05d.mkv", i/100),
+			PartNumber: i%100 + 1, TotalParts: 100, FileSize: 1_000_000,
+			Provenance: "local_body", AcceptanceState: "accepted",
+		})
+		if i%10 == 0 && len(requested) < evidence.MaxYEncQueryItems {
+			requested = append(requested, messageID)
+		}
+	}
+	accepted, quarantined, err := store.UpsertYEncHeaderEvidence(ctx, records)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if accepted != totalEvidence || quarantined != 0 {
+		t.Fatalf("unexpected load fixture result accepted=%d quarantined=%d", accepted, quarantined)
+	}
+
+	queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	items, err := store.FindAcceptedYEncEvidence(queryCtx, requested, true, evidence.MaxYEncQueryItems)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != evidence.MaxYEncQueryItems {
+		t.Fatalf("expected %d evidence rows, got %d", evidence.MaxYEncQueryItems, len(items))
+	}
+}
+
 func TestPeerSegmentsCompleteEffectiveBinaryWithoutArticleHeaderWrites(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
