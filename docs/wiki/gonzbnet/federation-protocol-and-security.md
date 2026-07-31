@@ -27,6 +27,13 @@ Admission has a deliberately narrow candidate-authenticated surface for join
 submission, approval/rejection fragments, and status polling. It does not grant
 normal pool outbox access before final membership is verified.
 
+Handshake requests are signed and must carry the supported protocol version, a
+16-byte random nonce, and a creation time inside the configured tolerance.
+Identity registration and nonce consumption commit atomically, so a replay or
+persistence failure cannot leave half of a handshake stored. Private-node or
+private-pool admission also requires the signed invitation to accompany the
+join submission; knowing a hidden endpoint is not an invitation.
+
 Local administration uses `/api/v1/admin/gonzbnet`. These routes use GoNZB's
 local session/API-key authentication, granular RBAC, CSRF protection, and audit
 logging. Local credentials never authenticate federation requests.
@@ -196,3 +203,10 @@ tolerance, maximum event age, and nonce TTL before expensive processing.
 Peer TLS trust still belongs to the deployment: use valid public certificates
 or an appropriately managed private CA. `allow_insecure_peer_http` is not a
 substitute for production certificate configuration.
+
+All federation routes—including discovery and handshake—share the source-IP
+flood limiter before an Authorization header is trusted. Signed request
+verification still identifies the node for authorization and audit. WebSocket
+gossip verifies that request before upgrading, caps each message using the
+configured event/batch limits, applies read/write deadlines, and enforces a
+per-connection message budget.

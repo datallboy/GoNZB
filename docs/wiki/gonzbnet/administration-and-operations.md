@@ -17,7 +17,9 @@ Open `/admin/gonzbnet`. Its four views separate routine understanding from
 protocol detail:
 
 - **Overview** summarizes the node, healthy enabled jobs, connected peers,
-  active pools, warnings, and pending admissions.
+  active pools, warnings, pending admissions, production-readiness checks, and
+  the module's PostgreSQL footprint split into protocol, projection, and
+  direct-evidence storage.
 - **Roles** explains the grouped jobs **Find and use releases**, **Contribute
   releases**, **Verify release health**, **Coordinate scanning**, and the
   **Connection layer**. Select an enabled role tab to see what it reads, what it

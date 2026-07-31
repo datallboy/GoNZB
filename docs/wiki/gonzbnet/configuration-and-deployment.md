@@ -172,6 +172,13 @@ Production peers should use HTTPS. Plain HTTP is rejected except loopback or
 when `allow_insecure_peer_http` is explicitly enabled. The checked-in E2E
 fixture enables it only for loopback processes.
 
+The GoNZBNet **Overview** includes a production-readiness panel for the
+effective configuration. Resolve failed transport and identity-key checks
+before internet exposure. Warnings identify deliberate operator choices—such
+as a private-network HTTP exception, no pool membership yet, or publicly
+advertised admission—that should be reviewed but do not automatically make a
+node unsafe.
+
 ## Capability Flags
 
 Capability flags are independent so deployments remain modular:
@@ -199,6 +206,14 @@ storage. `manifest_cache_serve_to_trusted_pools` controls whether eligible pool
 members can use cached manifests. Event, manifest, batch, request-rate,
 timestamp, nonce, and fetch-timeout settings bound protocol work before it
 reaches expensive storage or projection paths.
+
+The Overview storage panel reports the total database size and the GoNZBNet
+protocol, projection, and direct-evidence footprints. Relation row counts are
+PostgreSQL planner estimates; sizes include table data and indexes. The runtime
+automatically removes expired nonce replay entries, rejected-event payloads
+older than 90 days, and unreferenced handshake-only identities older than 24
+hours. Accepted signed events and their projections are not deleted by that
+protocol compaction.
 
 Scanner controls include maximum groups, article budget, claim TTL, checkpoint
 interval, remote-claim behavior, and provider-scope policy. Coverage thresholds
