@@ -65,7 +65,8 @@ func (s *Store) UpsertFederationNode(ctx context.Context, node FederationNodeRec
 		status = "unknown"
 	}
 
-	_, err := s.db.ExecContext(ctx, `
+	executor := s.federationExecutor(ctx)
+	_, err := executor.ExecContext(ctx, `
 		INSERT INTO federation_nodes (
 			node_id, public_key, alias, software, software_version, base_url,
 			capabilities, profile_json, status, last_seen_at, last_verified_at, updated_at
@@ -101,7 +102,7 @@ func (s *Store) UpsertFederationNode(ctx context.Context, node FederationNodeRec
 	if err != nil {
 		return fmt.Errorf("upsert federation node: %w", err)
 	}
-	if _, err := s.db.ExecContext(ctx, `
+	if _, err := executor.ExecContext(ctx, `
 		INSERT INTO federation_node_capabilities (
 			node_id, capabilities, module_status, scanner_capacity, validator_capacity,
 			provider_scope, updated_at
@@ -276,7 +277,7 @@ func (s *Store) StoreFederationNonce(ctx context.Context, nodeID, nonce string, 
 	if s == nil || s.db == nil {
 		return false, fmt.Errorf("pgindex store is not initialized")
 	}
-	res, err := s.db.ExecContext(ctx, `
+	res, err := s.federationExecutor(ctx).ExecContext(ctx, `
 		INSERT INTO federation_nonce_replay_cache (node_id, nonce, expires_at)
 		VALUES ($1, $2, $3)
 		ON CONFLICT (node_id, nonce) DO NOTHING`,
@@ -292,6 +293,35 @@ func (s *Store) StoreFederationNonce(ctx context.Context, nodeID, nonce string, 
 		return false, err
 	}
 	return rows > 0, nil
+}
+
+// RegisterFederationHandshake records a verified identity and consumes its
+// nonce atomically. A replay or persistence failure leaves neither half of the
+// handshake committed.
+func (s *Store) RegisterFederationHandshake(ctx context.Context, node FederationNodeRecord, nonce string, expiresAt time.Time) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, fmt.Errorf("pgindex store is not initialized")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin federation handshake: %w", err)
+	}
+	defer tx.Rollback()
+	txCtx := withFederationTransaction(ctx, tx)
+	if err := s.UpsertFederationNode(txCtx, node); err != nil {
+		return false, err
+	}
+	inserted, err := s.StoreFederationNonce(txCtx, node.NodeID, nonce, expiresAt)
+	if err != nil {
+		return false, err
+	}
+	if !inserted {
+		return false, nil
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit federation handshake: %w", err)
+	}
+	return true, nil
 }
 
 func (s *Store) AppendVerifiedFederationEvent(ctx context.Context, event *events.SignedEvent, validation *events.ValidationResult) error {

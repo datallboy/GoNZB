@@ -35,9 +35,10 @@ import (
 	"github.com/datallboy/gonzb/internal/gonzbnet/requestauth"
 	"github.com/datallboy/gonzb/internal/gonzbnet/trust"
 	gonzbnetvalidation "github.com/datallboy/gonzb/internal/gonzbnet/validation"
+	"github.com/datallboy/gonzb/internal/infra/config"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
+	gorillawebsocket "github.com/gorilla/websocket"
 	"github.com/labstack/echo/v5"
-	"golang.org/x/net/websocket"
 )
 
 type GoNZBNetController struct {
@@ -46,6 +47,31 @@ type GoNZBNetController struct {
 }
 
 var admissionFinalizeMu sync.Mutex
+
+const (
+	gonzbnetInvitationHeader = "X-GoNZBNet-Invitation"
+	gossipReadTimeout        = 30 * time.Second
+	gossipWriteTimeout       = 10 * time.Second
+)
+
+var gossipUpgrader = gorillawebsocket.Upgrader{
+	// Federation requests are authenticated with an explicit signed
+	// Authorization header. Browser WebSocket APIs cannot set that header, so
+	// cookie-origin authentication is not in use here.
+	CheckOrigin: func(*http.Request) bool { return true },
+}
+
+type handshakeRequest struct {
+	SchemaVersion     string   `json:"schema_version"`
+	Type              string   `json:"type"`
+	NodeID            string   `json:"node_id"`
+	PublicKey         string   `json:"public_key"`
+	Nonce             string   `json:"nonce"`
+	SupportedVersions []string `json:"supported_versions"`
+	RequestedPools    []string `json:"requested_pools"`
+	CreatedAt         string   `json:"created_at"`
+	Signature         string   `json:"signature,omitempty"`
+}
 
 type gonzbnetStore interface {
 	ListFederationOutboxEvents(ctx context.Context, params pgindex.FederationOutboxParams) (pgindex.FederationOutboxPage, error)
@@ -103,6 +129,28 @@ type gonzbnetStore interface {
 
 type gonzbnetTransactionalProjectionStore interface {
 	AppendVerifiedFederationEventWithProjection(context.Context, *events.SignedEvent, *events.ValidationResult, func(context.Context) error) error
+}
+
+type gonzbnetHandshakeStore interface {
+	RegisterFederationHandshake(context.Context, pgindex.FederationNodeRecord, string, time.Time) (bool, error)
+}
+
+type poolEventProjectionStore interface {
+	AppendVerifiedFederationEvent(context.Context, *events.SignedEvent, *events.ValidationResult) error
+	ProjectFederationPoolEvent(context.Context, *events.SignedEvent) error
+}
+
+func appendAndProjectFederationPoolEvent(ctx context.Context, store poolEventProjectionStore, event *events.SignedEvent, validation *events.ValidationResult) error {
+	project := func(projectCtx context.Context) error {
+		return store.ProjectFederationPoolEvent(projectCtx, event)
+	}
+	if transactional, ok := store.(gonzbnetTransactionalProjectionStore); ok {
+		return transactional.AppendVerifiedFederationEventWithProjection(ctx, event, validation, project)
+	}
+	if err := store.AppendVerifiedFederationEvent(ctx, event, validation); err != nil {
+		return err
+	}
+	return project(ctx)
 }
 
 type outboxResponse struct {
@@ -414,6 +462,21 @@ func (ctrl *GoNZBNetController) SubmitPoolJoin(c *echo.Context) error {
 	if err != nil || !pool.Enabled || !pool.AdmissionEnabled {
 		return federationJSONError(c, http.StatusForbidden, "pool_admission_disabled", "pool is not accepting join requests")
 	}
+	if strings.TrimSpace(body.GenesisEventID) == "" || body.GenesisEventID != pool.GenesisEventID {
+		return federationJSONError(c, http.StatusBadRequest, "invalid_schema", "join request genesis fingerprint does not match the pool")
+	}
+	var invitation *admission.Invitation
+	if rawInvitation := strings.TrimSpace(c.Request().Header.Get(gonzbnetInvitationHeader)); rawInvitation != "" {
+		parsed, parseErr := admission.ParseInvitation(rawInvitation)
+		if parseErr != nil || parsed.Verify(time.Now().UTC()) != nil {
+			return federationJSONError(c, http.StatusBadRequest, "invalid_invitation", "pool invitation is invalid or expired")
+		}
+		invitation = &parsed
+	}
+	if (pool.Visibility == "private" || ctrl.appCtx.Config.GoNZBNet.Visibility == "private") &&
+		!poolInvitationAuthorizes(c.Request().Context(), store, invitation, pool, ctrl.profileConfig(c).AdvertiseURL) {
+		return federationJSONError(c, http.StatusForbidden, "invitation_required", "a valid invitation from an active pool administrator is required")
+	}
 	publicKeyBytes, err := canonical.DecodeBase64URL(event.AuthorPublicKey)
 	if err != nil || len(publicKeyBytes) != ed25519.PublicKeySize {
 		return federationJSONError(c, http.StatusBadRequest, "invalid_signature", "invalid candidate public key")
@@ -424,10 +487,7 @@ func (ctrl *GoNZBNetController) SubmitPoolJoin(c *echo.Context) error {
 	if err := store.ValidateFederationPoolControlEvent(c.Request().Context(), &event); err != nil {
 		return federationJSONError(c, http.StatusBadRequest, "invalid_schema", err.Error())
 	}
-	if err := store.AppendVerifiedFederationEvent(c.Request().Context(), &event, validation); err != nil {
-		return federationJSONError(c, http.StatusInternalServerError, "internal_error", err.Error())
-	}
-	if err := store.ProjectFederationPoolEvent(c.Request().Context(), &event); err != nil {
+	if err := appendAndProjectFederationPoolEvent(c.Request().Context(), store, &event, validation); err != nil {
 		return federationJSONError(c, http.StatusInternalServerError, "internal_error", err.Error())
 	}
 	return c.JSON(http.StatusAccepted, map[string]any{"status": "pending", "proposal_event_id": event.EventID, "pool_id": poolID})
@@ -643,10 +703,7 @@ func finalizePoolAdmission(ctx context.Context, signer events.Identity, store go
 	if err := store.ValidateFederationPoolControlEvent(ctx, event); err != nil {
 		return status, err
 	}
-	if err := store.AppendVerifiedFederationEvent(ctx, event, validation); err != nil {
-		return status, err
-	}
-	if err := store.ProjectFederationPoolEvent(ctx, event); err != nil {
+	if err := appendAndProjectFederationPoolEvent(ctx, store, event, validation); err != nil {
 		return status, err
 	}
 	if strings.TrimSpace(record.CandidateURL) != "" {
@@ -1302,23 +1359,42 @@ func (ctrl *GoNZBNetController) Handshake(c *echo.Context) error {
 	if err != nil {
 		return federationJSONError(c, http.StatusBadRequest, "invalid_json", "read handshake json")
 	}
-	var req map[string]any
+	var req handshakeRequest
 	if err := decodeFederationJSON(bodyBytes, &req); err != nil {
 		return federationJSONError(c, http.StatusBadRequest, "invalid_json", "invalid handshake json")
 	}
-	signatureValue, _ := req["signature"].(string)
-	delete(req, "signature")
+	signatureValue := req.Signature
+	req.Signature = ""
 	if strings.TrimSpace(signatureValue) == "" {
 		return federationJSONError(c, http.StatusBadRequest, "invalid_signature", "missing signature")
 	}
-	nodeID, _ := req["node_id"].(string)
-	publicKeyValue, _ := req["public_key"].(string)
-	nonce, _ := req["nonce"].(string)
-	publicKey, err := canonical.DecodeBase64URL(publicKeyValue)
+	if req.SchemaVersion != "1.0" || req.Type != "HandshakeRequest" {
+		return federationJSONError(c, http.StatusBadRequest, "invalid_schema", "invalid handshake type or schema version")
+	}
+	createdAt, err := time.Parse(time.RFC3339, req.CreatedAt)
+	if err != nil {
+		return federationJSONError(c, http.StatusBadRequest, "invalid_schema", "invalid handshake created_at")
+	}
+	tolerance := time.Duration(ctrl.appCtx.Config.GoNZBNet.TimeToleranceSeconds) * time.Second
+	if tolerance <= 0 {
+		tolerance = 2 * time.Minute
+	}
+	now := time.Now().UTC()
+	if now.Sub(createdAt.UTC()) > tolerance || createdAt.UTC().Sub(now) > tolerance {
+		return federationJSONError(c, http.StatusUnauthorized, "expired_event", "handshake created_at is outside the accepted time window")
+	}
+	nonceBytes, err := canonical.DecodeBase64URL(req.Nonce)
+	if err != nil || len(nonceBytes) != 16 {
+		return federationJSONError(c, http.StatusBadRequest, "invalid_schema", "handshake nonce must contain 16 random bytes")
+	}
+	if !stringSliceContains(req.SupportedVersions, profile.SpecVersion) {
+		return federationJSONError(c, http.StatusBadRequest, "unsupported_spec_version", "handshake does not support gonzbnet/1.0")
+	}
+	publicKey, err := canonical.DecodeBase64URL(req.PublicKey)
 	if err != nil || len(publicKey) != ed25519.PublicKeySize {
 		return federationJSONError(c, http.StatusBadRequest, "invalid_signature", "invalid public key")
 	}
-	if identity.NodeIDFromPublicKey(ed25519.PublicKey(publicKey)) != nodeID {
+	if identity.NodeIDFromPublicKey(ed25519.PublicKey(publicKey)) != req.NodeID {
 		return federationJSONError(c, http.StatusBadRequest, "invalid_signature", "node_id does not match public key")
 	}
 	signature, err := canonical.DecodeBase64URL(signatureValue)
@@ -1333,12 +1409,24 @@ func (ctrl *GoNZBNetController) Handshake(c *echo.Context) error {
 		return federationJSONError(c, http.StatusUnauthorized, "invalid_signature", "handshake signature verification failed")
 	}
 
-	if store, ok := ctrl.appCtx.PGIndexStore.(gonzbnetStore); ok {
-		_ = store.UpsertFederationNode(c.Request().Context(), pgindex.FederationNodeRecord{
-			NodeID:    nodeID,
-			PublicKey: ed25519.PublicKey(publicKey),
-			Status:    "handshaken",
-		})
+	nonceTTL := time.Duration(ctrl.appCtx.Config.GoNZBNet.NonceTTLSeconds) * time.Second
+	if nonceTTL <= 0 {
+		nonceTTL = 10 * time.Minute
+	}
+	handshakeStore, ok := ctrl.appCtx.PGIndexStore.(gonzbnetHandshakeStore)
+	if !ok {
+		return federationJSONError(c, http.StatusServiceUnavailable, "internal_error", "gonzbnet handshake store is unavailable")
+	}
+	inserted, err := handshakeStore.RegisterFederationHandshake(c.Request().Context(), pgindex.FederationNodeRecord{
+		NodeID:    req.NodeID,
+		PublicKey: ed25519.PublicKey(publicKey),
+		Status:    "handshaken",
+	}, req.Nonce, now.Add(nonceTTL))
+	if err != nil {
+		return federationJSONError(c, http.StatusInternalServerError, "internal_error", err.Error())
+	}
+	if !inserted {
+		return federationJSONError(c, http.StatusUnauthorized, "replayed_nonce", "handshake nonce was already used")
 	}
 
 	localNodeID, _ := id.NodeID(c.Request().Context())
@@ -1346,7 +1434,7 @@ func (ctrl *GoNZBNetController) Handshake(c *echo.Context) error {
 		"schema_version":    "1.0",
 		"type":              "HandshakeResponse",
 		"node_id":           localNodeID,
-		"nonce":             nonce,
+		"nonce":             req.Nonce,
 		"accepted_versions": []string{profile.SpecVersion},
 		"status":            "accepted",
 		"created_at":        time.Now().UTC().Format(time.RFC3339),
@@ -1766,56 +1854,101 @@ func (ctrl *GoNZBNetController) GossipWS(c *echo.Context) error {
 	if !cfg.WebSocketGossipEnabled {
 		return federationJSONError(c, http.StatusNotFound, "invalid_schema", "websocket gossip is disabled")
 	}
-	handler := websocket.Handler(func(ws *websocket.Conn) {
-		defer ws.Close()
-		req := ws.Request()
-		verified, err := requestauth.Verify(
-			req.Context(),
-			store,
-			requestauth.HeaderFromRequest(req),
-			req.Method,
-			req.URL.Path,
-			req.URL.RawQuery,
-			nil,
-			time.Now(),
-			time.Duration(cfg.TimeToleranceSeconds)*time.Second,
-			time.Duration(cfg.NonceTTLSeconds)*time.Second,
-		)
-		if err != nil {
-			_ = websocket.JSON.Send(ws, gossip.Response{
-				SchemaVersion: "1.0",
-				Type:          gossip.ResponseType,
-				Rejected:      []gossip.EventResult{{Status: "rejected", Code: federationAuthErrorCode(err), Message: err.Error()}},
-			})
-			return
-		}
-		for {
-			var payload []byte
-			if err := websocket.Message.Receive(ws, &payload); err != nil {
-				if err != io.EOF {
-					_ = websocket.JSON.Send(ws, gossip.Response{
-						SchemaVersion: "1.0",
-						Type:          gossip.ResponseType,
-						Rejected:      []gossip.EventResult{{Status: "rejected", Code: "invalid_json", Message: err.Error()}},
-					})
-				}
-				return
-			}
-			var batch gossip.Batch
-			if err := decodeFederationJSON(payload, &batch); err != nil {
-				_ = websocket.JSON.Send(ws, gossip.Response{
-					SchemaVersion: "1.0",
-					Type:          gossip.ResponseType,
-					Rejected:      []gossip.EventResult{{Status: "rejected", Code: "invalid_json", Message: err.Error()}},
-				})
-				return
-			}
-			resp := ctrl.processGossipBatch(req.Context(), store, batch, verified.NodeID)
-			_ = websocket.JSON.Send(ws, resp)
-		}
+	req := c.Request()
+	verified, err := requestauth.Verify(
+		req.Context(),
+		store,
+		requestauth.HeaderFromRequest(req),
+		req.Method,
+		req.URL.Path,
+		req.URL.RawQuery,
+		nil,
+		time.Now(),
+		time.Duration(cfg.TimeToleranceSeconds)*time.Second,
+		time.Duration(cfg.NonceTTLSeconds)*time.Second,
+	)
+	if err != nil {
+		return federationJSONError(c, http.StatusUnauthorized, federationAuthErrorCode(err), err.Error())
+	}
+	ws, err := gossipUpgrader.Upgrade(c.Response(), req, nil)
+	if err != nil {
+		return err
+	}
+	defer ws.Close()
+	ws.SetReadLimit(federationGossipReadLimit(cfg))
+	_ = ws.SetReadDeadline(time.Now().Add(gossipReadTimeout))
+	ws.SetPongHandler(func(string) error {
+		return ws.SetReadDeadline(time.Now().Add(gossipReadTimeout))
 	})
-	handler.ServeHTTP(c.Response(), c.Request())
-	return nil
+
+	windowStarted := time.Now()
+	messagesThisWindow := 0
+	messageLimit := cfg.RateLimitEventsPerMinute
+	if messageLimit <= 0 {
+		messageLimit = 120
+	}
+	for {
+		_ = ws.SetReadDeadline(time.Now().Add(gossipReadTimeout))
+		messageType, payload, err := ws.ReadMessage()
+		if err != nil {
+			return nil
+		}
+		if messageType != gorillawebsocket.TextMessage && messageType != gorillawebsocket.BinaryMessage {
+			continue
+		}
+		now := time.Now()
+		if now.Sub(windowStarted) >= time.Minute {
+			windowStarted = now
+			messagesThisWindow = 0
+		}
+		messagesThisWindow++
+		if messagesThisWindow > messageLimit {
+			_ = ws.SetWriteDeadline(time.Now().Add(gossipWriteTimeout))
+			_ = ws.WriteJSON(gossip.Response{
+				SchemaVersion: "1.0", Type: gossip.ResponseType,
+				Rejected: []gossip.EventResult{{Status: "rejected", Code: "rate_limited", Message: "websocket message rate limit exceeded"}},
+			})
+			return nil
+		}
+		var batch gossip.Batch
+		if err := decodeFederationJSON(payload, &batch); err != nil {
+			_ = ws.SetWriteDeadline(time.Now().Add(gossipWriteTimeout))
+			_ = ws.WriteJSON(gossip.Response{
+				SchemaVersion: "1.0", Type: gossip.ResponseType,
+				Rejected: []gossip.EventResult{{Status: "rejected", Code: "invalid_json", Message: err.Error()}},
+			})
+			return nil
+		}
+		resp := ctrl.processGossipBatch(req.Context(), store, batch, verified.NodeID)
+		_ = ws.SetWriteDeadline(time.Now().Add(gossipWriteTimeout))
+		if err := ws.WriteJSON(resp); err != nil {
+			return nil
+		}
+	}
+}
+
+func federationGossipReadLimit(cfg config.GoNZBNetConfig) int64 {
+	eventBytes := cfg.MaxEventBytes
+	if eventBytes <= 0 {
+		eventBytes = 262144
+	}
+	batchSize := cfg.GossipBatchSize
+	if batchSize <= 0 {
+		batchSize = cfg.MaxBatchEvents
+	}
+	if batchSize <= 0 {
+		batchSize = 100
+	}
+	return int64(eventBytes)*int64(batchSize) + 64*1024
+}
+
+func stringSliceContains(values []string, expected string) bool {
+	for _, value := range values {
+		if strings.TrimSpace(value) == expected {
+			return true
+		}
+	}
+	return false
 }
 
 func (ctrl *GoNZBNetController) processGossipBatch(ctx context.Context, store gonzbnetStore, batch gossip.Batch, transportNodeID string) gossip.Response {
