@@ -5,8 +5,29 @@ import (
 	"testing"
 	"time"
 
+	"github.com/datallboy/gonzb/internal/buildinfo"
 	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
 )
+
+func TestNodeProfileAdvertisesBuildVersion(t *testing.T) {
+	previous := buildinfo.Version
+	buildinfo.Version = "v0.9.0-test"
+	t.Cleanup(func() { buildinfo.Version = previous })
+
+	node, err := identity.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("identity: %v", err)
+	}
+	got, err := NodeProfileFor(context.Background(), node, Config{
+		AdvertiseURL: "https://node.example/gonzbnet/v1",
+	}, time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("node profile: %v", err)
+	}
+	if got.SoftwareVersion != "v0.9.0-test" {
+		t.Fatalf("software version = %q, want linked build version", got.SoftwareVersion)
+	}
+}
 
 func TestNodeProfileAdvertisesValidatorOnlyCapabilities(t *testing.T) {
 	node, err := identity.LoadOrCreate(t.TempDir())
