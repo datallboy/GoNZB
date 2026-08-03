@@ -20,25 +20,17 @@ type Context struct {
 	Aggregator          IndexerAggregator
 	Resolver            ReleaseResolver
 	UsenetIndexer       UsenetIndexerService
-	Processor           Processor
-	Downloader          Downloader
-	Queue               QueueManager
-	NZBParser           NZBParser
+	DownloadClient      DownloadClient
 	JobStore            JobStore
-	QueueFileStore      QueueFileStore
 	BlobStore           BlobStore
 	IndexerArchiveStore BlobStore
 	PayloadFetcher      PayloadFetcher
 	PayloadCacheStore   PayloadCacheStore
 	SettingsStore       SettingsStore
 	PGIndexStore        UsenetIndexStore
-	ArrNotifier         ArrNotifier
+	AggregatorModule    AggregatorModule
+	SettingsAdmin       SettingsAdmin
 
-	DownloaderModule DownloaderModule
-	AggregatorModule AggregatorModule
-	SettingsAdmin    SettingsAdmin
-
-	ExtractionEnabled  bool
 	closers            []io.Closer
 	runtimeModules     map[string]RuntimeModule
 	runtimeModuleOrder []string
@@ -51,7 +43,6 @@ func NewContext(cfg *config.Config, log *logger.Logger) (*Context, error) {
 		BootstrapConfig:    cfg,
 		Config:             cfg,
 		Logger:             log,
-		ExtractionEnabled:  true,
 		closers:            make([]io.Closer, 0, 3),
 		runtimeModules:     make(map[string]RuntimeModule),
 		runtimeModuleOrder: make([]string, 0, 4),

@@ -1620,6 +1620,26 @@ func (ctrl *GoNZBNetController) RequestManifest(c *echo.Context) error {
 			Message:       "manifest not found",
 		})
 	}
+	if !cfg.ManifestCacheServeTrustedPools {
+		localIdentity, err := ctrl.localIdentity()
+		if err != nil {
+			return federationJSONError(c, http.StatusServiceUnavailable, "internal_error", err.Error())
+		}
+		localNodeID, err := localIdentity.NodeID(c.Request().Context())
+		if err != nil {
+			return federationJSONError(c, http.StatusServiceUnavailable, "internal_error", err.Error())
+		}
+		if !canServeResolutionManifest(false, localNodeID, event) {
+			return c.JSON(http.StatusForbidden, manifest.Response{
+				SchemaVersion: "1.0",
+				Type:          "ManifestResponse",
+				RequestID:     req.RequestID,
+				Status:        "error",
+				Code:          "manifest_cache_serving_disabled",
+				Message:       "This node does not serve cached manifests authored by another node",
+			})
+		}
+	}
 	return c.JSON(http.StatusOK, manifest.Response{
 		SchemaVersion: "1.0",
 		Type:          "ManifestResponse",
@@ -1627,6 +1647,13 @@ func (ctrl *GoNZBNetController) RequestManifest(c *echo.Context) error {
 		Status:        "ok",
 		ManifestEvent: event,
 	})
+}
+
+func canServeResolutionManifest(serveCached bool, localNodeID string, event *events.SignedEvent) bool {
+	if event == nil {
+		return false
+	}
+	return serveCached || strings.TrimSpace(event.AuthorNodeID) == strings.TrimSpace(localNodeID)
 }
 
 func (ctrl *GoNZBNetController) QueryYEncEvidence(c *echo.Context) error {

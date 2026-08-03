@@ -265,10 +265,7 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		v1AdminGoNZBNetKeys.POST("/keys/rotate", gonzbnetAdminCtrl.RotateKey)
 	}
 
-	var (
-		nzbCtrl *controllers.NewznabController
-		sabCtrl *controllers.SABController
-	)
+	var nzbCtrl *controllers.NewznabController
 
 	// Aggregator-owned API surface.
 	if modules.API.Enabled && modules.Aggregator.Enabled {
@@ -293,6 +290,12 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		v1Indexer.POST("/stages/:stage/resume", indexerCtrl.ResumeStage)
 		v1Indexer.GET("/releases", indexerCtrl.ListReleases)
 		v1Indexer.GET("/releases/:id", indexerCtrl.GetRelease)
+		v1Indexer.POST(
+			"/releases/:id/actions/send-to-download-client",
+			indexerCtrl.SendReleaseToDownloadClient,
+			authMiddleware(authSvc, false, auth.PermissionDownloadClientsSend),
+			csrfProtectionMiddleware(),
+		)
 		v1Indexer.GET("/binaries/:id", indexerCtrl.GetBinary)
 		v1Indexer.GET("/files/:id", indexerCtrl.GetFile)
 
@@ -347,45 +350,10 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		v1AdminIndexer.POST("/releases/:id/actions/unhide", indexerAdminCtrl.UnhideRelease, authMiddleware(authSvc, false, auth.PermissionIndexerReleasesHide))
 	}
 
-	// Downloader-owned API surface.
-	if modules.API.Enabled && modules.Downloader.Enabled {
-		queueCtrl := controllers.NewQueueController(appCtx.DownloaderModule)
-		var downloaderQueries app.DownloaderQueries
-		if appCtx.DownloaderModule != nil {
-			downloaderQueries = appCtx.DownloaderModule.Queries()
-		}
-		eventCtrl := controllers.NewDownloadEvent(downloaderQueries)
-		sabCtrl = controllers.NewSABController(appCtx.DownloaderModule, appCtx.CurrentConfig)
-
-		v1Queue := e.Group("/api/v1", bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit), authMiddleware(authSvc, false))
-		v1Queue.Use(csrfProtectionMiddleware())
-		v1Queue.GET("/queue", queueCtrl.ListActive)
-		v1Queue.GET("/queue/history", queueCtrl.ListHistory)
-		v1Queue.POST("/queue/bulk/cancel", queueCtrl.CancelMany)
-		v1Queue.POST("/queue/bulk/delete", queueCtrl.DeleteMany)
-		v1Queue.POST("/queue/history/clear", queueCtrl.ClearHistory)
-		v1Queue.GET("/queue/:id", queueCtrl.GetItem)
-		v1Queue.GET("/queue/:id/files", queueCtrl.GetItemFiles)
-		v1Queue.GET("/queue/:id/events", queueCtrl.GetItemEvents)
-		v1Queue.POST("/queue", queueCtrl.Add)
-		v1Queue.POST("/queue/:id/cancel", queueCtrl.Cancel)
-		v1Queue.GET("/events/queue", eventCtrl.HandleEvents)
-
-		// Explicit SAB-compatible downloader surface.
-		// Supported alongside the shared `/api` multiplexer.
-		e.GET("/api/sab", sabCtrl.Handle, bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit), apiTokenMiddleware(authSvc, auth.PermissionDownloaderRuntimeRead))
-		e.POST("/api/sab", sabCtrl.Handle, bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit), apiTokenMiddleware(authSvc, auth.PermissionDownloaderRuntimeRead))
-	}
-
-	// Shared compatibility multiplexer.
-	// Supported contract:
-	// - `/api?mode=...` => SAB-compatible downloader API
-	// - `/api?t=...` => Newznab-compatible aggregator API
-	if modules.API.Enabled && (modules.Aggregator.Enabled || modules.Downloader.Enabled) {
+	// Shared Newznab compatibility endpoint.
+	if modules.API.Enabled && modules.Aggregator.Enabled {
 		compatCtrl := &controllers.CompatAPIController{
-			SABEnabled:     modules.Downloader.Enabled,
 			NewznabEnabled: modules.Aggregator.Enabled,
-			SAB:            sabCtrl,
 			Newznab:        nzbCtrl,
 		}
 		e.GET("/api", compatCtrl.Handle, bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit), compatAPITokenMiddleware(authSvc))
@@ -544,11 +512,7 @@ func apiTokenMiddleware(authSvc *auth.Service, permissions ...string) echo.Middl
 func compatAPITokenMiddleware(authSvc *auth.Service) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c *echo.Context) error {
-			permission := auth.PermissionAggregatorReleasesRead
-			if strings.TrimSpace(c.QueryParam("mode")) != "" || strings.TrimSpace(c.FormValue("mode")) != "" {
-				permission = auth.PermissionDownloaderRuntimeRead
-			}
-			return apiTokenMiddleware(authSvc, permission)(next)(c)
+			return apiTokenMiddleware(authSvc, auth.PermissionAggregatorReleasesRead)(next)(c)
 		}
 	}
 }

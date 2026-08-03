@@ -148,6 +148,11 @@ active memberships. A configured peer is only a transport destination; it is
 not automatically trusted and cannot receive pools it has not joined. Delivery
 cursors make repeated synchronization incremental and idempotent.
 
+Resolution manifests use their dedicated authenticated fetch endpoint and are
+not part of the general relay event stream. Relaying a release card therefore
+does not make an unreachable manifest source reachable. Binary-evidence queries
+also require direct reachability to the selected authorized peer.
+
 ## Release And Manifest Security
 
 Release identities and manifest identities are recomputed from canonical

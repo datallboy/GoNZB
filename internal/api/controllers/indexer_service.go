@@ -47,6 +47,7 @@ type indexerService interface {
 	ListArticleCohorts(ctx context.Context, params pgindex.IndexerArticleCohortParams) ([]pgindex.IndexerArticleCohortItem, int, error)
 	ListReleases(ctx context.Context, params pgindex.PublicIndexerReleaseListParams) ([]pgindex.PublicIndexerReleaseSummary, int, error)
 	GetRelease(ctx context.Context, releaseID string) (*pgindex.PublicIndexerReleaseDetail, error)
+	SendReleaseToDownloadClient(ctx context.Context, releaseID string) (*app.DownloadClientResult, error)
 	ListAdminReleases(ctx context.Context, params pgindex.AdminIndexerReleaseListParams) ([]pgindex.IndexerReleaseSummary, int, error)
 	GetAdminRelease(ctx context.Context, releaseID string) (*indexerAdminReleaseView, error)
 	UpdateReleaseOverride(ctx context.Context, releaseID string, patch indexerReleaseOverridePatch) (*pgindex.ReleaseOverrideRecord, error)
@@ -196,10 +197,10 @@ type runtimeIndexerService struct {
 		GetLatestNNTPSnapshot(ctx context.Context, moduleName string) (*pgindex.NNTPRuntimeSnapshot, error)
 		ListRecentNNTPSnapshots(ctx context.Context, moduleName string, since time.Time) ([]pgindex.NNTPRuntimeSnapshot, error)
 	}
-	settingsAdmin   app.SettingsAdmin
-	archiveStore    app.BlobStore
-	downloaderReady bool
-	log             interface {
+	settingsAdmin  app.SettingsAdmin
+	archiveStore   app.BlobStore
+	downloadClient app.DownloadClient
+	log            interface {
 		Error(format string, v ...interface{})
 	}
 }
@@ -215,13 +216,13 @@ func newIndexerService(appCtx *app.Context) indexerService {
 		log = appCtx.Logger
 	}
 	return &runtimeIndexerService{
-		appCtx:          appCtx,
-		store:           appCtx.PGIndexStore,
-		nntpSnapshots:   snapshotReaderFromStore(appCtx.PGIndexStore),
-		settingsAdmin:   appCtx.SettingsAdmin,
-		archiveStore:    appCtx.IndexerArchiveStore,
-		downloaderReady: appCtx.DownloaderModule != nil,
-		log:             log,
+		appCtx:         appCtx,
+		store:          appCtx.PGIndexStore,
+		nntpSnapshots:  snapshotReaderFromStore(appCtx.PGIndexStore),
+		settingsAdmin:  appCtx.SettingsAdmin,
+		archiveStore:   appCtx.IndexerArchiveStore,
+		downloadClient: appCtx.DownloadClient,
+		log:            log,
 	}
 }
 
@@ -472,10 +473,6 @@ func aggregateNNTPSnapshots(snapshots []pgindex.NNTPRuntimeSnapshot, log interfa
 			modulesAssigned = true
 		} else {
 			aggregate.Modules.IndexerActive += stats.Modules.IndexerActive
-			aggregate.Modules.DownloaderActive += stats.Modules.DownloaderActive
-			aggregate.Modules.IndexerLimit += stats.Modules.IndexerLimit
-			aggregate.Modules.DownloaderLimit += stats.Modules.DownloaderLimit
-			aggregate.Modules.DownloaderDemandActive = aggregate.Modules.DownloaderDemandActive || stats.Modules.DownloaderDemandActive
 		}
 		for _, provider := range stats.Providers {
 			total := providerTotals[provider.ID]
@@ -1155,8 +1152,34 @@ func (s *runtimeIndexerService) GetRelease(ctx context.Context, releaseID string
 	if err != nil || detail == nil {
 		return detail, err
 	}
-	detail.Capabilities.CanSendToDownloader = s.downloaderReady
+	detail.Capabilities.CanSendToDownloadClient = s.downloadClient != nil && hasEnabledDownloadClient(ctx, s.settingsAdmin)
 	return detail, nil
+}
+
+func (s *runtimeIndexerService) SendReleaseToDownloadClient(ctx context.Context, releaseID string) (*app.DownloadClientResult, error) {
+	if s == nil || s.downloadClient == nil {
+		return nil, fmt.Errorf("SAB-compatible download client is not configured")
+	}
+	return s.downloadClient.SendRelease(ctx, app.DownloadClientSubmission{
+		SourceKind: "usenet_index",
+		ReleaseID:  strings.TrimSpace(releaseID),
+	})
+}
+
+func hasEnabledDownloadClient(ctx context.Context, admin app.SettingsAdmin) bool {
+	if admin == nil {
+		return false
+	}
+	runtime, err := admin.Get(ctx)
+	if err != nil || runtime == nil {
+		return false
+	}
+	for _, client := range runtime.DownloadClients {
+		if client.Enabled {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *runtimeIndexerService) releaseReadyPolicy(ctx context.Context) pgindex.ReleaseReadyPolicy {

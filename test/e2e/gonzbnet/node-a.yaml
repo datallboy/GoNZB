@@ -2,7 +2,6 @@
 port: "18081"
 bind_address: "127.0.0.1"
 modules:
-  downloader: { enabled: false }
   aggregator: { enabled: true }
   usenet_indexer: { enabled: false }
   gonzbnet: { enabled: true }

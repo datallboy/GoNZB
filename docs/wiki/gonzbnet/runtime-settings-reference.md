@@ -159,7 +159,7 @@ the node's provider scope.
 | `checksum_validation_enabled` | off | Enables checksum validation work. Also include `checksum` in `validation_tiers`; leave off unless the extra I/O is intentional. |
 | `manifest_cache_max_bytes` | 10 GiB | Maximum verified-manifest cache size. Reduce it on small disks. |
 | `manifest_cache_ttl_days` | 90 | Maximum cache residence time before expiry. |
-| `manifest_cache_serve_to_trusted_pools` | on | Allows authorized members of trusted pools to fetch eligible cached manifests. |
+| `manifest_cache_serve_to_trusted_pools` | on | Allows authorized members of trusted pools to fetch eligible manifests cached from another author. Turning it off still permits this node to serve manifests it authored locally. |
 
 The default validation profile is a reasonable low-cost baseline after the
 validator role is deliberately enabled. Independent validators should use

@@ -12,7 +12,6 @@ servers:
     # the closest valid provider role and keeps this disposable provider enabled.
     roles: ["scrape"]
 modules:
-  downloader: { enabled: false }
   aggregator: { enabled: true }
   usenet_indexer: { enabled: false }
   gonzbnet: { enabled: true }

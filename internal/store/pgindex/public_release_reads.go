@@ -108,7 +108,7 @@ type PublicIndexerReleaseExternal struct {
 }
 
 type PublicIndexerReleaseCapabilities struct {
-	CanSendToDownloader bool `json:"can_send_to_downloader"`
+	CanSendToDownloadClient bool `json:"can_send_to_download_client"`
 }
 
 func publicIndexerReleaseVisibilityClause(alias string, policy ReleaseReadyPolicy) string {

@@ -3,7 +3,7 @@ package wiring
 import (
 	aggregatormodule "github.com/datallboy/gonzb/internal/aggregator"
 	"github.com/datallboy/gonzb/internal/app"
-	downloadermodule "github.com/datallboy/gonzb/internal/downloader"
+	"github.com/datallboy/gonzb/internal/downloadclient"
 	"github.com/datallboy/gonzb/internal/infra/config"
 	"github.com/datallboy/gonzb/internal/settingsadmin"
 )
@@ -34,15 +34,9 @@ func BindApplicationModules(appCtx *app.Context) {
 		appCtx.SettingsAdmin = nil
 	}
 
-	if appCtx.Queue != nil {
-		appCtx.DownloaderModule = downloadermodule.NewModule(downloadermodule.DependencyProvider{
-			Queue:          func() app.QueueManager { return appCtx.Queue },
-			Resolver:       func() app.ReleaseResolver { return appCtx.Resolver },
-			BlobStore:      func() app.BlobStore { return appCtx.BlobStore },
-			JobStore:       func() app.JobStore { return appCtx.JobStore },
-			QueueFileStore: func() app.QueueFileStore { return appCtx.QueueFileStore },
-		})
+	if appCtx.SettingsAdmin != nil && appCtx.Resolver != nil {
+		appCtx.DownloadClient = downloadclient.New(appCtx.SettingsAdmin, appCtx.Resolver)
 	} else {
-		appCtx.DownloaderModule = nil
+		appCtx.DownloadClient = nil
 	}
 }

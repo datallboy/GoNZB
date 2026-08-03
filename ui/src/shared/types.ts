@@ -79,7 +79,7 @@ export type PublicReleaseDetail = {
     metadata_updated_at?: string
   }
   capabilities: {
-    can_send_to_downloader: boolean
+	can_send_to_download_client: boolean
   }
 }
 
@@ -332,16 +332,7 @@ export type IndexerOverviewStreamSnapshot = {
 }
 
 export type NNTPModuleRuntimeStats = {
-  reservations_enabled: boolean
-  idle_borrow_enabled: boolean
-  indexer_max_percent: number
-  downloader_reserve_percent: number
-  downloader_demand_window_ms: number
-  indexer_active: number
-  downloader_active: number
-  indexer_limit: number
-  downloader_limit: number
-  downloader_demand_active: boolean
+	indexer_active: number
 }
 
 export type AdminStage = {
@@ -1524,40 +1515,30 @@ export type IndexerRuntimeSettings = {
   allowed_cidrs: string[]
 }
 
-export type DownloadRuntimeSettings = {
-  out_dir: string
-  completed_dir: string
-  cleanup_extensions: string[]
-}
-
 export type NNTPPoolRuntimeSettings = {
-  idle_borrow_enabled: boolean
-  indexer_max_percent: number
-  downloader_reserve_percent: number
-  demand_window_seconds: number
+	indexer_stage_target_percent: number
 }
 
-export type ArrIntegrationRuntimeSettings = {
-  id: string
-  kind: string
-  enabled: boolean
-  base_url: string
-  api_key: string
-  client_name?: string
-  category?: string
+export type DownloadClientRuntimeSettings = {
+	id: string
+	name: string
+	enabled: boolean
+	default: boolean
+	base_url: string
+	api_key: string
+	category: string
+	priority: number
 }
 
 export type RuntimeSettings = {
-  servers?: ServerRuntimeSettings[]
-  downloader_servers?: ServerRuntimeSettings[]
-  indexer_servers?: ServerRuntimeSettings[]
-  indexers?: IndexerRuntimeSettings[]
+	servers?: ServerRuntimeSettings[]
+	indexer_servers?: ServerRuntimeSettings[]
+	indexers?: IndexerRuntimeSettings[]
+	download_clients?: DownloadClientRuntimeSettings[]
   aggregator?: AggregatorRuntimeSettings
   gonzbnet?: GoNZBNetRuntimeSettings
-  download?: DownloadRuntimeSettings
-  nntp_pool?: NNTPPoolRuntimeSettings
-  indexing?: IndexingRuntimeSettings
-  arr_integrations?: ArrIntegrationRuntimeSettings[]
+	nntp_pool?: NNTPPoolRuntimeSettings
+	indexing?: IndexingRuntimeSettings
   revision?: number
 }
 

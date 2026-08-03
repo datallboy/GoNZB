@@ -13,6 +13,10 @@ corresponding capabilities.
 
 ## Documentation
 
+- [Private Pool Quickstart](./private-pool-quickstart.md) is the recommended
+  operator path for an invitation-only pool over a private routed network.
+- [Networking And Exposure](./networking-and-exposure.md) explains NAT,
+  reachability, relays, private overlays, and safe public reverse-proxy scope.
 - [Architecture And Data Flow](./architecture-and-data-flow.md) explains the
   runtime, storage ownership, event flow, release discovery, and manifest path.
 - [Configuration And Deployment](./configuration-and-deployment.md) covers
@@ -113,7 +117,11 @@ GoNZBNet module is enabled.
 GoNZBNet is pre-release and implements the integrated v1 design. Public global
 discovery, DHT/mDNS discovery, NAT traversal, cross-pool bridging, and a
 standalone relay process are not implemented. First contact uses an explicit
-node address or a signed invitation. Protocol metrics are process-local. The
+node address or a signed invitation. A private routed overlay is supported and
+recommended for private pools; a peer URL need not be public, but it must be
+reachable by the nodes using it. The integrated relay forwards authorized
+events and admission material, not arbitrary manifest or evidence requests.
+Protocol metrics are process-local. The
 admin UI keeps bounded local activity history for operational visibility;
 external scraping is still required for alerting or retention beyond 90 days.
 

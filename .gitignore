@@ -10,8 +10,9 @@ config.yaml
 
 # Ignore any .nzb files used as a sample
 *.nzb
-# ignore the default downloads folder
-downloads
+
+# Legacy/local client download artifacts are never source files.
+downloads/
 
 # testdata used by docker compose
 testdata

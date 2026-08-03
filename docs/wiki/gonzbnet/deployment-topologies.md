@@ -99,8 +99,9 @@ For a small pool:
   divide the same pool's scrape space;
 - designate one or two capable members for coverage coordination rather than
   enabling the scheduler everywhere;
-- use pull/push between stable peer URLs; add relay or gossip only when
-  reachability or peer count calls for it.
+- use pull/push between stable peer URLs; add relay or gossip when event
+  propagation or peer count calls for it. A relay does not make an otherwise
+  unreachable manifest or evidence endpoint reachable.
 
 It is fine for each friend to run an all-in-one node. The federation benefit
 comes from different operators, locations, providers, and retained copies—not
@@ -117,7 +118,7 @@ no longer uniform. A practical pool may contain:
 | Scanner/publisher nodes | scanner, manifest builder, release/manifest publication | Scale by assigned groups/article ranges and provider quota. Respect remote claims. |
 | Validator/health nodes | validator, health checker, health publication | Scale across genuinely distinct NNTP backbones and locations for evidence diversity. |
 | Consumer/cache edges | consumer, index projection, larger manifest cache, aggregator source | Scale user-facing catalog and manifest resolution independently from NNTP scanning. |
-| Relays | relay, synchronization, optional peer exchange/gossip | Solve reachability and propagation for authorized events; do not need indexer or validator privileges. |
+| Relays | relay, synchronization, optional peer exchange/gossip | Improve propagation for authorized events and admission material; do not proxy manifest or evidence requests and do not need indexer or validator privileges. |
 | Coverage coordinators | coverage and scheduler | Maintain assignments and reassign stale claims; use a small redundant/admin-controlled set, not every node. |
 
 Specialization solves real problems here: scanners scale by work partition,
