@@ -12,6 +12,8 @@ closeout; use these focused pages as the source of truth.
   refresh, release formation, and inspection data flow.
 - [Schema And Partitions](./schema-and-partitions.md): table groups, daily
   partition keys, and query-shape rules.
+- [Schema Migrations](./schema-migrations.md): v0.9 baseline, supported upgrade
+  paths, migration compatibility, and post-release change policy.
 - [Retention](./retention.md): partition drop rules, blockers, and purge order.
 - [Release Formation](./release-formation.md): summary refresh and release
   candidate contracts.
