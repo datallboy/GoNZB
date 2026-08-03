@@ -1,5 +1,10 @@
 # Indexer Schema And Partitions
 
+The canonical fresh-install schema is the PostgreSQL v0.9 baseline at schema
+version 36. Existing v0.8 databases retain their incremental, data-preserving
+upgrade path. See [Schema Migrations](./schema-migrations.md) for the baseline,
+versioning, and compatibility policy.
+
 ## Partition Key
 
 High-volume source, work, and projection tables use daily UTC range partitions
