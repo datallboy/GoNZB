@@ -8,9 +8,17 @@ COMPOSE="$ROOT/docker-compose.gonzbnet-e2e.yml"
 COMPOSE_PROJECT="gonzbnet-e2e"
 BIN="$STATE/gonzb"
 NNTP_BIN="$STATE/nntpfixture"
+TLS_PROXY_BIN="$STATE/tlsproxy"
+TLS_DIR="$STATE/tls"
+TLS_CA="$TLS_DIR/ca.pem"
 
 usage() {
-  echo "usage: $0 {test|start|bootstrap|configure-pool|admission-smoke|quorum-smoke|smoke|federation-smoke|release-smoke|nntp-smoke|observability-smoke|stop|status|logs|reset}"
+  echo "usage: $0 {test|start|bootstrap|configure-pool|admission-smoke|quorum-smoke|smoke|federation-smoke|release-smoke|indexer-federation-smoke|nntp-smoke|observability-smoke|stop|status|logs|reset}"
+}
+
+peer_url() {
+  internal_port="$1"
+  echo "https://localhost:$((internal_port + 400))"
 }
 
 wait_http() {
@@ -26,6 +34,19 @@ wait_http() {
   done
 }
 
+wait_https() {
+  port="$1"
+  attempts=0
+  until curl -fsS --cacert "$TLS_CA" "https://localhost:$port/healthz" >/dev/null 2>&1; do
+    attempts=$((attempts + 1))
+    if [ "$attempts" -ge 60 ]; then
+      echo "HTTPS proxy on port $port did not become healthy" >&2
+      return 1
+    fi
+    sleep 1
+  done
+}
+
 start_node() {
   name="$1"
   config="$2"
@@ -35,9 +56,9 @@ start_node() {
     return
   fi
   if command -v setsid >/dev/null 2>&1; then
-    setsid "$BIN" serve --config "$config" </dev/null >"$dir/stdout.log" 2>&1 &
+    setsid env SSL_CERT_FILE="$TLS_CA" "$BIN" serve --config "$config" </dev/null >"$dir/stdout.log" 2>&1 &
   else
-    nohup "$BIN" serve --config "$config" </dev/null >"$dir/stdout.log" 2>&1 &
+    nohup env SSL_CERT_FILE="$TLS_CA" "$BIN" serve --config "$config" </dev/null >"$dir/stdout.log" 2>&1 &
   fi
   echo "$!" >"$dir/pid"
 }
@@ -51,10 +72,25 @@ stop_nodes() {
       rm -f "$pidfile"
     fi
   done
+}
+
+stop_fixtures() {
   if [ -f "$STATE/nntpfixture.pid" ]; then
     kill "$(cat "$STATE/nntpfixture.pid")" 2>/dev/null || true
     rm -f "$STATE/nntpfixture.pid"
   fi
+  for name in node-a node-b node-c node-d; do
+    pidfile="$STATE/tls-$name.pid"
+    if [ -f "$pidfile" ]; then
+      kill "$(cat "$pidfile")" 2>/dev/null || true
+      rm -f "$pidfile"
+    fi
+  done
+}
+
+stop_all() {
+  stop_nodes
+  stop_fixtures
 }
 
 cleanup_test_run() {
@@ -63,9 +99,34 @@ cleanup_test_run() {
   if [ "$result" -eq 0 ] || [ "${GONZBNET_E2E_KEEP_STATE_ON_FAILURE:-}" != "1" ]; then
     "$0" reset >/dev/null 2>&1 || true
   else
-    stop_nodes
+    stop_all
   fi
   exit "$result"
+}
+
+start_tls_proxies() {
+  (cd "$ROOT" && GOCACHE="${GOCACHE:-/tmp/gocache}" go build -o "$TLS_PROXY_BIN" ./test/e2e/gonzbnet/tlsproxy)
+  "$TLS_PROXY_BIN" -generate-dir "$TLS_DIR"
+  for spec in "node-a:18081:18481" "node-b:18082:18482" "node-c:18083:18483" "node-d:18084:18484"; do
+    name=${spec%%:*}
+    remainder=${spec#*:}
+    target_port=${remainder%%:*}
+    listen_port=${remainder#*:}
+    logfile="$STATE/$name/tls-proxy.log"
+    mkdir -p "$STATE/$name"
+    if command -v setsid >/dev/null 2>&1; then
+      setsid "$TLS_PROXY_BIN" -listen "127.0.0.1:$listen_port" \
+        -target "http://127.0.0.1:$target_port" \
+        -cert "$TLS_DIR/server.pem" -key "$TLS_DIR/server-key.pem" \
+        </dev/null >"$logfile" 2>&1 &
+    else
+      nohup "$TLS_PROXY_BIN" -listen "127.0.0.1:$listen_port" \
+        -target "http://127.0.0.1:$target_port" \
+        -cert "$TLS_DIR/server.pem" -key "$TLS_DIR/server-key.pem" \
+        </dev/null >"$logfile" 2>&1 &
+    fi
+    echo "$!" >"$STATE/tls-$name.pid"
+  done
 }
 
 start_nntp_fixture() {
@@ -152,12 +213,63 @@ db_exec() {
     psql -v ON_ERROR_STOP=1 -U gonzb -d "$database" -c "$query" >/dev/null
 }
 
+run_indexer_stage() {
+  stage="$1"
+  before=$(db_scalar gonzbnet_a "SELECT COALESCE(MAX(id), 0) FROM indexer_stage_runs WHERE stage_name = '$stage'")
+  admin_post node-a 18081 "/api/v1/admin/indexer/stages/$stage/actions/run" '{}'
+  attempts=0
+  while [ "$attempts" -lt 180 ]; do
+    row=$(db_scalar gonzbnet_a "
+      SELECT status || '|' || COALESCE(error_text, '')
+      FROM indexer_stage_runs
+      WHERE stage_name = '$stage'
+        AND trigger_kind = 'manual'
+        AND id > $before
+      ORDER BY id DESC
+      LIMIT 1")
+    case "$row" in
+      completed\|*)
+        echo "indexer stage completed: $stage"
+        return 0
+        ;;
+      failed\|*)
+        echo "indexer stage failed: $stage: ${row#*|}" >&2
+        return 1
+        ;;
+    esac
+    attempts=$((attempts + 1))
+    if [ $((attempts % 15)) -eq 0 ] && [ -z "$row" ]; then
+      admin_post node-a 18081 "/api/v1/admin/indexer/stages/$stage/actions/run" '{}'
+    fi
+    sleep 1
+  done
+  echo "timed out waiting for indexer stage: $stage" >&2
+  return 1
+}
+
+wait_db_at_least() {
+  database="$1"
+  expected="$2"
+  description="$3"
+  query="$4"
+  attempts=0
+  actual=0
+  while [ "$attempts" -lt 180 ]; do
+    actual=$(db_scalar "$database" "$query")
+    [ "$actual" -ge "$expected" ] && return 0
+    attempts=$((attempts + 1))
+    sleep 1
+  done
+  echo "$description was $actual, expected at least $expected" >&2
+  return 1
+}
+
 configure_pool() {
   pool=$(jq -n '{pool_id:"pool.e2e",display_name:"GoNZBNet E2E",description:"Four-node admission test pool",membership_threshold:1,moderation_threshold:1,checkpoint_witness_threshold:1,accept_mode:"pool_member",min_node_trust_score:0,visibility:"unlisted",join_mode:"approval",admission_enabled:true,enabled:true}')
   admin_post node-a 18081 /api/v1/admin/gonzbnet/pools "$pool"
-  join_pool node-b 18082 "http://127.0.0.1:18081" pool.e2e node-a 18081
-  join_pool node-c 18083 "http://127.0.0.1:18081" pool.e2e node-a 18081
-  join_pool node-d 18084 "http://127.0.0.1:18082" pool.e2e node-a 18081
+  join_pool node-b 18082 "$(peer_url 18081)" pool.e2e node-a 18081
+  join_pool node-c 18083 "$(peer_url 18081)" pool.e2e node-a 18081
+  join_pool node-d 18084 "$(peer_url 18082)" pool.e2e node-a 18081
 
   pool_two=$(jq -n '{pool_id:"pool.side",display_name:"Side Pool",description:"C and D isolation test",membership_threshold:1,moderation_threshold:1,checkpoint_witness_threshold:1,accept_mode:"pool_member",min_node_trust_score:0,visibility:"private",join_mode:"approval",admission_enabled:true,enabled:true}')
   admin_post node-d 18084 /api/v1/admin/gonzbnet/pools "$pool_two"
@@ -201,7 +313,7 @@ join_pool() {
 
   # A non-admin relay distributes the candidate event before the administrator signs it.
   case "$locator" in
-    *:18082*)
+    *:18482*)
       admin_post node-b 18082 /api/v1/admin/gonzbnet/sync/push '{}'
       admin_post "$admin" "$admin_port" /api/v1/admin/gonzbnet/sync/pull '{}'
       ;;
@@ -292,7 +404,7 @@ quorum_smoke() {
   pool_one=$(jq -n '{pool_id:"pool.quorum",display_name:"Quorum Pool",description:"Two-admin admission quorum",membership_threshold:1,moderation_threshold:2,checkpoint_witness_threshold:1,accept_mode:"pool_member",min_node_trust_score:0,visibility:"unlisted",join_mode:"approval",admission_enabled:true,enabled:true}')
   admin_post node-a 18081 /api/v1/admin/gonzbnet/pools "$pool_one"
 
-  admin_b_payload=$(jq -n '{locator:"http://127.0.0.1:18081",pool_id:"pool.quorum",role:"admin"}')
+  admin_b_payload=$(jq -n --arg locator "$(peer_url 18081)" '{locator:$locator,pool_id:"pool.quorum",role:"admin"}')
   admin_b_proposal=$(admin_request node-b 18082 /api/v1/admin/gonzbnet/admission/join "$admin_b_payload" | jq -r '.proposal_event_id')
   if [ -z "$admin_b_proposal" ] || [ "$admin_b_proposal" = "null" ]; then
     echo "Node B did not create an admin admission proposal" >&2
@@ -307,7 +419,7 @@ quorum_smoke() {
   admin_post node-a 18081 /api/v1/admin/gonzbnet/pools "$pool_two"
   admin_post node-b 18082 /api/v1/admin/gonzbnet/pools "$pool_two"
 
-  candidate_payload=$(jq -n '{locator:"http://127.0.0.1:18081",pool_id:"pool.quorum",role:"member"}')
+  candidate_payload=$(jq -n --arg locator "$(peer_url 18081)" '{locator:$locator,pool_id:"pool.quorum",role:"member"}')
   proposal=$(admin_request node-c 18083 /api/v1/admin/gonzbnet/admission/join "$candidate_payload" | jq -r '.proposal_event_id')
   if [ -z "$proposal" ] || [ "$proposal" = "null" ]; then
     echo "Node C did not create a member admission proposal" >&2
@@ -354,7 +466,7 @@ nntp_smoke() {
     [ "$attempts" -lt 20 ] || { echo "NNTP fixture did not become ready" >&2; return 1; }
     sleep 1
   done
-  echo "$result" | jq -e '.group == "alt.binaries.test" and .count == 1 and .overview_rows == 1 and .body_bytes > 0' >/dev/null || {
+  echo "$result" | jq -e '.group == "alt.binaries.test" and .count == 4 and .overview_rows == 4 and .body_bytes > 0' >/dev/null || {
     echo "production NNTP client did not read the deterministic fixture" >&2
     return 1
   }
@@ -369,7 +481,7 @@ federation_smoke() {
     }
   done
 
-  unsigned_status=$(curl -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:18081/gonzbnet/v1/outbox?limit=1")
+  unsigned_status=$(curl -sS --cacert "$TLS_CA" -o /dev/null -w '%{http_code}' "$(peer_url 18081)/gonzbnet/v1/outbox?limit=1")
   case "$unsigned_status" in 401|403) ;; *) echo "unsigned outbox read returned HTTP $unsigned_status" >&2; return 1;; esac
 
   foreign_session_status=$(curl -sS -o /dev/null -w '%{http_code}' \
@@ -591,6 +703,110 @@ release_smoke() {
   echo "repeat Newznab grab reused the local manifest/NZB cache"
 }
 
+indexer_federation_smoke() {
+  for name in node-a node-d; do
+    test -s "$STATE/$name/csrf-token" || {
+      echo "run bootstrap before indexer-federation-smoke" >&2
+      return 1
+    }
+  done
+
+  run_indexer_stage scrape_latest
+  wait_db_at_least gonzbnet_a 4 "scraped article headers" \
+    "SELECT count(*) FROM article_headers WHERE message_id LIKE '<gonzbnet-e2e-%@example.invalid>'"
+
+  run_indexer_stage assemble
+  wait_db_at_least gonzbnet_a 3 "assembled binaries" \
+    "SELECT count(*) FROM binary_identity_current WHERE release_name = 'GoNZBNet.E2E.Indexer.Release.2026.1080p'"
+  multipart=$(db_scalar gonzbnet_a "
+    SELECT count(*)
+    FROM binary_identity_current identity
+    JOIN binary_observation_stats observed
+      ON observed.binary_id = identity.binary_id
+     AND observed.source_posted_at = identity.source_posted_at
+    WHERE identity.file_name = 'GoNZBNet.E2E.Indexer.Release.2026.1080p.mkv'
+      AND observed.total_parts = 2
+      AND observed.observed_parts = 2")
+  [ "$multipart" = "1" ] || {
+    echo "multipart video did not assemble from both NNTP segments" >&2
+    return 1
+  }
+
+  run_indexer_stage release_summary_refresh
+  wait_db_at_least gonzbnet_a 1 "actionable release families" \
+    "SELECT count(*) FROM release_ready_candidates WHERE release_name = 'GoNZBNet.E2E.Indexer.Release.2026.1080p' AND ready_reason = 'actionable' AND binary_count = 3 AND complete_binary_count = 3 AND expected_file_coverage_pct = 100"
+
+  run_indexer_stage release
+  wait_db_at_least gonzbnet_a 1 "formed releases" \
+    "SELECT count(*) FROM releases WHERE title = 'GoNZBNet.E2E.Indexer.Release.2026.1080p' AND file_count = 3 AND completion_pct = 100 AND has_par2 AND has_nfo"
+  release_id=$(db_scalar gonzbnet_a "SELECT release_id FROM releases WHERE title = 'GoNZBNet.E2E.Indexer.Release.2026.1080p' ORDER BY created_at DESC LIMIT 1")
+  test -n "$release_id" || { echo "formed release has no release ID" >&2; return 1; }
+
+  run_indexer_stage release_generate_nzb
+  wait_db_at_least gonzbnet_a 1 "archived local NZBs" \
+    "SELECT count(*) FROM release_archive_state WHERE release_id = '$release_id' AND archive_status IN ('archived', 'purge_pending', 'purged') AND object_key <> '' AND object_size_bytes > 0"
+  run_indexer_stage release_archive_nzb
+
+  attempts=0
+  publication=""
+  while [ "$attempts" -lt 90 ]; do
+    publication=$(db_scalar gonzbnet_a "
+      SELECT (card.body_json->>'release_id') || '|' ||
+             (card.body_json->>'manifest_id')
+      FROM federation_events card
+      JOIN resolution_manifests manifest
+        ON manifest.manifest_id = card.body_json->>'manifest_id'
+      WHERE card.event_type = 'ReleaseCard'
+        AND card.validation_status = 'accepted'
+        AND card.body_json->>'title' = 'GoNZBNet.E2E.Indexer.Release.2026.1080p'
+        AND manifest.validation_status = 'accepted'
+      ORDER BY card.created_at DESC
+      LIMIT 1")
+    [ -n "$publication" ] && break
+    attempts=$((attempts + 1))
+    sleep 1
+  done
+  [ -n "$publication" ] || {
+    echo "Node A did not publish the indexed release and signed manifest" >&2
+    return 1
+  }
+  federated_release_id=$(printf '%s' "$publication" | cut -d'|' -f1)
+
+  admin_post node-a 18081 /api/v1/admin/gonzbnet/sync/push '{}'
+  admin_post node-d 18084 /api/v1/admin/gonzbnet/sync/pull '{}'
+  wait_db_at_least gonzbnet_d 1 "Node D federated release projection" \
+    "SELECT count(*) FROM federated_release_sources WHERE release_id = '$federated_release_id' AND pool_id = 'pool.e2e' AND resolvable"
+
+  token=$(admin_request node-d 18084 /api/v1/auth/tokens \
+    "$(jq -cn '{name:"gonzbnet-indexer-e2e"}')" | jq -r '.secret')
+  test -n "$token" && test "$token" != "null"
+  curl -fsS --get \
+    --data-urlencode 't=search' \
+    --data-urlencode 'q=GoNZBNet E2E Indexer Release 2026 1080p' \
+    --data-urlencode "apikey=$token" \
+    http://127.0.0.1:18084/api >"$STATE/indexer-release-search.xml"
+  grep -Fq 'GoNZBNet.E2E.Indexer.Release.2026.1080p' "$STATE/indexer-release-search.xml" || {
+    echo "Node D Newznab search did not return the indexed federated release" >&2
+    return 1
+  }
+  composite_id=$(sed -n 's:.*<guid isPermaLink="false">\([^<]*\)</guid>.*:\1:p' "$STATE/indexer-release-search.xml" | head -n 1)
+  test -n "$composite_id" || { echo "could not extract indexed federated release ID" >&2; return 1; }
+  curl -fsS --get \
+    --data-urlencode 't=get' \
+    --data-urlencode "id=$composite_id" \
+    --data-urlencode "apikey=$token" \
+    http://127.0.0.1:18084/api >"$STATE/indexer-release-grab.nzb"
+  for article in 1 2 3 4; do
+    grep -Fq "&lt;gonzbnet-e2e-$article@example.invalid&gt;" "$STATE/indexer-release-grab.nzb" || {
+      echo "federated NZB is missing deterministic article $article" >&2
+      return 1
+    }
+  done
+
+  echo "NNTP headers formed release $release_id with 3 files and 4 segments"
+  echo "Node A published it over HTTPS; Node D found and grabbed the signed manifest through Newznab"
+}
+
 observability_smoke() {
   admin_get node-a 18081 /api/v1/admin/gonzbnet/overview |
     jq -e '(.jobs | length) == 5
@@ -626,6 +842,7 @@ case "${1:-}" in
     "$0" quorum-smoke
     "$0" federation-smoke
     "$0" release-smoke
+    "$0" indexer-federation-smoke
     "$0" nntp-smoke
     "$0" observability-smoke
     "$0" reset
@@ -635,7 +852,11 @@ case "${1:-}" in
   start)
     mkdir -p "$STATE"
     docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE" up -d --wait
-    (cd "$ROOT" && GOCACHE="${GOCACHE:-/tmp/gocache}" go build -o "$BIN" ./cmd/gonzb)
+    (cd "$ROOT" && GOCACHE="${GOCACHE:-/tmp/gocache}" go build \
+      -ldflags "-X github.com/datallboy/gonzb/internal/buildinfo.Version=${GONZBNET_E2E_VERSION:-v0.9.0-smoke}" \
+      -o "$BIN" ./cmd/gonzb)
+    start_nntp_fixture
+    start_tls_proxies
     cd "$ROOT"
     start_node node-a "$ROOT/test/e2e/gonzbnet/node-a.yaml"
     start_node node-b "$ROOT/test/e2e/gonzbnet/node-b.yaml"
@@ -645,6 +866,10 @@ case "${1:-}" in
     wait_http 18082
     wait_http 18083
     wait_http 18084
+    wait_https 18481
+    wait_https 18482
+    wait_https 18483
+    wait_https 18484
     sleep 1
     for name in node-a node-b node-c node-d; do
       kill -0 "$(cat "$STATE/$name/pid")" 2>/dev/null || {
@@ -652,7 +877,7 @@ case "${1:-}" in
         exit 1
       }
     done
-    echo "GoNZBNet E2E nodes are ready: http://127.0.0.1:18081, :18082, :18083, :18084"
+    echo "GoNZBNet E2E nodes are ready behind trusted HTTPS: https://localhost:18481, :18482, :18483, :18484"
     ;;
   bootstrap)
     command -v jq >/dev/null 2>&1 || { echo "jq is required" >&2; exit 1; }
@@ -662,7 +887,8 @@ case "${1:-}" in
     bootstrap_node node-c 18083 "$password"
     bootstrap_node node-d 18084 "$password"
     aggregator='{"aggregator":{"sources":{"local_blob":{"enabled":false},"usenet_indexer":{"enabled":false},"gonzbnet":{"enabled":true}}}}'
-    admin_put node-a 18081 /api/v1/admin/settings "$aggregator"
+    indexer_aggregator='{"aggregator":{"sources":{"local_blob":{"enabled":false},"usenet_indexer":{"enabled":true},"gonzbnet":{"enabled":true}}}}'
+    admin_put node-a 18081 /api/v1/admin/settings "$indexer_aggregator"
     admin_put node-b 18082 /api/v1/admin/settings "$aggregator"
     admin_put node-c 18083 /api/v1/admin/settings "$aggregator"
     admin_put node-d 18084 /api/v1/admin/settings "$aggregator"
@@ -682,15 +908,33 @@ case "${1:-}" in
     ;;
   smoke)
     ids=""
-    for port in 18081 18082 18083 18084; do
-      curl -fsS "http://127.0.0.1:$port/.well-known/gonzbnet" | jq -e '.spec_version == "gonzbnet/1.0"' >/dev/null
-      node_id=$(curl -fsS "http://127.0.0.1:$port/gonzbnet/v1/node" | jq -r '.node_id')
+    if curl -fsS "https://localhost:18481/.well-known/gonzbnet" >/dev/null 2>&1; then
+      echo "disposable HTTPS endpoint unexpectedly trusted without the fixture CA" >&2
+      exit 1
+    fi
+    if curl -fsS --cacert "$TLS_CA" --tls-max 1.1 "https://localhost:18481/healthz" >/dev/null 2>&1; then
+      echo "HTTPS endpoint accepted obsolete TLS 1.1" >&2
+      exit 1
+    fi
+    curl -fsS --cacert "$TLS_CA" --tlsv1.2 --tls-max 1.2 "https://localhost:18481/healthz" >/dev/null
+    for port in 18481 18482 18483 18484; do
+      curl -fsS --cacert "$TLS_CA" "https://localhost:$port/.well-known/gonzbnet" | jq -e '.spec_version == "gonzbnet/1.0" and (.base_url | startswith("https://"))' >/dev/null
+      profile=$(curl -fsS --cacert "$TLS_CA" "https://localhost:$port/gonzbnet/v1/node")
+      node_id=$(echo "$profile" | jq -r '.node_id')
       test -n "$node_id"
       case " $ids " in *" $node_id "*) echo "duplicate node identity: $node_id" >&2; exit 1;; esac
       ids="$ids $node_id"
-      curl -fsS "http://127.0.0.1:$port/gonzbnet/v1/caps" | jq -e '.spec_versions | index("gonzbnet/1.0") != null' >/dev/null
+      echo "$profile" | jq -e '.software_version == "v0.9.0-smoke" and (.endpoints.base | startswith("https://"))' >/dev/null
+      curl -fsS --cacert "$TLS_CA" "https://localhost:$port/gonzbnet/v1/caps" | jq -e '.spec_versions | index("gonzbnet/1.0") != null' >/dev/null
       echo "port=$port node_id=$node_id"
     done
+    for database in gonzbnet_a gonzbnet_b gonzbnet_c gonzbnet_d; do
+      insecure=$(db_scalar "$database" "SELECT count(*) FROM federation_peers WHERE enabled AND peer_url LIKE 'http://%'")
+      [ "$insecure" = "0" ] || { echo "$database persisted an insecure HTTP peer" >&2; exit 1; }
+      connected=$(db_scalar "$database" "SELECT count(*) FROM federation_peers WHERE enabled AND status = 'connected' AND peer_url LIKE 'https://%'")
+      [ "$connected" -ge 1 ] || { echo "$database has no connected HTTPS peer" >&2; exit 1; }
+    done
+    echo "trusted TLS 1.2+, certificate rejection, HTTPS peer persistence, advertisement, and release version verified"
     ;;
   federation-smoke)
     command -v jq >/dev/null 2>&1 || { echo "jq is required" >&2; exit 1; }
@@ -699,6 +943,10 @@ case "${1:-}" in
   release-smoke)
     command -v jq >/dev/null 2>&1 || { echo "jq is required" >&2; exit 1; }
     release_smoke
+    ;;
+  indexer-federation-smoke)
+    command -v jq >/dev/null 2>&1 || { echo "jq is required" >&2; exit 1; }
+    indexer_federation_smoke
     ;;
   nntp-smoke)
     command -v jq >/dev/null 2>&1 || { echo "jq is required" >&2; exit 1; }
@@ -709,7 +957,7 @@ case "${1:-}" in
     observability_smoke
     ;;
   stop)
-    stop_nodes
+    stop_all
     docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE" down
     ;;
   status)
@@ -723,7 +971,7 @@ case "${1:-}" in
     tail -n 100 -F "$STATE/node-a/stdout.log" "$STATE/node-b/stdout.log" "$STATE/node-c/stdout.log" "$STATE/node-d/stdout.log"
     ;;
   reset)
-    stop_nodes
+    stop_all
     docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE" down -v
     rm -rf "$STATE"
     ;;
