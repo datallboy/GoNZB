@@ -4,9 +4,12 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/datallboy/gonzb/internal/gonzbnet/events"
 	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
 	"github.com/datallboy/gonzb/internal/gonzbnet/pools"
 )
@@ -55,6 +58,24 @@ func TestInvitationRoundTripAndTamper(t *testing.T) {
 	decoded.PoolID = "pool.other"
 	if err := decoded.Verify(time.Now().UTC()); err == nil {
 		t.Fatal("expected tampered invitation to fail")
+	}
+}
+
+func TestSubmitJoinCarriesPrivatePoolInvitation(t *testing.T) {
+	const invitation = "gonzbnet://invite-token"
+	var received string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received = r.Header.Get("X-GoNZBNet-Invitation")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	client := NewClient(newTestIdentity(t), true)
+	if err := client.SubmitJoin(context.Background(), server.URL, "pool.test", invitation, &events.SignedEvent{}); err != nil {
+		t.Fatalf("submit join: %v", err)
+	}
+	if received != invitation {
+		t.Fatalf("expected invitation header %q, got %q", invitation, received)
 	}
 }
 

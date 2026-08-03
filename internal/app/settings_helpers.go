@@ -95,6 +95,25 @@ func WithRuntimeDefaults(in *RuntimeSettings) *RuntimeSettings {
 	}
 	if out.GoNZBNet == nil {
 		out.GoNZBNet = defaults.GoNZBNet
+	} else {
+		if out.GoNZBNet.BinaryEvidencePeerTimeoutSecs <= 0 {
+			out.GoNZBNet.BinaryEvidencePeerTimeoutSecs = defaults.GoNZBNet.BinaryEvidencePeerTimeoutSecs
+		}
+		if out.GoNZBNet.BinaryEvidencePeerFanout <= 0 {
+			out.GoNZBNet.BinaryEvidencePeerFanout = defaults.GoNZBNet.BinaryEvidencePeerFanout
+		}
+		if out.GoNZBNet.BinaryEvidenceYEncBatchSize <= 0 {
+			out.GoNZBNet.BinaryEvidenceYEncBatchSize = defaults.GoNZBNet.BinaryEvidenceYEncBatchSize
+		}
+		if out.GoNZBNet.BinaryEvidenceSegmentLimit <= 0 {
+			out.GoNZBNet.BinaryEvidenceSegmentLimit = defaults.GoNZBNet.BinaryEvidenceSegmentLimit
+		}
+		if out.GoNZBNet.BinaryEvidenceMaxResponseBytes <= 0 {
+			out.GoNZBNet.BinaryEvidenceMaxResponseBytes = defaults.GoNZBNet.BinaryEvidenceMaxResponseBytes
+		}
+		if out.GoNZBNet.BinaryEvidenceCooldownMinutes <= 0 {
+			out.GoNZBNet.BinaryEvidenceCooldownMinutes = defaults.GoNZBNet.BinaryEvidenceCooldownMinutes
+		}
 	}
 	if out.Download == nil {
 		out.Download = defaults.Download
@@ -192,17 +211,20 @@ func defaultPartitionSettings() IndexingPartitionRuntimeSettings {
 
 func defaultRecoveryAdmissionSettings() IndexingRecoveryAdmissionRuntimeSettings {
 	return IndexingRecoveryAdmissionRuntimeSettings{
-		TargetHotLagHours:           4,
-		TargetWarmLagHours:          24,
-		SoftQueueHours:              4,
-		HardQueueMultiplier:         2,
-		AbsoluteHardQueueCap:        250000,
-		EWMAWindowMinutes:           30,
-		BootstrapProbesPerHour:      25000,
-		Priority0OverflowCap:        25000,
-		Priority0ReservoirBatches:   5,
-		NearTimeCohortBucketMinutes: 5,
-		LatestReservePercent:        10,
+		TargetHotLagHours:             4,
+		TargetWarmLagHours:            24,
+		SoftQueueHours:                4,
+		HardQueueMultiplier:           2,
+		AbsoluteHardQueueCap:          250000,
+		EWMAWindowMinutes:             30,
+		BootstrapProbesPerHour:        25000,
+		Priority0OverflowCap:          25000,
+		Priority0ReservoirBatches:     5,
+		NearTimeCohortBucketMinutes:   5,
+		LatestReservePercent:          10,
+		BalancedBodyRequestsPerHour:   25000,
+		ExhaustiveBodyRequestsPerHour: 100000,
+		DiscoveryBodyRequestsPerHour:  1000,
 	}
 }
 
@@ -503,6 +525,13 @@ func defaultGoNZBNetRuntimeSettings() *GoNZBNetRuntimeSettings {
 		GossipBatchSize:                100,
 		GossipTTL:                      4,
 		GossipFanout:                   4,
+		BinaryEvidenceConsumeEnabled:   true,
+		BinaryEvidencePeerTimeoutSecs:  3,
+		BinaryEvidencePeerFanout:       3,
+		BinaryEvidenceYEncBatchSize:    1000,
+		BinaryEvidenceSegmentLimit:     5000,
+		BinaryEvidenceMaxResponseBytes: 10 * 1024 * 1024,
+		BinaryEvidenceCooldownMinutes:  5,
 		MaxEventBytes:                  262144,
 		MaxManifestBytes:               10485760,
 		ManifestFetchTimeoutSeconds:    20,
@@ -575,6 +604,14 @@ func goNZBNetRuntimeFromConfig(cfg config.GoNZBNetConfig) *GoNZBNetRuntimeSettin
 		GossipTTL:                      cfg.GossipTTL,
 		GossipFanout:                   cfg.GossipFanout,
 		PeerExchangeEnabled:            cfg.PeerExchangeEnabled,
+		BinaryEvidenceConsumeEnabled:   cfg.BinaryEvidenceConsumeEnabled,
+		BinaryEvidenceServeEnabled:     cfg.BinaryEvidenceServeEnabled,
+		BinaryEvidencePeerTimeoutSecs:  cfg.BinaryEvidencePeerTimeoutSecs,
+		BinaryEvidencePeerFanout:       cfg.BinaryEvidencePeerFanout,
+		BinaryEvidenceYEncBatchSize:    cfg.BinaryEvidenceYEncBatchSize,
+		BinaryEvidenceSegmentLimit:     cfg.BinaryEvidenceSegmentLimit,
+		BinaryEvidenceMaxResponseBytes: cfg.BinaryEvidenceMaxResponseBytes,
+		BinaryEvidenceCooldownMinutes:  cfg.BinaryEvidenceCooldownMinutes,
 		RelayEnabled:                   cfg.RelayEnabled,
 		MaxEventBytes:                  cfg.MaxEventBytes,
 		MaxManifestBytes:               cfg.MaxManifestBytes,
@@ -652,6 +689,14 @@ func applyGoNZBNetRuntimeToConfig(out *config.GoNZBNetConfig, in *GoNZBNetRuntim
 	out.GossipTTL = in.GossipTTL
 	out.GossipFanout = in.GossipFanout
 	out.PeerExchangeEnabled = in.PeerExchangeEnabled
+	out.BinaryEvidenceConsumeEnabled = in.BinaryEvidenceConsumeEnabled
+	out.BinaryEvidenceServeEnabled = in.BinaryEvidenceServeEnabled
+	out.BinaryEvidencePeerTimeoutSecs = in.BinaryEvidencePeerTimeoutSecs
+	out.BinaryEvidencePeerFanout = in.BinaryEvidencePeerFanout
+	out.BinaryEvidenceYEncBatchSize = in.BinaryEvidenceYEncBatchSize
+	out.BinaryEvidenceSegmentLimit = in.BinaryEvidenceSegmentLimit
+	out.BinaryEvidenceMaxResponseBytes = in.BinaryEvidenceMaxResponseBytes
+	out.BinaryEvidenceCooldownMinutes = in.BinaryEvidenceCooldownMinutes
 	out.RelayEnabled = in.RelayEnabled
 	out.MaxEventBytes = in.MaxEventBytes
 	out.MaxManifestBytes = in.MaxManifestBytes
@@ -1604,6 +1649,15 @@ func mergeRecoveryAdmissionRuntimeSettings(base, override IndexingRecoveryAdmiss
 	}
 	if override.LatestReservePercent > 0 {
 		base.LatestReservePercent = override.LatestReservePercent
+	}
+	if override.BalancedBodyRequestsPerHour > 0 {
+		base.BalancedBodyRequestsPerHour = override.BalancedBodyRequestsPerHour
+	}
+	if override.ExhaustiveBodyRequestsPerHour > 0 {
+		base.ExhaustiveBodyRequestsPerHour = override.ExhaustiveBodyRequestsPerHour
+	}
+	if override.DiscoveryBodyRequestsPerHour > 0 {
+		base.DiscoveryBodyRequestsPerHour = override.DiscoveryBodyRequestsPerHour
 	}
 	if base.LatestReservePercent > 50 {
 		base.LatestReservePercent = 50

@@ -85,7 +85,7 @@ func (ctrl *SettingsConnectionController) test(ctx context.Context, req settings
 		}
 		indexer, ok := findRuntimeIndexer(runtime, req.ID)
 		if !ok {
-			return fmt.Errorf("Newznab source %q was not found", req.ID)
+			return fmt.Errorf("newznab source %q was not found", req.ID)
 		}
 		client := newznab.New(indexer.ID, indexer.BaseURL, indexer.APIPath, indexer.APIKey, indexer.Redirect, newznab.OutboundPolicy{
 			AllowPrivateAddresses: indexer.AllowPrivateAddresses,

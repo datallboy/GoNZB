@@ -13,7 +13,6 @@ import (
 	"github.com/datallboy/gonzb/internal/api/controllers"
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/auth"
-	"github.com/datallboy/gonzb/internal/gonzbnet/requestauth"
 	"github.com/datallboy/gonzb/internal/telemetry"
 	"github.com/datallboy/gonzb/internal/webui"
 	"github.com/labstack/echo/v5"
@@ -145,32 +144,38 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 
 	if modules.API.Enabled && modules.GoNZBNet.Enabled {
 		if appCtx.Config.GoNZBNet.HTTPEnabled {
-			e.GET("/.well-known/gonzbnet", gonzbnetCtrl.WellKnown)
-			fed := e.Group(gonzbnetHTTPBasePath(appCtx.Config.GoNZBNet.HTTPBasePath), federationBodyLimitMiddleware(appCtx.Config.GoNZBNet))
+			e.GET("/.well-known/gonzbnet", gonzbnetCtrl.WellKnown, federationRateLimit)
+			fed := e.Group(
+				gonzbnetHTTPBasePath(appCtx.Config.GoNZBNet.HTTPBasePath),
+				federationBodyLimitMiddleware(appCtx.Config.GoNZBNet),
+				federationRateLimit,
+			)
 			fed.GET("/node", gonzbnetCtrl.Node)
 			fed.GET("/caps", gonzbnetCtrl.Caps)
 			fed.POST("/handshake", gonzbnetCtrl.Handshake)
 			fed.GET("/pools", gonzbnetCtrl.AdmissionPools)
-			fed.POST("/pools/:pool_id/join-requests", gonzbnetCtrl.SubmitPoolJoin, federationRateLimit)
-			fed.GET("/pools/:pool_id/admissions/:proposal_event_id", gonzbnetCtrl.AdmissionStatus, federationRateLimit)
-			fed.POST("/pools/:pool_id/admissions/:proposal_event_id/approvals", gonzbnetCtrl.SubmitPoolApproval, federationRateLimit)
-			fed.POST("/pools/:pool_id/admissions/:proposal_event_id/rejections", gonzbnetCtrl.SubmitPoolRejection, federationRateLimit)
+			fed.POST("/pools/:pool_id/join-requests", gonzbnetCtrl.SubmitPoolJoin)
+			fed.GET("/pools/:pool_id/admissions/:proposal_event_id", gonzbnetCtrl.AdmissionStatus)
+			fed.POST("/pools/:pool_id/admissions/:proposal_event_id/approvals", gonzbnetCtrl.SubmitPoolApproval)
+			fed.POST("/pools/:pool_id/admissions/:proposal_event_id/rejections", gonzbnetCtrl.SubmitPoolRejection)
 			fed.GET("/outbox", gonzbnetCtrl.Outbox)
 			fed.GET("/events/:event_id", gonzbnetCtrl.Event)
-			fed.POST("/events/batch", gonzbnetCtrl.Inbox, federationRateLimit)
-			fed.POST("/inbox", gonzbnetCtrl.Inbox, federationRateLimit)
-			fed.POST("/manifests/:manifest_id/request", gonzbnetCtrl.RequestManifest, federationRateLimit)
-			fed.GET("/manifests/:manifest_id", gonzbnetCtrl.GetManifest, federationRateLimit)
+			fed.POST("/events/batch", gonzbnetCtrl.Inbox)
+			fed.POST("/inbox", gonzbnetCtrl.Inbox)
+			fed.POST("/manifests/:manifest_id/request", gonzbnetCtrl.RequestManifest)
+			fed.GET("/manifests/:manifest_id", gonzbnetCtrl.GetManifest)
 			fed.GET("/coverage/groups", gonzbnetCtrl.CoverageGroups)
 			fed.GET("/coverage/plan", gonzbnetCtrl.CoveragePlan)
 			fed.GET("/coverage/work", gonzbnetCtrl.CoverageWork)
-			fed.POST("/coverage/claim", gonzbnetCtrl.CoverageClaim, federationRateLimit)
-			fed.POST("/coverage/checkpoint", gonzbnetCtrl.CoverageCheckpoint, federationRateLimit)
-			fed.POST("/validation/request", gonzbnetCtrl.ValidationRequest, federationRateLimit)
+			fed.POST("/coverage/claim", gonzbnetCtrl.CoverageClaim)
+			fed.POST("/coverage/checkpoint", gonzbnetCtrl.CoverageCheckpoint)
+			fed.POST("/validation/request", gonzbnetCtrl.ValidationRequest)
 			fed.GET("/capabilities/nodes", gonzbnetCtrl.NodeCapabilities)
 			fed.GET("/pools/:pool_id/checkpoint", gonzbnetCtrl.PoolCheckpoint)
 			fed.GET("/pools/:pool_id/members", gonzbnetCtrl.PoolMembers)
 			fed.GET("/peers", gonzbnetCtrl.Peers)
+			fed.POST("/evidence/yenc/query", gonzbnetCtrl.QueryYEncEvidence)
+			fed.POST("/evidence/segments/query", gonzbnetCtrl.QueryBinarySegments)
 			fed.GET("/ws", gonzbnetCtrl.GossipWS)
 		}
 
@@ -216,6 +221,7 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		v1AdminGoNZBNet.GET("/diagnostics/rejected-events", gonzbnetAdminCtrl.RejectedEventDiagnostics)
 		v1AdminGoNZBNet.GET("/diagnostics/deliveries", gonzbnetAdminCtrl.PeerDeliveryDiagnostics)
 		v1AdminGoNZBNet.GET("/diagnostics/validation-tasks", gonzbnetAdminCtrl.ValidationTaskDiagnostics)
+		v1AdminGoNZBNet.GET("/diagnostics/binary-evidence", gonzbnetAdminCtrl.BinaryEvidenceDiagnostics)
 		v1AdminGoNZBNet.GET("/diagnostics/release-sources", gonzbnetAdminCtrl.ReleaseSourceDiagnostics)
 		v1AdminGoNZBNet.GET("/diagnostics/manifest-sources", gonzbnetAdminCtrl.ManifestSourceDiagnostics)
 		v1AdminGoNZBNet.GET("/diagnostics/article-availability", gonzbnetAdminCtrl.ArticleAvailabilityDiagnostics)
@@ -511,21 +517,10 @@ func (t *federationFloodThrottle) recordViolation(identifier string, now time.Ti
 }
 
 func federationRateLimitIdentifier(c *echo.Context) string {
-	if nodeID := federationAuthorizationNodeID(c); nodeID != "" {
-		return "node:" + nodeID
-	}
+	// The Authorization header is not verified until the request reaches the
+	// handler. Never let an attacker select a fresh limiter bucket by rotating
+	// an unsigned node_id value.
 	return "ip:" + c.RealIP()
-}
-
-func federationAuthorizationNodeID(c *echo.Context) string {
-	if c == nil || c.Request() == nil {
-		return ""
-	}
-	values, err := requestauth.ParseAuthorization(c.Request().Header.Get("Authorization"))
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(values["node_id"])
 }
 
 func apiTokenMiddleware(authSvc *auth.Service, permissions ...string) echo.MiddlewareFunc {

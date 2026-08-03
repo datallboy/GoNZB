@@ -226,6 +226,15 @@ func validateGoNZBNet(in *app.GoNZBNetRuntimeSettings) []string {
 	positiveInt("time_tolerance_seconds", in.TimeToleranceSeconds)
 	positiveInt("max_event_age_hours", in.MaxEventAgeHours)
 	positiveInt("nonce_ttl_seconds", in.NonceTTLSeconds)
+	positiveInt("binary_evidence_peer_timeout_seconds", in.BinaryEvidencePeerTimeoutSecs)
+	positiveInt("binary_evidence_peer_fanout", in.BinaryEvidencePeerFanout)
+	positiveInt("binary_evidence_yenc_batch_size", in.BinaryEvidenceYEncBatchSize)
+	positiveInt("binary_evidence_segment_limit", in.BinaryEvidenceSegmentLimit)
+	positiveInt("binary_evidence_max_response_bytes", in.BinaryEvidenceMaxResponseBytes)
+	positiveInt("binary_evidence_circuit_breaker_cooldown_minutes", in.BinaryEvidenceCooldownMinutes)
+	if in.BinaryEvidencePeerFanout > 20 || in.BinaryEvidenceYEncBatchSize > 1000 || in.BinaryEvidenceSegmentLimit > 5000 {
+		issues = append(issues, "gonzbnet binary evidence batch limits exceed protocol bounds")
+	}
 	if in.ScannerMaxGroups < 0 || in.ScannerMaxArticlesPerHour < 0 || in.ScannerClaimTTLMinutes < 0 || in.ScannerCheckpointIntervalSecs < 0 {
 		issues = append(issues, "gonzbnet scanner limits must be greater than or equal to 0")
 	}

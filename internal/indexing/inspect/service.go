@@ -56,6 +56,7 @@ type Options struct {
 	Concurrency              int
 	ClaimOwner               string
 	ClaimLease               time.Duration
+	BodyRequestsPerHour      int64
 }
 
 type ContentFilterDecision struct {
@@ -149,6 +150,9 @@ func DefaultOptions(opts Options) Options {
 	}
 	if opts.Concurrency <= 0 {
 		opts.Concurrency = 1
+	}
+	if opts.BodyRequestsPerHour <= 0 {
+		opts.BodyRequestsPerHour = 1000
 	}
 	if strings.TrimSpace(opts.ClaimOwner) == "" {
 		opts.ClaimOwner = "inspect"

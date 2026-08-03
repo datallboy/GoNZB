@@ -18,7 +18,7 @@ import type {
   GoNZBNetRolesReport,
   GoNZBNetValidationTaskDiagnostic,
 } from '../../shared/types'
-import { formatDateTime, formatNumber } from '../../shared/lib/format'
+import { formatBytes, formatDateTime, formatNumber } from '../../shared/lib/format'
 
 type View = 'overview' | 'roles' | 'pools' | 'activity'
 
@@ -297,6 +297,48 @@ function OverviewView({ report }: { report: GoNZBNetOverviewReport | null }) {
         <div className="stat-card"><span>Release health</span><strong>{formatNumber(report.release_evidence.fresh)} fresh</strong><small>of {formatNumber(report.release_evidence.total)} shared reports</small></div>
         <div className="stat-card"><span>Article availability</span><strong>{formatNumber(report.article_evidence.fresh)} fresh</strong><small>from {formatNumber(report.article_evidence.reporters)} reporters</small></div>
       </div>
+      <section className="page-card stack">
+        <div>
+          <p className="eyebrow">Deployment checks</p>
+          <h2 className="section-title">Production readiness: {report.production_ready ? 'Ready' : 'Action required'}</h2>
+          <p className="muted-copy">Warnings are deployment choices to review. Failed checks should be resolved before exposing this node to the internet.</p>
+        </div>
+        <div className="gonzbnet-component-list">
+          {report.production_checks.map((check) => (
+            <div className="gonzbnet-component-row" key={check.key}>
+              <div><strong>{check.label}</strong><div className="muted-copy">{check.details}</div></div>
+              <div className="gonzbnet-component-row__metrics">
+                <span className={`status-pill status-pill--table gonzbnet-status gonzbnet-status--${check.status === 'pass' ? 'ready' : check.status === 'fail' ? 'blocked' : 'degraded'}`}>
+                  {check.status === 'pass' ? 'Pass' : check.status === 'fail' ? 'Fail' : 'Review'}
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+      <section className="page-card stack">
+        <div>
+          <p className="eyebrow">Storage</p>
+          <h2 className="section-title">GoNZBNet database footprint</h2>
+          <p className="muted-copy">Relation sizes include table data and indexes. Row counts are PostgreSQL estimates and may lag recent writes.</p>
+        </div>
+        {report.storage.available ? (
+          <>
+            <div className="stat-grid">
+              <div className="stat-card"><span>GoNZBNet total</span><strong>{formatBytes(report.storage.gonzbnet_bytes)}</strong><small>of {formatBytes(report.storage.database_bytes)} database</small></div>
+              <div className="stat-card"><span>Protocol log</span><strong>{formatBytes(report.storage.protocol_bytes)}</strong><small>Events, peers, replay protection</small></div>
+              <div className="stat-card"><span>Projections</span><strong>{formatBytes(report.storage.projection_bytes)}</strong><small>Releases, manifests, health, activity</small></div>
+              <div className="stat-card"><span>Direct evidence</span><strong>{formatBytes(report.storage.evidence_bytes)}</strong><small>yEnc facts and shared segments</small></div>
+            </div>
+            <details>
+              <summary>Relation details ({report.storage.relations.length})</summary>
+              <div className="table-scroll gonzbnet-details-body"><table className="data-table data-table--compact"><thead><tr><th>Relation</th><th>Purpose</th><th>Estimated rows</th><th>Size</th></tr></thead><tbody>
+                {report.storage.relations.map((relation) => <tr key={relation.name}><td>{relation.name}</td><td>{relation.category}</td><td>{formatNumber(relation.estimated_rows)}</td><td>{formatBytes(relation.total_bytes)}</td></tr>)}
+              </tbody></table></div>
+            </details>
+          </>
+        ) : <div className="muted-copy">Storage reporting is unavailable.</div>}
+      </section>
       <div className="gonzbnet-job-grid">
         {report.jobs.filter((job) => job.configured).map((job) => <RoleSummary job={job} key={job.key} />)}
       </div>

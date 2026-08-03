@@ -112,8 +112,29 @@ func TestInspectReadyQueueDefersDiscoveryAndBacksOffFailures(t *testing.T) {
 	if rows, err := res.RowsAffected(); err != nil || rows != 1 {
 		t.Fatalf("expected one seeded yenc work item, rows=%d err=%v", rows, err)
 	}
-	if _, err := store.RefreshInspectDiscoveryReadyQueue(ctx, 100); err != nil {
-		t.Fatalf("refresh discovery ready queue with active yenc work: %v", err)
+	releaseID := "inspect-ready-deferral-release"
+	if _, err := store.PersistReleaseSnapshot(ctx, ReleaseRecord{
+		ReleaseID:         releaseID,
+		GUID:              releaseID,
+		ProviderID:        testProviderID,
+		SourceReleaseKey:  "inspect-ready-deferral",
+		ReleaseFamilyKey:  "inspect-ready-deferral",
+		ReleaseKey:        "inspect-ready-deferral",
+		GroupName:         "inspect-ready-deferral",
+		Title:             "inspect-ready-deferral",
+		SearchTitle:       "inspect-ready-deferral",
+		FileCount:         1,
+		ExpectedFileCount: 1,
+		CompletionPct:     100,
+		PostedAt:          &postedAt,
+		MetadataUpdatedAt: &postedAt,
+	}, []ReleaseFileRecord{{
+		BinaryID:  binaryID,
+		FileName:  "opaque.bin",
+		FileIndex: 1,
+		PostedAt:  &postedAt,
+	}}, []int64{groupID}); err != nil {
+		t.Fatalf("persist release with active yenc work: %v", err)
 	}
 	var readyCount int
 	if err := store.DB().QueryRowContext(ctx, `
@@ -138,8 +159,13 @@ func TestInspectReadyQueueDefersDiscoveryAndBacksOffFailures(t *testing.T) {
 	); err != nil {
 		t.Fatalf("complete yenc work item: %v", err)
 	}
-	if _, err := store.RefreshInspectDiscoveryReadyQueue(ctx, 100); err != nil {
-		t.Fatalf("refresh discovery ready queue after yenc: %v", err)
+	if err := store.ReplaceReleaseFiles(ctx, releaseID, []ReleaseFileRecord{{
+		BinaryID:  binaryID,
+		FileName:  "opaque.bin",
+		FileIndex: 1,
+		PostedAt:  &postedAt,
+	}}); err != nil {
+		t.Fatalf("publish discovery event after yenc: %v", err)
 	}
 	if err := finishInspectReadyQueueRow(ctx, store.DB(), "inspect_discovery", binaryID, "failed", "temporary fetch failure"); err != nil {
 		t.Fatalf("finish failed discovery row: %v", err)
@@ -182,7 +208,7 @@ func TestInspectReadyQueueDefersDiscoveryAndBacksOffFailures(t *testing.T) {
 	defer lockTx.Rollback()
 	if _, err := lockTx.ExecContext(ctx,
 		`SELECT pg_advisory_xact_lock(hashtext($1))`,
-		"gonzb-inspect-discovery-ready-refresh",
+		"gonzb-inspect-discovery-ready-reconcile",
 	); err != nil {
 		t.Fatalf("hold discovery refresh lock: %v", err)
 	}
@@ -200,5 +226,46 @@ func TestInspectReadyQueueDefersDiscoveryAndBacksOffFailures(t *testing.T) {
 	}
 	if len(candidates) != 1 || candidates[0].BinaryID != binaryID {
 		t.Fatalf("expected existing ready candidate %d, got %+v", binaryID, candidates)
+	}
+}
+
+func TestInspectionReadyQueueReconcilesMissedReleaseEvent(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	releaseID, binaryID := seedNZBGenerateCandidateRelease(
+		t,
+		store,
+		ctx,
+		"inspection-reconcile",
+		"Inspection.Reconcile.2026.mkv",
+		0,
+		"video",
+	)
+	if _, err := store.DB().ExecContext(ctx, `
+		DELETE FROM binary_inspection_ready_queue
+		WHERE stage_name = 'inspect_media'
+		  AND binary_id = $1`, binaryID); err != nil {
+		t.Fatalf("simulate missed inspection event: %v", err)
+	}
+
+	result, err := store.RefreshInspectionReadyQueue(ctx, "inspect_media", 100)
+	if err != nil {
+		t.Fatalf("reconcile inspect_media queue: %v", err)
+	}
+	if result.ReadyUpserted != 1 {
+		t.Fatalf("expected one reconciled media candidate, got %+v", result)
+	}
+
+	var queuedReleaseID string
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT release_id
+		FROM binary_inspection_ready_queue
+		WHERE stage_name = 'inspect_media'
+		  AND binary_id = $1`, binaryID).Scan(&queuedReleaseID); err != nil {
+		t.Fatalf("load reconciled media row: %v", err)
+	}
+	if queuedReleaseID != releaseID {
+		t.Fatalf("expected reconciled release %q, got %q", releaseID, queuedReleaseID)
 	}
 }

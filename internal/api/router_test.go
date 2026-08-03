@@ -131,8 +131,11 @@ func TestRegisterRoutesGoNZBNetOnly(t *testing.T) {
 	assertRoutePresent(t, routes, "/gonzbnet/v1/pools/:pool_id/checkpoint")
 	assertRoutePresent(t, routes, "/gonzbnet/v1/pools/:pool_id/members")
 	assertRoutePresent(t, routes, "/gonzbnet/v1/peers")
+	assertRoutePresent(t, routes, "/gonzbnet/v1/evidence/yenc/query")
+	assertRoutePresent(t, routes, "/gonzbnet/v1/evidence/segments/query")
 	assertRoutePresent(t, routes, "/api/v1/admin/gonzbnet/node/profile")
 	assertRoutePresent(t, routes, "/api/v1/admin/gonzbnet/config/validation")
+	assertRoutePresent(t, routes, "/api/v1/admin/gonzbnet/diagnostics/binary-evidence")
 	assertRouteMissing(t, routes, "/api/v1/releases/search")
 	assertRouteMissing(t, routes, "/api/v1/queue")
 }
@@ -159,6 +162,8 @@ func TestRegisterRoutesGoNZBNetHTTPDisabledKeepsLocalAdmin(t *testing.T) {
 
 	assertRouteMissing(t, routes, "/.well-known/gonzbnet")
 	assertRouteMissing(t, routes, "/gonzbnet/v1/node")
+	assertRouteMissing(t, routes, "/gonzbnet/v1/evidence/yenc/query")
+	assertRouteMissing(t, routes, "/gonzbnet/v1/evidence/segments/query")
 	assertRouteMissing(t, routes, "/gonzbnet/v1/inbox")
 	assertRouteMissing(t, routes, "/gonzbnet/v1/events/batch")
 	assertRouteMissing(t, routes, "/gonzbnet/v1/coverage/groups")
@@ -173,6 +178,7 @@ func TestRegisterRoutesGoNZBNetHTTPDisabledKeepsLocalAdmin(t *testing.T) {
 	assertRouteMissing(t, routes, "/gonzbnet/v1/peers")
 	assertRoutePresent(t, routes, "/api/v1/admin/gonzbnet/node/profile")
 	assertRoutePresent(t, routes, "/api/v1/admin/gonzbnet/config/validation")
+	assertRoutePresent(t, routes, "/api/v1/admin/gonzbnet/diagnostics/binary-evidence")
 }
 
 func TestRegisterRoutesGoNZBNetDisabledOmitsFederationRoutes(t *testing.T) {
@@ -241,6 +247,31 @@ func TestFederationRateLimitReturnsStableErrorCode(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"code":"rate_limited"`) {
 		t.Fatalf("expected rate_limited code, got %s", rec.Body.String())
+	}
+}
+
+func TestFederationRateLimitCannotBeBypassedWithUnsignedNodeID(t *testing.T) {
+	e := echo.New()
+	mw := federationRateLimitMiddleware(1)
+	handler := mw(func(c *echo.Context) error {
+		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
+	})
+
+	for i, nodeID := range []string{"node_attacker_a", "node_attacker_b"} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/gonzbnet/v1/inbox", strings.NewReader(`{}`))
+		req.RemoteAddr = "192.0.2.20:12345"
+		req.Header.Set("Authorization", `GoNZBNet node_id="`+nodeID+`",timestamp="ignored",nonce="ignored",signature="ignored"`)
+		if err := handler(e.NewContext(req, rec)); err != nil {
+			t.Fatalf("request %d returned error: %v", i+1, err)
+		}
+		expected := http.StatusOK
+		if i == 1 {
+			expected = http.StatusTooManyRequests
+		}
+		if rec.Code != expected {
+			t.Fatalf("request %d: expected status %d, got %d", i+1, expected, rec.Code)
+		}
 	}
 }
 

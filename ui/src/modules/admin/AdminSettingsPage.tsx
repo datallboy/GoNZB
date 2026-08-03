@@ -165,6 +165,14 @@ function defaultGoNZBNetSettings(): GoNZBNetRuntimeSettings {
     gossip_ttl: 4,
     gossip_fanout: 4,
     peer_exchange_enabled: false,
+    binary_evidence_consume_enabled: true,
+    binary_evidence_serve_enabled: false,
+    binary_evidence_peer_timeout_seconds: 3,
+    binary_evidence_peer_fanout: 3,
+    binary_evidence_yenc_batch_size: 1000,
+    binary_evidence_segment_limit: 5000,
+    binary_evidence_max_response_bytes: 10 * 1024 * 1024,
+    binary_evidence_circuit_breaker_cooldown_minutes: 5,
     relay_enabled: false,
     max_event_bytes: 262144,
     max_manifest_bytes: 10485760,
@@ -237,6 +245,9 @@ function defaultSettings(): RuntimeSettings {
       },
       recovery_admission: {
         latest_reserve_percent: 10,
+        balanced_body_requests_per_hour: 25000,
+        exhaustive_body_requests_per_hour: 100000,
+        discovery_body_requests_per_hour: 1000,
       },
       release_summary_refresh: stageDefaults(10000, 0, { max_batches: 10 }),
       release: {
@@ -418,6 +429,9 @@ function normalizeSettings(input?: RuntimeSettings): RuntimeSettings {
       recovery_admission: {
         ...indexing.recovery_admission,
         latest_reserve_percent: indexing.recovery_admission?.latest_reserve_percent ?? 10,
+        balanced_body_requests_per_hour: indexing.recovery_admission?.balanced_body_requests_per_hour ?? 25000,
+        exhaustive_body_requests_per_hour: indexing.recovery_admission?.exhaustive_body_requests_per_hour ?? 100000,
+        discovery_body_requests_per_hour: indexing.recovery_admission?.discovery_body_requests_per_hour ?? 1000,
       },
       release_summary_refresh: { ...defaults.indexing!.release_summary_refresh, ...indexing.release_summary_refresh },
       release: { ...defaults.indexing!.release, ...indexing.release },
@@ -1086,6 +1100,20 @@ export function AdminSettingsPage() {
             </div>
           </SettingsSection>
 
+          <SettingsSection title="Binary evidence exchange">
+            <p className="settings-section-copy">Reuses signed yEnc headers and missing binary segments from authorized pool peers before spending NNTP BODY requests. Pool policy must also opt in.</p>
+            <div className="toolbar-grid">
+              <CheckboxField label="Consume peer evidence" checked={gonzbnet.binary_evidence_consume_enabled} onChange={(value) => setGoNZBNet({ binary_evidence_consume_enabled: value })} helpText="Checks the local evidence cache and authorized pool peers before NNTP BODY recovery." />
+              <CheckboxField label="Serve local evidence" checked={gonzbnet.binary_evidence_serve_enabled} onChange={(value) => setGoNZBNet({ binary_evidence_serve_enabled: value })} helpText="Serves only locally acquired evidence. Imported evidence is never relayed." />
+              <NumberField label="Peer timeout (seconds)" min={1} value={gonzbnet.binary_evidence_peer_timeout_seconds} onChange={(value) => setGoNZBNet({ binary_evidence_peer_timeout_seconds: value })} />
+              <NumberField label="Peer fanout" min={1} max={20} value={gonzbnet.binary_evidence_peer_fanout} onChange={(value) => setGoNZBNet({ binary_evidence_peer_fanout: value })} />
+              <NumberField label="yEnc query batch" min={1} max={1000} value={gonzbnet.binary_evidence_yenc_batch_size} onChange={(value) => setGoNZBNet({ binary_evidence_yenc_batch_size: value })} />
+              <NumberField label="Segment response limit" min={1} max={5000} value={gonzbnet.binary_evidence_segment_limit} onChange={(value) => setGoNZBNet({ binary_evidence_segment_limit: value })} />
+              <NumberField label="Max response bytes" min={1024} value={gonzbnet.binary_evidence_max_response_bytes} onChange={(value) => setGoNZBNet({ binary_evidence_max_response_bytes: value })} />
+              <NumberField label="Failure cooldown (minutes)" min={1} value={gonzbnet.binary_evidence_circuit_breaker_cooldown_minutes} onChange={(value) => setGoNZBNet({ binary_evidence_circuit_breaker_cooldown_minutes: value })} />
+            </div>
+          </SettingsSection>
+
           <SettingsSection title="Transport limits and privacy">
             <div className="toolbar-grid">
               <NumberField label="Max event bytes" min={1} value={gonzbnet.max_event_bytes} onChange={(value) => setGoNZBNet({ max_event_bytes: value })} />
@@ -1605,6 +1633,27 @@ export function AdminSettingsPage() {
               value={indexing.recovery_admission?.latest_reserve_percent ?? 10}
               helpText="Reserves this share of each yEnc recovery claim for the newest available work before older fairness lanes are selected."
               onChange={(value) => setIndexing({ ...indexing, recovery_admission: { ...indexing.recovery_admission!, latest_reserve_percent: value } })}
+            />
+            <NumberField
+              label="Balanced BODY requests/hour"
+              min={1}
+              value={indexing.recovery_admission?.balanced_body_requests_per_hour ?? 25000}
+              helpText="Durable hourly NNTP BODY cap in Balanced mode. Balanced samples small opaque cohorts and expands only when repeated recovered evidence is useful."
+              onChange={(value) => setIndexing({ ...indexing, recovery_admission: { ...indexing.recovery_admission!, balanced_body_requests_per_hour: value } })}
+            />
+            <NumberField
+              label="Exhaustive BODY requests/hour"
+              min={1}
+              value={indexing.recovery_admission?.exhaustive_body_requests_per_hour ?? 100000}
+              helpText="Durable hourly NNTP BODY cap in Exhaustive mode. Exhaustive explores more opaque cohorts, but still stops cohorts that produce no grouping evidence."
+              onChange={(value) => setIndexing({ ...indexing, recovery_admission: { ...indexing.recovery_admission!, exhaustive_body_requests_per_hour: value } })}
+            />
+            <NumberField
+              label="Discovery BODY requests/hour"
+              min={1}
+              value={indexing.recovery_admission?.discovery_body_requests_per_hour ?? 1000}
+              helpText="Durable hourly cap for inspection signature probes. Discovery samples one representative release file instead of scanning every binary globally."
+              onChange={(value) => setIndexing({ ...indexing, recovery_admission: { ...indexing.recovery_admission!, discovery_body_requests_per_hour: value } })}
             />
             <CheckboxField
               label="Enable destructive outcome purge"

@@ -174,6 +174,11 @@ func TestDefaultRuntimeSettingsAreOperationallyDisabled(t *testing.T) {
 	if runtime.Indexing.RecoveryAdmission.LatestReservePercent != 10 {
 		t.Fatalf("expected latest-work capacity reserve, got %+v", runtime.Indexing.RecoveryAdmission)
 	}
+	if runtime.Indexing.RecoveryAdmission.BalancedBodyRequestsPerHour != 25000 ||
+		runtime.Indexing.RecoveryAdmission.ExhaustiveBodyRequestsPerHour != 100000 ||
+		runtime.Indexing.RecoveryAdmission.DiscoveryBodyRequestsPerHour != 1000 {
+		t.Fatalf("unexpected BODY request budgets: %+v", runtime.Indexing.RecoveryAdmission)
+	}
 }
 
 func TestWithRuntimeDefaultsMapsLegacyPartitionAheadSetting(t *testing.T) {

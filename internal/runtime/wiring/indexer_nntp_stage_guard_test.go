@@ -92,7 +92,7 @@ func TestNNTPTrafficGuardBlocksScrapeBackfillWhenPoolHotAndLatestEnabled(t *test
 	}
 }
 
-func TestNNTPTrafficGuardBlocksScrapeLatestWhenRecoverYEncBacklogIsHot(t *testing.T) {
+func TestNNTPTrafficGuardKeepsScrapeLatestAheadOfRecoveryBacklog(t *testing.T) {
 	guard := &cachedNNTPTrafficGuard{
 		settingsStore: fakePipelineSettingsStore{runtime: &app.RuntimeSettings{
 			NNTPPool: &app.NNTPPoolRuntimeSettings{IndexerStageTargetPercent: 90},
@@ -116,8 +116,41 @@ func TestNNTPTrafficGuardBlocksScrapeLatestWhenRecoverYEncBacklogIsHot(t *testin
 	if err != nil {
 		t.Fatalf("allowStage returned error: %v", err)
 	}
+	if !decision.Allowed {
+		t.Fatalf("expected scrape_latest to remain allowed, got %+v", decision)
+	}
+}
+
+func TestNNTPTrafficGuardBlocksRecoveryWhileScrapeIsUsingHotPool(t *testing.T) {
+	guard := &cachedNNTPTrafficGuard{
+		settingsStore: fakePipelineSettingsStore{runtime: &app.RuntimeSettings{
+			NNTPPool: &app.NNTPPoolRuntimeSettings{IndexerStageTargetPercent: 90},
+			Indexing: &app.IndexingRuntimeSettings{
+				ScrapeLatest: app.IndexingStageRuntimeSettings{Enabled: true, BatchSize: 5000},
+				RecoverYEnc:  app.IndexingStageRuntimeSettings{Enabled: true, BatchSize: 1000},
+			},
+		}},
+		repo: fakeNNTPTrafficBacklogReader{yenc: 6000},
+		statsFn: func() app.NNTPRuntimeStats {
+			return app.NNTPRuntimeStats{
+				Capacity: 50,
+				Active:   47,
+				Waiting:  3,
+				Scopes: []app.NNTPScopeRuntimeStats{{
+					Scope:  "scrape",
+					Active: 40,
+				}},
+			}
+		},
+		lastResults: make(map[supervisor.StageName]supervisor.StageGateDecision),
+	}
+
+	decision, err := guard.allowStage(context.Background(), supervisor.Stage{Name: supervisor.StageRecoverYEnc}, "scheduled")
+	if err != nil {
+		t.Fatalf("allowStage returned error: %v", err)
+	}
 	if decision.Allowed {
-		t.Fatalf("expected scrape_latest to be blocked, got %+v", decision)
+		t.Fatalf("expected recover_yenc to yield to scrape traffic, got %+v", decision)
 	}
 }
 

@@ -2974,10 +2974,12 @@ func refreshBinaryStatsIDsInTxForWindow(ctx context.Context, tx *sql.Tx, binaryI
 					lb.source_posted_at AS stats_source_posted_at,
 					bp.segment_bytes,
 					bp.part_number,
-					bp.article_header_id,
-					bp.source_posted_at
+					bp.source_posted_at,
+					bp.article_number,
+					bp.posted_at AS date_utc,
+					bp.part_source
 				FROM locked_binaries lb
-				JOIN binary_parts bp
+				JOIN binary_effective_parts bp
 				  -- Existing min/max values describe the previous refresh. Widen
 				  -- them so a yEnc merge can extend a target across source times.
 				  ON bp.source_posted_at >= CASE
@@ -2991,21 +2993,6 @@ func refreshBinaryStatsIDsInTxForWindow(ctx context.Context, tx *sql.Tx, binaryI
 				 AND bp.binary_id = lb.binary_id
 				WHERE ($4::boolean = FALSE OR (bp.source_posted_at >= $5 AND bp.source_posted_at < $6))
 		),
-		part_rows_with_headers AS MATERIALIZED (
-			SELECT
-					p.binary_id,
-					p.stats_source_posted_at,
-					p.segment_bytes,
-					p.part_number,
-					p.source_posted_at,
-					ah.article_number,
-				ah.date_utc
-			FROM part_rows p
-			JOIN article_headers ah
-			  ON ah.source_posted_at = p.source_posted_at
-			 AND ah.id = p.article_header_id
-			WHERE ($4::boolean = FALSE OR (ah.source_posted_at >= $5 AND ah.source_posted_at < $6))
-		),
 		logical_parts AS MATERIALIZED (
 			SELECT DISTINCT ON (p.binary_id, p.stats_source_posted_at, p.part_number)
 				p.binary_id,
@@ -3015,8 +3002,10 @@ func refreshBinaryStatsIDsInTxForWindow(ctx context.Context, tx *sql.Tx, binaryI
 				p.source_posted_at,
 				p.article_number,
 				p.date_utc
-			FROM part_rows_with_headers p
-			ORDER BY p.binary_id, p.stats_source_posted_at, p.part_number, p.source_posted_at, p.article_number
+			FROM part_rows p
+			ORDER BY p.binary_id, p.stats_source_posted_at, p.part_number,
+			         CASE p.part_source WHEN 'local' THEN 0 ELSE 1 END,
+			         p.source_posted_at, p.article_number
 		),
 		agg AS (
 			SELECT

@@ -152,12 +152,16 @@ func containsString(items []string, value string) bool {
 	return false
 }
 
-func (c *Client) SubmitJoin(ctx context.Context, baseURL, poolID string, event *events.SignedEvent) error {
+func (c *Client) SubmitJoin(ctx context.Context, baseURL, poolID, invitation string, event *events.SignedEvent) error {
 	if event == nil {
 		return fmt.Errorf("join event is required")
 	}
 	endpoint := strings.TrimRight(baseURL, "/") + "/pools/" + url.PathEscape(poolID) + "/join-requests"
-	return c.postJSON(ctx, endpoint, event, nil, false)
+	headers := http.Header{}
+	if invitation = strings.TrimSpace(invitation); invitation != "" {
+		headers.Set("X-GoNZBNet-Invitation", invitation)
+	}
+	return c.postJSONWithHeaders(ctx, endpoint, event, nil, false, headers)
 }
 
 func (c *Client) SubmitApproval(ctx context.Context, baseURL string, fragment ApprovalFragment) (Status, error) {
@@ -243,6 +247,10 @@ func (c *Client) getJSON(ctx context.Context, endpoint string, out any) error {
 }
 
 func (c *Client) postJSON(ctx context.Context, endpoint string, body, out any, signed bool) error {
+	return c.postJSONWithHeaders(ctx, endpoint, body, out, signed, nil)
+}
+
+func (c *Client) postJSONWithHeaders(ctx context.Context, endpoint string, body, out any, signed bool, headers http.Header) error {
 	if err := transportpolicy.ValidateHTTPURL(endpoint, c.allowInsecure); err != nil {
 		return err
 	}
@@ -255,6 +263,11 @@ func (c *Client) postJSON(ctx context.Context, endpoint string, body, out any, s
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	for name, values := range headers {
+		for _, value := range values {
+			req.Header.Add(name, value)
+		}
+	}
 	if signed {
 		auth, err := requestauth.Sign(ctx, c.identity, req.Method, req.URL.Path, req.URL.RawQuery, payload, time.Now())
 		if err != nil {

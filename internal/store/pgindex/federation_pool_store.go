@@ -587,11 +587,11 @@ func (s *Store) GetTrustPoolPolicy(ctx context.Context, poolID string) (pools.Po
 	if s == nil || s.db == nil {
 		return policy, fmt.Errorf("pgindex store is not initialized")
 	}
-	var acceptedTypesJSON []byte
+	var acceptedTypesJSON, policyJSON []byte
 	err := s.federationExecutor(ctx).QueryRowContext(ctx, `
 		SELECT pool_id, membership_threshold, moderation_threshold,
 		       checkpoint_witness_threshold, accept_mode, min_node_trust_score,
-		       accepted_event_types
+		       accepted_event_types, policy_json
 		FROM trust_pools
 		WHERE pool_id = $1
 		  AND enabled = TRUE`, strings.TrimSpace(poolID)).Scan(
@@ -601,13 +601,43 @@ func (s *Store) GetTrustPoolPolicy(ctx context.Context, poolID string) (pools.Po
 		&policy.CheckpointWitnessThreshold,
 		&policy.AcceptMode,
 		&policy.MinNodeTrustScore,
-		&acceptedTypesJSON,
+		&acceptedTypesJSON, &policyJSON,
 	)
 	if err != nil {
 		return policy, err
 	}
 	_ = json.Unmarshal(acceptedTypesJSON, &policy.AcceptedEventTypes)
+	var full pools.Policy
+	if json.Unmarshal(policyJSON, &full) == nil {
+		policy.AllowBinaryEvidenceExchange = full.AllowBinaryEvidenceExchange
+	}
 	return policy, nil
+}
+
+func (s *Store) IsActivePoolMemberWithCapability(ctx context.Context, poolID, nodeID, required string) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, fmt.Errorf("pgindex store is not initialized")
+	}
+	var allowed bool
+	err := s.federationExecutor(ctx).QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM pool_members member
+			JOIN trust_pools pool ON pool.pool_id = member.pool_id
+			WHERE member.pool_id = $1
+			  AND member.node_id = $2
+			  AND member.status = 'active'
+			  AND pool.enabled = TRUE
+			  AND (
+			    member.role = 'admin'
+			    OR EXISTS (
+			      SELECT 1
+			      FROM jsonb_array_elements_text(member.allowed_capabilities) cap(value)
+			      WHERE cap.value = $3
+			    )
+			  )
+		)`, strings.TrimSpace(poolID), strings.TrimSpace(nodeID), strings.TrimSpace(required)).Scan(&allowed)
+	return allowed, err
 }
 
 func (s *Store) ActivePoolAdminPublicKeys(ctx context.Context, poolID string) (map[string]ed25519.PublicKey, error) {
@@ -881,6 +911,7 @@ func defaultAllowedCapabilities(role string, allowed []string) []string {
 		capability.HealthChecker,
 		capability.Relay,
 		capability.CoverageCoordinator,
+		capability.BinaryEvidenceExchange,
 	}
 }
 

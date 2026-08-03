@@ -10,17 +10,27 @@ import (
 )
 
 const (
-	EventsReceivedTotal          = "gonzbnet_events_received_total"
-	EventsAcceptedTotal          = "gonzbnet_events_accepted_total"
-	EventsRejectedTotal          = "gonzbnet_events_rejected_total"
-	PeerFailuresTotal            = "gonzbnet_peer_failures_total"
-	ManifestRequestsTotal        = "gonzbnet_manifest_requests_total"
-	ManifestRequestFailuresTotal = "gonzbnet_manifest_request_failures_total"
-	ReleaseCardsProjectedTotal   = "gonzbnet_release_cards_projected_total"
-	HealthAttestationsTotal      = "gonzbnet_health_attestations_total"
-	TombstonesActiveTotal        = "gonzbnet_tombstones_active_total"
-	PeerSyncDurationSeconds      = "gonzbnet_peer_sync_duration_seconds"
-	ManifestResolutionSeconds    = "gonzbnet_manifest_resolution_duration_seconds"
+	EventsReceivedTotal                 = "gonzbnet_events_received_total"
+	EventsAcceptedTotal                 = "gonzbnet_events_accepted_total"
+	EventsRejectedTotal                 = "gonzbnet_events_rejected_total"
+	PeerFailuresTotal                   = "gonzbnet_peer_failures_total"
+	ManifestRequestsTotal               = "gonzbnet_manifest_requests_total"
+	ManifestRequestFailuresTotal        = "gonzbnet_manifest_request_failures_total"
+	BinaryEvidencePeerRequestsTotal     = "gonzbnet_binary_evidence_peer_requests_total"
+	BinaryEvidencePeerFailuresTotal     = "gonzbnet_binary_evidence_peer_failures_total"
+	BinaryEvidenceYEncHitsTotal         = "gonzbnet_binary_evidence_yenc_hits_total"
+	BinaryEvidenceBodyAvoidedTotal      = "gonzbnet_binary_evidence_body_requests_avoided_total"
+	BinaryEvidenceSegmentsImportedTotal = "gonzbnet_binary_evidence_segments_imported_total"
+	BinaryEvidenceCompletedTotal        = "gonzbnet_binary_evidence_completed_binaries_total"
+	BinaryEvidenceResponseBytesTotal    = "gonzbnet_binary_evidence_response_bytes_total"
+	BinaryEvidenceConflictsTotal        = "gonzbnet_binary_evidence_conflicts_total"
+	BinaryEvidenceQuarantinesTotal      = "gonzbnet_binary_evidence_quarantines_total"
+	BinaryEvidenceTimeoutsTotal         = "gonzbnet_binary_evidence_timeouts_total"
+	ReleaseCardsProjectedTotal          = "gonzbnet_release_cards_projected_total"
+	HealthAttestationsTotal             = "gonzbnet_health_attestations_total"
+	TombstonesActiveTotal               = "gonzbnet_tombstones_active_total"
+	PeerSyncDurationSeconds             = "gonzbnet_peer_sync_duration_seconds"
+	ManifestResolutionSeconds           = "gonzbnet_manifest_resolution_duration_seconds"
 )
 
 var counterNames = []string{
@@ -32,6 +42,16 @@ var counterNames = []string{
 	ManifestRequestFailuresTotal,
 	ReleaseCardsProjectedTotal,
 	HealthAttestationsTotal,
+	BinaryEvidencePeerRequestsTotal,
+	BinaryEvidencePeerFailuresTotal,
+	BinaryEvidenceYEncHitsTotal,
+	BinaryEvidenceBodyAvoidedTotal,
+	BinaryEvidenceSegmentsImportedTotal,
+	BinaryEvidenceCompletedTotal,
+	BinaryEvidenceResponseBytesTotal,
+	BinaryEvidenceConflictsTotal,
+	BinaryEvidenceQuarantinesTotal,
+	BinaryEvidenceTimeoutsTotal,
 }
 
 type durationMetric struct {
