@@ -9,7 +9,7 @@ function canOpenAdminPortal(permissions: string[]) {
   return permissions.some((permission) =>
     permission.startsWith('indexer.runtime.') ||
     permission.startsWith('aggregator.runtime.') ||
-    permission.startsWith('downloader.runtime.') ||
+    permission.startsWith('download_clients.') ||
     permission.startsWith('gonzbnet.') ||
     permission.startsWith('admin.settings.') ||
     permission.startsWith('auth.')

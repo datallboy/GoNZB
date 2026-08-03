@@ -7,7 +7,6 @@ import (
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/infra/config"
 	"github.com/datallboy/gonzb/internal/infra/logger"
-	"github.com/datallboy/gonzb/internal/infra/platform"
 	"github.com/datallboy/gonzb/internal/runtime/wiring"
 )
 
@@ -42,12 +41,6 @@ func (r *Runner) loadRuntimeConfig() (*config.Config, *logger.Logger) {
 
 func (r *Runner) setupApp(ctx context.Context) *app.Context {
 	cfg, appLogger := r.loadRuntimeConfig()
-
-	if cfg.Modules.Downloader.Enabled {
-		if err := platform.ValidateDependencies(); err != nil {
-			log.Fatalf("Missing dependencies. Please check your Dockerfile or local installation: %v", err)
-		}
-	}
 
 	appCtx, err := app.NewContext(cfg, appLogger)
 	if err != nil {

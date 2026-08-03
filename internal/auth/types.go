@@ -32,8 +32,7 @@ const (
 	PermissionGoNZBNetAdminScanner       = "gonzbnet.admin.scanner"
 	PermissionGoNZBNetAdminValidator     = "gonzbnet.admin.validator"
 	PermissionGoNZBNetAdminScheduler     = "gonzbnet.admin.scheduler"
-	PermissionDownloaderRuntimeRead      = "downloader.runtime.read"
-	PermissionDownloaderRuntimeConfigure = "downloader.runtime.configure"
+	PermissionDownloadClientsSend        = "download_clients.send"
 	PermissionAuthUsersRead              = "auth.users.read"
 	PermissionAuthUsersWrite             = "auth.users.write"
 	PermissionAuthRolesRead              = "auth.roles.read"
@@ -109,7 +108,7 @@ func DefaultRoles() []Role {
 				PermissionAdminSettingsRead,
 				PermissionAggregatorReleasesRead,
 				PermissionAggregatorRuntimeRead,
-				PermissionDownloaderRuntimeRead,
+				PermissionDownloadClientsSend,
 			},
 		},
 		{
@@ -146,8 +145,7 @@ func DefaultRoles() []Role {
 				PermissionGoNZBNetAdminScanner,
 				PermissionGoNZBNetAdminValidator,
 				PermissionGoNZBNetAdminScheduler,
-				PermissionDownloaderRuntimeRead,
-				PermissionDownloaderRuntimeConfigure,
+				PermissionDownloadClientsSend,
 				PermissionAuthUsersRead,
 				PermissionAuthUsersWrite,
 				PermissionAuthRolesRead,

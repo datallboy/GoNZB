@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/datallboy/gonzb/internal/api"
-	"github.com/datallboy/gonzb/internal/engine"
 	"github.com/datallboy/gonzb/internal/runtime/wiring"
 	"github.com/datallboy/gonzb/internal/telemetry"
 	"github.com/labstack/echo/v5"
@@ -29,9 +28,6 @@ func (r *Runner) ExecuteServerWithOptions(opts ServerOptions) {
 		appCtx.Logger.Fatal("%v", err)
 	}
 
-	if appCtx.Config.Modules.Downloader.Enabled {
-		appCtx.Queue = engine.NewQueueManager(appCtx, true)
-	}
 	wiring.BindApplicationModules(appCtx)
 
 	// Server mode must stay reachable for the control plane even when
@@ -83,9 +79,8 @@ func (r *Runner) ExecuteServerWithOptions(opts ServerOptions) {
 	}
 
 	appCtx.Logger.Info(
-		"starting server addr=%s downloader=%t aggregator=%t usenet_indexer=%t api=%t web_ui=%t indexer_supervisor=%t",
+		"starting server addr=%s aggregator=%t usenet_indexer=%t api=%t web_ui=%t indexer_supervisor=%t",
 		srv.Addr,
-		appCtx.Config.Modules.Downloader.Enabled,
 		appCtx.Config.Modules.Aggregator.Enabled,
 		appCtx.Config.Modules.UsenetIndexer.Enabled,
 		appCtx.Config.Modules.API.Enabled,

@@ -53,9 +53,8 @@ RUN chmod +x /usr/bin/unrar
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-# Create directories for config and download
-RUN mkdir /config /downloads /completed
-RUN mkdir -p /store/metadata /store/nzbs
+# Create runtime configuration and storage directories.
+RUN mkdir -p /config /store/metadata /store/nzbs
 
 COPY --from=builder /app/gonzb .
 

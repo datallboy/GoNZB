@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { enqueueReleaseToDownloader, getPublicRelease } from '../../shared/api/indexer'
+import { getPublicRelease, sendReleaseToDownloadClient } from '../../shared/api/indexer'
 import { formatBytes, formatDateTime, formatRuntime } from '../../shared/lib/format'
+import { useAuth } from '../../shared/auth/useAuth'
 import type { PublicReleaseDetail } from '../../shared/types'
 import { releaseCategoryLabel, simpleSceneName } from './browse'
 
@@ -13,12 +14,13 @@ function publicFileTypeLabel(fileName: string, isPars: boolean) {
 }
 
 export function IndexerReleaseDetailPage() {
+	const { hasPermission } = useAuth()
   const { id = '' } = useParams()
   const [data, setData] = useState<PublicReleaseDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [downloadMessage, setDownloadMessage] = useState<string | null>(null)
-  const [downloading, setDownloading] = useState(false)
+  const [sendMessage, setSendMessage] = useState<string | null>(null)
+  const [sending, setSending] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -50,17 +52,17 @@ export function IndexerReleaseDetailPage() {
     }
   }, [id])
 
-  async function handleSendToDownloader() {
+  async function handleSendToDownloadClient() {
     if (!data) return
-    setDownloading(true)
-    setDownloadMessage(null)
+    setSending(true)
+    setSendMessage(null)
     try {
-      await enqueueReleaseToDownloader(data.release.release_id, data.release.title)
-      setDownloadMessage('Release sent to downloader queue.')
+		await sendReleaseToDownloadClient(data.release.release_id)
+		setSendMessage('Release sent to the configured download client.')
     } catch (err) {
-      setDownloadMessage(err instanceof Error ? err.message : 'Failed to send release')
+      setSendMessage(err instanceof Error ? err.message : 'Failed to send release')
     } finally {
-      setDownloading(false)
+      setSending(false)
     }
   }
 
@@ -89,15 +91,15 @@ export function IndexerReleaseDetailPage() {
           <Link className="secondary-button" to="/indexer/releases">
             Back to browse
           </Link>
-          {capabilities.can_send_to_downloader ? (
-            <button className="primary-button" onClick={handleSendToDownloader} disabled={downloading}>
-              {downloading ? 'Sending...' : 'Download NZB'}
+		  {capabilities.can_send_to_download_client && hasPermission('download_clients.send') ? (
+			<button className="primary-button" onClick={handleSendToDownloadClient} disabled={sending}>
+			  {sending ? 'Sending...' : 'Send to downloader'}
             </button>
           ) : null}
         </div>
       </div>
 
-      {downloadMessage ? <div className="banner">{downloadMessage}</div> : null}
+      {sendMessage ? <div className="banner">{sendMessage}</div> : null}
 
       <div className="public-detail__grid">
         <div className="page-card">

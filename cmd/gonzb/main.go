@@ -11,7 +11,6 @@ import (
 )
 
 var (
-	nzbPath string
 	cfgFile string = "config.yaml"
 
 	serveWithoutIndexerSupervisor      bool
@@ -43,17 +42,11 @@ var (
 
 var rootCmd = &cobra.Command{
 	Use:     "gonzb",
-	Short:   "GONZB is a simple Usenet downloader",
-	Long:    `A lightweight, concurrent NNTP downloaer written in Go.`,
+	Short:   "GoNZB indexes and shares Usenet release metadata",
+	Long:    `A Usenet indexer, Newznab aggregator, and decentralized GoNZBNet node.`,
 	Version: buildinfo.Version,
 	Run: func(cmd *cobra.Command, args []string) {
-		if nzbPath == "" {
-			fmt.Println("Error: --file or -f is required")
-			cmd.Help()
-			return
-		}
-
-		commands.New(cfgFile).ExecuteDownload(nzbPath)
+		_ = cmd.Help()
 	},
 }
 
@@ -424,7 +417,6 @@ var indexerEnrichTMDBCmd = &cobra.Command{
 func init() {
 	// Define flags
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "config.yaml", "config file (default is ./config.yaml)")
-	rootCmd.Flags().StringVarP(&nzbPath, "file", "f", "", "Path to the NZB file (required)")
 
 	rootCmd.SetVersionTemplate(fmt.Sprintf("GoNZB Version: %s\nBuild Time: %s\n", buildinfo.Version, buildinfo.BuildTime))
 	rootCmd.Flags().BoolP("version", "v", false, "display version information")

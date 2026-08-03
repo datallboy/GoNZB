@@ -64,7 +64,6 @@ install: build
 clean:
 	@echo "Cleaning up..."
 	rm -rf bin/
-	rm -f downloads/
 	rm -f *.nzb
 
 gonzbnet-e2e-test:
