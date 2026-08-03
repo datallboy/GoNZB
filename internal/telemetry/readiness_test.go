@@ -13,7 +13,6 @@ func TestReadinessUsesRuntimeModuleChecks(t *testing.T) {
 		Config: &config.Config{
 			Modules: config.ModulesConfig{
 				API:           config.ModuleToggle{Enabled: true},
-				Downloader:    config.ModuleToggle{Enabled: true},
 				Aggregator:    config.ModuleToggle{Enabled: true},
 				UsenetIndexer: config.ModuleToggle{Enabled: false},
 			},
@@ -21,13 +20,6 @@ func TestReadinessUsesRuntimeModuleChecks(t *testing.T) {
 	}
 
 	appCtx.RegisterRuntimeModules(
-		fakeRuntimeModule{
-			name:    "downloader",
-			enabled: true,
-			checks: []app.RuntimeCheck{
-				{Name: "queue_manager", OK: true},
-			},
-		},
 		fakeRuntimeModule{
 			name:    "aggregator",
 			enabled: true,
@@ -40,9 +32,6 @@ func TestReadinessUsesRuntimeModuleChecks(t *testing.T) {
 	code, report := Readiness(context.Background(), appCtx)
 	if code != 503 {
 		t.Fatalf("expected service unavailable, got %d", code)
-	}
-	if report.Modules["downloader"].Status != "ready" {
-		t.Fatalf("expected downloader ready, got %q", report.Modules["downloader"].Status)
 	}
 	if report.Modules["aggregator"].Status != "not_ready" {
 		t.Fatalf("expected aggregator not_ready, got %q", report.Modules["aggregator"].Status)

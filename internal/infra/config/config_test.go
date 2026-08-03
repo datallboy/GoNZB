@@ -14,15 +14,6 @@ func TestAggregatorBootstrapDoesNotRequireSource(t *testing.T) {
 	}
 }
 
-func TestDownloaderBootstrapDoesNotRequireNNTPServer(t *testing.T) {
-	cfg := minimalAggregatorConfig()
-	cfg.Modules.Downloader.Enabled = true
-
-	if err := cfg.ValidateEffective(); err != nil {
-		t.Fatalf("expected unconfigured downloader bootstrap to validate, got %v", err)
-	}
-}
-
 func TestAPITrustedProxyCIDRValidation(t *testing.T) {
 	cfg := minimalAggregatorConfig()
 	cfg.API.TrustedProxyCIDRs = []string{"not-a-cidr"}
@@ -47,8 +38,6 @@ func TestIndexerAllowedCIDRValidation(t *testing.T) {
 func TestAPIBootstrapTokenEnvironmentOverride(t *testing.T) {
 	cfgPath := writeMinimalConfig(t, `
 modules:
-  downloader:
-    enabled: false
   aggregator:
     enabled: true
   usenet_indexer:
@@ -83,8 +72,6 @@ func TestReleaseExpectedFileCoverageValidation(t *testing.T) {
 func TestIndexerRecoveryProfileDefaultsToBalanced(t *testing.T) {
 	cfgPath := writeMinimalConfig(t, `
 modules:
-  downloader:
-    enabled: false
   aggregator:
     enabled: true
   usenet_indexer:
@@ -134,8 +121,6 @@ func TestGoNZBNetRejectsLiveQueryEnabled(t *testing.T) {
 func TestGoNZBNetRejectsLiveQueryEnvAlias(t *testing.T) {
 	cfgPath := writeMinimalConfig(t, `
 modules:
-  downloader:
-    enabled: false
   aggregator:
     enabled: true
   usenet_indexer:
@@ -169,8 +154,6 @@ func TestGoNZBNetEnabledEnvAliasMapsToModuleGate(t *testing.T) {
 store:
   pg_dsn: postgres://gonzb:gonzb@localhost:5432/gonzb?sslmode=disable
 modules:
-  downloader:
-    enabled: false
   aggregator:
     enabled: false
   usenet_indexer:
@@ -196,8 +179,6 @@ func TestProjectPrefixedGoNZBNetModuleEnvTakesPrecedenceOverAlias(t *testing.T) 
 store:
   pg_dsn: postgres://gonzb:gonzb@localhost:5432/gonzb?sslmode=disable
 modules:
-  downloader:
-    enabled: false
   aggregator:
     enabled: false
   usenet_indexer:
@@ -222,8 +203,6 @@ modules:
 func TestGoNZBNetMaxEventAgeDefault(t *testing.T) {
 	cfgPath := writeMinimalConfig(t, `
 modules:
-  downloader:
-    enabled: false
   aggregator:
     enabled: true
   usenet_indexer:
@@ -246,8 +225,6 @@ modules:
 func TestGoNZBNetAddendumConfigDefaults(t *testing.T) {
 	cfgPath := writeMinimalConfig(t, `
 modules:
-  downloader:
-    enabled: false
   aggregator:
     enabled: true
   usenet_indexer:
@@ -279,8 +256,6 @@ modules:
 func TestGoNZBNetAddendumEnvAliases(t *testing.T) {
 	cfgPath := writeMinimalConfig(t, `
 modules:
-  downloader:
-    enabled: false
   aggregator:
     enabled: true
   usenet_indexer:
@@ -340,9 +315,6 @@ func minimalAggregatorConfig() *Config {
 		Modules: ModulesConfig{
 			Aggregator: ModuleToggle{Enabled: true},
 			API:        ModuleToggle{Enabled: true},
-		},
-		Download: DownloadConfig{
-			OutDir: "./downloads",
 		},
 	}
 }

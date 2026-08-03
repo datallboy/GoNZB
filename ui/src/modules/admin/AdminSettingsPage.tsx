@@ -4,8 +4,8 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { getCapabilities, getSettings, testSettingsConnection, updateSettings } from '../../shared/api/settings'
 import type {
   AdminStageConfigPatch,
-  ArrIntegrationRuntimeSettings,
-  ControlPlaneCapabilities,
+	ControlPlaneCapabilities,
+	DownloadClientRuntimeSettings,
   GoNZBNetRuntimeSettings,
   IndexerRuntimeSettings,
   IndexingRuntimeSettings,
@@ -35,7 +35,7 @@ type StageKey =
   | 'enrich_predb'
   | 'enrich_tmdb'
 
-type SettingsTab = 'nntp' | 'downloader' | 'aggregator' | 'gonzbnet' | 'indexer'
+type SettingsTab = 'nntp' | 'download-clients' | 'aggregator' | 'gonzbnet' | 'indexer'
 
 type StageDefinition = {
   key: StageKey
@@ -87,7 +87,7 @@ const stageGroups: Array<{ title: string; keys: StageKey[] }> = [
 
 const settingsTabs: Array<{ key: SettingsTab; label: string }> = [
   { key: 'nntp', label: 'NNTP' },
-  { key: 'downloader', label: 'Downloader' },
+	{ key: 'download-clients', label: 'Download Clients' },
   { key: 'aggregator', label: 'Aggregator' },
   { key: 'gonzbnet', label: 'GoNZBNet' },
   { key: 'indexer', label: 'Indexer' },
@@ -101,7 +101,6 @@ const nntpProviderRoles = [
   { key: 'scrape', label: 'Scrape' },
   { key: 'yenc_recovery', label: 'yEnc recovery' },
   { key: 'inspection', label: 'Inspection' },
-  { key: 'download', label: 'Download' },
 ]
 
 function defaultGoNZBNetSettings(): GoNZBNetRuntimeSettings {
@@ -190,21 +189,13 @@ function defaultGoNZBNetSettings(): GoNZBNetRuntimeSettings {
 function defaultSettings(): RuntimeSettings {
   return {
     servers: [],
-    downloader_servers: [],
-    indexer_servers: [],
-    indexers: [],
+		indexer_servers: [],
+		indexers: [],
+		download_clients: [],
     aggregator: { sources: { local_blob: { enabled: false }, usenet_indexer: { enabled: false }, gonzbnet: { enabled: false } } },
     gonzbnet: defaultGoNZBNetSettings(),
-    download: {
-      out_dir: './downloads',
-      completed_dir: './downloads/completed',
-      cleanup_extensions: ['nzb', 'par2', 'sfv', 'nfo'],
-    },
-    nntp_pool: {
-      idle_borrow_enabled: true,
-      indexer_max_percent: 80,
-      downloader_reserve_percent: 20,
-      demand_window_seconds: 30,
+		nntp_pool: {
+			indexer_stage_target_percent: 90,
     },
     indexing: {
       newsgroups: [],
@@ -336,7 +327,6 @@ function defaultSettings(): RuntimeSettings {
         tvdb_base_url: 'https://api4.thetvdb.com/v4',
       },
     },
-    arr_integrations: [],
   }
 }
 
@@ -350,15 +340,14 @@ function normalizeSettings(input?: RuntimeSettings): RuntimeSettings {
   return {
     ...defaults,
     ...input,
-    servers: input?.servers ?? input?.downloader_servers ?? input?.indexer_servers ?? [],
-    downloader_servers: input?.downloader_servers ?? input?.servers ?? [],
-    indexer_servers: input?.indexer_servers ?? input?.servers ?? [],
+		servers: input?.servers ?? input?.indexer_servers ?? [],
+		indexer_servers: input?.indexer_servers ?? input?.servers ?? [],
     indexers: (input?.indexers ?? []).map((indexer) => ({
       ...indexer,
       allow_private_addresses: Boolean(indexer.allow_private_addresses),
       allowed_cidrs: indexer.allowed_cidrs ?? [],
     })),
-    arr_integrations: input?.arr_integrations ?? [],
+		download_clients: input?.download_clients ?? [],
     aggregator: {
       ...defaults.aggregator,
       ...input?.aggregator,
@@ -376,11 +365,6 @@ function normalizeSettings(input?: RuntimeSettings): RuntimeSettings {
       publish_pool_ids: input?.gonzbnet?.publish_pool_ids ?? [],
       manual_peers: input?.gonzbnet?.manual_peers ?? [],
       validation_tiers: input?.gonzbnet?.validation_tiers ?? defaults.gonzbnet!.validation_tiers,
-    },
-    download: {
-      ...defaults.download!,
-      ...input?.download,
-      cleanup_extensions: input?.download?.cleanup_extensions ?? defaults.download!.cleanup_extensions,
     },
     nntp_pool: {
       ...defaults.nntp_pool!,
@@ -468,7 +452,7 @@ function serverDefaults(index: number): ServerRuntimeSettings {
     pool_idle_timeout_seconds: 45,
     pool_max_age_seconds: 600,
     enable_pool_logging: false,
-    roles: ['scrape', 'yenc_recovery', 'inspection', 'download'],
+		roles: ['scrape', 'yenc_recovery', 'inspection'],
   }
 }
 
@@ -484,20 +468,12 @@ function indexerDefaults(index: number): IndexerRuntimeSettings {
   }
 }
 
-function arrDefaults(index: number): ArrIntegrationRuntimeSettings {
-  return { id: `arr-${index + 1}`, kind: 'sonarr', enabled: false, base_url: '', api_key: '', client_name: '', category: '' }
+function downloadClientDefaults(index: number): DownloadClientRuntimeSettings {
+	return { id: `sab-${index + 1}`, name: 'SABnzbd', enabled: false, default: index === 0, base_url: '', api_key: '', category: '', priority: -100 }
 }
 
 function fieldNumber(value: string) {
   return Number.isFinite(Number(value)) ? Number(value) : 0
-}
-
-function cleanupExtensionsText(items: string[]) {
-  return items.join(', ')
-}
-
-function parseCleanupExtensions(value: string) {
-  return value.split(',').map((item) => item.trim()).filter(Boolean)
 }
 
 function parseCSV(value: string) {
@@ -626,17 +602,15 @@ function sanitizeIndexingForSave(indexing: IndexingRuntimeSettings): IndexingRun
 
 function buildTabPatch(tab: SettingsTab, settings: RuntimeSettings) {
   switch (tab) {
-    case 'nntp':
-      return {
-        servers: serversForSave(settings.servers ?? [], 'nntp'),
-        downloader_servers: [],
-        indexer_servers: [],
-        nntp_pool: settings.nntp_pool,
-      }
-    case 'downloader':
-      return {
-        download: settings.download,
-        arr_integrations: settings.arr_integrations ?? [],
+	case 'nntp':
+		return {
+			servers: serversForSave(settings.servers ?? [], 'nntp'),
+			indexer_servers: [],
+			nntp_pool: settings.nntp_pool,
+		}
+	case 'download-clients':
+		return {
+			download_clients: settings.download_clients ?? [],
       }
     case 'aggregator':
       return {
@@ -706,14 +680,12 @@ export function AdminSettingsPage() {
   const indexing = normalized.indexing!
   const aggregator = normalized.aggregator!
   const gonzbnet = normalized.gonzbnet!
-  const download = normalized.download!
-  const nntpPool = normalized.nntp_pool!
+	const nntpPool = normalized.nntp_pool!
   const servers = normalized.servers ?? []
   const indexers = normalized.indexers ?? []
-  const arrIntegrations = normalized.arr_integrations ?? []
-  const lockNNTPServers = Boolean(capabilities?.modules.downloader?.ready || capabilities?.modules.usenet_indexer?.ready)
-  const lockIndexers = Boolean(capabilities?.modules.aggregator?.ready)
-  const lockArr = Boolean(capabilities?.modules.downloader?.ready)
+	const downloadClients = normalized.download_clients ?? []
+	const lockNNTPServers = Boolean(capabilities?.modules.usenet_indexer?.ready)
+	const lockIndexers = Boolean(capabilities?.modules.aggregator?.ready)
   const requirements = capabilityRequirements(capabilities)
 
   function setIndexing(next: IndexingRuntimeSettings) {
@@ -728,7 +700,7 @@ export function AdminSettingsPage() {
     setIndexing({ ...indexing, [key]: { ...indexing[key], ...patch } })
   }
 
-  async function runConnectionTest(kind: 'postgres' | 'nntp' | 'newznab', id = '') {
+	async function runConnectionTest(kind: 'postgres' | 'nntp' | 'newznab' | 'sab', id = '') {
     const key = `${kind}:${id}`
     setTestingConnection(key)
     try {
@@ -744,7 +716,7 @@ export function AdminSettingsPage() {
     }
   }
 
-  function connectionResult(kind: 'postgres' | 'nntp' | 'newznab', id = '') {
+  function connectionResult(kind: 'postgres' | 'nntp' | 'newznab' | 'sab', id = '') {
     const result = connectionResults[`${kind}:${id}`]
     return result ? (
       <div className={result.ok ? 'banner' : 'banner error'}>
@@ -794,38 +766,36 @@ export function AdminSettingsPage() {
           </div>
         ) : null}
 
-        {activeTab === 'downloader' ? (
-        <ModuleGroup title="Downloader settings">
-          <SettingsSection title="Paths">
-            <div className="toolbar-grid">
-              <TextField label="Output directory" value={download.out_dir} onChange={(value) => setSettings((current) => ({ ...current, download: { ...download, out_dir: value } }))} />
-              <TextField label="Completed directory" value={download.completed_dir} onChange={(value) => setSettings((current) => ({ ...current, download: { ...download, completed_dir: value } }))} />
-              <TextField label="Cleanup extensions" value={cleanupExtensionsText(download.cleanup_extensions)} onChange={(value) => setSettings((current) => ({ ...current, download: { ...download, cleanup_extensions: parseCleanupExtensions(value) } }))} />
-            </div>
-          </SettingsSection>
-
-          <SettingsSection
-            title="ARR integrations"
-            locked={lockArr}
-            lockedMessage="ARR integration removal is disabled while downloader is ready."
-            onAdd={() => setSettings((current) => ({ ...current, arr_integrations: [...arrIntegrations, arrDefaults(arrIntegrations.length)] }))}
-          >
-            {arrIntegrations.map((integration, index) => (
-              <div className="settings-row stack" key={`${integration.id}-${index}`}>
-                <div className="button-row">
-                  <strong>Integration {index + 1}</strong>
-                  <RemoveButton locked={lockArr} onClick={() => setSettings((current) => ({ ...current, arr_integrations: arrIntegrations.filter((_, i) => i !== index) }))} />
-                </div>
-                <div className="toolbar-grid">
-                  <TextField label="ID" value={integration.id} required={integration.enabled} onChange={(value) => updateArr(index, { id: value })} />
-                  <TextField label="Kind" value={integration.kind} required={integration.enabled} onChange={(value) => updateArr(index, { kind: value })} />
-                  <TextField label="Base URL" value={integration.base_url} required={integration.enabled} onChange={(value) => updateArr(index, { base_url: value })} />
-                  <TextField label="API key" type="password" value={integration.api_key} required={integration.enabled} onChange={(value) => updateArr(index, { api_key: value })} />
-                  <TextField label="Client name" value={integration.client_name ?? ''} onChange={(value) => updateArr(index, { client_name: value })} />
-                  <TextField label="Category" value={integration.category ?? ''} onChange={(value) => updateArr(index, { category: value })} />
-                  <CheckboxField label="Enabled" checked={integration.enabled} onChange={(value) => updateArr(index, { enabled: value })} />
-                </div>
-              </div>
+		{activeTab === 'download-clients' ? (
+		<ModuleGroup title="Download client settings">
+		  <SettingsSection
+			title="SAB-compatible clients"
+			onAdd={() => setSettings((current) => ({ ...current, download_clients: [...downloadClients, downloadClientDefaults(downloadClients.length)] }))}
+		  >
+			<div className="banner">Used only by the manual “Send to downloader” action. Radarr, Sonarr, Prowlarr, and NZBHydra use GoNZB as a Newznab indexer and manage their own download client.</div>
+			{downloadClients.map((client, index) => (
+			  <div className="settings-row stack" key={`${client.id}-${index}`}>
+				<div className="button-row">
+				  <strong>{client.name || `Client ${index + 1}`}</strong>
+				  <RemoveButton locked={false} onClick={() => setSettings((current) => ({ ...current, download_clients: downloadClients.filter((_, i) => i !== index) }))} />
+				</div>
+				<div className="toolbar-grid">
+				  <TextField label="ID" value={client.id} required onChange={(value) => updateDownloadClient(index, { id: value })} />
+				  <TextField label="Name" value={client.name} onChange={(value) => updateDownloadClient(index, { name: value })} />
+				  <TextField label="Base URL" value={client.base_url} required={client.enabled} onChange={(value) => updateDownloadClient(index, { base_url: value })} helpText="SABnzbd base URL, including any install prefix. GoNZB adds /api automatically." />
+				  <TextField label="API key" type="password" value={client.api_key} required={client.enabled} onChange={(value) => updateDownloadClient(index, { api_key: value })} />
+				  <TextField label="Category" value={client.category} onChange={(value) => updateDownloadClient(index, { category: value })} helpText="Optional SAB category, such as movies or tv." />
+				  <NumberField label="Priority" min={-100} max={2} value={client.priority} onChange={(value) => updateDownloadClient(index, { priority: value })} helpText="SAB priority: -100 default, -2 paused, -1 low, 0 normal, 1 high, 2 force." />
+				  <CheckboxField label="Enabled" checked={client.enabled} onChange={(value) => updateDownloadClient(index, { enabled: value })} />
+				  <CheckboxField label="Default" checked={client.default} onChange={(value) => setSettings((current) => ({ ...current, download_clients: downloadClients.map((item, i) => ({ ...item, default: i === index ? value : value ? false : item.default })) }))} helpText="The manual release action sends to the enabled default client. If none is marked, the first enabled client is used." />
+				</div>
+				<div className="button-row">
+				  <button className="secondary-button" type="button" disabled={!client.id || testingConnection === `sab:${client.id}`} onClick={() => void runConnectionTest('sab', client.id)}>
+					{testingConnection === `sab:${client.id}` ? 'Testing...' : 'Test saved client'}
+				  </button>
+				</div>
+				{connectionResult('sab', client.id)}
+			  </div>
             ))}
           </SettingsSection>
           <SettingsActions onReload={() => void refresh()} />
@@ -837,7 +807,7 @@ export function AdminSettingsPage() {
           <SettingsSection
             title="Providers"
             locked={lockNNTPServers}
-            lockedMessage="NNTP provider removal is disabled while downloader or indexer runtime is ready."
+			lockedMessage="NNTP provider removal is disabled while the indexer runtime is ready."
             onAdd={() => setSettings((current) => ({ ...current, servers: [...servers, serverDefaults(servers.length)] }))}
           >
             {servers.map((server, index) => (
@@ -859,36 +829,15 @@ export function AdminSettingsPage() {
             ))}
           </SettingsSection>
 
-          <SettingsSection title="Pool sharing">
-            <div className="toolbar-grid">
-              <CheckboxField
-                label="Idle borrow"
-                checked={Boolean(nntpPool.idle_borrow_enabled)}
-                onChange={(value) => setSettings((current) => ({ ...current, nntp_pool: { ...nntpPool, idle_borrow_enabled: value } }))}
-                helpText="Allows indexer work to use the full NNTP pool while downloader demand is quiet."
-              />
-              <NumberField
-                label="Indexer max %"
-                min={1}
-                max={100}
-                value={nntpPool.indexer_max_percent}
-                onChange={(value) => setSettings((current) => ({ ...current, nntp_pool: { ...nntpPool, indexer_max_percent: value } }))}
-                helpText="Maximum indexer share while downloader demand is active, or always when idle borrow is off."
-              />
-              <NumberField
-                label="Downloader reserve %"
-                min={1}
-                max={100}
-                value={nntpPool.downloader_reserve_percent}
-                onChange={(value) => setSettings((current) => ({ ...current, nntp_pool: { ...nntpPool, downloader_reserve_percent: value } }))}
-                helpText="Reserved downloader share used when deriving pool behavior."
-              />
-              <NumberField
-                label="Demand window seconds"
-                min={1}
-                value={nntpPool.demand_window_seconds}
-                onChange={(value) => setSettings((current) => ({ ...current, nntp_pool: { ...nntpPool, demand_window_seconds: value } }))}
-                helpText="How long recent downloader demand keeps indexer borrowing capped."
+		  <SettingsSection title="Pool utilization">
+			<div className="toolbar-grid">
+			  <NumberField
+				label="Indexer stage target %"
+				min={1}
+				max={100}
+				value={nntpPool.indexer_stage_target_percent}
+				onChange={(value) => setSettings((current) => ({ ...current, nntp_pool: { ...nntpPool, indexer_stage_target_percent: value } }))}
+				helpText="Utilization threshold used by the supervisor to avoid starting more NNTP-heavy stages when the provider pool is already busy."
               />
             </div>
           </SettingsSection>
@@ -1854,8 +1803,8 @@ export function AdminSettingsPage() {
     setSettings((current) => ({ ...current, indexers: indexers.map((item, i) => (i === index ? { ...item, ...patch } : item)) }))
   }
 
-  function updateArr(index: number, patch: Partial<ArrIntegrationRuntimeSettings>) {
-    setSettings((current) => ({ ...current, arr_integrations: arrIntegrations.map((item, i) => (i === index ? { ...item, ...patch } : item)) }))
+	function updateDownloadClient(index: number, patch: Partial<DownloadClientRuntimeSettings>) {
+		setSettings((current) => ({ ...current, download_clients: downloadClients.map((item, i) => (i === index ? { ...item, ...patch } : item)) }))
   }
 }
 

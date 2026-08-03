@@ -14,6 +14,7 @@ import (
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/gonzbnet/admission"
 	"github.com/datallboy/gonzb/internal/gonzbnet/capability"
+	"github.com/datallboy/gonzb/internal/gonzbnet/events"
 	"github.com/datallboy/gonzb/internal/gonzbnet/evidence"
 	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
 	"github.com/datallboy/gonzb/internal/gonzbnet/pools"
@@ -109,6 +110,23 @@ func TestDistinctPoolMemberCountCountsActiveNodesOnce(t *testing.T) {
 	}
 	if got := distinctPoolMemberCount(members); got != 2 {
 		t.Fatalf("expected two distinct active nodes, got %d", got)
+	}
+}
+
+func TestCanServeResolutionManifestHonorsCachePolicy(t *testing.T) {
+	local := &events.SignedEvent{AuthorNodeID: "node_local"}
+	remote := &events.SignedEvent{AuthorNodeID: "node_remote"}
+	if !canServeResolutionManifest(false, "node_local", local) {
+		t.Fatal("publisher must be allowed to serve its own manifest")
+	}
+	if canServeResolutionManifest(false, "node_local", remote) {
+		t.Fatal("cache node must not serve a remote manifest when serving is disabled")
+	}
+	if !canServeResolutionManifest(true, "node_local", remote) {
+		t.Fatal("cache node should serve a remote manifest when serving is enabled")
+	}
+	if canServeResolutionManifest(true, "node_local", nil) {
+		t.Fatal("missing manifest event must not be served")
 	}
 }
 
