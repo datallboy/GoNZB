@@ -11,30 +11,6 @@ import (
 	"github.com/labstack/echo/v5"
 )
 
-func TestRegisterRoutesDownloaderOnly(t *testing.T) {
-	e := echo.New()
-	appCtx := &app.Context{
-		Config: &config.Config{
-			API: config.APIConfig{
-				CORSAllowedOrigins: []string{"http://localhost:5173"},
-			},
-			Modules: config.ModulesConfig{
-				API:        config.ModuleToggle{Enabled: true},
-				Downloader: config.ModuleToggle{Enabled: true},
-			},
-		},
-	}
-
-	RegisterRoutes(e, appCtx)
-	routes := routePaths(e)
-
-	assertRoutePresent(t, routes, "/api/v1/queue")
-	assertRoutePresent(t, routes, "/api/sab")
-	assertRoutePresent(t, routes, "/api/v1/events/queue")
-	assertRouteMissing(t, routes, "/api/v1/releases/search")
-	assertRouteMissing(t, routes, "/nzb/:id")
-}
-
 func TestRegisterRoutesAggregatorOnly(t *testing.T) {
 	e := echo.New()
 	appCtx := &app.Context{
@@ -83,6 +59,7 @@ func TestRegisterRoutesIndexerOnly(t *testing.T) {
 	assertRoutePresent(t, routes, "/api/v1/indexer/stages/:stage/resume")
 	assertRoutePresent(t, routes, "/api/v1/indexer/releases")
 	assertRoutePresent(t, routes, "/api/v1/indexer/releases/:id")
+	assertRoutePresent(t, routes, "/api/v1/indexer/releases/:id/actions/send-to-download-client")
 	assertRoutePresent(t, routes, "/api/v1/indexer/binaries/:id")
 	assertRoutePresent(t, routes, "/api/v1/indexer/files/:id")
 	assertRoutePresent(t, routes, "/api/v1/admin/indexer/overview")

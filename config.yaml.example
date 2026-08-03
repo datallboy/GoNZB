@@ -9,8 +9,6 @@ bind_address: "127.0.0.1"
 
 # Hard module gates. These decide which backend/UI surfaces are loaded.
 modules:
-  downloader:
-    enabled: true
   aggregator:
     enabled: true
   usenet_indexer:
@@ -106,7 +104,7 @@ gonzbnet:
 # - servers
 # - indexers
 # - aggregator.sources, including optional GoNZBNet federated cache search
-# - download paths/options
+# - SAB-compatible download clients
 # - indexing stage schedules/newsgroups/enrichment settings
 # - release public-ready policy thresholds and release_generate_nzb/archive/purge stage controls
 # - indexer PostgreSQL storage guard thresholds
@@ -119,10 +117,10 @@ log:
   max_size_mb: 32   # Rotate active log file after this size.
   max_backups: 5    # Keep this many rotated files: gonzb.log.1, gonzb.log.2, ...
 
-# Bootstrap storage. SQLite path stores queue/settings metadata; blob_dir is the single
+# Bootstrap storage. SQLite stores settings and optional aggregator cache metadata; blob_dir is the single
 # filesystem root for cached and archived NZBs.
 store:
-  sqlite_path: "/store/metadata/gonzb.db" # Database for releases and queue
+  sqlite_path: "/store/metadata/gonzb.db" # Runtime settings and optional aggregator cache
   blob_dir: "/store/nzbs"                # Cache root; archives live under /store/nzbs/indexer-archive
   payload_cache_enabled: true # false = ephemeral (non-persistent) payload mode
   search_persistence_enabled: true # false = ephemeral (non-persistent) aggregator results
@@ -136,4 +134,4 @@ store:
   pg_maintenance_dsn: ""
 
 # After first launch, create the initial admin user at /setup, then configure NNTP,
-# aggregator sources, downloader paths, and indexer stages in /admin/settings.
+# aggregator sources, SAB-compatible download clients, and indexer stages in /admin/settings.

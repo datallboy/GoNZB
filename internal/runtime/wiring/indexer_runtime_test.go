@@ -10,8 +10,6 @@ import (
 
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/infra/config"
-	"github.com/datallboy/gonzb/internal/infra/logger"
-	"github.com/datallboy/gonzb/internal/nntp"
 )
 
 type fakeSettingsStore struct {
@@ -378,92 +376,6 @@ func TestDeriveUsenetIndexerConfigPreservesAllIndexerServers(t *testing.T) {
 	}
 	if got.ScrapeServers[1].ID != "newshosting" {
 		t.Fatalf("expected newshosting as second scrape server, got %+v", got.ScrapeServers)
-	}
-}
-
-func TestScopedDownloaderServersUsesSharedRuntimeServers(t *testing.T) {
-	appCtx := &app.Context{
-		BootstrapConfig: &config.Config{},
-		SettingsStore: fakeSettingsStore{
-			runtime: &app.RuntimeSettings{
-				Servers: []app.ServerRuntimeSettings{{
-					ID:       "shared",
-					Host:     "shared.example.com",
-					Port:     563,
-					Username: "shared-user",
-					Password: "shared-pass",
-					TLS:      true,
-				}},
-				DownloaderServers: []app.ServerRuntimeSettings{{
-					ID:       "downloader",
-					Host:     "downloader.example.com",
-					Port:     563,
-					Username: "downloader-user",
-					Password: "downloader-pass",
-					TLS:      true,
-				}},
-			},
-		},
-	}
-
-	servers := scopedDownloaderServers(appCtx)
-	if len(servers) != 1 {
-		t.Fatalf("expected one shared downloader server, got %+v", servers)
-	}
-	if servers[0].ID != "shared" || servers[0].Host != "shared.example.com" || servers[0].Username != "shared-user" {
-		t.Fatalf("expected shared server selection, got %+v", servers[0])
-	}
-}
-
-func TestIndexerNNTPManagerReusesSharedDownloaderManager(t *testing.T) {
-	indexerAddr := startTestNNTPServer(t)
-	downloaderAddr := startTestNNTPServer(t)
-
-	indexerHost, indexerPort := splitHostPort(t, indexerAddr)
-	downloaderHost, downloaderPort := splitHostPort(t, downloaderAddr)
-
-	log, err := logger.New("/dev/null", logger.LevelError, false)
-	if err != nil {
-		t.Fatalf("new logger: %v", err)
-	}
-	appCtx := &app.Context{
-		Logger: log,
-		Config: &config.Config{
-			Servers: []config.ServerConfig{{
-				ID:            "downloader",
-				Host:          downloaderHost,
-				Port:          downloaderPort,
-				MaxConnection: 1,
-			}},
-		},
-	}
-
-	sharedManager, err := nntp.NewManagerWithOptions(appCtx, nntp.ManagerOptions{CapacityPolicy: nntp.CapacityReturnBusy})
-	if err != nil {
-		t.Fatalf("build shared manager: %v", err)
-	}
-	defer sharedManager.Close()
-	appCtx.NNTP = sharedManager
-
-	runtimeCfg := usenetIndexerConfig{
-		ScrapeServer: &config.ServerConfig{
-			ID:            "indexer",
-			Host:          indexerHost,
-			Port:          indexerPort,
-			MaxConnection: 1,
-		},
-	}
-
-	manager, owned, err := indexerNNTPManager(appCtx, runtimeCfg)
-	if err != nil {
-		t.Fatalf("indexerNNTPManager: %v", err)
-	}
-
-	if owned {
-		t.Fatalf("expected shared downloader manager reuse, got owned=%v", owned)
-	}
-	if manager != sharedManager {
-		t.Fatalf("expected shared downloader manager to be reused")
 	}
 }
 

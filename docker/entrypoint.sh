@@ -18,7 +18,7 @@ ensure_user() {
 
 fix_ownership() {
     chown "$PUID:$PGID" /config 2>/dev/null || true
-    for path in /downloads /store /completed; do
+    for path in /store; do
         if [ -e "$path" ]; then
             chown -R "$PUID:$PGID" "$path" || true
         fi

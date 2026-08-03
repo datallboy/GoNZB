@@ -36,7 +36,6 @@ func Health(appCtx *app.Context) ProbeResponse {
 		cfg := appCtx.Config.Modules
 		modules["api"] = simpleHealthModule(cfg.API.Enabled)
 		modules["web_ui"] = simpleHealthModule(cfg.WebUI.Enabled)
-		modules["downloader"] = simpleHealthModule(cfg.Downloader.Enabled)
 		modules["aggregator"] = simpleHealthModule(cfg.Aggregator.Enabled)
 		modules["usenet_indexer"] = simpleHealthModule(cfg.UsenetIndexer.Enabled)
 	}
@@ -64,12 +63,6 @@ func Readiness(ctx context.Context, appCtx *app.Context) (int, ProbeResponse) {
 
 	modules["api"] = simpleReadyModule(cfg.API.Enabled)
 	modules["web_ui"] = simpleReadyModule(cfg.WebUI.Enabled)
-
-	downloader := evaluateRuntimeModule(ctx, appCtx.RuntimeModule("downloader"))
-	modules["downloader"] = downloader
-	if downloader.Enabled && !downloader.Ready {
-		overallReady = false
-	}
 
 	aggregator := evaluateRuntimeModule(ctx, appCtx.RuntimeModule("aggregator"))
 	modules["aggregator"] = aggregator
