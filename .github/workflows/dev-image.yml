@@ -34,19 +34,19 @@ jobs:
             GONZB_QUERY_SOAK: "1"
         steps:
             - name: Checkout code
-              uses: actions/checkout@v4
+              uses: actions/checkout@v7
 
             - name: Lowercase repo name
               run: |
                 echo "REPO_LOWER=${GITHUB_REPOSITORY@L}" >> "${GITHUB_ENV}"
 
             - name: Set up Go
-              uses: actions/setup-go@v5
+              uses: actions/setup-go@v7
               with:
                 go-version: '1.25'
 
             - name: Set up Node
-              uses: actions/setup-node@v4
+              uses: actions/setup-node@v7
               with:
                 node-version: "22"
                 cache: "npm"
