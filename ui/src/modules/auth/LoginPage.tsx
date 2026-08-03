@@ -42,8 +42,7 @@ export function LoginPage() {
         <p className="eyebrow">Indexer Control</p>
         <h1 className="auth-title">Sign in to the new indexer workspace.</h1>
         <p className="auth-copy">
-          This UI is dedicated to the indexer and admin surfaces. Downloader and aggregator stay
-          plugin-bound behind explicit capabilities.
+          Browse indexed releases, operate enabled modules, and manage integrations from one place.
         </p>
         <form className="stack" onSubmit={handleSubmit}>
           <label className="field">
