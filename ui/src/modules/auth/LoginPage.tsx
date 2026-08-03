@@ -4,6 +4,13 @@ import { Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { createSession } from '../../shared/api/auth'
 import { useAuth } from '../../shared/auth/useAuth'
 
+function safePostLoginPath(value: unknown) {
+  if (typeof value !== 'string' || !value.startsWith('/') || value.startsWith('//') || value.includes('\\')) {
+    return '/indexer/releases'
+  }
+  return value
+}
+
 export function LoginPage() {
   const { session, refreshSession } = useAuth()
   const navigate = useNavigate()
@@ -27,7 +34,7 @@ export function LoginPage() {
     try {
       await createSession({ username, password })
       await refreshSession()
-      const next = (location.state as { from?: string } | null)?.from ?? '/indexer/releases'
+      const next = safePostLoginPath((location.state as { from?: string } | null)?.from)
       navigate(next, { replace: true })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed')
