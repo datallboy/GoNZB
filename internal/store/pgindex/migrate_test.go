@@ -154,3 +154,91 @@ func TestFreshBaselineMigration(t *testing.T) {
 		t.Fatalf("release base-stem lookup must cover singleton families, predicate=%q", baseStemPredicate)
 	}
 }
+
+func TestV080BaselineUpgradesWithoutLosingData(t *testing.T) {
+	postgresTestDatabaseMu.Lock()
+	t.Cleanup(postgresTestDatabaseMu.Unlock)
+
+	db, err := sql.Open("pgx", requireTestPostgresDSN(t))
+	if err != nil {
+		t.Fatalf("open disposable PostgreSQL database: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close disposable PostgreSQL database: %v", err)
+		}
+	})
+	store := &Store{db: db}
+	requireDisposableTestDatabase(t, store)
+	t.Cleanup(func() {
+		if _, err := db.Exec(`DROP SCHEMA public CASCADE; CREATE SCHEMA public`); err != nil {
+			t.Errorf("reset PostgreSQL schema after upgrade test: %v", err)
+			return
+		}
+		if err := store.RunMigrations(); err != nil {
+			t.Errorf("restore current PostgreSQL schema after upgrade test: %v", err)
+		}
+	})
+
+	if _, err := db.Exec(`DROP SCHEMA public CASCADE; CREATE SCHEMA public`); err != nil {
+		t.Fatalf("reset PostgreSQL schema before upgrade test: %v", err)
+	}
+	baseline, err := migrationFS.ReadFile("migrations/001_v0_8_0_baseline.up.sql")
+	if err != nil {
+		t.Fatalf("read v0.8.0 baseline: %v", err)
+	}
+	if _, err := db.Exec(string(baseline)); err != nil {
+		t.Fatalf("apply v0.8.0 baseline: %v", err)
+	}
+	if err := ensureModuleVersionTable(context.Background(), db); err != nil {
+		t.Fatalf("create module version table: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO module_schema_version (module_name, version) VALUES ('pgindex', 1);
+		INSERT INTO usenet_providers (provider_key, display_name)
+		VALUES ('v080-upgrade-sentinel', 'Preserved v0.8 Provider');
+		INSERT INTO newsgroups (group_name)
+		VALUES ('alt.binaries.v080-upgrade-sentinel')`); err != nil {
+		t.Fatalf("populate v0.8.0 sentinel data: %v", err)
+	}
+
+	if err := store.RunMigrations(); err != nil {
+		t.Fatalf("upgrade populated v0.8.0 schema: %v", err)
+	}
+	version, err := currentVersion(context.Background(), db, "pgindex")
+	if err != nil {
+		t.Fatalf("read upgraded schema version: %v", err)
+	}
+	if version != expectedMigrationVersion() {
+		t.Fatalf("upgraded schema version = %d, want %d", version, expectedMigrationVersion())
+	}
+
+	var providerName string
+	if err := db.QueryRow(`
+		SELECT display_name
+		FROM usenet_providers
+		WHERE provider_key = 'v080-upgrade-sentinel'`).Scan(&providerName); err != nil {
+		t.Fatalf("read preserved v0.8 provider: %v", err)
+	}
+	if providerName != "Preserved v0.8 Provider" {
+		t.Fatalf("preserved provider name = %q", providerName)
+	}
+	var newsgroupCount int
+	if err := db.QueryRow(`
+		SELECT count(*)
+		FROM newsgroups
+		WHERE group_name = 'alt.binaries.v080-upgrade-sentinel'`).Scan(&newsgroupCount); err != nil {
+		t.Fatalf("read preserved v0.8 newsgroup: %v", err)
+	}
+	if newsgroupCount != 1 {
+		t.Fatalf("preserved v0.8 newsgroups = %d, want 1", newsgroupCount)
+	}
+
+	var hardeningIndexExists bool
+	if err := db.QueryRow(`SELECT to_regclass('public.idx_federation_events_outbox') IS NOT NULL`).Scan(&hardeningIndexExists); err != nil {
+		t.Fatalf("check protocol-hardening migration: %v", err)
+	}
+	if !hardeningIndexExists {
+		t.Fatal("upgraded schema is missing the protocol-hardening outbox index")
+	}
+}
