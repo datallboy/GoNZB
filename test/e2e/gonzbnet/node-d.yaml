@@ -16,10 +16,10 @@ aggregator:
 gonzbnet:
   mode: consumer
   node_alias: "e2e-standalone-d"
-  advertise_url: "http://127.0.0.1:18084/gonzbnet/v1"
+  advertise_url: "https://localhost:18484/gonzbnet/v1"
   keys_dir: ".e2e/gonzbnet/node-d/keys"
   http_enabled: true
-  allow_insecure_peer_http: true
+  allow_insecure_peer_http: false
   private_network: true
   visibility: unlisted
   allow_pool_creation: true

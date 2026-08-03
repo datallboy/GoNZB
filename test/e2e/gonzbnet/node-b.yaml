@@ -26,16 +26,16 @@ aggregator:
 gonzbnet:
   mode: integrated
   node_alias: "e2e-validator-b"
-  advertise_url: "http://127.0.0.1:18082/gonzbnet/v1"
+  advertise_url: "https://localhost:18482/gonzbnet/v1"
   keys_dir: ".e2e/gonzbnet/node-b/keys"
   http_enabled: true
-  allow_insecure_peer_http: true
+  allow_insecure_peer_http: false
   private_network: true
   network_id: "gonzbnet-e2e"
   local_pool_id: "pool.e2e"
   manual_peers:
-    - "http://127.0.0.1:18081"
-    - "http://127.0.0.1:18083"
+    - "https://localhost:18481"
+    - "https://localhost:18483"
   consumer_enabled: true
   scanner_enabled: false
   index_projection_enabled: true
