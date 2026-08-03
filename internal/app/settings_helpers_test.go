@@ -1,6 +1,7 @@
 package app
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/datallboy/gonzb/internal/infra/config"
@@ -300,21 +301,20 @@ func TestToStageConfigOmitsUnsetBinaryUpsertChunkSize(t *testing.T) {
 	}
 }
 
-func TestApplyPatchPreservesExistingArrIntegrations(t *testing.T) {
+func TestApplyPatchPreservesExistingDownloadClients(t *testing.T) {
 	current := &RuntimeSettings{
-		ArrIntegrations: []ArrIntegrationRuntimeSettings{{
-			ID:      "sonarr",
-			Kind:    "sonarr",
+		DownloadClients: []DownloadClientRuntimeSettings{{
+			ID:      "sab",
 			Enabled: true,
 		}},
 	}
 
 	next := ApplyPatch(current, &RuntimeSettingsPatch{
-		Download: &DownloadRuntimeSettings{OutDir: "/downloads"},
+		Aggregator: &AggregatorRuntimeSettings{},
 	})
 
-	if len(next.ArrIntegrations) != 1 || next.ArrIntegrations[0].ID != "sonarr" {
-		t.Fatalf("expected arr integrations to be preserved, got %+v", next.ArrIntegrations)
+	if len(next.DownloadClients) != 1 || next.DownloadClients[0].ID != "sab" {
+		t.Fatalf("expected download clients to be preserved, got %+v", next.DownloadClients)
 	}
 }
 
@@ -481,6 +481,25 @@ func TestRedactedCopyRemovesNestedIndexerSecrets(t *testing.T) {
 
 	if redacted.Indexing.EnrichTMDB.TVDBAPIKey != "" || redacted.Indexing.EnrichTMDB.TVDBPIN != "" {
 		t.Fatalf("expected nested TVDB secrets to be redacted, got %+v", redacted.Indexing.EnrichTMDB)
+	}
+}
+
+func TestRedactedCopyRemovesDownloadClientAPIKey(t *testing.T) {
+	redacted := RedactedCopy(&RuntimeSettings{
+		DownloadClients: []DownloadClientRuntimeSettings{{ID: "sab", APIKey: "secret"}},
+	})
+
+	if len(redacted.DownloadClients) != 1 || redacted.DownloadClients[0].APIKey != "" {
+		t.Fatalf("expected download client API key to be redacted, got %+v", redacted.DownloadClients)
+	}
+}
+
+func TestValidateDownloadClientsRejectsEmbeddedCredentials(t *testing.T) {
+	err := ValidateDownloadClients([]DownloadClientRuntimeSettings{{
+		ID: "sab", Enabled: true, BaseURL: "https://user:password@example.test", APIKey: "secret",
+	}})
+	if err == nil || !strings.Contains(err.Error(), "must not contain credentials") {
+		t.Fatalf("expected embedded credentials to be rejected, got %v", err)
 	}
 }
 

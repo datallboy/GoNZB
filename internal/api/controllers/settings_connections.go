@@ -9,6 +9,7 @@ import (
 
 	"github.com/datallboy/gonzb/internal/aggregator/sources/newznab"
 	"github.com/datallboy/gonzb/internal/app"
+	"github.com/datallboy/gonzb/internal/downloadclient"
 	"github.com/datallboy/gonzb/internal/infra/config"
 	"github.com/datallboy/gonzb/internal/nntp"
 	"github.com/labstack/echo/v5"
@@ -92,9 +93,30 @@ func (ctrl *SettingsConnectionController) test(ctx context.Context, req settings
 			AllowedCIDRs:          indexer.AllowedCIDRs,
 		})
 		return client.TestConnection(ctx)
+	case "sab":
+		runtime, err := ctrl.appCtx.SettingsAdmin.Get(ctx)
+		if err != nil {
+			return err
+		}
+		client, ok := findDownloadClient(runtime, req.ID)
+		if !ok {
+			return fmt.Errorf("download client %q was not found", req.ID)
+		}
+		return downloadclient.New(ctrl.appCtx.SettingsAdmin, ctrl.appCtx.Resolver).Test(ctx, client)
 	default:
-		return fmt.Errorf("connection kind must be postgres, nntp, or newznab")
+		return fmt.Errorf("connection kind must be postgres, nntp, newznab, or sab")
 	}
+}
+
+func findDownloadClient(runtime *app.RuntimeSettings, id string) (app.DownloadClientRuntimeSettings, bool) {
+	if runtime != nil {
+		for _, client := range runtime.DownloadClients {
+			if strings.EqualFold(strings.TrimSpace(client.ID), id) {
+				return client, true
+			}
+		}
+	}
+	return app.DownloadClientRuntimeSettings{}, false
 }
 
 func findRuntimeServer(runtime *app.RuntimeSettings, id string) (app.ServerRuntimeSettings, bool) {

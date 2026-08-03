@@ -7,30 +7,26 @@ const (
 )
 
 type RuntimeSettings struct {
-	Servers           []ServerRuntimeSettings         `json:"servers,omitempty"`
-	DownloaderServers []ServerRuntimeSettings         `json:"downloader_servers,omitempty"`
-	IndexerServers    []ServerRuntimeSettings         `json:"indexer_servers,omitempty"`
-	Indexers          []IndexerRuntimeSettings        `json:"indexers,omitempty"`
-	Aggregator        *AggregatorRuntimeSettings      `json:"aggregator,omitempty"`
-	GoNZBNet          *GoNZBNetRuntimeSettings        `json:"gonzbnet,omitempty"`
-	Download          *DownloadRuntimeSettings        `json:"download,omitempty"`
-	NNTPPool          *NNTPPoolRuntimeSettings        `json:"nntp_pool,omitempty"`
-	Indexing          *IndexingRuntimeSettings        `json:"indexing,omitempty"`
-	ArrIntegrations   []ArrIntegrationRuntimeSettings `json:"arr_integrations,omitempty"`
-	Revision          int64                           `json:"revision,omitempty"`
+	Servers         []ServerRuntimeSettings         `json:"servers,omitempty"`
+	IndexerServers  []ServerRuntimeSettings         `json:"indexer_servers,omitempty"`
+	Indexers        []IndexerRuntimeSettings        `json:"indexers,omitempty"`
+	DownloadClients []DownloadClientRuntimeSettings `json:"download_clients,omitempty"`
+	Aggregator      *AggregatorRuntimeSettings      `json:"aggregator,omitempty"`
+	GoNZBNet        *GoNZBNetRuntimeSettings        `json:"gonzbnet,omitempty"`
+	NNTPPool        *NNTPPoolRuntimeSettings        `json:"nntp_pool,omitempty"`
+	Indexing        *IndexingRuntimeSettings        `json:"indexing,omitempty"`
+	Revision        int64                           `json:"revision,omitempty"`
 }
 
 type RuntimeSettingsPatch struct {
-	Servers           *[]ServerRuntimeSettings         `json:"servers,omitempty"`
-	DownloaderServers *[]ServerRuntimeSettings         `json:"downloader_servers,omitempty"`
-	IndexerServers    *[]ServerRuntimeSettings         `json:"indexer_servers,omitempty"`
-	Indexers          *[]IndexerRuntimeSettings        `json:"indexers,omitempty"`
-	Aggregator        *AggregatorRuntimeSettings       `json:"aggregator,omitempty"`
-	GoNZBNet          *GoNZBNetRuntimeSettings         `json:"gonzbnet,omitempty"`
-	Download          *DownloadRuntimeSettings         `json:"download,omitempty"`
-	NNTPPool          *NNTPPoolRuntimeSettings         `json:"nntp_pool,omitempty"`
-	Indexing          *IndexingRuntimeSettings         `json:"indexing,omitempty"`
-	ArrIntegrations   *[]ArrIntegrationRuntimeSettings `json:"arr_integrations,omitempty"`
+	Servers         *[]ServerRuntimeSettings         `json:"servers,omitempty"`
+	IndexerServers  *[]ServerRuntimeSettings         `json:"indexer_servers,omitempty"`
+	Indexers        *[]IndexerRuntimeSettings        `json:"indexers,omitempty"`
+	DownloadClients *[]DownloadClientRuntimeSettings `json:"download_clients,omitempty"`
+	Aggregator      *AggregatorRuntimeSettings       `json:"aggregator,omitempty"`
+	GoNZBNet        *GoNZBNetRuntimeSettings         `json:"gonzbnet,omitempty"`
+	NNTPPool        *NNTPPoolRuntimeSettings         `json:"nntp_pool,omitempty"`
+	Indexing        *IndexingRuntimeSettings         `json:"indexing,omitempty"`
 }
 
 type ServerRuntimeSettings struct {
@@ -158,18 +154,19 @@ type GoNZBNetRuntimeSettings struct {
 	ShareSourceIndexer             bool     `json:"share_source_indexer_hash"`
 }
 
-type DownloadRuntimeSettings struct {
-	OutDir            string   `json:"out_dir"`
-	CompletedDir      string   `json:"completed_dir"`
-	CleanupExtensions []string `json:"cleanup_extensions"`
+type DownloadClientRuntimeSettings struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Enabled  bool   `json:"enabled"`
+	Default  bool   `json:"default"`
+	BaseURL  string `json:"base_url"`
+	APIKey   string `json:"api_key"`
+	Category string `json:"category,omitempty"`
+	Priority int    `json:"priority"`
 }
 
 type NNTPPoolRuntimeSettings struct {
-	IdleBorrowEnabled         bool `json:"idle_borrow_enabled"`
-	IndexerMaxPercent         int  `json:"indexer_max_percent"`
-	IndexerStageTargetPercent int  `json:"indexer_stage_target_percent"`
-	DownloaderReservePercent  int  `json:"downloader_reserve_percent"`
-	DemandWindowSeconds       int  `json:"demand_window_seconds"`
+	IndexerStageTargetPercent int `json:"indexer_stage_target_percent"`
 }
 
 type IndexingStageRuntimeSettings struct {
@@ -443,16 +440,6 @@ type IndexingMaintenanceTaskRuntimeSettings struct {
 	IntervalHours   int    `json:"interval_hours,omitempty"`
 	BatchSize       int    `json:"batch_size,omitempty"`
 	LastDryRunAt    string `json:"last_dry_run_at,omitempty"`
-}
-
-type ArrIntegrationRuntimeSettings struct {
-	ID         string `json:"id"`
-	Kind       string `json:"kind"`
-	Enabled    bool   `json:"enabled"`
-	BaseURL    string `json:"base_url"`
-	APIKey     string `json:"api_key"`
-	ClientName string `json:"client_name,omitempty"`
-	Category   string `json:"category,omitempty"`
 }
 
 type ControlPlaneCapabilities struct {

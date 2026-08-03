@@ -1,440 +1,133 @@
 # GoNZB Architecture
 
-GoNZB is a modular monolith for Usenet downloading, aggregated search, local
-Usenet/NZB indexing, and pool-scoped GoNZBNet federation.
+GoNZB is a modular monolith with three product domains: aggregator, Usenet
+indexer, and GoNZBNet. Authentication, runtime settings, HTTP, and storage are
+shared infrastructure. Download execution is deliberately outside the process.
 
-This document is the high-level reference for how the main modules fit together, what each module owns, and how the current bootstrap-plus-runtime-settings model works.
-
-## Core Rules
-
-1. Downloader, aggregator, usenet indexer, and GoNZBNet are separate ownership domains.
-2. The aggregator must work without PostgreSQL unless the local usenet indexer
-   or GoNZBNet projection is explicitly used as a source.
-3. The downloader must not depend on PostgreSQL-backed indexer internals.
-4. The web UI uses API surfaces instead of talking to storage directly.
-5. Route registration, readiness, and runtime behavior are module-aware.
-6. GoNZBNet may consume indexer-owned release/evidence contracts but must not
-   rewrite indexer source facts or share local user context.
-7. These deployment shapes must keep working:
-   - downloader-only
-   - aggregator-only
-   - usenet-indexer-only
-   - aggregator plus GoNZBNet consumer/relay
-   - usenet-indexer plus GoNZBNet scanner/publisher
-   - all-in-one
-
-## Architecture Shape
-
-GoNZB uses a pragmatic modular-monolith pattern:
-
-1. `internal/runtime/wiring` is the composition root.
-2. `internal/app/context.go` holds shared process state and module registrations.
-3. Module facades expose behavior to HTTP, CLI, and runtime adapters.
-4. Long-running services are managed through runtime modules.
-5. Storage, transport, and external integrations stay at the edges.
-
-Important module-facing contracts live in `internal/app/contracts.go`.
-
-Current facades include:
-
-- `DownloaderModule`
-- `AggregatorModule`
-- `SettingsAdmin`
-
-## Bootstrap Config Vs Runtime Settings
-
-GoNZB now keeps `config.yaml` intentionally small.
-
-Bootstrap config is for values needed before the app can start:
-
-- HTTP port
-- hard module gates
-- logging
-- SQLite/blob/PostgreSQL bootstrap paths
-- CORS
-
-Operational settings are stored in SQLite runtime settings and are edited through the control plane:
-
-- NNTP servers and credentials
-- downloader output paths and behavior
-- aggregator sources
-- indexer newsgroups, stages, schedules, and enrichment settings
-- GoNZBNet peers, pools, roles, transport, publication, validation, coverage,
-  cache, and binary-evidence policy
-- maintenance and retention settings
-- user, role, and user-token auth state
-
-Newznab/NZB `apikey` values are generated account API tokens. They authenticate as the owning user and are authorized through that user's RBAC roles.
-
-That means a fresh install usually follows this flow:
-
-1. copy `config.yaml.example`
-2. start `gonzb serve`
-3. create the initial admin user at `/setup`
-4. finish module configuration in `/admin/settings`
-
-## Module Overview
-
-### Downloader
-
-Primary packages:
-
-- `internal/downloader`
-- `internal/engine`
-- `internal/nntp`
-- `internal/processor`
-- `internal/nzb`
-- `internal/store/sqlitejob`
-
-What it owns:
-
-- manual NZB enqueue
-- enqueue by release ID
-- queue lifecycle
-- NNTP download execution
-- extraction and post-processing
-- queue/history/files/events APIs
-- SAB-compatible downloader behavior
-
-Storage:
-
-- SQLite queue/job/history/event metadata
-- filesystem work and output directories
-
-Boundary rule:
-
-- downloader features must not reach into PostgreSQL-backed indexer storage
+## Ownership boundaries
 
 ### Aggregator
 
-Primary packages:
+`internal/aggregator` owns normalized release search across external Newznab,
+the local indexer, accepted GoNZBNet data, and the optional blob/cache source.
+It owns Newznab-compatible search and NZB retrieval through `/api` and
+`/nzb/:id`.
 
-- `internal/aggregator`
-- `internal/aggregator/sources/*`
-- `internal/resolver`
-- `internal/store/blob`
+The aggregator can run without PostgreSQL when none of its selected sources
+requires the local indexer or PostgreSQL-backed GoNZBNet data.
 
-What it owns:
+### Usenet indexer
 
-- searching configured sources
-- merging and normalizing release results
-- resolving NZB payloads
-- caching payloads
-- native aggregated search
-- Newznab-compatible search/get behavior
+`internal/indexer` and `internal/store/pgindex` own NNTP header ingestion,
+partitioned article storage, binary assembly, yEnc recovery, release formation,
+inspection, enrichment, retention, NZB generation, and the PostgreSQL catalog.
+The maintained stage and schema contracts live in `docs/wiki/indexer/`.
 
-Current source types:
-
-- external Newznab sources
-- local blob-backed releases
-- the local usenet indexer when `aggregator.sources.usenet_indexer.enabled` is enabled
-- the local GoNZBNet projection when `aggregator.sources.gonzbnet.enabled` is enabled
-
-Storage:
-
-- filesystem blob store for NZB payloads
-- optional SQLite-backed cache/search persistence
-
-Boundary rule:
-
-- aggregator behavior may use the local indexer as a source, but it should still depend on module contracts rather than indexer storage internals
-
-### Usenet Indexer
-
-Primary packages:
-
-- `internal/indexing`
-- `internal/indexing/scrape`
-- `internal/indexing/assemble`
-- `internal/indexing/release`
-- `internal/indexing/inspect`
-- `internal/indexing/enrich`
-- `internal/indexing/scheduler`
-- `internal/store/pgindex`
-
-What it owns:
-
-- scraping article headers from NNTP
-- assembling binaries
-- forming releases
-- inspection and enrichment passes
-- PostgreSQL-backed catalog and operational reporting
-- public and admin indexer APIs
-
-Storage:
-
-- PostgreSQL catalog/index data
-
-Reference:
-
-- see the [Indexer Wiki](./wiki/indexer/README.md) for the stage-by-stage
-  pipeline, schema, partition, retention, and release-formation contracts
-
-Boundary rule:
-
-- PostgreSQL-backed catalog ownership stays inside the usenet indexer module
+The local indexer is exposed to clients by enabling it as an aggregator source;
+the Newznab compatibility edge remains aggregator-owned.
 
 ### GoNZBNet
 
-Primary packages:
-
-- `internal/gonzbnet/*`
-- `internal/runtime/wiring/gonzbnet_*`
-- GoNZBNet tables and projections in `internal/store/pgindex`
-
-What it owns:
-
-- persistent Ed25519 node identity and signed protocol events
-- trust pools, admission, invitations, capability grants, and moderation
-- pull, push, WebSocket gossip, relay, and peer exchange
-- release cards, resolution manifests, health and validation statements
-- scanner coverage coordination and binary-evidence exchange
-- local federated catalog projections, reporting, and diagnostics
-
-Storage:
-
-- PostgreSQL event log, authorization state, typed projections, manifests,
-  delivery state, diagnostics, and direct evidence
-- filesystem Ed25519 key material under the configured protected key directory
-
-Boundary rules:
-
-- local users authenticate only to their home node; federation requests use
-  node signatures and pool authorization
-- search and get use the local aggregator adapter instead of live remote search
-- imported binary evidence remains separate from scrape-owned article headers
-  and local binary parts
-
-Reference:
-
-- see the [GoNZBNet Wiki](./wiki/gonzbnet/README.md) for protocol, roles,
-  configuration, deployment, security, operations, and testing
-
-### API
-
-Primary packages:
-
-- `internal/api`
-- `internal/api/controllers`
-- `internal/telemetry`
-
-What it owns:
-
-- route registration based on enabled modules
-- request binding and validation
-- transport DTO mapping
-- auth, audit, and request middleware
-- health and readiness endpoints
-
-Controller rule:
-
-- controllers should call facades or module services, not build internals directly
-
-### Web UI
-
-Primary packages:
-
-- `internal/webui`
-- `ui/`
-
-What it owns:
-
-- serving frontend assets when enabled
-- setup, admin, and operator workflows on top of the API
-
-Boundary rule:
-
-- the UI should not bypass the API layer
-
-### ARR Notifier
-
-Primary packages:
-
-- `internal/integrations/arr`
-- `internal/runtime/wiring/arr.go`
-
-This is a runtime support module that reacts to terminal downloader outcomes and notifies external ARR tools when configured.
-
-## Runtime Modules
-
-Runtime module contracts define:
-
-- `Name()`
-- `Enabled()`
-- `Build(ctx)`
-- `Start(ctx)`
-- `Reload(ctx)`
-- `Close()`
-- `ReadinessChecks(ctx)`
-
-Current runtime modules:
-
-- downloader
-- aggregator
-- usenet_indexer
-- gonzbnet
-- arr_notifier
-
-Runtime lifecycle behavior:
-
-- startup builds enabled modules
-- server mode starts long-running runtimes
-- settings changes trigger reload where supported
-- readiness probes call module-owned checks
-- shutdown closes module resources
-
-This keeps startup, reload, readiness, and shutdown on the same module boundaries instead of scattering that logic across the app.
-
-## API Surface Ownership
-
-Routes are registered only when the owning module is enabled.
-
-### Downloader-Owned Routes
-
-- `GET /api/v1/queue`
-- `GET /api/v1/queue/history`
-- `GET /api/v1/queue/:id`
-- `GET /api/v1/queue/:id/files`
-- `GET /api/v1/queue/:id/events`
-- `POST /api/v1/queue`
-- `POST /api/v1/queue/:id/cancel`
-- `POST /api/v1/queue/bulk/cancel`
-- `POST /api/v1/queue/bulk/delete`
-- `POST /api/v1/queue/history/clear`
-- `GET /api/v1/events/queue`
-- `/api/sab?mode=...`
-
-### Aggregator-Owned Routes
-
-- `GET /api/v1/releases/search`
-- `/api?t=...`
-- `GET /nzb/:id`
-
-### Indexer-Owned Routes
-
-- `GET /api/v1/indexer/overview`
-- `GET /api/v1/indexer/stages`
-- `GET /api/v1/indexer/runs`
-- `POST /api/v1/indexer/stages/:stage/run`
-- `POST /api/v1/indexer/stages/:stage/pause`
-- `POST /api/v1/indexer/stages/:stage/resume`
-- `GET /api/v1/indexer/releases`
-- `GET /api/v1/indexer/releases/:id`
-- `GET /api/v1/indexer/binaries/:id`
-- `GET /api/v1/indexer/files/:id`
-- `GET /api/v1/admin/indexer/*`
-
-### GoNZBNet-Owned Routes
-
-- `GET /.well-known/gonzbnet`
-- `/gonzbnet/v1/*` for node-authenticated federation protocol traffic
-- `/api/v1/admin/gonzbnet/*` for local administration and reporting
-
-### Shared Control-Plane And Auth Routes
-
-- `GET /api/v1/admin/settings`
-- `GET /api/v1/admin/capabilities`
-- `PUT /api/v1/admin/settings`
-- `/api/v1/auth/*`
-- `/api/v1/admin/auth/*`
-
-### Shared Compatibility Multiplexer
-
-- `/api?mode=...` routes to SAB-compatible downloader behavior
-- `/api?t=...` routes to Newznab-compatible aggregator behavior
-
-### Probes
-
-- `GET /healthz`
-- `GET /readyz`
-
-## Readiness Model
-
-Readiness is reported through module-owned checks rather than ad hoc global inspection.
-
-Examples:
-
-- downloader checks queue manager, SQLite store, parser, and NNTP runtime
-- aggregator checks that it has a runtime, a payload store, and at least one enabled source
-- usenet indexer checks PostgreSQL availability and settings store health
-- GoNZBNet checks PostgreSQL, identity keys, advertised transport, and enabled
-  capability prerequisites
-
-This is why an enabled module can start but still report a not-ready state until its runtime settings are configured.
-
-## CLI Shape
-
-Primary entrypoint:
-
-- `cmd/gonzb/main.go`
-
-Common commands:
-
-- `gonzb serve`
-- `gonzb --file <nzb>`
-- `gonzb indexer scrape`
-- `gonzb indexer scrape latest`
-- `gonzb indexer scrape backfill --once`
-- `gonzb indexer assemble --once`
-- `gonzb indexer release --once`
-- `gonzb indexer pipeline --once`
-- `gonzb indexer inspect ...`
-- `gonzb indexer enrich ...`
-- `gonzb indexer maintenance`
-- `gonzb gonzbnet status`
-- `gonzb gonzbnet pools`
-- `gonzb gonzbnet peers`
-- `gonzb gonzbnet sync <pull|push>`
-
-CLI rule:
-
-- CLI adapters should call runtime commands or module services instead of duplicating business logic
-
-## Storage Overview
-
-### SQLite
-
-Used for:
-
-- downloader metadata
-- auth state
-- runtime settings
-- optional aggregator cache/search persistence
-
-### Filesystem Blob Store
-
-Used for:
-
-- NZB payload cache files
-
-### PostgreSQL
-
-Used for:
-
-- usenet indexer catalog and pipeline state
-- GoNZBNet event, pool, projection, manifest, delivery, reporting, and evidence
-  state
-
-## Extension Guidelines
-
-When adding new work:
-
-1. decide which module owns the behavior
-2. add or extend the module use case first
-3. add storage or integration adapters only where needed
-4. keep HTTP, CLI, and UI adapters thin
-5. preserve optional deployment combinations
-
-Avoid:
-
-- putting business logic directly in controllers
-- passing `*app.Context` deep into feature code outside runtime wiring
-- creating direct cross-module storage dependencies
-
-For indexer-specific work:
-
-- scrape behavior belongs in `internal/indexing/scrape`
-- binary matching and grouping belongs in assemble or match code
-- release formation belongs in `internal/indexing/release`
-- inspection and enrichment belong in their dedicated stage packages
-- schema and repository changes belong in `internal/store/pgindex`
+`internal/gonzbnet` owns node identity, signed federation events, pools,
+membership, roles, peer synchronization, manifest exchange, validation,
+coverage coordination, and direct binary evidence. It may publish from the
+indexer and project accepted remote releases into the aggregator without
+making those modules import GoNZBNet internals.
+
+### External download-client adapter
+
+`internal/downloadclient` is a small outbound adapter, not a runtime module. It
+resolves an existing GoNZB release/NZB and submits it to an administrator-
+configured SAB-compatible endpoint. It has no queue, NNTP body downloader,
+repair/extraction pipeline, history, filesystem manager, or ARR notifier.
+
+The adapter is invoked only by the explicit local release action and is guarded
+by `download_clients.send`. The external client owns all subsequent state.
+
+## Runtime and configuration
+
+`config.yaml` provides bootstrap state: listener settings, hard module gates,
+logging, store paths/DSNs, and GoNZBNet protocol bootstrap settings. SQLite
+runtime settings provide live-editable NNTP providers, aggregator sources,
+SAB-compatible clients, indexer stages, and GoNZBNet operator settings.
+
+Runtime construction lives under `internal/runtime/wiring`. Module bindings use
+interfaces from `internal/app`; concrete stores and services are not reached
+across domains directly. Settings reload rebuilds affected runtime components.
+
+## Storage
+
+- SQLite: users, roles, sessions, API tokens, runtime settings, and optional
+  aggregator cache metadata
+- PostgreSQL: indexer pipeline/catalog state and GoNZBNet state
+- blob store: cached and archived NZBs
+- external SAB-compatible client: download queue, incomplete/complete files,
+  repair, extraction, and history
+
+SQLite secret columns are not encrypted at the application layer. Operators
+must protect configuration, database volumes, snapshots, and backups.
+
+## Request flows
+
+### Newznab automation
+
+```text
+Radarr/Sonarr/Prowlarr
+  -> GoNZB /api (account token)
+  -> aggregator searches configured sources
+  -> client requests NZB from GoNZB
+  -> automation submits NZB to its configured downloader
+  -> automation imports the completed download
+```
+
+GoNZB neither receives download-completion callbacks nor talks directly to ARR
+applications.
+
+### Manual Send to downloader
+
+```text
+authenticated operator
+  -> local release detail action
+  -> release resolver generates or retrieves the NZB
+  -> outbound SAB addfile request
+  -> client ID and optional external job ID returned
+```
+
+### Local indexing
+
+```text
+NNTP XOVER
+  -> article partitions
+  -> binary assembly / evidence recovery
+  -> release formation
+  -> inspection and enrichment
+  -> public-ready release
+  -> NZB generation/archive
+  -> local aggregator source
+```
+
+## Authentication and exposure
+
+Browser sessions use CSRF protection. Newznab clients use account API tokens
+and inherit their account's RBAC permissions. A dedicated viewer account is the
+recommended least-privilege Newznab identity.
+
+The release submission action requires an authenticated operator/admin with
+`download_clients.send`. Download-client configuration requires admin settings
+permissions. The outbound adapter rejects URL credentials and HTTP redirects;
+its destination and API key are administrator-controlled.
+
+Health and readiness probes are unauthenticated for infrastructure use. The
+application listener should remain private or sit behind a correctly scoped TLS
+reverse proxy. GoNZBNet peer endpoints have separate signed-node security and
+deployment guidance.
+
+## Supported deployment shapes
+
+- aggregator-only with external/federated sources
+- local indexer plus aggregator/Newznab API
+- standalone or integrated GoNZBNet node
+- all-in-one indexer, aggregator, and GoNZBNet node
+
+There is no downloader-only deployment. Disabling the aggregator removes the
+Newznab endpoint even when the local indexer is enabled.

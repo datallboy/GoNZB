@@ -19,7 +19,7 @@ const (
 	aggregatorModuleName    = "aggregator"
 	goNZBNetModuleName      = "gonzbnet"
 )
-const expectedSchemaVersion = 2
+const expectedSchemaVersion = 3
 
 type Store struct {
 	db *sql.DB
@@ -212,20 +212,17 @@ func (s *Store) UpdateSettings(ctx context.Context, next *RuntimeSettings) error
 	if err := s.writeIndexers(ctx, tx, next.Indexers); err != nil {
 		return fmt.Errorf("write settings_indexers: %w", err)
 	}
+	if err := s.writeDownloadClients(ctx, tx, next.DownloadClients); err != nil {
+		return fmt.Errorf("write settings_download_clients: %w", err)
+	}
 	if err := s.writeAggregatorOptions(ctx, tx, next.Aggregator); err != nil {
 		return fmt.Errorf("write aggregator module options: %w", err)
 	}
 	if err := s.writeGoNZBNetOptions(ctx, tx, next.GoNZBNet); err != nil {
 		return fmt.Errorf("write gonzbnet module options: %w", err)
 	}
-	if err := s.writeDownload(ctx, tx, next.Download); err != nil {
-		return fmt.Errorf("write settings_download: %w", err)
-	}
 	if err := s.writeUsenetIndexerOptions(ctx, tx, next.Indexing); err != nil {
 		return fmt.Errorf("write settings_module_options: %w", err)
-	}
-	if err := s.writeArrIntegrations(ctx, tx, next.ArrIntegrations); err != nil {
-		return fmt.Errorf("write settings_arr_integrations: %w", err)
 	}
 
 	if _, err := tx.ExecContext(ctx, `
@@ -324,11 +321,10 @@ func (s *Store) readLatestRevisionSnapshot(ctx context.Context) (*RuntimeSetting
 
 func (s *Store) readStructuredSettings(ctx context.Context) (*RuntimeSettings, bool, error) {
 	out := &RuntimeSettings{
-		Servers:           make([]ServerRuntimeSettings, 0),
-		DownloaderServers: make([]ServerRuntimeSettings, 0),
-		IndexerServers:    make([]ServerRuntimeSettings, 0),
-		Indexers:          make([]IndexerRuntimeSettings, 0),
-		ArrIntegrations:   make([]ArrIntegrationRuntimeSettings, 0),
+		Servers:         make([]ServerRuntimeSettings, 0),
+		IndexerServers:  make([]ServerRuntimeSettings, 0),
+		Indexers:        make([]IndexerRuntimeSettings, 0),
+		DownloadClients: make([]DownloadClientRuntimeSettings, 0),
 	}
 
 	hasState := false
@@ -411,55 +407,25 @@ func (s *Store) readStructuredSettings(ctx context.Context) (*RuntimeSettings, b
 		return nil, false, err
 	}
 
-	arrRows, err := s.db.QueryContext(ctx, `
-		SELECT id, kind, enabled, base_url, api_key_ciphertext, client_name, category
-		FROM settings_arr_integrations
-		ORDER BY kind, id`)
+	clientRows, err := s.db.QueryContext(ctx, `
+		SELECT id, name, enabled, is_default, base_url, api_key_ciphertext, category, priority
+		FROM settings_download_clients
+		ORDER BY is_default DESC, name, id`)
 	if err != nil {
 		return nil, false, err
 	}
-	defer arrRows.Close()
+	defer clientRows.Close()
 
-	for arrRows.Next() {
+	for clientRows.Next() {
 		hasState = true
-		var item ArrIntegrationRuntimeSettings
-		if err := arrRows.Scan(&item.ID, &item.Kind, &item.Enabled, &item.BaseURL, &item.APIKey, &item.ClientName, &item.Category); err != nil {
+		var item DownloadClientRuntimeSettings
+		if err := clientRows.Scan(&item.ID, &item.Name, &item.Enabled, &item.Default, &item.BaseURL, &item.APIKey, &item.Category, &item.Priority); err != nil {
 			return nil, false, err
 		}
-		out.ArrIntegrations = append(out.ArrIntegrations, item)
+		out.DownloadClients = append(out.DownloadClients, item)
 	}
-	if err := arrRows.Err(); err != nil {
+	if err := clientRows.Err(); err != nil {
 		return nil, false, err
-	}
-
-	var (
-		outDir      string
-		completed   string
-		cleanupJSON string
-	)
-	err = s.db.QueryRowContext(ctx, `
-		SELECT out_dir, completed_dir, cleanup_extensions_json
-		FROM settings_download
-		WHERE singleton_id = 1`).Scan(&outDir, &completed, &cleanupJSON)
-	if err != nil && err != sql.ErrNoRows {
-		return nil, false, err
-	}
-	if err == nil {
-		hasState = true
-
-		var cleanup []string
-		if cleanupJSON == "" {
-			cleanupJSON = "[]"
-		}
-		if unmarshalErr := json.Unmarshal([]byte(cleanupJSON), &cleanup); unmarshalErr != nil {
-			return nil, false, fmt.Errorf("unmarshal settings_download.cleanup_extensions_json: %w", unmarshalErr)
-		}
-
-		out.Download = &DownloadRuntimeSettings{
-			OutDir:            outDir,
-			CompletedDir:      completed,
-			CleanupExtensions: cleanup,
-		}
 	}
 
 	var optionsJSON string
@@ -605,46 +571,22 @@ func (s *Store) writeIndexers(ctx context.Context, tx *sql.Tx, indexers []Indexe
 	return nil
 }
 
-func (s *Store) writeArrIntegrations(ctx context.Context, tx *sql.Tx, integrations []ArrIntegrationRuntimeSettings) error {
-	if _, err := tx.ExecContext(ctx, `DELETE FROM settings_arr_integrations`); err != nil {
+func (s *Store) writeDownloadClients(ctx context.Context, tx *sql.Tx, clients []DownloadClientRuntimeSettings) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM settings_download_clients`); err != nil {
 		return err
 	}
 
-	for _, item := range integrations {
+	for _, item := range clients {
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO settings_arr_integrations (
-				id, kind, enabled, base_url, api_key_ciphertext, client_name, category, updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
-			item.ID, item.Kind, item.Enabled, item.BaseURL, item.APIKey, item.ClientName, item.Category,
+			INSERT INTO settings_download_clients (
+				id, name, enabled, is_default, base_url, api_key_ciphertext, category, priority, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+			item.ID, item.Name, item.Enabled, item.Default, item.BaseURL, item.APIKey, item.Category, item.Priority,
 		); err != nil {
 			return err
 		}
 	}
 	return nil
-}
-
-func (s *Store) writeDownload(ctx context.Context, tx *sql.Tx, download *DownloadRuntimeSettings) error {
-	if _, err := tx.ExecContext(ctx, `DELETE FROM settings_download WHERE singleton_id = 1`); err != nil {
-		return err
-	}
-	if download == nil {
-		return nil
-	}
-
-	cleanupJSON, err := json.Marshal(download.CleanupExtensions)
-	if err != nil {
-		return fmt.Errorf("marshal cleanup extensions: %w", err)
-	}
-
-	_, err = tx.ExecContext(ctx, `
-		INSERT INTO settings_download (
-			singleton_id, out_dir, completed_dir, cleanup_extensions_json, updated_at
-		) VALUES (1, ?, ?, ?, CURRENT_TIMESTAMP)`,
-		download.OutDir,
-		download.CompletedDir,
-		string(cleanupJSON),
-	)
-	return err
 }
 
 func (s *Store) writeUsenetIndexerOptions(ctx context.Context, tx *sql.Tx, indexing *IndexingRuntimeSettings) error {

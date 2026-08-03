@@ -51,8 +51,6 @@ services:
       GONZB_STORE_PG_DSN: postgresql://${POSTGRES_APP_USER:-gonzb}:${POSTGRES_APP_PASSWORD}@postgres:5432/${POSTGRES_DB:-gonzb}?sslmode=disable
       GONZB_BIND_ADDRESS: 0.0.0.0
       GONZB_API_BOOTSTRAP_TOKEN: ${GONZB_API_BOOTSTRAP_TOKEN:-}
-      GONZB_DOWNLOAD_OUT_DIR: /downloads
-      GONZB_DOWNLOAD_COMPLETED_DIR: /downloads/completed
       GONZB_GONZBNET_KEYS_DIR: /store/gonzbnet/keys
       GONZB_LOG_PATH: none
     command: ["--config", "/config/config.yaml", "serve"]
@@ -61,7 +59,6 @@ services:
     volumes:
       - ${GONZB_CONFIG_PATH:-./config.yaml.example}:/config/config.yaml:ro
       - gonzb-store:/store
-      - gonzb-downloads:/downloads
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/healthz"]
       interval: 10s
@@ -72,4 +69,3 @@ services:
 volumes:
   postgres-data:
   gonzb-store:
-  gonzb-downloads:

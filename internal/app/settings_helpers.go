@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"net/url"
 	"slices"
 	"strings"
 
@@ -10,18 +11,13 @@ import (
 
 func DefaultRuntimeSettings() *RuntimeSettings {
 	return &RuntimeSettings{
-		Servers:           []ServerRuntimeSettings{},
-		DownloaderServers: []ServerRuntimeSettings{},
-		IndexerServers:    []ServerRuntimeSettings{},
-		Indexers:          []IndexerRuntimeSettings{},
-		Aggregator:        &AggregatorRuntimeSettings{},
-		GoNZBNet:          defaultGoNZBNetRuntimeSettings(),
-		Download: &DownloadRuntimeSettings{
-			OutDir:            "./downloads",
-			CompletedDir:      "./downloads/completed",
-			CleanupExtensions: []string{"nzb", "par2", "sfv", "nfo"},
-		},
-		NNTPPool: DefaultNNTPPoolRuntimeSettings(),
+		Servers:         []ServerRuntimeSettings{},
+		IndexerServers:  []ServerRuntimeSettings{},
+		Indexers:        []IndexerRuntimeSettings{},
+		DownloadClients: []DownloadClientRuntimeSettings{},
+		Aggregator:      &AggregatorRuntimeSettings{},
+		GoNZBNet:        defaultGoNZBNetRuntimeSettings(),
+		NNTPPool:        DefaultNNTPPoolRuntimeSettings(),
 		Indexing: &IndexingRuntimeSettings{
 			Newsgroups:                  []string{},
 			BackfillUntilDateByGroup:    map[string]string{},
@@ -65,7 +61,6 @@ func DefaultRuntimeSettings() *RuntimeSettings {
 			EnrichPreDB:                 defaultPreDBStage(false),
 			EnrichTMDB:                  defaultTMDBStage(false),
 		},
-		ArrIntegrations: []ArrIntegrationRuntimeSettings{},
 	}
 }
 
@@ -78,17 +73,14 @@ func WithRuntimeDefaults(in *RuntimeSettings) *RuntimeSettings {
 	if out.Servers == nil {
 		out.Servers = []ServerRuntimeSettings{}
 	}
-	if out.DownloaderServers == nil {
-		out.DownloaderServers = []ServerRuntimeSettings{}
-	}
 	if out.IndexerServers == nil {
 		out.IndexerServers = []ServerRuntimeSettings{}
 	}
 	if out.Indexers == nil {
 		out.Indexers = []IndexerRuntimeSettings{}
 	}
-	if out.ArrIntegrations == nil {
-		out.ArrIntegrations = []ArrIntegrationRuntimeSettings{}
+	if out.DownloadClients == nil {
+		out.DownloadClients = []DownloadClientRuntimeSettings{}
 	}
 	if out.Aggregator == nil {
 		out.Aggregator = defaults.Aggregator
@@ -114,9 +106,6 @@ func WithRuntimeDefaults(in *RuntimeSettings) *RuntimeSettings {
 		if out.GoNZBNet.BinaryEvidenceCooldownMinutes <= 0 {
 			out.GoNZBNet.BinaryEvidenceCooldownMinutes = defaults.GoNZBNet.BinaryEvidenceCooldownMinutes
 		}
-	}
-	if out.Download == nil {
-		out.Download = defaults.Download
 	}
 	out.NNTPPool = mergeNNTPPoolRuntimeSettings(defaults.NNTPPool, out.NNTPPool)
 	if out.Indexing == nil {
@@ -284,19 +273,13 @@ func FromConfig(cfg *config.Config) *RuntimeSettings {
 	}
 
 	out := &RuntimeSettings{
-		Servers:           make([]ServerRuntimeSettings, 0, len(cfg.Servers)),
-		DownloaderServers: make([]ServerRuntimeSettings, 0, len(cfg.Servers)),
-		IndexerServers:    make([]ServerRuntimeSettings, 0, len(cfg.Servers)),
-		Indexers:          make([]IndexerRuntimeSettings, 0, len(cfg.Indexers)),
-		Aggregator:        aggregatorRuntimeFromConfig(cfg.Aggregator),
-		GoNZBNet:          goNZBNetRuntimeFromConfig(cfg.GoNZBNet),
-		ArrIntegrations:   []ArrIntegrationRuntimeSettings{},
-		Download: &DownloadRuntimeSettings{
-			OutDir:            cfg.Download.OutDir,
-			CompletedDir:      cfg.Download.CompletedDir,
-			CleanupExtensions: append([]string(nil), cfg.Download.CleanupExtensions...),
-		},
-		NNTPPool: DefaultNNTPPoolRuntimeSettings(),
+		Servers:         make([]ServerRuntimeSettings, 0, len(cfg.Servers)),
+		IndexerServers:  make([]ServerRuntimeSettings, 0, len(cfg.Servers)),
+		Indexers:        make([]IndexerRuntimeSettings, 0, len(cfg.Indexers)),
+		DownloadClients: []DownloadClientRuntimeSettings{},
+		Aggregator:      aggregatorRuntimeFromConfig(cfg.Aggregator),
+		GoNZBNet:        goNZBNetRuntimeFromConfig(cfg.GoNZBNet),
+		NNTPPool:        DefaultNNTPPoolRuntimeSettings(),
 		Indexing: func() *IndexingRuntimeSettings {
 			indexing := IndexingRuntimeFromConfig(cfg.Indexing)
 			return &indexing
@@ -321,7 +304,6 @@ func FromConfig(cfg *config.Config) *RuntimeSettings {
 			Roles:                  append([]string(nil), s.Roles...),
 		}
 		out.Servers = append(out.Servers, server)
-		out.DownloaderServers = append(out.DownloaderServers, server)
 		out.IndexerServers = append(out.IndexerServers, server)
 	}
 
@@ -724,7 +706,6 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 	effective.GoNZBNet.PublishPoolIDs = append([]string(nil), base.GoNZBNet.PublishPoolIDs...)
 	effective.GoNZBNet.ManualPeers = append([]string(nil), base.GoNZBNet.ManualPeers...)
 	effective.GoNZBNet.ValidationTiers = append([]string(nil), base.GoNZBNet.ValidationTiers...)
-	effective.Download.CleanupExtensions = append([]string(nil), base.Download.CleanupExtensions...)
 	effective.Indexing.Newsgroups = append([]string(nil), base.Indexing.Newsgroups...)
 
 	if runtime == nil {
@@ -754,18 +735,6 @@ func ApplyToConfig(base *config.Config, runtime *RuntimeSettings) *config.Config
 
 	if runtime.GoNZBNet != nil {
 		applyGoNZBNetRuntimeToConfig(&effective.GoNZBNet, runtime.GoNZBNet)
-	}
-
-	if runtime.Download != nil {
-		if runtime.Download.OutDir != "" {
-			effective.Download.OutDir = runtime.Download.OutDir
-		}
-		if runtime.Download.CompletedDir != "" {
-			effective.Download.CompletedDir = runtime.Download.CompletedDir
-		}
-		if runtime.Download.CleanupExtensions != nil {
-			effective.Download.CleanupExtensions = append([]string(nil), runtime.Download.CleanupExtensions...)
-		}
 	}
 
 	if runtime.Indexing != nil {
@@ -892,24 +861,19 @@ func ApplyPatch(current *RuntimeSettings, patch *RuntimeSettingsPatch) *RuntimeS
 	}
 
 	next := &RuntimeSettings{
-		Servers:           append([]ServerRuntimeSettings(nil), current.Servers...),
-		DownloaderServers: append([]ServerRuntimeSettings(nil), current.DownloaderServers...),
-		IndexerServers:    append([]ServerRuntimeSettings(nil), current.IndexerServers...),
-		Indexers:          append([]IndexerRuntimeSettings(nil), current.Indexers...),
-		ArrIntegrations:   append([]ArrIntegrationRuntimeSettings(nil), current.ArrIntegrations...),
-		Aggregator:        cloneAggregator(current.Aggregator),
-		GoNZBNet:          cloneGoNZBNet(current.GoNZBNet),
-		Download:          cloneDownload(current.Download),
-		NNTPPool:          cloneNNTPPool(current.NNTPPool),
-		Indexing:          cloneIndexing(current.Indexing),
-		Revision:          current.Revision,
+		Servers:         append([]ServerRuntimeSettings(nil), current.Servers...),
+		IndexerServers:  append([]ServerRuntimeSettings(nil), current.IndexerServers...),
+		Indexers:        append([]IndexerRuntimeSettings(nil), current.Indexers...),
+		DownloadClients: append([]DownloadClientRuntimeSettings(nil), current.DownloadClients...),
+		Aggregator:      cloneAggregator(current.Aggregator),
+		GoNZBNet:        cloneGoNZBNet(current.GoNZBNet),
+		NNTPPool:        cloneNNTPPool(current.NNTPPool),
+		Indexing:        cloneIndexing(current.Indexing),
+		Revision:        current.Revision,
 	}
 
 	if patch.Servers != nil {
 		next.Servers = append([]ServerRuntimeSettings(nil), (*patch.Servers)...)
-	}
-	if patch.DownloaderServers != nil {
-		next.DownloaderServers = append([]ServerRuntimeSettings(nil), (*patch.DownloaderServers)...)
 	}
 	if patch.IndexerServers != nil {
 		next.IndexerServers = append([]ServerRuntimeSettings(nil), (*patch.IndexerServers)...)
@@ -917,23 +881,20 @@ func ApplyPatch(current *RuntimeSettings, patch *RuntimeSettingsPatch) *RuntimeS
 	if patch.Indexers != nil {
 		next.Indexers = append([]IndexerRuntimeSettings(nil), (*patch.Indexers)...)
 	}
+	if patch.DownloadClients != nil {
+		next.DownloadClients = append([]DownloadClientRuntimeSettings(nil), (*patch.DownloadClients)...)
+	}
 	if patch.Aggregator != nil {
 		next.Aggregator = cloneAggregator(patch.Aggregator)
 	}
 	if patch.GoNZBNet != nil {
 		next.GoNZBNet = cloneGoNZBNet(patch.GoNZBNet)
 	}
-	if patch.Download != nil {
-		next.Download = cloneDownload(patch.Download)
-	}
 	if patch.NNTPPool != nil {
 		next.NNTPPool = mergeNNTPPoolRuntimeSettings(DefaultNNTPPoolRuntimeSettings(), patch.NNTPPool)
 	}
 	if patch.Indexing != nil {
 		next.Indexing = cloneIndexing(patch.Indexing)
-	}
-	if patch.ArrIntegrations != nil {
-		next.ArrIntegrations = append([]ArrIntegrationRuntimeSettings(nil), (*patch.ArrIntegrations)...)
 	}
 
 	dropUnsupportedIndexingConcurrency(next)
@@ -947,17 +908,15 @@ func CloneRuntimeSettings(in *RuntimeSettings) *RuntimeSettings {
 	}
 
 	out := &RuntimeSettings{
-		Servers:           append([]ServerRuntimeSettings(nil), in.Servers...),
-		DownloaderServers: append([]ServerRuntimeSettings(nil), in.DownloaderServers...),
-		IndexerServers:    append([]ServerRuntimeSettings(nil), in.IndexerServers...),
-		Indexers:          append([]IndexerRuntimeSettings(nil), in.Indexers...),
-		ArrIntegrations:   append([]ArrIntegrationRuntimeSettings(nil), in.ArrIntegrations...),
-		Aggregator:        cloneAggregator(in.Aggregator),
-		GoNZBNet:          cloneGoNZBNet(in.GoNZBNet),
-		Download:          cloneDownload(in.Download),
-		NNTPPool:          cloneNNTPPool(in.NNTPPool),
-		Indexing:          cloneIndexing(in.Indexing),
-		Revision:          in.Revision,
+		Servers:         append([]ServerRuntimeSettings(nil), in.Servers...),
+		IndexerServers:  append([]ServerRuntimeSettings(nil), in.IndexerServers...),
+		Indexers:        append([]IndexerRuntimeSettings(nil), in.Indexers...),
+		DownloadClients: append([]DownloadClientRuntimeSettings(nil), in.DownloadClients...),
+		Aggregator:      cloneAggregator(in.Aggregator),
+		GoNZBNet:        cloneGoNZBNet(in.GoNZBNet),
+		NNTPPool:        cloneNNTPPool(in.NNTPPool),
+		Indexing:        cloneIndexing(in.Indexing),
+		Revision:        in.Revision,
 	}
 	out.NNTPPool = mergeNNTPPoolRuntimeSettings(DefaultNNTPPoolRuntimeSettings(), out.NNTPPool)
 	dropUnsupportedIndexingConcurrency(out)
@@ -970,17 +929,14 @@ func RedactedCopy(in *RuntimeSettings) *RuntimeSettings {
 	for i := range out.Servers {
 		out.Servers[i].Password = ""
 	}
-	for i := range out.DownloaderServers {
-		out.DownloaderServers[i].Password = ""
-	}
 	for i := range out.IndexerServers {
 		out.IndexerServers[i].Password = ""
 	}
 	for i := range out.Indexers {
 		out.Indexers[i].APIKey = ""
 	}
-	for i := range out.ArrIntegrations {
-		out.ArrIntegrations[i].APIKey = ""
+	for i := range out.DownloadClients {
+		out.DownloadClients[i].APIKey = ""
 	}
 	if out.Indexing != nil {
 		dropUnsupportedIndexingConcurrency(out)
@@ -998,28 +954,16 @@ func RuntimeConfigured(in *RuntimeSettings) bool {
 	}
 	return len(in.Servers) > 0 ||
 		len(in.Indexers) > 0 ||
-		len(in.ArrIntegrations) > 0 ||
+		len(in.DownloadClients) > 0 ||
 		in.Aggregator != nil && (in.Aggregator.Sources.LocalBlob.Enabled || in.Aggregator.Sources.UsenetIndexer.Enabled || in.Aggregator.Sources.GoNZBNet.Enabled) ||
 		goNZBNetRuntimeConfigured(in.GoNZBNet) ||
-		downloadConfigured(in.Download) ||
 		indexingConfigured(in.Indexing)
 }
 
 func DefaultNNTPPoolRuntimeSettings() *NNTPPoolRuntimeSettings {
 	return &NNTPPoolRuntimeSettings{
-		IdleBorrowEnabled:         true,
-		IndexerMaxPercent:         80,
 		IndexerStageTargetPercent: 90,
-		DownloaderReservePercent:  20,
-		DemandWindowSeconds:       30,
 	}
-}
-
-func DownloaderNNTPServers(in *RuntimeSettings) []ServerRuntimeSettings {
-	if in == nil {
-		return nil
-	}
-	return in.Servers
 }
 
 func IndexerNNTPServers(in *RuntimeSettings) []ServerRuntimeSettings {
@@ -1063,14 +1007,6 @@ func toConfigServers(servers []ServerRuntimeSettings) []config.ServerConfig {
 	return out
 }
 
-func downloadConfigured(in *DownloadRuntimeSettings) bool {
-	if in == nil {
-		return false
-	}
-	return strings.TrimSpace(in.OutDir) != "" && strings.TrimSpace(in.OutDir) != "./downloads" ||
-		strings.TrimSpace(in.CompletedDir) != "" && strings.TrimSpace(in.CompletedDir) != "./downloads/completed"
-}
-
 func indexingConfigured(in *IndexingRuntimeSettings) bool {
 	if in == nil {
 		return false
@@ -1107,47 +1043,42 @@ func dropUnsupportedIndexingConcurrency(in *RuntimeSettings) {
 	in.Indexing.InspectPassword.Concurrency = 0
 }
 
-func ValidateArrIntegrations(integrations []ArrIntegrationRuntimeSettings) error {
-	seen := make(map[string]struct{}, len(integrations))
-
-	for _, integration := range integrations {
-		if !integration.Enabled {
-			continue
-		}
-
-		id := strings.TrimSpace(integration.ID)
+func ValidateDownloadClients(clients []DownloadClientRuntimeSettings) error {
+	seen := make(map[string]struct{}, len(clients))
+	defaultCount := 0
+	for _, client := range clients {
+		id := strings.TrimSpace(client.ID)
 		if id == "" {
-			return fmt.Errorf("arr integration id is required")
+			return fmt.Errorf("download client id is required")
 		}
 		if _, exists := seen[id]; exists {
-			return fmt.Errorf("duplicate arr integration id %q", id)
+			return fmt.Errorf("duplicate download client id %q", id)
 		}
 		seen[id] = struct{}{}
-
-		kind := strings.ToLower(strings.TrimSpace(integration.Kind))
-		if kind != "radarr" && kind != "sonarr" {
-			return fmt.Errorf("arr integration %q kind must be radarr or sonarr", id)
+		if client.Default && client.Enabled {
+			defaultCount++
 		}
-		if strings.TrimSpace(integration.BaseURL) == "" {
-			return fmt.Errorf("arr integration %q base_url is required", id)
+		if !client.Enabled {
+			continue
 		}
-		if strings.TrimSpace(integration.APIKey) == "" {
-			return fmt.Errorf("arr integration %q api_key is required", id)
+		parsed, err := url.Parse(strings.TrimSpace(client.BaseURL))
+		if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+			return fmt.Errorf("download client %q base_url must be an http or https URL", id)
+		}
+		if parsed.User != nil {
+			return fmt.Errorf("download client %q base_url must not contain credentials", id)
+		}
+		if strings.TrimSpace(client.APIKey) == "" {
+			return fmt.Errorf("download client %q api_key is required", id)
+		}
+		if client.Priority < -100 || client.Priority > 2 {
+			return fmt.Errorf("download client %q priority must be between -100 and 2", id)
 		}
 	}
-
+	if defaultCount > 1 {
+		return fmt.Errorf("only one enabled download client may be the default")
+	}
 	return nil
-}
-
-func cloneDownload(in *DownloadRuntimeSettings) *DownloadRuntimeSettings {
-	if in == nil {
-		return nil
-	}
-	return &DownloadRuntimeSettings{
-		OutDir:            in.OutDir,
-		CompletedDir:      in.CompletedDir,
-		CleanupExtensions: append([]string(nil), in.CleanupExtensions...),
-	}
 }
 
 func cloneNNTPPool(in *NNTPPoolRuntimeSettings) *NNTPPoolRuntimeSettings {
@@ -1166,18 +1097,8 @@ func mergeNNTPPoolRuntimeSettings(base, override *NNTPPoolRuntimeSettings) *NNTP
 	if override == nil {
 		return &out
 	}
-	out.IdleBorrowEnabled = override.IdleBorrowEnabled
-	if override.IndexerMaxPercent > 0 {
-		out.IndexerMaxPercent = clampPercent(override.IndexerMaxPercent)
-	}
 	if override.IndexerStageTargetPercent > 0 {
 		out.IndexerStageTargetPercent = clampPercent(override.IndexerStageTargetPercent)
-	}
-	if override.DownloaderReservePercent > 0 {
-		out.DownloaderReservePercent = clampPercent(override.DownloaderReservePercent)
-	}
-	if override.DemandWindowSeconds > 0 {
-		out.DemandWindowSeconds = override.DemandWindowSeconds
 	}
 	return &out
 }

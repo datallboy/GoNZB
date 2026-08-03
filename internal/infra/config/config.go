@@ -15,7 +15,6 @@ import (
 type Config struct {
 	Servers  []ServerConfig  `mapstructure:"servers" yaml:"servers"`
 	Indexers []IndexerConfig `mapstructure:"indexers" yaml:"indexers"`
-	Download DownloadConfig  `mapstructure:"download" yaml:"download"`
 	Log      LogConfig       `mapstructure:"log" yaml:"log"`
 	Store    StoreConfig     `mapstructure:"store" yaml:"store"`
 	API      APIConfig       `mapstructure:"api" yaml:"api"`
@@ -54,12 +53,6 @@ type IndexerConfig struct {
 	Redirect              bool     `mapstructure:"redirect" yaml:"redirect"`
 	AllowPrivateAddresses bool     `mapstructure:"allow_private_addresses" yaml:"allow_private_addresses"`
 	AllowedCIDRs          []string `mapstructure:"allowed_cidrs" yaml:"allowed_cidrs"`
-}
-
-type DownloadConfig struct {
-	OutDir            string   `mapstructure:"out_dir" yaml:"out_dir"`
-	CompletedDir      string   `mapstructure:"completed_dir" yaml:"completed_dir"`
-	CleanupExtensions []string `mapstructure:"cleanup_extensions" yaml:"cleanup_extensions"`
 }
 
 type LogConfig struct {
@@ -333,7 +326,6 @@ type IndexingTMDBConfig struct {
 
 // ModuleConfig is used to enable or disable certain modules within the application
 type ModulesConfig struct {
-	Downloader    ModuleToggle `mapstructure:"downloader" yaml:"downloader"`
 	Aggregator    ModuleToggle `mapstructure:"aggregator" yaml:"aggregator"`
 	UsenetIndexer ModuleToggle `mapstructure:"usenet_indexer" yaml:"usenet_indexer"`
 	GoNZBNet      ModuleToggle `mapstructure:"gonzbnet" yaml:"gonzbnet"`
@@ -384,9 +376,6 @@ func Load(path string) (*Config, error) {
 
 	// Set Defaults
 	v.SetDefault("port", "8080")
-	v.SetDefault("download.out_dir", "./downloads")
-	v.SetDefault("download.completed_dir", "./downloads/completed")
-	v.SetDefault("download.cleanup_extensions", []string{"nzb", "par2", "sfv", "nfo"}) // sane default for completed cleanup
 	v.SetDefault("log.level", "info")
 	v.SetDefault("log.include_stdout", true)
 	v.SetDefault("log.max_size_mb", 32)
@@ -529,7 +518,6 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("indexing.enrich_tmdb.tvdb_pin", "")
 	v.SetDefault("indexing.enrich_tmdb.tvdb_base_url", "https://api4.thetvdb.com/v4")
 
-	v.SetDefault("modules.downloader.enabled", true)
 	v.SetDefault("modules.aggregator.enabled", true)
 	v.SetDefault("modules.usenet_indexer.enabled", true)
 	v.SetDefault("modules.gonzbnet.enabled", false)
@@ -722,9 +710,6 @@ func (c *Config) ValidateEffective() error {
 
 func (c *Config) validate() error {
 
-	if c.Download.OutDir == "" {
-		c.Download.OutDir = "./downloads"
-	}
 	for _, raw := range c.API.TrustedProxyCIDRs {
 		if _, err := netip.ParsePrefix(strings.TrimSpace(raw)); err != nil {
 			return fmt.Errorf("api.trusted_proxy_cidrs contains invalid CIDR %q: %w", raw, err)
@@ -929,8 +914,7 @@ func (c *Config) validate() error {
 	}
 
 	// startup must have at least one meaningful runtime surface.
-	if !c.Modules.Downloader.Enabled &&
-		!c.Modules.Aggregator.Enabled &&
+	if !c.Modules.Aggregator.Enabled &&
 		!c.Modules.UsenetIndexer.Enabled &&
 		!c.Modules.GoNZBNet.Enabled &&
 		!c.Modules.API.Enabled &&

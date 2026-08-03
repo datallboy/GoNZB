@@ -1,269 +1,153 @@
 # GoNZB
 
-GoNZB is a modular Usenet application written in Go.
+GoNZB is a self-hosted Usenet indexer, Newznab aggregator, and decentralized
+GoNZBNet node. It discovers and forms NZB releases; a dedicated client such as
+SABnzbd handles downloading, repair, extraction, history, and media-library
+imports.
 
-It can run as:
+## Components
 
-- a downloader
-- an aggregator for external and local sources
-- a Usenet/NZB indexer
-- a GoNZBNet federation node
-- an all-in-one server with API and web UI
+### Usenet indexer
 
-The project is intentionally built as a modular monolith. Downloader, aggregator, and indexer live in one process, but they keep clear ownership boundaries so each module can be enabled independently.
+The PostgreSQL-backed indexer scrapes NNTP headers, groups articles into
+binaries, recovers useful yEnc evidence, forms releases, inspects metadata, and
+generates NZBs. Its supervisor runs the configured pipeline stages and the web
+UI exposes status, queues, release details, and runtime controls.
 
-## What It Does
+### Aggregator and Newznab API
 
-### Downloader
+The aggregator combines any enabled sources:
 
-The downloader module handles:
+- GoNZB's local indexer
+- external Newznab sources
+- accepted GoNZBNet release data
+- the optional local payload cache
 
-- manual NZB enqueue
-- release-based enqueue from search results
-- NNTP download execution
-- extraction and post-processing
-- queue, history, files, and event APIs
-- SAB-compatible downloader behavior
-
-### Aggregator
-
-The aggregator module handles:
-
-- searching external Newznab sources
-- searching the local indexer as a source when enabled
-- serving Newznab-compatible search and get behavior
-- caching NZB payloads
-- native aggregated release search
-
-The aggregator does not require PostgreSQL unless you explicitly use the local usenet indexer as one of its sources.
-
-### Usenet/NZB Indexer
-
-The usenet indexer module handles:
-
-- scraping article headers from NNTP providers
-- assembling binaries and forming releases
-- inspection and enrichment passes
-- PostgreSQL-backed release catalog APIs
-- feeding the aggregator when the local indexer source is enabled
+It exposes the Newznab-compatible `/api` endpoint used by Radarr, Sonarr,
+Prowlarr, NZBHydra, and similar clients. The aggregator module must be enabled
+to expose this endpoint.
 
 ### GoNZBNet
 
-GoNZBNet is GoNZB's optional, pool-scoped federation module. Independently
-operated nodes exchange signed release cards, resolution manifests, validation
-and health statements, scanner coordination, and bounded binary-recovery
-evidence without forwarding users' searches, API keys, grabs, or download
-history.
+GoNZBNet exchanges signed release metadata and manifests between approved
+nodes. Pools, capabilities, validation, trust, and direct binary evidence are
+independently configurable. Start with the private-pool guide before exposing a
+node to peers.
 
-GoNZBNet roles are capability combinations inside the normal `gonzb serve`
-process—not separate binaries. A node may consume federated releases, publish
-releases formed by its local indexer, validate availability through its NNTP
-provider, coordinate scanning, cache manifests, or relay authorized events.
-For a normal single-operator installation, one all-in-one node is the
-recommended starting point. Additional nodes are useful when they add an
-independent operator, NNTP provider/backbone, host, location, security
-boundary, or workload boundary.
+### External download clients
 
-The module is disabled by default and requires PostgreSQL when enabled. Start
-with the [GoNZBNet Wiki](docs/wiki/gonzbnet/README.md), then use the
-[deployment recommendations](docs/wiki/gonzbnet/deployment-topologies.md) and
-[configuration guide](docs/wiki/gonzbnet/configuration-and-deployment.md).
+GoNZB does not contain a download engine and does not monitor completed
+downloads. An administrator can configure one or more SAB-compatible clients
+and use **Send to downloader** from a local release page. This uploads the
+generated NZB to the selected client through SAB's `addfile` API.
 
-### API And Web UI
+Radarr and Sonarr do not need a direct GoNZB integration. Configure GoNZB as
+their Newznab indexer and configure SABnzbd (or another compatible download
+client) in the automation application itself. That application then tracks the
+download and imports the completed files.
 
-The API module exposes native APIs, compatibility routes, health/readiness probes, and admin/runtime settings endpoints.  
-The web UI sits on top of those APIs and provides first-run setup, operations, and admin tooling.
+## Deployment shapes
 
-## Common Deployment Shapes
+The modules retain explicit ownership boundaries and may run as:
 
-GoNZB is designed to support these combinations:
+1. aggregator-only
+2. indexer with aggregator/Newznab API
+3. GoNZBNet consumer, publisher, or validator
+4. all-in-one indexer, aggregator, and GoNZBNet node
 
-1. downloader-only
-2. aggregator-only
-3. usenet-indexer-only
-4. GoNZBNet consumer/relay with the aggregator
-5. GoNZBNet scanner/publisher with the local indexer
-6. all-in-one
+SQLite stores authentication, runtime settings, and optional aggregator cache
+metadata. PostgreSQL stores the indexing pipeline and release catalog. The
+filesystem blob store holds cached and archived NZBs.
 
-Do not assume one module requires the others.
+## Quick start
 
-## How The Modules Work Together
-
-- The aggregator can search external indexers, the local blob cache, and the local usenet indexer.
-- The aggregator can expose locally projected GoNZBNet releases through the
-  same native and Newznab-compatible search/get surfaces.
-- The downloader can enqueue NZBs directly or queue releases discovered through the aggregator or local indexer.
-- The local usenet indexer can act as a catalog source for the aggregator without collapsing module boundaries.
-- An authorized GoNZBNet pool can publish releases formed by the local indexer
-  and share bounded missing-part evidence before the indexer spends NNTP BODY
-  requests.
-
-## Storage
-
-GoNZB uses different storage backends depending on which modules are enabled:
-
-- SQLite for downloader metadata, auth, runtime settings, and optional aggregator cache/search persistence
-- filesystem blob storage for cached NZB payloads
-- PostgreSQL for the usenet indexer catalog and indexing pipeline
-- PostgreSQL for GoNZBNet identities, signed events, pool authorization,
-  projections, manifests, and binary evidence
-
-## Configuration Model
-
-`config.yaml` is now intentionally minimal.
-
-Bootstrap config covers:
-
-- port and HTTP/bootstrap behavior
-- hard module enablement flags
-- logging
-- storage bootstrap paths
-- API key and CORS
-
-Operational settings are managed at runtime and stored in SQLite:
-
-- NNTP servers and credentials
-- downloader paths and options
-- aggregator sources
-- indexer newsgroups, stages, schedules, and enrichment settings
-- GoNZBNet roles, peers, pools, synchronization, publication, validation,
-  coverage, cache, evidence exchange, and transport limits
-- maintenance and retention settings
-
-### Credential storage
-
-The settings database is restricted to its owning OS user, but NNTP passwords,
-external-indexer API keys, ARR API keys, and bootstrap DSNs are not encrypted
-by GoNZB. Column names ending in `_ciphertext` are storage-schema placeholders,
-not a claim of encryption. Production operators must keep the configuration,
-SQLite volume, PostgreSQL data, snapshots, and backups on encrypted storage,
-restrict host and backup access, and avoid copying them into logs or support
-bundles. Use a deployment secret manager for environment-provided bootstrap
-values where available.
-
-External Newznab sources block loopback, private, link-local, and carrier-grade
-NAT destinations by default. A source that intentionally runs on the local
-network must be granted a narrow CIDR exception in **Admin > Settings >
-Aggregator**. The broader private-address switch is intended only for trusted
-administrators who need multiple changing local destinations.
-
-Start from the example:
+Copy the bootstrap configuration and start the application:
 
 ```bash
 cp config.yaml.example config.yaml
-```
-
-Then launch GoNZB and complete setup in the UI:
-
-- create the initial admin user at `/setup`
-- configure enabled modules in `/admin/settings`
-
-## Quick Start
-
-### Run The Server
-
-```bash
 make build
-./bin/gonzb serve
+./bin/gonzb --config ./config.yaml serve
 ```
 
-If `/config/config.yaml` exists, GoNZB will use it automatically in container-style environments. Otherwise pass the path explicitly:
+If `/config/config.yaml` exists, GoNZB uses it automatically in a container.
+Open `http://localhost:8080/setup`, create the initial administrator, and then
+use **Admin > Settings** to configure NNTP providers, aggregator sources,
+download clients, indexer newsgroups, and indexer stages.
 
-```bash
-./bin/gonzb --config /config/config.yaml serve
-```
+### Docker Compose
 
-### Manual NZB Download
-
-```bash
-./bin/gonzb --file my_file.nzb
-```
-
-### Docker Compose (recommended for an all-in-one personal server)
-
-The included Compose stack starts GoNZB and a checksummed PostgreSQL 17
-database, keeps both databases and NZB data in named volumes, and publishes the
-UI on localhost by default.
+The included stack starts GoNZB and PostgreSQL 17 and publishes the UI on
+localhost by default:
 
 ```bash
 cp .env.example .env
-# Set two independently generated database passwords in .env. Set the
-# bootstrap token too if setup will be reachable from another machine.
+# Set independent database passwords and a bootstrap token in .env.
 docker compose up -d --build
 ```
 
-Open `http://localhost:8080/setup`, create the initial administrator, then use
-**Admin > Settings** to configure NNTP servers, downloader paths, aggregator
-sources, and indexer stages. Copy `config.yaml.example` to `config.yaml` and set
-`GONZB_CONFIG_PATH=./config.yaml` in `.env` only when changing hard module gates
-or GoNZBNet bootstrap settings.
+Do not publish port 8080 directly to the Internet. Use an authenticated TLS
+reverse proxy or a private overlay network, set `GONZB_API_BOOTSTRAP_TOKEN`
+before remotely exposing first-run setup, and restrict
+`api.trusted_proxy_cidrs` to the reverse proxy network.
 
-Do not publish port 8080 directly to the Internet. Put an authenticated TLS
-reverse proxy in front of it and change `GONZB_BIND_ADDRESS` only after that
-protection is in place. Set `GONZB_API_BOOTSTRAP_TOKEN` before exposing an
-instance that has not created its first administrator. Configure
-`api.trusted_proxy_cidrs` with only the reverse proxy's network so forwarded
-HTTPS is trusted only from that proxy.
+## Connect Newznab clients
 
-### Standalone Docker image
+1. Enable the aggregator and its desired sources.
+2. Sign in to GoNZB and open **Profile > API Tokens**.
+3. Create a token for a dedicated viewer account.
+4. Add a generic Newznab indexer in Radarr, Sonarr, Prowlarr, NZBHydra, or
+   another client.
+5. Use `http://<gonzb-host>:8080/api` as the URL and the token secret as the API
+   key.
+6. Test capabilities, search, and NZB retrieval.
 
-```bash
-docker build \
-  --build-arg VERSION=$(git describe --tags --always) \
-  --build-arg BUILD_TIME=$(date -u +'%Y-%m-%dT%H:%M:%SZ') \
-  -t gonzb:latest .
-```
+The compatibility API supports capabilities, generic/movie/TV search,
+category filtering, bounded pagination, and NZB retrieval. Configure the
+external download client separately in Radarr/Sonarr/Prowlarr.
 
-```bash
-docker run -d \
-  --name gonzb \
-  -p 8080:8080 \
-  -v $(pwd)/config:/config \
-  -v $(pwd)/downloads:/downloads \
-  -v $(pwd)/store:/store \
-  gonzb:latest --config /config/config.yaml serve
-```
+## Configure Send to downloader
 
-The standalone container needs a reachable PostgreSQL server whenever the
-Usenet indexer is enabled. Compose is the simpler supported starting point.
+In **Admin > Settings > Download Clients**, add the SAB-compatible base URL and
+API key, optionally choose a category and priority, save it, and test the saved
+client. Mark one enabled client as the default when configuring multiple
+clients. The URL may contain an installation prefix; GoNZB appends `/api`.
 
-## Connect Radarr, Sonarr, Prowlarr, or another Newznab client
+This integration is intentionally one-way. GoNZB submits the NZB and reports
+the returned job ID; SAB-compatible software owns its queue and lifecycle.
 
-1. In GoNZB, open **Admin > Security > Users**, select the account that the
-   client should use, and create an API token.
-2. Add a generic Newznab indexer in the client.
-3. Use `http://<gonzb-host>:8080/api` as the URL and the generated account token
-   as the API key.
-4. Test capabilities and search before enabling automatic grabs.
+## Configuration and secrets
 
-The compatibility surface supports capabilities, generic/movie/TV search,
-category filtering, bounded pagination, and NZB retrieval.
+`config.yaml` contains bootstrap-only settings: listeners, hard module gates,
+logging, storage paths, and GoNZBNet bootstrap behavior. Runtime settings are
+stored in SQLite and managed through the web UI.
 
-## API Surfaces
+NNTP passwords, external-indexer keys, and SAB API keys are not encrypted by
+GoNZB. Schema columns ending in `_ciphertext` are placeholders, not an
+encryption claim. Restrict the SQLite/config volumes and backups, use encrypted
+host storage, and keep secrets out of logs and support bundles.
 
-### Native
+External Newznab sources reject private destinations by default. Grant a
+narrow CIDR exception only for a trusted local source. SAB-compatible clients
+are administrator-configured local integrations and should be placed on a
+trusted network; GoNZB refuses embedded URL credentials and redirects.
 
-- downloader routes under `/api/v1/queue` and `/api/v1/events/queue`
-- aggregator release search under `/api/v1/releases/search`
-- indexer catalog and operations under `/api/v1/indexer/*`
-- admin settings and control-plane routes under `/api/v1/admin/*`
-- auth routes under `/api/v1/auth/*`
+## API surfaces
 
-### Compatibility
+- `/api?t=...` — Newznab compatibility (aggregator)
+- `/nzb/:id` — direct aggregator NZB retrieval
+- `/api/v1/indexer/*` — local indexer catalog and operations
+- `/api/v1/admin/*` — settings and control plane
+- `/api/v1/auth/*` — sessions, users, roles, and API tokens
+- `/gonzbnet/v1/*` — GoNZBNet federation when enabled
+- `/healthz` and `/readyz` — infrastructure probes
 
-- `/api?mode=...` for SAB-compatible downloader behavior
-- `/api/sab?mode=...` for explicit SAB-compatible downloader behavior
-- `/api?t=...` for Newznab-compatible aggregator behavior
-- `/nzb/:id` for direct NZB fetch/download
+GoNZB does not expose a SAB server API, a download queue, or direct
+Radarr/Sonarr notification endpoints.
 
-### Probes
+## Documentation
 
-- `/healthz`
-- `/readyz`
-
-## Docs
-
-- [Docs Index](docs/README.md)
+- [Documentation index](docs/README.md)
 - [Architecture](docs/ARCHITECTURE.md)
-- [Indexer Wiki](docs/wiki/indexer/README.md)
-- [GoNZBNet Wiki](docs/wiki/gonzbnet/README.md)
+- [Newznab and download-client integrations](docs/wiki/integrations/README.md)
+- [Indexer wiki](docs/wiki/indexer/README.md)
+- [GoNZBNet wiki](docs/wiki/gonzbnet/README.md)

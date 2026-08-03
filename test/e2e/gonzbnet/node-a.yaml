@@ -10,7 +10,6 @@ servers:
     priority: 1
     roles: ["scrape"]
 modules:
-  downloader: { enabled: false }
   aggregator: { enabled: true }
   usenet_indexer: { enabled: true }
   gonzbnet: { enabled: true }

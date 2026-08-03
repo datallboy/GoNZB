@@ -18,7 +18,7 @@ export function RootRedirect() {
         const caps = response as ControlPlaneCapabilities
         if (caps.modules.usenet_indexer?.ready) {
           setTarget('/indexer/releases')
-        } else if (caps.modules.downloader?.visible || caps.modules.aggregator?.visible) {
+        } else if (caps.modules.aggregator?.visible || caps.modules.gonzbnet?.visible) {
           setTarget('/admin')
         } else {
           setTarget('/admin')

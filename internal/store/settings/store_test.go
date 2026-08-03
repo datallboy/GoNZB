@@ -106,6 +106,46 @@ func TestIndexerOutboundPolicyRoundTrips(t *testing.T) {
 	}
 }
 
+func TestExternalDownloadClientsRoundTripAndReplaceLegacySettings(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "settings.db"))
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	defer store.Close()
+
+	runtime := DefaultRuntimeSettings()
+	runtime.DownloadClients = []DownloadClientRuntimeSettings{{
+		ID: "sab", Name: "SABnzbd", Enabled: true, Default: true,
+		BaseURL: "https://sab.example.test", APIKey: "secret", Category: "movies", Priority: 1,
+	}}
+	if err := store.UpdateSettings(t.Context(), runtime); err != nil {
+		t.Fatalf("update settings: %v", err)
+	}
+
+	reloaded, err := store.GetRuntimeSettings(t.Context())
+	if err != nil {
+		t.Fatalf("reload settings: %v", err)
+	}
+	if len(reloaded.DownloadClients) != 1 {
+		t.Fatalf("expected one download client, got %+v", reloaded.DownloadClients)
+	}
+	got := reloaded.DownloadClients[0]
+	if got.ID != "sab" || got.APIKey != "secret" || !got.Default || got.Priority != 1 {
+		t.Fatalf("unexpected download client after reload: %+v", got)
+	}
+
+	for _, legacyTable := range []string{"settings_download", "settings_arr_integrations"} {
+		var count int
+		if err := store.db.QueryRowContext(t.Context(), `
+			SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, legacyTable).Scan(&count); err != nil {
+			t.Fatalf("inspect legacy table %s: %v", legacyTable, err)
+		}
+		if count != 0 {
+			t.Fatalf("expected legacy table %s to be removed", legacyTable)
+		}
+	}
+}
+
 func TestUpdateSettingsPreservesExplicitlyEmptyScrapeGroupsAcrossReload(t *testing.T) {
 	store, err := NewStore(filepath.Join(t.TempDir(), "settings.db"))
 	if err != nil {

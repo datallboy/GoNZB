@@ -77,8 +77,8 @@ for pool authorization.
 
 - Keep GoNZBNet inside the modular monolith unless a separate service is
   explicitly designed and approved.
-- Access indexer data through focused store interfaces; do not make downloader,
-  aggregator, and indexer deployment shapes depend on one another implicitly.
+- Access indexer data through focused store interfaces; do not make aggregator
+  and indexer deployment shapes depend on one another implicitly.
 - Capabilities describe real enabled behavior. Do not advertise placeholder
   functionality.
 - Pool IDs and source provenance remain explicit in queries and unique keys.
