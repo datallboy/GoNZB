@@ -47,8 +47,15 @@ docker compose up -d --build
 docker compose logs -f gonzb
 ```
 
-The v0.9 test suite exercises a populated v0.8 PostgreSQL baseline and verifies
-that provider and newsgroup data survive all later migrations.
+New databases apply the canonical v0.9 PostgreSQL schema directly. Existing
+versioned v0.8 databases apply the original incremental migrations through the
+same schema version. The v0.9 test suite verifies that both paths produce the
+same logical schema and that provider and newsgroup data survive the upgrade.
+
+Migration startup is serialized, so multiple GoNZB processes cannot race while
+upgrading one database. GoNZB also refuses to start against an unversioned,
+non-empty catalog or a schema newer than the running application. Do not work
+around either error by manually changing `module_schema_version`.
 
 ## Upgrading a pre-v0.8 installation
 

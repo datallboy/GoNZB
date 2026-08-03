@@ -66,6 +66,7 @@ nav:
       - yEnc recovery: wiki/indexer/yenc-recovery-queueing.md
       - Release formation: wiki/indexer/release-formation.md
       - Schema and partitions: wiki/indexer/schema-and-partitions.md
+      - Schema migrations: wiki/indexer/schema-migrations.md
       - Retention: wiki/indexer/retention.md
       - Operations: wiki/indexer/operations-playbook.md
   - GoNZBNet:
