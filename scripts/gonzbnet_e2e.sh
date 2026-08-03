@@ -57,6 +57,17 @@ stop_nodes() {
   fi
 }
 
+cleanup_test_run() {
+  result=$?
+  trap - 0 1 2 15
+  if [ "$result" -eq 0 ] || [ "${GONZBNET_E2E_KEEP_STATE_ON_FAILURE:-}" != "1" ]; then
+    "$0" reset >/dev/null 2>&1 || true
+  else
+    stop_nodes
+  fi
+  exit "$result"
+}
+
 start_nntp_fixture() {
   if [ -f "$STATE/nntpfixture.pid" ] && kill -0 "$(cat "$STATE/nntpfixture.pid")" 2>/dev/null; then
     return
@@ -97,7 +108,14 @@ admin_request() {
 }
 
 admin_post() {
-  admin_request "$@" >/dev/null
+  attempts=0
+  until admin_request "$@" >/dev/null; do
+    attempts=$((attempts + 1))
+    if [ "$attempts" -ge 3 ]; then
+      return 1
+    fi
+    sleep 1
+  done
 }
 
 admin_get() {
@@ -575,7 +593,12 @@ release_smoke() {
 
 observability_smoke() {
   admin_get node-a 18081 /api/v1/admin/gonzbnet/overview |
-    jq -e '(.jobs | length) == 5 and (.pools | length) >= 1' >/dev/null
+    jq -e '(.jobs | length) == 5
+      and (.pools | length) >= 1
+      and (.production_checks | length) >= 5
+      and (.production_ready | type) == "boolean"
+      and .storage.available == true
+      and .storage.gonzbnet_bytes > 0' >/dev/null
   admin_get node-a 18081 /api/v1/admin/gonzbnet/roles |
     jq -e '.jobs[] | select(.key == "contribute" and .configured == true)' >/dev/null
   admin_get node-b 18082 /api/v1/admin/gonzbnet/roles |
@@ -594,7 +617,7 @@ observability_smoke() {
 case "${1:-}" in
   test)
     "$0" reset
-    trap '"$0" reset >/dev/null 2>&1 || true' 0 1 2 15
+    trap cleanup_test_run 0 1 2 15
     "$0" start
     "$0" bootstrap
     "$0" configure-pool

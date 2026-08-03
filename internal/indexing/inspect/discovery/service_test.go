@@ -51,8 +51,9 @@ func TestDiscoveryCompletesTerminalPrefixErrorsWithoutRetrying(t *testing.T) {
 				MaxBytes:           4096,
 			})
 
-			if err := service.RunOnce(context.Background()); err != nil {
-				t.Fatalf("RunOnce() error = %v", err)
+			metrics, err := service.RunOnceWithMetrics(context.Background())
+			if err != nil {
+				t.Fatalf("RunOnceWithMetrics() error = %v", err)
 			}
 			if len(repo.failed) != 0 {
 				t.Fatalf("expected terminal sample error not to be retried, got %+v", repo.failed)
@@ -62,6 +63,9 @@ func TestDiscoveryCompletesTerminalPrefixErrorsWithoutRetrying(t *testing.T) {
 			}
 			if got := repo.completed[0].Summary["probe_skip_reason"]; got != tt.skipReason {
 				t.Fatalf("probe_skip_reason = %v, want %q", got, tt.skipReason)
+			}
+			if got := metrics["terminal_skip_count"]; got != 1 {
+				t.Fatalf("terminal_skip_count = %v, want 1", got)
 			}
 		})
 	}
@@ -82,8 +86,9 @@ func TestDiscoveryRetriesTransientFetchErrors(t *testing.T) {
 		MaxBytes:           4096,
 	})
 
-	if err := service.RunOnce(context.Background()); err != nil {
-		t.Fatalf("RunOnce() error = %v", err)
+	metrics, err := service.RunOnceWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("RunOnceWithMetrics() error = %v", err)
 	}
 	if len(repo.completed) != 0 {
 		t.Fatalf("expected transient fetch failure not to complete, got %+v", repo.completed)
@@ -93,6 +98,9 @@ func TestDiscoveryRetriesTransientFetchErrors(t *testing.T) {
 	}
 	if got := repo.failed[0].ErrorText; got != "sample opaque binary prefix: fetch article <part-1>: temporary NNTP failure" {
 		t.Fatalf("error text = %q", got)
+	}
+	if got := metrics["retryable_failure_count"]; got != 1 {
+		t.Fatalf("retryable_failure_count = %v, want 1", got)
 	}
 }
 

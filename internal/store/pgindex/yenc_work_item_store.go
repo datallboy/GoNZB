@@ -42,11 +42,12 @@ const yencRecoveryWeakFamilyEligibilityPredicate = `
 			  )`
 const yencRecoveryWorkItemPriorityRankSQL = `
 				CASE
-					WHEN GREATEST(COALESCE(bic.expected_file_count, 0), COALESCE(bic.expected_archive_file_count, 0)) > 1
-						OR COALESCE(bic.file_index, 0) > 0
-						OR COALESCE(bos.total_parts, 0) > 1
-						OR COALESCE(p.subject_file_total, 0) > 1
-						OR COALESCE(p.yenc_total_parts, 0) > 1
+					WHEN COALESCE(s.recover_pending, FALSE) = TRUE
+						AND BTRIM(COALESCE(bic.release_family_key, '')) <> ''
+						AND (
+							COALESCE(s.binary_count, 0) > 1 OR
+							COALESCE(s.complete_binary_count, 0) > 0
+						)
 					THEN 0
 					WHEN COALESCE(s.binary_count, 0) > 1
 						OR COALESCE(s.complete_binary_count, 0) > 0
@@ -177,6 +178,20 @@ func (s *Store) BackfillPriorityYEncRecoveryWorkItems(ctx context.Context, limit
 			return 0, 0, fmt.Errorf("commit scheduled priority yenc recovery work item backfill tx: %w", err)
 		}
 		return upserted, retired, nil
+	}
+	recoveryProfile := "balanced"
+	if err := tx.QueryRowContext(ctx, `
+		SELECT recovery_profile
+		FROM indexer_recovery_capacity_state
+		WHERE id = true`).Scan(&recoveryProfile); err != nil && err != sql.ErrNoRows {
+		return 0, 0, fmt.Errorf("load priority yenc recovery profile: %w", err)
+	}
+	if strings.TrimSpace(recoveryProfile) != "exhaustive" {
+		if err := tx.Commit(); err != nil {
+			return 0, 0, fmt.Errorf("commit sampled priority yenc selection tx: %w", err)
+		}
+		selectionCommitted = true
+		return 0, 0, nil
 	}
 
 	openWork, err := countOpenPriority0YEncRecoveryWorkItemsInTx(ctx, tx, limit)
@@ -542,52 +557,6 @@ func markArticleCohortYEncQueueAdmittedInTx(ctx context.Context, tx *sql.Tx, bin
 	return nil
 }
 
-func (s *Store) BackfillPriorityYEncRecoveryWorkItemsForBinaries(ctx context.Context, binaryIDs []int64) (int64, int64, error) {
-	if len(binaryIDs) == 0 {
-		return 0, 0, nil
-	}
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, 0, fmt.Errorf("begin priority yenc recovery work item binary backfill tx: %w", err)
-	}
-	defer rollbackTx(tx)
-	if err := configureYEncRecoveryWorkItemQueryTx(ctx, tx); err != nil {
-		return 0, 0, err
-	}
-
-	siblingLimit := len(binaryIDs) * 20
-	if siblingLimit < yencRecoveryWorkItemSeedLimit {
-		siblingLimit = yencRecoveryWorkItemSeedLimit
-	}
-	if siblingLimit > yencRecoveryWorkItemSeedLimit {
-		siblingLimit = yencRecoveryWorkItemSeedLimit
-	}
-	bucketSeconds, err := yEncOpaqueCohortBucketSecondsInTx(ctx, tx)
-	if err != nil {
-		return 0, 0, err
-	}
-	siblingIDs, err := selectOpaqueNearTimeYEncRecoverySiblingBinaryIDsInTx(ctx, tx, binaryIDs, siblingLimit, bucketSeconds)
-	if err != nil {
-		return 0, 0, err
-	}
-	if len(siblingIDs) == 0 {
-		if err := tx.Commit(); err != nil {
-			return 0, 0, fmt.Errorf("commit empty priority yenc recovery work item binary backfill tx: %w", err)
-		}
-		return 0, 0, nil
-	}
-
-	upserted, retired, err := s.syncYEncRecoveryWorkItemsForBinariesInTx(ctx, tx, siblingIDs)
-	if err != nil {
-		return 0, 0, err
-	}
-	if err := tx.Commit(); err != nil {
-		return 0, 0, fmt.Errorf("commit priority yenc recovery work item binary backfill tx: %w", err)
-	}
-	return upserted, retired, nil
-}
-
 func yEncOpaqueCohortBucketSecondsInTx(ctx context.Context, tx *sql.Tx) (int, error) {
 	if tx == nil {
 		return defaultYEncAdmissionNearTimeBucketMinutes * 60, nil
@@ -605,136 +574,6 @@ func yEncOpaqueCohortBucketSecondsInTx(ctx context.Context, tx *sql.Tx) (int, er
 		return 0, fmt.Errorf("load yenc opaque cohort bucket seconds: %w", err)
 	}
 	return seconds, nil
-}
-
-func selectOpaqueNearTimeYEncRecoverySiblingBinaryIDsInTx(ctx context.Context, tx *sql.Tx, binaryIDs []int64, limit int, bucketSeconds int) ([]int64, error) {
-	if tx == nil {
-		return nil, fmt.Errorf("yenc recovery work item tx is required")
-	}
-	if limit <= 0 || len(binaryIDs) == 0 {
-		return nil, nil
-	}
-	unique := make([]int64, 0, len(binaryIDs))
-	seen := make(map[int64]struct{}, len(binaryIDs))
-	for _, binaryID := range binaryIDs {
-		if binaryID <= 0 {
-			continue
-		}
-		if _, ok := seen[binaryID]; ok {
-			continue
-		}
-		seen[binaryID] = struct{}{}
-		unique = append(unique, binaryID)
-	}
-	if len(unique) == 0 {
-		return nil, nil
-	}
-	if len(unique) > yencRecoveryPrioritySeedMax {
-		unique = unique[:yencRecoveryPrioritySeedMax]
-	}
-
-	placeholders := make([]string, 0, len(unique))
-	args := make([]interface{}, 0, len(unique)+1)
-	for i, binaryID := range unique {
-		placeholders = append(placeholders, fmt.Sprintf("($%d::bigint)", i+1))
-		args = append(args, binaryID)
-	}
-	limitParam := len(args) + 1
-	args = append(args, limit)
-	bucketParam := len(args) + 1
-	args = append(args, bucketSeconds)
-
-	query := `
-		WITH requested_ids(binary_id) AS (
-			VALUES ` + strings.Join(placeholders, ",") + `
-		),
-		requested AS MATERIALIZED (
-			SELECT bc.binary_id, bc.source_posted_at
-			FROM requested_ids r
-			JOIN binary_core bc ON bc.binary_id = r.binary_id
-			WHERE bc.source_posted_at IS NOT NULL
-		),
-		eligible AS MATERIALIZED (
-			SELECT
-				bic.binary_id,
-				bic.source_posted_at,
-				bic.provider_id,
-				bic.newsgroup_id,
-				FLOOR(EXTRACT(EPOCH FROM bos.posted_at) / $` + fmt.Sprintf("%d", bucketParam) + `::double precision)::bigint AS posted_bucket,
-				bos.posted_at,
-				bos.total_bytes
-			FROM requested r
-			JOIN binary_identity_current bic
-			  ON bic.source_posted_at = r.source_posted_at
-			 AND bic.binary_id = r.binary_id
-			JOIN binary_observation_stats bos
-			  ON bos.source_posted_at = bic.source_posted_at
-			 AND bos.binary_id = bic.binary_id
-			LEFT JOIN binary_recovery_current brc
-			  ON brc.source_posted_at = bic.source_posted_at
-			 AND brc.binary_id = bic.binary_id
-			LEFT JOIN binary_lifecycle bl
-			  ON bl.source_posted_at = bic.source_posted_at
-			 AND bl.binary_id = bic.binary_id
-			WHERE bic.family_kind = 'opaque_set'
-			  AND bic.identity_reason = 'opaque_subject_set'
-			  AND bic.is_main_payload = TRUE
-			  AND LOWER(BTRIM(COALESCE(bic.identity_strength, ''))) IN ('weak', 'provisional')
-			  AND COALESCE(bos.total_parts, 0) <= 1
-			  AND COALESCE(bos.observed_parts, 0) <= 1
-			  AND bos.posted_at IS NOT NULL
-			  AND COALESCE(brc.recovered_source, '') <> 'yenc_header'
-			  AND COALESCE(bl.lifecycle_status, 'active') <> 'superseded'
-			  AND NOT EXISTS (
-			  	SELECT 1
-			  	FROM yenc_recovery_work_items wi
-				WHERE wi.source_posted_at = bic.source_posted_at
-				  AND wi.binary_id = bic.binary_id
-			  	  AND wi.status IN ('ready', 'running', 'done')
-			  )
-		),
-		cohorts AS MATERIALIZED (
-			SELECT
-				e.provider_id,
-				e.newsgroup_id,
-				e.posted_bucket,
-				MAX(e.posted_at) AS latest_posted_at,
-				COUNT(*) AS cohort_size
-			FROM eligible e
-			GROUP BY e.provider_id, e.newsgroup_id, e.posted_bucket
-			HAVING COUNT(*) >= ` + fmt.Sprintf("%d", yencRecoveryOpaqueCohortMin) + `
-		)
-		SELECT e.binary_id
-		FROM cohorts c
-		JOIN eligible e
-		  ON e.provider_id = c.provider_id
-		 AND e.newsgroup_id = c.newsgroup_id
-		 AND e.posted_bucket = c.posted_bucket
-		ORDER BY c.latest_posted_at DESC, c.cohort_size DESC, e.total_bytes DESC, e.binary_id
-		LIMIT $` + fmt.Sprintf("%d", limitParam)
-
-	rows, err := tx.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("select opaque near-time yenc recovery sibling binaries: %w", err)
-	}
-	defer rows.Close()
-	out := make([]int64, 0, limit)
-	seen = make(map[int64]struct{}, limit)
-	for rows.Next() {
-		var binaryID int64
-		if err := rows.Scan(&binaryID); err != nil {
-			return nil, fmt.Errorf("scan opaque near-time yenc recovery sibling binary: %w", err)
-		}
-		if _, ok := seen[binaryID]; ok {
-			continue
-		}
-		seen[binaryID] = struct{}{}
-		out = append(out, binaryID)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate opaque near-time yenc recovery sibling binaries: %w", err)
-	}
-	return out, nil
 }
 
 func selectOpaqueNearTimeYEncRecoveryBackfillBinaryIDsInTx(ctx context.Context, tx *sql.Tx, limit int, bucketSeconds int) ([]int64, error) {
@@ -1412,7 +1251,7 @@ func (s *Store) syncYEncRecoveryWorkItemsChunkInTx(ctx context.Context, tx *sql.
 				END AS group_tier,
 				CASE
 					WHEN bc.scheduler_backed AND BTRIM(bc.scheduler_admission_reason) <> '' THEN bc.scheduler_admission_reason
-					WHEN `+yencRecoveryWorkItemPriorityRankSQL+` = 0 THEN 'near_complete_or_multipart'
+					WHEN `+yencRecoveryWorkItemPriorityRankSQL+` = 0 THEN 'release_blocker'
 					ELSE 'bounded_admission'
 				END AS admission_reason,
 				CASE

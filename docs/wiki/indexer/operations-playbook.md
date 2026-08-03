@@ -112,3 +112,20 @@ stage. That switch is an independent circuit breaker; a selected profile does
 not force a disabled stage to run. The **Indexer Work** page reports the
 effective profile and only counts queue rows eligible under that profile
 toward recovery capacity.
+
+The recovery controls also expose durable hourly NNTP limits:
+
+- **Balanced BODY requests/hour** limits the normal evidence-driven profile;
+- **Exhaustive BODY requests/hour** limits deep recovery;
+- **Discovery BODY requests/hour** limits representative inspection probes.
+
+The defaults are 25,000, 100,000, and 1,000 respectively. They are safety
+ceilings, not targets. Balanced can use substantially less because an
+unproductive opaque cohort stops after 16 completed samples. The **Indexer
+Work** page shows the active recovery budget's used and remaining requests for
+the current UTC hour.
+
+Inspect `article_cohort_candidates.recovery_decision` when BODY traffic is not
+producing releases. `sample` is still gathering evidence, `promoted` found
+repeatable identity/grouping value, and `no_yield` exhausted the bounded sample.
+New articles reopen a no-yield cohort automatically.

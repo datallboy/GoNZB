@@ -16,6 +16,7 @@ The runtime can start these recurring activities:
 - signed pull, push, and WebSocket gossip synchronization;
 - automatic stale coverage-claim reassignment;
 - scanner coordination through the existing indexer scrape runtime.
+- direct binary-evidence repair when GoNZBNet and the indexer are both active.
 
 Workers select the local node's active pool memberships on every pass.
 `publish_pool_ids` may restrict those memberships, but cannot grant access to a
@@ -34,6 +35,7 @@ keeps multi-pool publication isolated.
 | Sync | Discovery, handshake, signed pull/push/gossip, receive validation |
 | Coverage | Capacity, plans, assignments, claims, outcomes, checkpoints |
 | Manifest resolver | Authorized source selection, fetch, verification, cache, NZB generation |
+| Evidence exchange | Targeted signed yEnc lookup and missing-segment repair before NNTP BODY fallback |
 | PostgreSQL store | Event log, pool state, typed projections, diagnostics, delivery state |
 | Aggregator adapter | Reads the local federated projection for normal search/get operations |
 | Admin API/UI/CLI | Local operation and diagnostics; never federation authentication |
@@ -108,6 +110,22 @@ Results become signed validation and health events. Without suitable NNTP
 access, structural results remain explicitly unverified rather than being
 presented as provider-backed evidence.
 
+## Binary Evidence Recovery
+
+Local BODY recovery stores raw yEnc facts separately from recovery queue state.
+For each selected recovery batch the indexer checks accepted cached evidence,
+queries eligible pool peers for unresolved Message-IDs, validates and persists
+their signed bundles, then issues BODY only for remaining candidates. Avoided
+requests are refunded to the durable hourly BODY budget.
+
+Incomplete binaries with a unique portable `subject_multipart_v1` or `yenc_v1`
+identity enter a retryable repair queue. The worker sends compact missing-part
+ranges and known Message-ID anchors. Imported parts remain separate from
+scrape-owned `article_headers` and local `binary_parts`. The
+`binary_effective_parts` read projection chooses local parts first, then
+accepted peer parts, so completion refresh and NZB generation can improve
+without rewriting source facts.
+
 ## Storage Ownership
 
 PostgreSQL owns durable federation state:
@@ -118,6 +136,8 @@ PostgreSQL owns durable federation state:
 - release cards, sources, manifests, validation, health, trust, and tombstones;
 - coverage plans, assignments, claims, outcomes, and checkpoints;
 - delivery cursors, pending work, and administrative diagnostics.
+- raw yEnc evidence, portable binary identities, peer segments, repair work,
+  and 90-day exchange diagnostics.
 
 SQLite remains the local settings/authentication store where configured. Blob
 and generated NZB storage follow the normal GoNZB store configuration. The

@@ -65,6 +65,7 @@ type Policy struct {
 	AllowLiveQuery              bool     `json:"allow_live_query"`
 	ShareResolutionManifests    string   `json:"share_resolution_manifests"`
 	AllowEncryptedManifests     bool     `json:"allow_encrypted_manifests"`
+	AllowBinaryEvidenceExchange bool     `json:"allow_binary_evidence_exchange"`
 	AcceptedEventTypes          []string `json:"accepted_event_types,omitempty"`
 }
 
@@ -151,13 +152,14 @@ type CheckpointLeaf struct {
 }
 
 type PoolPolicy struct {
-	PoolID                     string
-	MembershipThreshold        int
-	ModerationThreshold        int
-	CheckpointWitnessThreshold int
-	AcceptMode                 string
-	MinNodeTrustScore          float64
-	AcceptedEventTypes         []string
+	PoolID                      string
+	MembershipThreshold         int
+	ModerationThreshold         int
+	CheckpointWitnessThreshold  int
+	AcceptMode                  string
+	MinNodeTrustScore           float64
+	AcceptedEventTypes          []string
+	AllowBinaryEvidenceExchange bool
 }
 
 type Member struct {

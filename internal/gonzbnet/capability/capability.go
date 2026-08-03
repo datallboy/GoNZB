@@ -3,18 +3,19 @@ package capability
 import "strings"
 
 const (
-	Consumer            = "consumer"
-	Scanner             = "scanner"
-	Indexer             = "indexer"
-	ManifestBuilder     = "manifest_builder"
-	ManifestCache       = "manifest_cache"
-	Validator           = "validator"
-	HealthChecker       = "health_checker"
-	Coverage            = "coverage"
-	Scheduler           = "scheduler"
-	Relay               = "relay"
-	CoverageCoordinator = "coverage_coordinator"
-	Admin               = "admin"
+	Consumer               = "consumer"
+	Scanner                = "scanner"
+	Indexer                = "indexer"
+	ManifestBuilder        = "manifest_builder"
+	ManifestCache          = "manifest_cache"
+	Validator              = "validator"
+	HealthChecker          = "health_checker"
+	Coverage               = "coverage"
+	Scheduler              = "scheduler"
+	Relay                  = "relay"
+	CoverageCoordinator    = "coverage_coordinator"
+	Admin                  = "admin"
+	BinaryEvidenceExchange = "binary_evidence_exchange"
 )
 
 func Normalize(values []string) []string {

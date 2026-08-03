@@ -2,7 +2,8 @@
 
 GoNZBNet is GoNZB's pool-scoped federation module. It lets independently
 operated nodes exchange signed release metadata, resolution manifests,
-validation results, health statements, and scanner coordination without
+validation results, health statements, scanner coordination, and bounded
+binary-recovery evidence without
 sharing local accounts, API keys, searches, grabs, or download history.
 
 The module runs inside the `gonzb` modular monolith. There is no separate
@@ -60,6 +61,19 @@ The normal release path is:
 Pool governance, membership, moderation, validation, coverage, health, and
 scanner coordination use the same signed-event and local-projection model.
 
+When both the indexer and GoNZBNet are active, an authorized pool may also opt
+into direct binary evidence exchange. Recovery checks the local evidence cache,
+then up to three eligible peers, before issuing an NNTP BODY request. Peers may
+return locally acquired yEnc header facts or specifically requested missing
+segments. Imported evidence is signed, pool/request/recipient bound, retained
+with provenance, never re-served in protocol v1, and applied through the local
+matcher with local binary parts taking precedence.
+
+The GoNZBNet Activity view reports peer requests and hits, avoided BODY
+requests, imported segments, completed binaries, response volume and latency,
+timeouts, conflicts, and quarantines. Recent rows identify the contributing
+node and pool but intentionally omit Message-IDs.
+
 ## Deployment Roles
 
 Roles are capability combinations, not separate binaries:
@@ -81,6 +95,9 @@ GoNZBNet module is enabled.
 - Node identity is independent of local user identity.
 - Signed protocol objects use RFC 8785 canonical JSON and Ed25519 signatures.
 - Pool events are visible only to active members of the named pool.
+- Binary evidence requires active membership, the
+  `binary_evidence_exchange` capability, local serving permission, and an
+  opt-in pool policy.
 - Protocol v1 accepts exactly one pool per protected event.
 - Unknown pools fail closed.
 - Local sessions and API keys authenticate only to the home node.

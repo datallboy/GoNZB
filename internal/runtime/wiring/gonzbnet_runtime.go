@@ -14,6 +14,8 @@ import (
 	"github.com/datallboy/gonzb/internal/gonzbnet/capability"
 	"github.com/datallboy/gonzb/internal/gonzbnet/eventbody"
 	"github.com/datallboy/gonzb/internal/gonzbnet/events"
+	"github.com/datallboy/gonzb/internal/gonzbnet/evidenceclient"
+	"github.com/datallboy/gonzb/internal/gonzbnet/evidencerepair"
 	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
 	"github.com/datallboy/gonzb/internal/gonzbnet/pools"
 	"github.com/datallboy/gonzb/internal/gonzbnet/publisher"
@@ -44,7 +46,14 @@ type gonzbnetRuntimeModule struct {
 		ProjectFederationPoolEvent(context.Context, *events.SignedEvent) error
 		UpsertFederationPeerURL(context.Context, string) (int64, error)
 	}
-	pullSync      *gonzbnetsync.Service
+	pullSync            *gonzbnetsync.Service
+	evidenceRepair      *evidencerepair.Service
+	evidenceMaintenance interface {
+		CompactBinaryEvidenceDiagnostics(context.Context, time.Time) error
+	}
+	protocolMaintenance interface {
+		CompactFederationProtocolState(context.Context, time.Time, time.Time, time.Time) (pgindex.FederationProtocolCompactionResult, error)
+	}
 	activityStore interface {
 		UpsertFederationActivityRollups(context.Context, []activity.Rollup) error
 		CompactFederationActivityRollups(context.Context, time.Time) error
@@ -68,6 +77,9 @@ func (m *gonzbnetRuntimeModule) Build(ctx context.Context) error {
 	m.reassignStore = nil
 	m.admissionStore = nil
 	m.pullSync = nil
+	m.evidenceRepair = nil
+	m.evidenceMaintenance = nil
+	m.protocolMaintenance = nil
 	m.activityStore = nil
 	if !m.Enabled() {
 		return nil
@@ -143,6 +155,36 @@ func (m *gonzbnetRuntimeModule) Build(ctx context.Context) error {
 		return fmt.Errorf("pgindex store does not support gonzbnet admission polling")
 	}
 	m.admissionStore = admissionStore
+	if protocolMaintenance, ok := m.appCtx.PGIndexStore.(interface {
+		CompactFederationProtocolState(context.Context, time.Time, time.Time, time.Time) (pgindex.FederationProtocolCompactionResult, error)
+	}); ok {
+		m.protocolMaintenance = protocolMaintenance
+	}
+	if evidenceMaintenance, ok := m.appCtx.PGIndexStore.(interface {
+		CompactBinaryEvidenceDiagnostics(context.Context, time.Time) error
+	}); ok && (m.appCtx.Config.GoNZBNet.BinaryEvidenceConsumeEnabled ||
+		m.appCtx.Config.GoNZBNet.BinaryEvidenceServeEnabled) {
+		m.evidenceMaintenance = evidenceMaintenance
+	}
+	if m.appCtx.Config.Modules.UsenetIndexer.Enabled && m.appCtx.Config.GoNZBNet.BinaryEvidenceConsumeEnabled {
+		evidenceStore, ok := m.appCtx.PGIndexStore.(interface {
+			evidenceclient.Store
+			evidencerepair.Store
+		})
+		if !ok {
+			return fmt.Errorf("pgindex store does not support binary evidence repair")
+		}
+		client := evidenceclient.New(nodeIdentity, evidenceStore, evidenceclient.Options{
+			Enabled:                true,
+			AllowInsecurePeerHTTP:  m.appCtx.Config.GoNZBNet.AllowInsecurePeerHTTP,
+			PeerTimeout:            time.Duration(m.appCtx.Config.GoNZBNet.BinaryEvidencePeerTimeoutSecs) * time.Second,
+			PeerFanout:             m.appCtx.Config.GoNZBNet.BinaryEvidencePeerFanout,
+			BatchSize:              m.appCtx.Config.GoNZBNet.BinaryEvidenceYEncBatchSize,
+			MaxResponseBytes:       int64(m.appCtx.Config.GoNZBNet.BinaryEvidenceMaxResponseBytes),
+			CircuitBreakerCooldown: time.Duration(m.appCtx.Config.GoNZBNet.BinaryEvidenceCooldownMinutes) * time.Minute,
+		})
+		m.evidenceRepair = evidencerepair.New(evidenceStore, client, nodeID, 10)
+	}
 	if activityStore, ok := m.appCtx.PGIndexStore.(interface {
 		UpsertFederationActivityRollups(context.Context, []activity.Rollup) error
 		CompactFederationActivityRollups(context.Context, time.Time) error
@@ -171,7 +213,8 @@ func (m *gonzbnetRuntimeModule) Start(ctx context.Context) error {
 		m.appCtx.Config.GoNZBNet.SchedulerEnabled &&
 		strings.EqualFold(m.appCtx.Config.GoNZBNet.CoverageMode, "automatic")
 	admissionEnabled := m.admissionStore != nil
-	if !publishEnabled && !healthEnabled && !validationEnabled && !pullEnabled && !pushEnabled && !gossipEnabled && !reassignEnabled && !admissionEnabled {
+	repairEnabled := m.evidenceRepair != nil
+	if !publishEnabled && !healthEnabled && !validationEnabled && !pullEnabled && !pushEnabled && !gossipEnabled && !reassignEnabled && !admissionEnabled && !repairEnabled {
 		return nil
 	}
 	if m.running {
@@ -185,6 +228,15 @@ func (m *gonzbnetRuntimeModule) Start(ctx context.Context) error {
 	}
 	if admissionEnabled {
 		go m.runAdmissionPolling(childCtx, 30*time.Second)
+	}
+	if repairEnabled {
+		go m.runEvidenceRepair(childCtx, time.Minute)
+	}
+	if m.evidenceMaintenance != nil {
+		go m.runEvidenceCompaction(childCtx, 6*time.Hour)
+	}
+	if m.protocolMaintenance != nil {
+		go m.runProtocolCompaction(childCtx, 6*time.Hour)
 	}
 
 	if publishEnabled {
@@ -295,6 +347,73 @@ func (m *gonzbnetRuntimeModule) Start(ctx context.Context) error {
 		}()
 	}
 	return nil
+}
+
+func (m *gonzbnetRuntimeModule) runEvidenceRepair(ctx context.Context, interval time.Duration) {
+	for {
+		finish := activity.Default.Begin(activity.ComponentBinaryEvidenceRepair, "")
+		result, err := m.evidenceRepair.RunOnce(ctx)
+		finish(activity.Result{
+			ItemsIn: int64(result.Claimed), ItemsOut: int64(result.Imported),
+			Backlog: int64(result.Seeded), Err: err,
+		})
+		if err != nil && ctx.Err() == nil {
+			m.appCtx.Logger.Warn("gonzbnet binary evidence repair failed: %v", err)
+		}
+		timer := time.NewTimer(interval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+	}
+}
+
+func (m *gonzbnetRuntimeModule) runEvidenceCompaction(ctx context.Context, interval time.Duration) {
+	for {
+		if err := m.evidenceMaintenance.CompactBinaryEvidenceDiagnostics(
+			ctx, time.Now().UTC().Add(-90*24*time.Hour),
+		); err != nil && ctx.Err() == nil {
+			m.appCtx.Logger.Warn("gonzbnet binary evidence compaction failed: %v", err)
+		}
+		timer := time.NewTimer(interval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+	}
+}
+
+func (m *gonzbnetRuntimeModule) runProtocolCompaction(ctx context.Context, interval time.Duration) {
+	for {
+		now := time.Now().UTC()
+		result, err := m.protocolMaintenance.CompactFederationProtocolState(
+			ctx,
+			now,
+			now.Add(-24*time.Hour),
+			now.Add(-90*24*time.Hour),
+		)
+		if err != nil && ctx.Err() == nil {
+			m.appCtx.Logger.Warn("gonzbnet protocol compaction failed: %v", err)
+		} else if err == nil && (result.ExpiredNonces > 0 || result.RejectedEvents > 0 || result.StaleHandshakeNodes > 0) {
+			m.appCtx.Logger.Info(
+				"gonzbnet protocol compaction expired_nonces=%d rejected_events=%d stale_handshake_nodes=%d",
+				result.ExpiredNonces,
+				result.RejectedEvents,
+				result.StaleHandshakeNodes,
+			)
+		}
+		timer := time.NewTimer(interval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+	}
 }
 
 func (m *gonzbnetRuntimeModule) Reload(ctx context.Context) error {
@@ -526,6 +645,7 @@ func goNZBNetActivityDefinitions(appCtx *app.Context) []activity.Definition {
 		PullSyncEnabled: cfg.PullSyncEnabled, PushSyncEnabled: cfg.PushSyncEnabled,
 		WebSocketGossipEnabled: cfg.WebSocketGossipEnabled, RelayEnabled: cfg.RelayEnabled,
 		PeerExchangeEnabled: cfg.PeerExchangeEnabled, CoverageMode: cfg.CoverageMode,
+		BinaryEvidenceEnabled:       cfg.BinaryEvidenceConsumeEnabled && appCtx.Config.Modules.UsenetIndexer.Enabled,
 		PublishReleaseCardsInterval: time.Duration(cfg.PublishReleaseCardsIntervalMin * float64(time.Minute)),
 		HealthAttestationsInterval:  time.Duration(cfg.HealthAttestationsIntervalMin * float64(time.Minute)),
 		ValidationInterval:          time.Duration(cfg.ValidationIntervalMin * float64(time.Minute)),

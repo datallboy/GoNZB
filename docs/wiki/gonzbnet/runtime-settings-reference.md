@@ -190,6 +190,30 @@ For two or three stable nodes, pull plus push is easy to reason about. Add
 WebSocket gossip and peer exchange when lower latency or a changing/larger
 peer set justifies the extra connections.
 
+## Binary Evidence Exchange
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `binary_evidence_consume_enabled` | on | Checks accepted local/peer yEnc evidence and authorized peers before NNTP BODY recovery. |
+| `binary_evidence_serve_enabled` | off | Allows serving locally acquired evidence when pool policy also opts in. Imported evidence is never re-served. |
+| `binary_evidence_peer_timeout_seconds` | 3 | Per-peer evidence request deadline. A timeout falls through to normal NNTP behavior. |
+| `binary_evidence_peer_fanout` | 3 | Maximum eligible peers queried for one recovery batch. |
+| `binary_evidence_yenc_batch_size` | 1,000 | Maximum Message-IDs in one yEnc evidence request. |
+| `binary_evidence_segment_limit` | 5,000 | Maximum requested/returned missing parts per segment query. |
+| `binary_evidence_max_response_bytes` | 10 MiB | Maximum accepted or served evidence-bundle size. |
+| `binary_evidence_circuit_breaker_cooldown_minutes` | 5 | Cooldown after a peer transport or verification failure. |
+
+Consumption being enabled does not grant access or cause unrestricted sharing.
+The pool must set `allow_binary_evidence_exchange`, both nodes need the
+`binary_evidence_exchange` membership capability, and the provider node must
+enable serving. Leave serving off for pools whose membership or retention
+policy has not been reviewed.
+
+The Activity tab includes a Binary evidence exchange table with recent
+per-peer direction, evidence kind, hit count, response bytes, latency,
+conflicts, quarantines, and errors. It never displays the exchanged
+Message-IDs.
+
 ## Transport Limits And Privacy
 
 | Setting | Default | Meaning |

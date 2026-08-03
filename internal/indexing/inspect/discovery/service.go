@@ -3,7 +3,6 @@ package discovery
 import (
 	"context"
 	"fmt"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -29,11 +28,24 @@ type repository interface {
 	inspectpkg.CatalogReader
 }
 
+type repositoryWithBodyBudget interface {
+	ReserveBodyRequestBudget(ctx context.Context, budgetKey string, limit int64, requested int) (pgindex.BodyRequestBudgetSnapshot, int, error)
+}
+
 type Service struct {
 	repo    repository
 	fetcher inspectpkg.ArticleFetcher
 	log     logger
 	opts    inspectpkg.Options
+}
+
+type inspectionOutcome struct {
+	SignatureRecovered int
+	Filtered           int
+	TerminalSkip       int
+	RetryableFailure   int
+	SampledFiles       int
+	MaterializedBytes  int64
 }
 
 func NewService(repo repository, fetcher inspectpkg.ArticleFetcher, log logger, opts inspectpkg.Options) *Service {
@@ -55,7 +67,38 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 	if err != nil {
 		return nil, fmt.Errorf("list inspect_discovery candidates: %w", err)
 	}
-	metrics := map[string]any{"candidate_count": len(candidates), "processed_count": 0, "batch_size": s.opts.CandidateBatchSize}
+	metrics := map[string]any{
+		"eligible_candidate_count":   len(candidates),
+		"candidate_count":            len(candidates),
+		"processed_count":            0,
+		"batch_size":                 s.opts.CandidateBatchSize,
+		"signature_recovered_count":  0,
+		"filtered_count":             0,
+		"terminal_skip_count":        0,
+		"retryable_failure_count":    0,
+		"sampled_file_count":         0,
+		"materialized_bytes":         int64(0),
+		"body_budget_deferred_count": 0,
+	}
+	if budgetRepo, ok := s.repo.(repositoryWithBodyBudget); ok && len(candidates) > 0 {
+		snapshot, granted, budgetErr := budgetRepo.ReserveBodyRequestBudget(
+			ctx,
+			"inspect_discovery",
+			s.opts.BodyRequestsPerHour,
+			len(candidates),
+		)
+		if budgetErr != nil {
+			return metrics, fmt.Errorf("reserve inspect_discovery body budget: %w", budgetErr)
+		}
+		if granted < len(candidates) {
+			metrics["body_budget_deferred_count"] = len(candidates) - granted
+			candidates = candidates[:granted]
+		}
+		metrics["candidate_count"] = len(candidates)
+		metrics["body_budget_limit"] = snapshot.Limit
+		metrics["body_budget_used"] = snapshot.Used
+		metrics["body_budget_remaining"] = snapshot.Remaining
+	}
 	if len(candidates) == 0 {
 		if s != nil && s.log != nil {
 			s.log.Debug("inspect_discovery: no opaque binary candidates available")
@@ -65,28 +108,33 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 	metrics["worker_count"] = s.opts.Concurrency
 
 	if s.opts.Concurrency > 1 && len(candidates) > 1 {
-		processed, err := s.inspectCandidatesConcurrently(ctx, candidates)
+		processed, outcome, err := s.inspectCandidatesConcurrently(ctx, candidates)
 		metrics["processed_count"] = processed
+		addInspectionOutcomeMetrics(metrics, outcome)
 		return metrics, err
 	}
 
 	processed := 0
+	var total inspectionOutcome
 	for _, candidate := range candidates {
 		if err := ctx.Err(); err != nil {
 			metrics["processed_count"] = processed
 			return metrics, err
 		}
-		if err := s.inspectCandidate(ctx, candidate); err != nil {
+		outcome, err := s.inspectCandidate(ctx, candidate)
+		if err != nil {
 			metrics["processed_count"] = processed
 			return metrics, err
 		}
+		total.add(outcome)
 		processed++
 	}
 	metrics["processed_count"] = processed
+	addInspectionOutcomeMetrics(metrics, total)
 	return metrics, nil
 }
 
-func (s *Service) inspectCandidatesConcurrently(ctx context.Context, candidates []pgindex.BinaryInspectionCandidate) (int, error) {
+func (s *Service) inspectCandidatesConcurrently(ctx context.Context, candidates []pgindex.BinaryInspectionCandidate) (int, inspectionOutcome, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -99,6 +147,7 @@ func (s *Service) inspectCandidatesConcurrently(ctx context.Context, candidates 
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	processed := 0
+	var total inspectionOutcome
 
 	for i := 0; i < workerCount; i++ {
 		wg.Add(1)
@@ -108,7 +157,8 @@ func (s *Service) inspectCandidatesConcurrently(ctx context.Context, candidates 
 				if err := ctx.Err(); err != nil {
 					return
 				}
-				if err := s.inspectCandidate(ctx, candidate); err != nil {
+				outcome, err := s.inspectCandidate(ctx, candidate)
+				if err != nil {
 					select {
 					case errs <- err:
 						cancel()
@@ -118,6 +168,7 @@ func (s *Service) inspectCandidatesConcurrently(ctx context.Context, candidates 
 				}
 				mu.Lock()
 				processed++
+				total.add(outcome)
 				mu.Unlock()
 			}
 		}()
@@ -138,23 +189,23 @@ queueCandidates:
 	case err := <-errs:
 		mu.Lock()
 		defer mu.Unlock()
-		return processed, err
+		return processed, total, err
 	default:
 	}
 	if err := ctx.Err(); err != nil && err != context.Canceled {
 		mu.Lock()
 		defer mu.Unlock()
-		return processed, err
+		return processed, total, err
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	return processed, nil
+	return processed, total, nil
 }
 
-func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.BinaryInspectionCandidate) error {
+func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.BinaryInspectionCandidate) (inspectionOutcome, error) {
 	stageName := string(supervisor.StageInspectDiscovery)
 	if err := s.repo.StartBinaryInspection(ctx, stageName, candidate.BinaryID, candidate.ReleaseID, candidate.SourceUpdatedAt); err != nil {
-		return err
+		return inspectionOutcome{}, err
 	}
 
 	targets, err := s.discoveryTargets(ctx, candidate)
@@ -166,7 +217,7 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 			ErrorText:       err.Error(),
 			SourceUpdatedAt: candidate.SourceUpdatedAt,
 		})
-		return fmt.Errorf("build discovery targets: %w", err)
+		return inspectionOutcome{}, fmt.Errorf("build discovery targets: %w", err)
 	}
 
 	var (
@@ -182,7 +233,7 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 	)
 	for _, target := range targets {
 		if err := ctx.Err(); err != nil {
-			return err
+			return inspectionOutcome{}, err
 		}
 		sampleCtx, cancel := context.WithTimeout(ctx, discoverySampleTimeout(s.opts))
 		sample, sampleErr := inspectpkg.SampleBinaryPrefix(sampleCtx, s.repo, s.fetcher, target, minInt64(s.opts.MaxBytes, 4096))
@@ -212,7 +263,7 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 	}
 	if bestSample == nil {
 		if sampleErrCount > 0 && terminalErrs == sampleErrCount {
-			return s.repo.CompleteBinaryInspection(ctx, pgindex.BinaryInspectionRecord{
+			err := s.repo.CompleteBinaryInspection(ctx, pgindex.BinaryInspectionRecord{
 				StageName:       stageName,
 				BinaryID:        candidate.BinaryID,
 				ReleaseID:       candidate.ReleaseID,
@@ -226,6 +277,7 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 					"release_scan_mode":  "opaque_release_family",
 				},
 			})
+			return inspectionOutcome{TerminalSkip: 1}, err
 		}
 		errorText := "no materializable opaque binaries found for discovery"
 		if lastSampleErr != nil {
@@ -238,9 +290,13 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 			ErrorText:       errorText,
 			SourceUpdatedAt: candidate.SourceUpdatedAt,
 		})
-		return nil
+		return inspectionOutcome{RetryableFailure: 1}, nil
 	}
 
+	outcome := inspectionOutcome{
+		SampledFiles:      sampledBinaries,
+		MaterializedBytes: int64(sampledBinaries) * bestSample.BytesRead,
+	}
 	summary := map[string]any{
 		"signature":         bestSample.Signature,
 		"mime_type":         bestSample.MIMEType,
@@ -254,10 +310,11 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		"release_scan_mode": "opaque_release_family",
 	}
 	if decision := inspectpkg.EvaluateContentFilter(s.opts, bestSample); decision.Filtered {
+		outcome.Filtered = 1
 		summary["content_filtered"] = true
 		summary["content_filter_reason"] = decision.Reason
 		summary["content_filter_rule"] = decision.Rule
-		return s.repo.CompleteBinaryInspection(ctx, pgindex.BinaryInspectionRecord{
+		err := s.repo.CompleteBinaryInspection(ctx, pgindex.BinaryInspectionRecord{
 			StageName:         stageName,
 			BinaryID:          candidate.BinaryID,
 			ReleaseID:         candidate.ReleaseID,
@@ -267,6 +324,7 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 			Summary:           summary,
 			SourceUpdatedAt:   candidate.SourceUpdatedAt,
 		})
+		return outcome, err
 	}
 
 	if kind != "" && ext != "" {
@@ -278,14 +336,15 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 			Confidence:   confidence,
 			Canonicalize: true,
 		}); err != nil {
-			return fmt.Errorf("apply binary recovery %d: %w", bestTarget.BinaryID, err)
+			return outcome, fmt.Errorf("apply binary recovery %d: %w", bestTarget.BinaryID, err)
 		}
+		outcome.SignatureRecovered = 1
 		if s != nil && s.log != nil {
 			s.log.Info("inspect_discovery: recovered binary_id=%d release_id=%s kind=%s ext=%s confidence=%.2f sampled_files=%d", bestTarget.BinaryID, candidate.ReleaseID, kind, ext, confidence, sampledBinaries)
 		}
 	}
 
-	return s.repo.CompleteBinaryInspection(ctx, pgindex.BinaryInspectionRecord{
+	err = s.repo.CompleteBinaryInspection(ctx, pgindex.BinaryInspectionRecord{
 		StageName:         stageName,
 		BinaryID:          candidate.BinaryID,
 		ReleaseID:         candidate.ReleaseID,
@@ -295,6 +354,31 @@ func (s *Service) inspectCandidate(ctx context.Context, candidate pgindex.Binary
 		Summary:           summary,
 		SourceUpdatedAt:   candidate.SourceUpdatedAt,
 	})
+	return outcome, err
+}
+
+func (o *inspectionOutcome) add(other inspectionOutcome) {
+	if o == nil {
+		return
+	}
+	o.SignatureRecovered += other.SignatureRecovered
+	o.Filtered += other.Filtered
+	o.TerminalSkip += other.TerminalSkip
+	o.RetryableFailure += other.RetryableFailure
+	o.SampledFiles += other.SampledFiles
+	o.MaterializedBytes += other.MaterializedBytes
+}
+
+func addInspectionOutcomeMetrics(metrics map[string]any, outcome inspectionOutcome) {
+	if metrics == nil {
+		return
+	}
+	metrics["signature_recovered_count"] = outcome.SignatureRecovered
+	metrics["filtered_count"] = outcome.Filtered
+	metrics["terminal_skip_count"] = outcome.TerminalSkip
+	metrics["retryable_failure_count"] = outcome.RetryableFailure
+	metrics["sampled_file_count"] = outcome.SampledFiles
+	metrics["materialized_bytes"] = outcome.MaterializedBytes
 }
 
 func discoveryTerminalSampleReason(err error) string {
@@ -313,54 +397,8 @@ func discoveryTerminalSampleReason(err error) string {
 }
 
 func (s *Service) discoveryTargets(ctx context.Context, candidate pgindex.BinaryInspectionCandidate) ([]pgindex.BinaryInspectionCandidate, error) {
-	if strings.TrimSpace(candidate.ReleaseID) == "" {
-		return []pgindex.BinaryInspectionCandidate{candidate}, nil
-	}
-
-	files, err := s.repo.ListCatalogReleaseFiles(ctx, candidate.ReleaseID)
-	if err != nil {
-		return nil, fmt.Errorf("list catalog release files %s: %w", candidate.ReleaseID, err)
-	}
-
-	opaque := make([]pgindex.CatalogReleaseFile, 0, len(files))
-	for _, file := range files {
-		if file.IsPars {
-			continue
-		}
-		if !strings.HasSuffix(strings.ToLower(strings.TrimSpace(file.FileName)), ".bin") {
-			continue
-		}
-		opaque = append(opaque, file)
-	}
-	if len(opaque) == 0 {
-		return []pgindex.BinaryInspectionCandidate{candidate}, nil
-	}
-
-	sort.SliceStable(opaque, func(i, j int) bool {
-		if opaque[i].FileIndex != opaque[j].FileIndex {
-			return opaque[i].FileIndex < opaque[j].FileIndex
-		}
-		if opaque[i].SizeBytes != opaque[j].SizeBytes {
-			return opaque[i].SizeBytes > opaque[j].SizeBytes
-		}
-		return opaque[i].BinaryID < opaque[j].BinaryID
-	})
-
-	selected := opaque
-	const maxOpaqueSamples = 64
-	if len(selected) > maxOpaqueSamples {
-		selected = evenlySampleReleaseFiles(selected, maxOpaqueSamples)
-	}
-
-	targets := make([]pgindex.BinaryInspectionCandidate, 0, len(selected))
-	for _, file := range selected {
-		target := candidate
-		target.BinaryID = file.BinaryID
-		target.FileName = file.FileName
-		target.TotalBytes = file.SizeBytes
-		targets = append(targets, target)
-	}
-	return targets, nil
+	_ = ctx
+	return []pgindex.BinaryInspectionCandidate{candidate}, nil
 }
 
 func discoverySampleTimeout(opts inspectpkg.Options) time.Duration {
@@ -373,27 +411,6 @@ func discoverySampleTimeout(opts inspectpkg.Options) time.Duration {
 		return maxDiscoverySampleTimeout
 	}
 	return timeout
-}
-
-func evenlySampleReleaseFiles(files []pgindex.CatalogReleaseFile, limit int) []pgindex.CatalogReleaseFile {
-	if len(files) <= limit || limit <= 0 {
-		return files
-	}
-	out := make([]pgindex.CatalogReleaseFile, 0, limit)
-	step := float64(len(files)-1) / float64(limit-1)
-	seen := make(map[int]struct{}, limit)
-	for i := 0; i < limit; i++ {
-		idx := int(float64(i) * step)
-		if idx >= len(files) {
-			idx = len(files) - 1
-		}
-		if _, ok := seen[idx]; ok {
-			continue
-		}
-		seen[idx] = struct{}{}
-		out = append(out, files[idx])
-	}
-	return out
 }
 
 func classifySample(sample *inspectpkg.BinaryPrefixSample) (string, string, float64) {

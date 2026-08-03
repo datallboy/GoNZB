@@ -29,10 +29,11 @@ markers.
   preserved so a later profile change can resume them.
 - `balanced` is the default and recommended unattended mode. It refills and
   claims only `priority_rank = 0` work likely to unlock a multipart binary or
-  release. Generic priority-1/2 seeding is disabled.
+  release. Opaque near-time cohorts start with a 16-article evidence sample.
+  Generic priority-1/2 seeding is disabled.
 - `exhaustive` enables priority ranks 0-2 and generic bounded seeding. Use it
   for targeted historical work or when maximum recoverable coverage is worth
-  the additional BODY traffic.
+  the additional BODY traffic. Opaque cohorts start with a 32-article sample.
 
 The `recover_yenc.enabled` stage switch remains an operational circuit breaker.
 The stage must be enabled for `balanced` or `exhaustive` to issue BODY requests;
@@ -48,10 +49,11 @@ Work can enter the table from these paths:
 
 - scheduler-backed priority admission from `article_cohort_yenc_queue`;
 - generic bounded admission from weak or incomplete binary projections;
-- priority admission for near-complete or multipart candidates;
+- priority admission for near-complete candidates with stable release-family
+  evidence;
 - priority admission for opaque near-time singleton cohorts;
-- sibling admission after a successful yEnc recovery proves a nearby opaque
-  cohort is worth probing;
+- bounded sibling expansion after repeated recovered identity evidence proves
+  an opaque cohort is worth probing;
 - refresh/maintenance paths that resync recovery work for changed binary
   projections.
 
@@ -102,10 +104,10 @@ Typical eligible shapes include:
 `priority_rank = 0` is work likely to unlock binary grouping or release
 formation:
 
-- near-complete or multipart candidates;
-- indexed multi-file candidates;
+- scheduler-selected opaque cohort samples;
+- near-complete candidates with stable release-family evidence;
 - suspicious opaque near-time cohorts;
-- siblings of a successful opaque yEnc recovery.
+- siblings promoted by repeated recovered evidence.
 
 `priority_rank = 1` is bounded weak/provisional work that may need BODY
 identity but has less immediate release pressure.
@@ -120,6 +122,22 @@ Admission respects runtime recovery capacity:
 - the hard cap blocks normal scrape admission and generic yEnc expansion;
 - priority-0 overflow may still admit a bounded amount of work so high-yield
   cohorts do not starve behind a large priority-1 backlog.
+
+Candidate claims also consume a durable UTC-hour BODY budget. The default
+limits are:
+
+- Balanced: 25,000 requests/hour;
+- Exhaustive: 100,000 requests/hour;
+- inspection discovery: 1,000 representative probes/hour.
+
+The selector locks and consumes the active recovery budget in the same
+transaction that claims work, so concurrent workers cannot oversubscribe it.
+When accepted local-cache or GoNZBNet peer evidence satisfies a claimed row,
+the reservation is refunded before processing. Only unresolved rows consume
+the BODY allowance.
+Changing a limit takes effect on the next claim without clearing queue state.
+The **Indexer Work** page reports used and remaining requests for the active
+recovery profile.
 
 Scrape gating is a storage guard. Recovery backlog should stay bounded, but a
 full priority-1 backlog must not prevent priority-0 opaque bursts from being
@@ -138,8 +156,10 @@ reservoir is five recovery batches:
 Refill order is:
 
 1. consume scheduler materialized rows from `article_cohort_yenc_queue`;
-2. fall back to the bounded opaque near-time projection scan;
-3. run generic bounded seeding only when the ready queue is empty.
+2. in Exhaustive only, fall back to the bounded opaque near-time projection
+   scan;
+3. in Exhaustive only, run generic bounded seeding when the ready queue is
+   empty.
 
 In `exhaustive`, the selector then claims ready rows in two lanes:
 
@@ -171,39 +191,39 @@ binary grouping proof.
 ## Cohort Outcome Feedback
 
 Scheduler-backed priority work records recovery yield back into
-`article_cohort_candidates`.
+`article_cohort_candidates`. `recovery_decision` is durable and has three
+states: `sample`, `promoted`, and `no_yield`.
 
 - Successful yEnc recovery marks matching `article_cohort_yenc_queue` rows
-  `done`, increments `yenc_done_count` and `yenc_recovered_count`, clears any
-  cooldown, and raises the cohort score.
+  `done`, increments `yenc_done_count` and `yenc_recovered_count`, and records
+  the recovered stable identity signal and any actual binary merge.
 - `not_found` and no-op outcomes keep the normal yEnc work-item retry/backoff
   behavior, but increment `yenc_no_identity_count`.
-- A zero-recovered cohort that reaches the no-identity threshold is moved to
-  cooldown. While the cooldown is active, the scheduler does not enqueue more
-  rows for that cohort.
+- Two matching stable recovered signals promote a cohort in both recovery
+  profiles. Exhaustive may also promote after two real grouping gains.
+- Promotion expands at most 256 additional rows per scheduler pass, up to
+  2,048 probes per Balanced cohort or 20,000 per Exhaustive cohort.
+- A sample that reaches 16/32 completed probes without promotion becomes
+  `no_yield`, whether the probes found no yEnc identity or found mutually
+  random names. The scheduler stops enqueueing that cohort.
+- If later ingestion increases the cohort's article count, `no_yield` reopens
+  to `sample`; it is never a permanent judgment about future source data.
 
 This feedback loop keeps productive opaque cohorts hot while stopping random or
 low-yield cohorts from repeatedly filling priority-0 capacity.
 
-## Current Audit Notes
+When GoNZBNet evidence consumption is active, per-batch recovery order is:
 
-On 2026-07-01, ready claim selection was fast: selecting 10,000 ready rows from
-`yenc_recovery_work_items` took about 33 ms on the live database.
+1. accepted local raw-evidence cache;
+2. up to the configured number of authorized pool peers;
+3. local matcher/application of accepted evidence;
+4. NNTP BODY for unresolved Message-IDs only.
 
-Admission/refill is the heavier path. A read-only EXPLAIN of opaque near-time
-admission over a 50,000-row recent scan took about 2.85 seconds and performed
-many partitioned point lookups into binary projection tables. That cost is
-acceptable as a bounded refill path, but it should not run inside assemble's
-hot refresh path for every large assemble batch.
+Peer miss, timeout, conflict, disabled exchange, or ambiguous evidence does not
+fail the stage and falls through to normal BODY behavior.
 
-Live recovery was productive in the sampled run: a 5,000-item batch recovered
-5,000 headers and merged 4,950 of them at concurrency 100. Later batches with
-zero merges are useful signal that selection/admission metrics should include
-`priority_rank`, `admission_reason`, and lane-level merge yield.
-
-## Follow-Up Targets
-
-- Add selection metrics by `priority_rank`, `admission_reason`, `group_tier`,
-  and lane.
-- Add merge-yield metrics by admission reason.
-- Keep priority-0 refill independent of generic ready backlog.
+Opaque projection discovery reads one bounded page at a time. Its durable
+window cursor advances by `(posted_at, binary_id)` and wraps only after reaching
+the bottom of the selected source-day or explicit target window. This prevents
+a large newest slice from being rescanned forever while older candidates in
+the same window are never evaluated.

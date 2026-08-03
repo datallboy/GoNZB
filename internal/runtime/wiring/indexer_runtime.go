@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/datallboy/gonzb/internal/app"
+	"github.com/datallboy/gonzb/internal/gonzbnet/evidenceclient"
+	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
 	"github.com/datallboy/gonzb/internal/indexing"
 	"github.com/datallboy/gonzb/internal/indexing/assemble"
 	"github.com/datallboy/gonzb/internal/indexing/enrich/predb"
@@ -358,18 +360,42 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		recoverFetcher,
 		appCtx.Logger,
 		yencrecover.Options{
-			BatchSize:           runtimeCfg.RecoverYEnc.BatchSize,
-			MaxHeaderBytes:      8192,
-			FetchTimeout:        recoverYEncFetchTimeout(runtimeCfg.RecoverYEnc),
-			Concurrency:         runtimeCfg.RecoverYEnc.Concurrency,
-			RecoveryProfile:     runtimeCfg.RecoveryProfile,
-			TargetWindowEnabled: runtimeCfg.RecoverYEnc.TargetWindowEnabled,
-			TargetWindowStart:   runtimeCfg.RecoverYEnc.TargetWindowStart,
-			TargetWindowEnd:     runtimeCfg.RecoverYEnc.TargetWindowEnd,
-			TargetWindowPercent: runtimeCfg.RecoverYEnc.TargetWindowPct,
-			NewestPercent:       runtimeCfg.RecoverYEnc.NewestPct,
+			BatchSize:                     runtimeCfg.RecoverYEnc.BatchSize,
+			MaxHeaderBytes:                8192,
+			FetchTimeout:                  recoverYEncFetchTimeout(runtimeCfg.RecoverYEnc),
+			Concurrency:                   runtimeCfg.RecoverYEnc.Concurrency,
+			RecoveryProfile:               runtimeCfg.RecoveryProfile,
+			TargetWindowEnabled:           runtimeCfg.RecoverYEnc.TargetWindowEnabled,
+			TargetWindowStart:             runtimeCfg.RecoverYEnc.TargetWindowStart,
+			TargetWindowEnd:               runtimeCfg.RecoverYEnc.TargetWindowEnd,
+			TargetWindowPercent:           runtimeCfg.RecoverYEnc.TargetWindowPct,
+			NewestPercent:                 runtimeCfg.RecoverYEnc.NewestPct,
+			BalancedBodyRequestsPerHour:   int64(runtimeCfg.RecoveryAdmission.BalancedBodyRequestsPerHour),
+			ExhaustiveBodyRequestsPerHour: int64(runtimeCfg.RecoveryAdmission.ExhaustiveBodyRequestsPerHour),
 		},
 	)
+	if appCtx.Config.Modules.GoNZBNet.Enabled && appCtx.Config.GoNZBNet.BinaryEvidenceConsumeEnabled {
+		evidenceStore, ok := appCtx.PGIndexStore.(evidenceclient.Store)
+		if !ok {
+			return nil, fmt.Errorf("pgindex store does not support gonzbnet binary evidence exchange")
+		}
+		nodeIdentity, err := identity.LoadOrCreateWithPassword(
+			appCtx.Config.GoNZBNet.KeysDir,
+			appCtx.Config.GoNZBNet.KeyPassword,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("load gonzbnet identity for binary evidence exchange: %w", err)
+		}
+		recoverYEncSvc.SetEvidenceLookup(evidenceclient.New(nodeIdentity, evidenceStore, evidenceclient.Options{
+			Enabled:                true,
+			AllowInsecurePeerHTTP:  appCtx.Config.GoNZBNet.AllowInsecurePeerHTTP,
+			PeerTimeout:            time.Duration(appCtx.Config.GoNZBNet.BinaryEvidencePeerTimeoutSecs) * time.Second,
+			PeerFanout:             appCtx.Config.GoNZBNet.BinaryEvidencePeerFanout,
+			BatchSize:              appCtx.Config.GoNZBNet.BinaryEvidenceYEncBatchSize,
+			MaxResponseBytes:       int64(appCtx.Config.GoNZBNet.BinaryEvidenceMaxResponseBytes),
+			CircuitBreakerCooldown: time.Duration(appCtx.Config.GoNZBNet.BinaryEvidenceCooldownMinutes) * time.Minute,
+		}))
+	}
 
 	releaseSvc := release.NewService(
 		appCtx.PGIndexStore,
@@ -985,6 +1011,7 @@ func deriveUsenetIndexerConfig(cfg *config.Config, runtimeIndexing ...*app.Index
 			UnrarPath:                indexingCfg.Inspect.UnrarPath,
 			PAR2Path:                 indexingCfg.Inspect.PAR2Path,
 			CandidateBatchSize:       100,
+			BodyRequestsPerHour:      int64(indexingCfg.RecoveryAdmission.DiscoveryBodyRequestsPerHour),
 		}),
 		EnrichTMDB: tmdb.DefaultOptions(tmdb.Options{
 			Limit:           indexingCfg.EnrichTMDB.BatchSize,

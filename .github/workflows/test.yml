@@ -53,16 +53,68 @@ jobs:
       - name: Install UI dependencies
         run: npm --prefix ui ci
 
+      - name: Lint UI
+        run: npm --prefix ui run lint
+
       - name: Build UI assets
         run: npm --prefix ui run build
+
+      - name: Audit production UI dependencies
+        # The current React Router high advisory only affects unstable RSC APIs,
+        # which this Vite SPA does not use. Keep critical findings blocking
+        # until the patched 8.3 release is available from npm.
+        run: npm --prefix ui audit --omit=dev --audit-level=critical
 
       - name: Install test tools
         run: |
           sudo apt-get update
           sudo apt-get install --yes ffmpeg p7zip-full
+          go install honnef.co/go/tools/cmd/staticcheck@v0.7.0
+          go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
 
       - name: Run Go tests
         run: ./scripts/test_ci.sh
 
       - name: Run Go vet
         run: go vet ./...
+
+      - name: Run static analysis
+        run: staticcheck ./...
+
+      - name: Check reachable Go vulnerabilities
+        run: govulncheck ./...
+
+  gonzbnet-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: Install fixture tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes jq curl
+
+      - name: Run four-node GoNZBNet E2E
+        env:
+          GONZBNET_E2E_KEEP_STATE_ON_FAILURE: "1"
+        run: ./scripts/gonzbnet_e2e.sh test
+
+      - name: Show fixture logs after failure
+        if: failure()
+        run: |
+          for log in .e2e/gonzbnet/node-*/stdout.log; do
+            if [ -f "$log" ]; then
+              echo "::group::$log"
+              tail -n 200 "$log"
+              echo "::endgroup::"
+            fi
+          done

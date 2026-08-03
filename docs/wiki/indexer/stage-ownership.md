@@ -14,7 +14,10 @@
 - Release refresh owns release summary and ready-candidate work tables.
 - Release formation owns release catalog and release lineage tables.
 - Inspect stages own inspection history, artifacts, archive entries, text/media
-  evidence, PAR2 sets, and PAR2 targets.
+  evidence, PAR2 sets, PAR2 targets, and their ready queue.
+- Release persistence publishes inspection-ready events. A durable
+  `(updated_at, release_id)` reconciliation cursor repairs a missed event
+  without scanning every binary projection.
 - Source purge and partition retention are the only intentional terminal
   source/work deletion paths.
 
@@ -46,7 +49,8 @@ Projection tables are owned by the stage that derives them:
   lineage, and recovery-driven dirty-family enqueue;
 - release summary refresh owns readiness summaries and ready candidates;
 - release formation owns release catalog and lineage;
-- inspect owns inspection ready/history/evidence tables.
+- inspect owns inspection ready/history/evidence tables and inspection
+  reconciliation state.
 
 ## Guardrails
 

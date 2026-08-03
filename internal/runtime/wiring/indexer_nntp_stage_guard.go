@@ -146,6 +146,12 @@ func (g *cachedNNTPTrafficGuard) evaluate(ctx context.Context, runtime *app.Runt
 			Reason:  fmt.Sprintf("inspect_par2 paused for nntp catch-up: active=%d capacity=%d waiting=%d", stats.Active, stats.Capacity, stats.Waiting),
 		}
 	}
+	if runtime.Indexing.InspectDiscovery.Enabled && (yencHot || scopeHot(scopeActivity, "recover_yenc") || scopeHot(scopeActivity, "scrape")) {
+		results[supervisor.StageInspectDiscovery] = supervisor.StageGateDecision{
+			Allowed: false,
+			Reason:  fmt.Sprintf("inspect_discovery paused for nntp catch-up: active=%d capacity=%d waiting=%d", stats.Active, stats.Capacity, stats.Waiting),
+		}
+	}
 
 	// Backfill is lower priority than latest freshness and yEnc identity recovery.
 	if runtime.Indexing.ScrapeBackfill.Enabled && (yencHot || runtime.Indexing.ScrapeLatest.Enabled || scopeHot(scopeActivity, "recover_yenc")) {
@@ -167,11 +173,11 @@ func (g *cachedNNTPTrafficGuard) evaluate(ctx context.Context, runtime *app.Runt
 		}
 	}
 
-	// Latest scraping yields only when yEnc has a meaningful backlog and the pool is already hot.
-	if runtime.Indexing.ScrapeLatest.Enabled && yencHot {
-		results[supervisor.StageScrapeLatest] = supervisor.StageGateDecision{
+	// Recovery is opportunistic. Fresh XOVER traffic always wins an already-hot pool.
+	if recoverYEncEnabled(runtime.Indexing) && scopeHot(scopeActivity, "scrape") {
+		results[supervisor.StageRecoverYEnc] = supervisor.StageGateDecision{
 			Allowed: false,
-			Reason:  fmt.Sprintf("scrape_latest paused for recover_yenc catch-up: pending_yenc=%d active=%d capacity=%d", yencBacklog, stats.Active, stats.Capacity),
+			Reason:  fmt.Sprintf("recover_yenc paused for scrape_latest freshness: active=%d capacity=%d waiting=%d", stats.Active, stats.Capacity, stats.Waiting),
 		}
 	}
 
@@ -180,7 +186,7 @@ func (g *cachedNNTPTrafficGuard) evaluate(ctx context.Context, runtime *app.Runt
 
 func nntpGuardApplies(stageName supervisor.StageName) bool {
 	switch stageName {
-	case supervisor.StageScrapeLatest, supervisor.StageScrapeBackfill, supervisor.StageScrapeTimeframe, supervisor.StageScrapeDeferred, supervisor.StageRecoverYEnc, supervisor.StageInspectPAR2:
+	case supervisor.StageScrapeLatest, supervisor.StageScrapeBackfill, supervisor.StageScrapeTimeframe, supervisor.StageScrapeDeferred, supervisor.StageRecoverYEnc, supervisor.StageInspectDiscovery, supervisor.StageInspectPAR2:
 		return true
 	default:
 		return false

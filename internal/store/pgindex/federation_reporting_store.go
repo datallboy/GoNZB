@@ -73,7 +73,9 @@ func (s *Store) GetFederationPoolHealthReport(ctx context.Context, poolID string
 		       COUNT(*), MAX(e.received_at)
 		FROM federation_events e
 		LEFT JOIN federation_nodes n ON n.node_id = e.author_node_id
-		WHERE e.pool_ids ? $1 AND e.received_at >= $2
+		WHERE e.validation_status = 'accepted'
+		  AND e.pool_ids ? $1
+		  AND e.received_at >= $2
 		GROUP BY e.author_node_id, n.alias
 		ORDER BY MAX(e.received_at) DESC`, poolID, now.Add(-30*24*time.Hour))
 	if err != nil {

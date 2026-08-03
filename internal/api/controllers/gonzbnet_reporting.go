@@ -3,12 +3,14 @@ package controllers
 import (
 	"context"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/datallboy/gonzb/internal/gonzbnet/activity"
 	"github.com/datallboy/gonzb/internal/gonzbnet/capability"
+	"github.com/datallboy/gonzb/internal/infra/config"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
 	"github.com/labstack/echo/v5"
 )
@@ -24,6 +26,17 @@ type gonzbnetPoolHealthStore interface {
 
 type gonzbnetArticleAvailabilityStore interface {
 	ListArticleAvailabilityDiagnostics(context.Context, string, int) ([]pgindex.ArticleAvailabilityDiagnostic, error)
+}
+
+type gonzbnetStorageStore interface {
+	GetFederationStorageReport(context.Context) (pgindex.FederationStorageReport, error)
+}
+
+type gonzbnetProductionCheck struct {
+	Key     string `json:"key"`
+	Label   string `json:"label"`
+	Status  string `json:"status"`
+	Details string `json:"details"`
 }
 
 type gonzbnetRoleJob struct {
@@ -78,6 +91,9 @@ type gonzbnetOverviewResponse struct {
 	ArticleEvidence   pgindex.FederationEvidenceSummary `json:"article_evidence"`
 	Warnings          []string                          `json:"warnings"`
 	Jobs              []gonzbnetRoleJob                 `json:"jobs"`
+	ProductionReady   bool                              `json:"production_ready"`
+	ProductionChecks  []gonzbnetProductionCheck         `json:"production_checks"`
+	Storage           pgindex.FederationStorageReport   `json:"storage"`
 }
 
 type gonzbnetActivityResponse struct {
@@ -158,6 +174,13 @@ func (ctrl *GoNZBNetAdminController) ReportingOverview(c *echo.Context) error {
 			healthy++
 		}
 	}
+	productionChecks, productionReady := goNZBNetProductionChecks(ctrl.appCtx.Config.GoNZBNet, len(poolItems))
+	storage := pgindex.FederationStorageReport{Relations: []pgindex.FederationStorageRelation{}}
+	if storageStore, ok := any(store).(gonzbnetStorageStore); ok {
+		if report, storageErr := storageStore.GetFederationStorageReport(c.Request().Context()); storageErr == nil {
+			storage = report
+		}
+	}
 	return c.JSON(http.StatusOK, gonzbnetOverviewResponse{
 		GeneratedAt: report.GeneratedAt, NodeID: report.NodeID,
 		NodeAlias:     ctrl.appCtx.Config.GoNZBNet.NodeAlias,
@@ -166,7 +189,63 @@ func (ctrl *GoNZBNetAdminController) ReportingOverview(c *echo.Context) error {
 		PeersConnected: connected, PeersTotal: len(peers), Pools: poolItems,
 		PendingAdmissions: pendingAdmissions, Warnings: report.Warnings, Jobs: report.Jobs,
 		ReleaseEvidence: releaseEvidence, ArticleEvidence: articleEvidence,
+		ProductionReady: productionReady, ProductionChecks: productionChecks, Storage: storage,
 	})
+}
+
+func goNZBNetProductionChecks(cfg config.GoNZBNetConfig, poolCount int) ([]gonzbnetProductionCheck, bool) {
+	checks := make([]gonzbnetProductionCheck, 0, 6)
+	add := func(key, label, status, details string) {
+		checks = append(checks, gonzbnetProductionCheck{Key: key, Label: label, Status: status, Details: details})
+	}
+
+	advertiseURL, err := url.Parse(strings.TrimSpace(cfg.AdvertiseURL))
+	switch {
+	case !cfg.HTTPEnabled:
+		add("transport", "Federation transport", "warning", "HTTP federation is disabled; this node cannot directly exchange events with peers.")
+	case err != nil || advertiseURL.Host == "":
+		add("transport", "Federation transport", "fail", "Set a valid advertised HTTPS URL before accepting remote peers.")
+	case strings.EqualFold(advertiseURL.Scheme, "https"):
+		add("transport", "Federation transport", "pass", "The advertised federation endpoint uses HTTPS.")
+	case cfg.PrivateNetwork:
+		add("transport", "Federation transport", "warning", "Plain HTTP is limited to a declared private network; keep it off public networks.")
+	default:
+		add("transport", "Federation transport", "fail", "The advertised federation endpoint must use HTTPS outside a private network.")
+	}
+	if strings.TrimSpace(cfg.KeyPassword) == "" {
+		add("identity_key", "Identity key encryption", "fail", "Set a key password so the node's private identity is encrypted at rest.")
+	} else {
+		add("identity_key", "Identity key encryption", "pass", "The node identity is configured for encrypted storage.")
+	}
+	if cfg.AllowInsecurePeerHTTP {
+		add("peer_http", "Peer transport policy", "warning", "Insecure peer HTTP is allowed; disable it for internet-facing deployments.")
+	} else {
+		add("peer_http", "Peer transport policy", "pass", "Peer connections require HTTPS.")
+	}
+	if strings.TrimSpace(cfg.NodeAlias) == "" {
+		add("node_alias", "Operator identity", "warning", "Set a recognizable node name so pool members can identify this node.")
+	} else {
+		add("node_alias", "Operator identity", "pass", "A recognizable node name is configured.")
+	}
+	if poolCount == 0 {
+		add("pool_membership", "Pool membership", "warning", "Create or join a pool before expecting shared work or data.")
+	} else {
+		add("pool_membership", "Pool membership", "pass", "At least one pool is configured.")
+	}
+	if cfg.AllowJoinRequests && strings.EqualFold(strings.TrimSpace(cfg.Visibility), "public") {
+		add("admission", "Public admission", "warning", "This public node accepts join proposals; monitor and approve membership deliberately.")
+	} else {
+		add("admission", "Admission exposure", "pass", "Pool admission is not openly advertised for automatic trust.")
+	}
+
+	ready := true
+	for _, check := range checks {
+		if check.Status == "fail" {
+			ready = false
+			break
+		}
+	}
+	return checks, ready
 }
 
 func poolMemberOverview(members []pgindex.PoolMemberRecord, nodes map[string]pgindex.NodeCapabilityView, localNodeID, localAlias, localBaseURL string) []gonzbnetPoolMemberOverview {
