@@ -4,16 +4,15 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/datallboy/gonzb/internal/buildinfo"
 	"github.com/datallboy/gonzb/internal/runtime/commands"
 
 	"github.com/spf13/cobra"
 )
 
 var (
-	Version   = "dev"
-	BuildTime = "unknown"
-	nzbPath   string
-	cfgFile   string = "config.yaml"
+	nzbPath string
+	cfgFile string = "config.yaml"
 
 	serveWithoutIndexerSupervisor      bool
 	disableReleasePurgeArchivedSources bool
@@ -46,7 +45,7 @@ var rootCmd = &cobra.Command{
 	Use:     "gonzb",
 	Short:   "GONZB is a simple Usenet downloader",
 	Long:    `A lightweight, concurrent NNTP downloaer written in Go.`,
-	Version: Version,
+	Version: buildinfo.Version,
 	Run: func(cmd *cobra.Command, args []string) {
 		if nzbPath == "" {
 			fmt.Println("Error: --file or -f is required")
@@ -62,7 +61,7 @@ var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print the version number of GoNZB",
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Printf("GoNZB Version: %s\nBuild Time: %s\n", Version, BuildTime)
+		fmt.Printf("GoNZB Version: %s\nBuild Time: %s\n", buildinfo.Version, buildinfo.BuildTime)
 	},
 }
 
@@ -427,7 +426,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "config.yaml", "config file (default is ./config.yaml)")
 	rootCmd.Flags().StringVarP(&nzbPath, "file", "f", "", "Path to the NZB file (required)")
 
-	rootCmd.SetVersionTemplate(fmt.Sprintf("GoNZB Version: %s\nBuild Time: %s\n", Version, BuildTime))
+	rootCmd.SetVersionTemplate(fmt.Sprintf("GoNZB Version: %s\nBuild Time: %s\n", buildinfo.Version, buildinfo.BuildTime))
 	rootCmd.Flags().BoolP("version", "v", false, "display version information")
 	serveCmd.Flags().BoolVar(&serveWithoutIndexerSupervisor, "no-indexer-supervisor", false, "serve API/UI without starting the built-in indexer supervisor")
 	serveCmd.Flags().BoolVar(&disableReleasePurgeArchivedSources, "disable-release-purge-archived-sources", false, "disable the release_purge_archived_sources indexer stage")
