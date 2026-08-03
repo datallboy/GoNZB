@@ -146,7 +146,9 @@ Radarr/Sonarr notification endpoints.
 
 ## Documentation
 
-- [Documentation index](docs/README.md)
+- [Beginner setup guide](docs/getting-started/index.md)
+- [Published documentation site](https://datallboy.github.io/GoNZB/)
+- [Documentation index](docs/index.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Newznab and download-client integrations](docs/wiki/integrations/README.md)
 - [Indexer wiki](docs/wiki/indexer/README.md)
