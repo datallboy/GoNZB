@@ -39,11 +39,11 @@ If an archived document conflicts with `docs/wiki/indexer/`, the wiki wins unles
 
 ## Repository Guidance
 - Preserve module independence where practical.
-- Do not introduce hidden hard dependencies between the aggregator, usenet-indexer, and downloader modules unless explicitly requested.
+- Do not introduce hidden hard dependencies between the aggregator, usenet-indexer, and GoNZBNet modules unless explicitly requested.
 - Keep implementation compatible with these deployment shapes when relevant:
-  1. downloader-only
-  2. aggregator-only
-  3. usenet-indexer-only
+  1. aggregator-only
+  2. usenet-indexer-only
+  3. GoNZBNet-only
   4. all-in-one
 
 ## Preferred Response Style

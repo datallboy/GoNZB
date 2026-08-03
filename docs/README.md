@@ -8,6 +8,7 @@ If you are trying to understand or run GoNZB, start with:
 
 - [README](../README.md)
 - [Architecture](./ARCHITECTURE.md)
+- [Newznab and download-client integrations](./wiki/integrations/README.md)
 - [Indexer Wiki](./wiki/indexer/README.md)
 - [GoNZBNet Wiki](./wiki/gonzbnet/README.md)
 
@@ -15,6 +16,8 @@ If you are trying to understand or run GoNZB, start with:
 
 - [Architecture](./ARCHITECTURE.md)
   - high-level module layout, ownership boundaries, and runtime model
+- [Newznab and download-client integrations](./wiki/integrations/README.md)
+  - connect automation clients and configure one-way SAB submission
 - [Indexer Wiki](./wiki/indexer/README.md)
   - maintained stage ownership, flow, schema, partition, retention, release, and operations reference
 - [GoNZBNet Wiki](./wiki/gonzbnet/README.md)

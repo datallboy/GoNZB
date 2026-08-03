@@ -240,7 +240,7 @@ hash when explicitly enabled, never provider credentials.
 GoNZBNet does not introduce a dependency between otherwise independent GoNZB
 modules beyond the capabilities selected by the operator:
 
-- downloader-only deployments leave GoNZBNet disabled;
+- deployments that do not participate in federation leave GoNZBNet disabled;
 - aggregator-only deployments can act as federated consumers;
 - indexer-only deployments can publish and scan without serving downloads;
 - all-in-one deployments can combine consumer, publisher, validator, and admin
