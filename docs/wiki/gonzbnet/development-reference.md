@@ -116,5 +116,5 @@ generated keys, databases, blobs, NZBs, tokens, or logs into tracked fixtures.
 This wiki describes the current system and its operator/developer contract.
 Completed plans and implementation evidence belong in `docs/archive/` only
 when they retain decision value. The original implementation specification is
-[archived reference material](../../archive/completed/gonzbnet/GoNZBNet_Codex_Implementation_Spec.md)
+[archived reference material](https://github.com/datallboy/GoNZB/blob/dev/docs/archive/completed/gonzbnet/GoNZBNet_Codex_Implementation_Spec.md)
 and does not override current code or this wiki.
