@@ -702,8 +702,16 @@ export function AdminMaintenancePage() {
   }
 
   useEffect(() => {
-    void refresh()
-    void refreshAudit()
+    let cancelled = false
+    void Promise.resolve().then(() => {
+      if (!cancelled) {
+        void refresh()
+        void refreshAudit()
+      }
+    })
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   return (

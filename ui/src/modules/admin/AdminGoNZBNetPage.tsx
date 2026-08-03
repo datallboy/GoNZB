@@ -753,7 +753,15 @@ export function AdminGoNZBNetPage() {
   }, [activityWindow, effectivePoolID])
 
   useEffect(() => {
-    void refresh()
+    let cancelled = false
+    void Promise.resolve().then(() => {
+      if (!cancelled) {
+        return refresh()
+      }
+    })
+    return () => {
+      cancelled = true
+    }
   }, [refresh])
 
   useEffect(() => {
@@ -761,12 +769,21 @@ export function AdminGoNZBNetPage() {
       return
     }
     const firstPool = trustPools.find((pool) => pool.enabled) ?? trustPools[0]
-    setPoolID(firstPool.pool_id)
-    setSearchParams((current) => {
-      const updated = new URLSearchParams(current)
-      updated.set('pool_id', firstPool.pool_id)
-      return updated
-    }, { replace: true })
+    let cancelled = false
+    void Promise.resolve().then(() => {
+      if (cancelled) {
+        return
+      }
+      setPoolID(firstPool.pool_id)
+      setSearchParams((current) => {
+        const updated = new URLSearchParams(current)
+        updated.set('pool_id', firstPool.pool_id)
+        return updated
+      }, { replace: true })
+    })
+    return () => {
+      cancelled = true
+    }
   }, [effectivePoolID, setSearchParams, trustPools])
 
   async function handleCreatePool(event: FormEvent<HTMLFormElement>) {
