@@ -110,8 +110,8 @@ GoNZBNet module is enabled.
 
 ## Current Boundaries
 
-GoNZBNet is pre-release and implements the integrated v1 design. Public global
-discovery, DHT/mDNS discovery, NAT traversal, cross-pool bridging, and a
+GoNZBNet implements the integrated v1 design targeted by GoNZB v0.9.0. Public
+global discovery, DHT/mDNS discovery, NAT traversal, cross-pool bridging, and a
 standalone relay process are not implemented. First contact uses an explicit
 node address or a signed invitation. Protocol metrics are process-local. The
 admin UI keeps bounded local activity history for operational visibility;

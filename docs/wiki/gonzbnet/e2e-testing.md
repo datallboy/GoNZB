@@ -15,7 +15,7 @@ blob cache, logs, and persistent Ed25519 key directory.
 - Go 1.25 or the version declared by `go.mod`
 - Docker with Compose
 - `curl` and `jq`
-- free ports `11119`, `18081`, `18082`, `18083`, `18084`, and `55432`
+- free ports `11119`, `18081`-`18084`, `18481`-`18484`, and `55432`
 
 ## Lifecycle
 
@@ -37,12 +37,18 @@ make gonzbnet-e2e-status
 
 The nodes are available at:
 
-| Node | URL | Intended role |
-|---|---|---|
-| A | `http://127.0.0.1:18081` | scanner, coverage, manifest builder |
-| B | `http://127.0.0.1:18082` | validator and health checker |
-| C | `http://127.0.0.1:18083` | consumer/cache and relay mode |
-| D | `http://127.0.0.1:18084` | standalone consumer with no configured peers |
+| Node | Federation HTTPS URL | Local admin URL | Intended role |
+|---|---|---|---|
+| A | `https://localhost:18481` | `http://127.0.0.1:18081` | indexer, scanner, publisher, coverage, manifest builder |
+| B | `https://localhost:18482` | `http://127.0.0.1:18082` | validator and health checker |
+| C | `https://localhost:18483` | `http://127.0.0.1:18083` | consumer/cache and relay mode |
+| D | `https://localhost:18484` | `http://127.0.0.1:18084` | standalone consumer with no configured peers |
+
+The harness generates an ephemeral ECDSA CA and localhost certificate under
+`.e2e/gonzbnet/tls`. Federation traffic uses the HTTPS ports and each node
+trusts only that fixture CA. The loopback HTTP ports remain available solely
+for local admin API and WebUI test automation; they are never advertised as
+federation endpoints.
 
 The local bootstrap password defaults to `gonzb-e2e-local`. Override it with
 `GONZBNET_E2E_PASSWORD`. This credential is local to each node and is never
@@ -66,8 +72,11 @@ directories or any configured production database.
 ## Basic Federation Checks
 
 The smoke command verifies that all four nodes are healthy, advertise
-`gonzbnet/1.0`, expose capabilities, and have distinct deterministic node IDs.
-Node D has no manual peers. It learns its first peer only through admission.
+`gonzbnet/1.0`, expose capabilities, report the linked release version, and
+have distinct persistent node IDs. It proves the generated CA is required,
+TLS 1.1 is rejected, TLS 1.2 succeeds, and every connected/persisted peer URL
+uses HTTPS. Node D has no manual peers. It learns its first peer only through
+admission.
 
 The federation smoke command creates a signed pool tombstone on Node A, pushes
 it to B, C, and D, checks accepted append and projection in every PostgreSQL
@@ -78,9 +87,9 @@ admin session is not valid on Node B.
 Inspect public profiles directly:
 
 ```sh
-curl -s http://127.0.0.1:18081/.well-known/gonzbnet | jq
-curl -s http://127.0.0.1:18082/gonzbnet/v1/node | jq
-curl -s http://127.0.0.1:18083/gonzbnet/v1/caps | jq
+curl --cacert .e2e/gonzbnet/tls/ca.pem -s https://localhost:18481/.well-known/gonzbnet | jq
+curl --cacert .e2e/gonzbnet/tls/ca.pem -s https://localhost:18482/gonzbnet/v1/node | jq
+curl --cacert .e2e/gonzbnet/tls/ca.pem -s https://localhost:18483/gonzbnet/v1/caps | jq
 ```
 
 Open `/admin/gonzbnet` on each node to compare its grouped roles, pool
@@ -152,18 +161,17 @@ production `nntp.Manager` through DATE, GROUP, XOVER, and BODY operations:
 ./scripts/gonzbnet_e2e.sh nntp-smoke
 ```
 
-Use the following path when validating the complete indexer-to-federation flow
-against an external NNTP provider.
-
-Node A needs a local release fixture with complete segment Message-IDs. The
-most representative route is to configure a test NNTP account and newsgroup in
-Node A's settings, enable the usenet-indexer module, then run:
+The `indexer-federation-smoke` scenario proves the complete integration rather
+than injecting a prebuilt release. Node A uses its production NNTP client to
+scrape four deterministic XOVER headers, assembles a two-part video plus NFO
+and PAR2 into three complete binaries, refreshes the release-family queue,
+forms a public-ready release, and archives its locally generated NZB. Its
+GoNZBNet publisher then signs a `ReleaseCard` and `ResolutionManifest`, pushes
+them over HTTPS, and Node D searches and grabs the result through its local
+Newznab API. The final NZB must contain all four original Message-IDs.
 
 ```sh
-.e2e/gonzbnet/gonzb indexer pipeline --once --config test/e2e/gonzbnet/node-a.yaml
-.e2e/gonzbnet/gonzb indexer recover-yenc --once --config test/e2e/gonzbnet/node-a.yaml
-.e2e/gonzbnet/gonzb indexer inspect --once --config test/e2e/gonzbnet/node-a.yaml
-.e2e/gonzbnet/gonzb indexer release generate-nzb --once --config test/e2e/gonzbnet/node-a.yaml
+./scripts/gonzbnet_e2e.sh indexer-federation-smoke
 ```
 
 GoNZBNet has no separate service or microservice. Its scanner, publisher,
@@ -171,12 +179,12 @@ validator, health, cache, consumer, and relay capabilities are background
 modules of `gonzb serve`. Local `gonzb gonzbnet` operator commands inspect the
 same database or trigger a one-shot sync; they do not run another daemon.
 
-To test against an existing indexer database, use the GoNZBNet feature build
-(`v0.8.0` plus the GoNZBNet commits), stop the plain `v0.8.0` process, and test
-against a database copy first. Point Node A's `store.pg_dsn` at that copy and
-keep its existing E2E key directory. Starting the feature build applies newer
-database migrations, so do not continue running an older binary against the
-migrated database.
+Database upgrades are tested separately against the disposable
+`gonzbnet_test` database. The migration test installs the v0.8 PostgreSQL
+baseline, inserts sentinel provider/newsgroup data, upgrades through the latest
+embedded migration, and verifies both the data and current protocol-hardening
+schema survive. Operators should still test upgrades against a backup copy and
+must not run an older binary after migrating a production database.
 
 After a public-ready release forms, wait for or trigger ReleaseCard publication
 and pull sync. The automated smoke test covers the following behavior; repeat
@@ -255,7 +263,7 @@ default. Point them at a disposable database, never a development database:
 
 ```sh
 GONZB_TEST_PG_DSN='postgres://gonzb:gonzb@127.0.0.1:55432/gonzbnet_test?sslmode=disable' \
-  go test ./internal/store/pgindex -run Federation -count=1
+  go test ./internal/store/pgindex -run 'Federation|V080BaselineUpgrades' -count=1
 ```
 
 The `gonzbnet_test` database is separate from the four running node databases,
