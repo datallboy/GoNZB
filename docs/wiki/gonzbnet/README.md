@@ -38,7 +38,7 @@ corresponding capabilities.
   federation test and the guarantees it verifies.
 
 The archived
-[implementation specification](../../archive/completed/gonzbnet/GoNZBNet_Codex_Implementation_Spec.md)
+[implementation specification](https://github.com/datallboy/GoNZB/blob/dev/docs/archive/completed/gonzbnet/GoNZBNet_Codex_Implementation_Spec.md)
 is retained as design background. It inspired the module, but this wiki and the
 code describe current behavior when the specification differs.
 
