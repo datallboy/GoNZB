@@ -1,10 +1,7 @@
 package wiring
 
 import (
-	"bufio"
 	"context"
-	"fmt"
-	"net"
 	"testing"
 	"time"
 
@@ -379,49 +376,6 @@ func TestDeriveUsenetIndexerConfigPreservesAllIndexerServers(t *testing.T) {
 	}
 }
 
-func startTestNNTPServer(t *testing.T) string {
-	t.Helper()
-
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen nntp test server: %v", err)
-	}
-	t.Cleanup(func() { _ = ln.Close() })
-
-	go func() {
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			go handleTestNNTPConn(conn)
-		}
-	}()
-
-	return ln.Addr().String()
-}
-
-func handleTestNNTPConn(conn net.Conn) {
-	defer conn.Close()
-	_, _ = fmt.Fprintf(conn, "200 test server ready\r\n")
-	reader := bufio.NewReader(conn)
-	for {
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			return
-		}
-		switch {
-		case line == "DATE\r\n":
-			_, _ = fmt.Fprintf(conn, "111 20260604120000\r\n")
-		case line == "QUIT\r\n":
-			_, _ = fmt.Fprintf(conn, "205 closing connection\r\n")
-			return
-		default:
-			_, _ = fmt.Fprintf(conn, "500 unsupported\r\n")
-		}
-	}
-}
-
 func TestIndexerStageTargetWindow(t *testing.T) {
 	start, end := indexerStageTargetWindow(indexerStageConfig{
 		TargetWindowEnabled: true,
@@ -446,17 +400,4 @@ func TestIndexerStageTargetWindow(t *testing.T) {
 	if start != nil || end != nil {
 		t.Fatalf("expected invalid target window to be disabled, got %v..%v", start, end)
 	}
-}
-
-func splitHostPort(t *testing.T, addr string) (string, int) {
-	t.Helper()
-	host, portText, err := net.SplitHostPort(addr)
-	if err != nil {
-		t.Fatalf("split host port %q: %v", addr, err)
-	}
-	port, err := net.LookupPort("tcp", portText)
-	if err != nil {
-		t.Fatalf("lookup port %q: %v", portText, err)
-	}
-	return host, port
 }
