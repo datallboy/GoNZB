@@ -1,20 +1,26 @@
 # GoNZB Architecture
 
-GoNZB is a modular monolith for Usenet downloading, aggregated search, and local Usenet/NZB indexing.
+GoNZB is a modular monolith for Usenet downloading, aggregated search, local
+Usenet/NZB indexing, and pool-scoped GoNZBNet federation.
 
 This document is the high-level reference for how the main modules fit together, what each module owns, and how the current bootstrap-plus-runtime-settings model works.
 
 ## Core Rules
 
-1. Downloader, aggregator, and usenet indexer are separate ownership domains.
-2. The aggregator must work without PostgreSQL unless the local usenet indexer is explicitly used as a source.
+1. Downloader, aggregator, usenet indexer, and GoNZBNet are separate ownership domains.
+2. The aggregator must work without PostgreSQL unless the local usenet indexer
+   or GoNZBNet projection is explicitly used as a source.
 3. The downloader must not depend on PostgreSQL-backed indexer internals.
 4. The web UI uses API surfaces instead of talking to storage directly.
 5. Route registration, readiness, and runtime behavior are module-aware.
-6. These deployment shapes must keep working:
+6. GoNZBNet may consume indexer-owned release/evidence contracts but must not
+   rewrite indexer source facts or share local user context.
+7. These deployment shapes must keep working:
    - downloader-only
    - aggregator-only
    - usenet-indexer-only
+   - aggregator plus GoNZBNet consumer/relay
+   - usenet-indexer plus GoNZBNet scanner/publisher
    - all-in-one
 
 ## Architecture Shape
@@ -53,6 +59,8 @@ Operational settings are stored in SQLite runtime settings and are edited throug
 - downloader output paths and behavior
 - aggregator sources
 - indexer newsgroups, stages, schedules, and enrichment settings
+- GoNZBNet peers, pools, roles, transport, publication, validation, coverage,
+  cache, and binary-evidence policy
 - maintenance and retention settings
 - user, role, and user-token auth state
 
@@ -120,6 +128,7 @@ Current source types:
 - external Newznab sources
 - local blob-backed releases
 - the local usenet indexer when `aggregator.sources.usenet_indexer.enabled` is enabled
+- the local GoNZBNet projection when `aggregator.sources.gonzbnet.enabled` is enabled
 
 Storage:
 
@@ -164,6 +173,42 @@ Reference:
 Boundary rule:
 
 - PostgreSQL-backed catalog ownership stays inside the usenet indexer module
+
+### GoNZBNet
+
+Primary packages:
+
+- `internal/gonzbnet/*`
+- `internal/runtime/wiring/gonzbnet_*`
+- GoNZBNet tables and projections in `internal/store/pgindex`
+
+What it owns:
+
+- persistent Ed25519 node identity and signed protocol events
+- trust pools, admission, invitations, capability grants, and moderation
+- pull, push, WebSocket gossip, relay, and peer exchange
+- release cards, resolution manifests, health and validation statements
+- scanner coverage coordination and binary-evidence exchange
+- local federated catalog projections, reporting, and diagnostics
+
+Storage:
+
+- PostgreSQL event log, authorization state, typed projections, manifests,
+  delivery state, diagnostics, and direct evidence
+- filesystem Ed25519 key material under the configured protected key directory
+
+Boundary rules:
+
+- local users authenticate only to their home node; federation requests use
+  node signatures and pool authorization
+- search and get use the local aggregator adapter instead of live remote search
+- imported binary evidence remains separate from scrape-owned article headers
+  and local binary parts
+
+Reference:
+
+- see the [GoNZBNet Wiki](./wiki/gonzbnet/README.md) for protocol, roles,
+  configuration, deployment, security, operations, and testing
 
 ### API
 
@@ -227,6 +272,7 @@ Current runtime modules:
 - downloader
 - aggregator
 - usenet_indexer
+- gonzbnet
 - arr_notifier
 
 Runtime lifecycle behavior:
@@ -278,6 +324,12 @@ Routes are registered only when the owning module is enabled.
 - `GET /api/v1/indexer/files/:id`
 - `GET /api/v1/admin/indexer/*`
 
+### GoNZBNet-Owned Routes
+
+- `GET /.well-known/gonzbnet`
+- `/gonzbnet/v1/*` for node-authenticated federation protocol traffic
+- `/api/v1/admin/gonzbnet/*` for local administration and reporting
+
 ### Shared Control-Plane And Auth Routes
 
 - `GET /api/v1/admin/settings`
@@ -305,6 +357,8 @@ Examples:
 - downloader checks queue manager, SQLite store, parser, and NNTP runtime
 - aggregator checks that it has a runtime, a payload store, and at least one enabled source
 - usenet indexer checks PostgreSQL availability and settings store health
+- GoNZBNet checks PostgreSQL, identity keys, advertised transport, and enabled
+  capability prerequisites
 
 This is why an enabled module can start but still report a not-ready state until its runtime settings are configured.
 
@@ -327,6 +381,10 @@ Common commands:
 - `gonzb indexer inspect ...`
 - `gonzb indexer enrich ...`
 - `gonzb indexer maintenance`
+- `gonzb gonzbnet status`
+- `gonzb gonzbnet pools`
+- `gonzb gonzbnet peers`
+- `gonzb gonzbnet sync <pull|push>`
 
 CLI rule:
 
@@ -354,6 +412,8 @@ Used for:
 Used for:
 
 - usenet indexer catalog and pipeline state
+- GoNZBNet event, pool, projection, manifest, delivery, reporting, and evidence
+  state
 
 ## Extension Guidelines
 

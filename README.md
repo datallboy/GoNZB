@@ -7,6 +7,7 @@ It can run as:
 - a downloader
 - an aggregator for external and local sources
 - a Usenet/NZB indexer
+- a GoNZBNet federation node
 - an all-in-one server with API and web UI
 
 The project is intentionally built as a modular monolith. Downloader, aggregator, and indexer live in one process, but they keep clear ownership boundaries so each module can be enabled independently.
@@ -46,6 +47,28 @@ The usenet indexer module handles:
 - PostgreSQL-backed release catalog APIs
 - feeding the aggregator when the local indexer source is enabled
 
+### GoNZBNet
+
+GoNZBNet is GoNZB's optional, pool-scoped federation module. Independently
+operated nodes exchange signed release cards, resolution manifests, validation
+and health statements, scanner coordination, and bounded binary-recovery
+evidence without forwarding users' searches, API keys, grabs, or download
+history.
+
+GoNZBNet roles are capability combinations inside the normal `gonzb serve`
+process—not separate binaries. A node may consume federated releases, publish
+releases formed by its local indexer, validate availability through its NNTP
+provider, coordinate scanning, cache manifests, or relay authorized events.
+For a normal single-operator installation, one all-in-one node is the
+recommended starting point. Additional nodes are useful when they add an
+independent operator, NNTP provider/backbone, host, location, security
+boundary, or workload boundary.
+
+The module is disabled by default and requires PostgreSQL when enabled. Start
+with the [GoNZBNet Wiki](docs/wiki/gonzbnet/README.md), then use the
+[deployment recommendations](docs/wiki/gonzbnet/deployment-topologies.md) and
+[configuration guide](docs/wiki/gonzbnet/configuration-and-deployment.md).
+
 ### API And Web UI
 
 The API module exposes native APIs, compatibility routes, health/readiness probes, and admin/runtime settings endpoints.  
@@ -58,15 +81,22 @@ GoNZB is designed to support these combinations:
 1. downloader-only
 2. aggregator-only
 3. usenet-indexer-only
-4. all-in-one
+4. GoNZBNet consumer/relay with the aggregator
+5. GoNZBNet scanner/publisher with the local indexer
+6. all-in-one
 
 Do not assume one module requires the others.
 
 ## How The Modules Work Together
 
 - The aggregator can search external indexers, the local blob cache, and the local usenet indexer.
+- The aggregator can expose locally projected GoNZBNet releases through the
+  same native and Newznab-compatible search/get surfaces.
 - The downloader can enqueue NZBs directly or queue releases discovered through the aggregator or local indexer.
 - The local usenet indexer can act as a catalog source for the aggregator without collapsing module boundaries.
+- An authorized GoNZBNet pool can publish releases formed by the local indexer
+  and share bounded missing-part evidence before the indexer spends NNTP BODY
+  requests.
 
 ## Storage
 
@@ -75,6 +105,8 @@ GoNZB uses different storage backends depending on which modules are enabled:
 - SQLite for downloader metadata, auth, runtime settings, and optional aggregator cache/search persistence
 - filesystem blob storage for cached NZB payloads
 - PostgreSQL for the usenet indexer catalog and indexing pipeline
+- PostgreSQL for GoNZBNet identities, signed events, pool authorization,
+  projections, manifests, and binary evidence
 
 ## Configuration Model
 
@@ -94,6 +126,8 @@ Operational settings are managed at runtime and stored in SQLite:
 - downloader paths and options
 - aggregator sources
 - indexer newsgroups, stages, schedules, and enrichment settings
+- GoNZBNet roles, peers, pools, synchronization, publication, validation,
+  coverage, cache, evidence exchange, and transport limits
 - maintenance and retention settings
 
 ### Credential storage
