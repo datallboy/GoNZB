@@ -2,13 +2,93 @@ package settings
 
 import (
 	"context"
+	"database/sql"
+	"embed"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/infra/config"
 )
+
+//go:embed migrations_archive/pre_v0_8_0_squash/*.up.sql
+var preV080SettingsMigrationFS embed.FS
+
+func TestPreV080SettingsDatabaseUpgradesWithoutLosingData(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "settings.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open pre-v0.8 settings database: %v", err)
+	}
+	entries, err := preV080SettingsMigrationFS.ReadDir("migrations_archive/pre_v0_8_0_squash")
+	if err != nil {
+		t.Fatalf("read pre-v0.8 settings migrations: %v", err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".up.sql") {
+			continue
+		}
+		migration, err := preV080SettingsMigrationFS.ReadFile("migrations_archive/pre_v0_8_0_squash/" + entry.Name())
+		if err != nil {
+			t.Fatalf("read %s: %v", entry.Name(), err)
+		}
+		if _, err := db.Exec(string(migration)); err != nil {
+			t.Fatalf("apply %s: %v", entry.Name(), err)
+		}
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE module_schema_version (
+			module_name TEXT PRIMARY KEY,
+			version INTEGER NOT NULL,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);
+		INSERT INTO module_schema_version(module_name, version) VALUES ('settings', 8);
+		INSERT INTO auth_users(id, username, password_hash) VALUES ('pre08-user', 'pre08-admin', 'sentinel-hash');
+		INSERT INTO settings_nntp_servers(id, host, port, username, password_ciphertext, tls, max_connections, priority, scope)
+		VALUES ('pre08-provider', 'news.example.test', 563, 'reader', 'sentinel-secret', 1, 12, 1, 'shared');
+	`); err != nil {
+		t.Fatalf("seed pre-v0.8 settings database: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close pre-v0.8 settings database: %v", err)
+	}
+
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("upgrade pre-v0.8 settings database: %v", err)
+	}
+	defer store.Close()
+
+	version, err := store.SchemaVersion(t.Context())
+	if err != nil {
+		t.Fatalf("read upgraded settings version: %v", err)
+	}
+	if version != expectedSchemaVersion {
+		t.Fatalf("upgraded settings version = %d, want %d", version, expectedSchemaVersion)
+	}
+	var username, host string
+	if err := store.db.QueryRowContext(t.Context(), `SELECT username FROM auth_users WHERE id = 'pre08-user'`).Scan(&username); err != nil {
+		t.Fatalf("read preserved pre-v0.8 user: %v", err)
+	}
+	if err := store.db.QueryRowContext(t.Context(), `SELECT host FROM settings_nntp_servers WHERE id = 'pre08-provider'`).Scan(&host); err != nil {
+		t.Fatalf("read preserved pre-v0.8 provider: %v", err)
+	}
+	if username != "pre08-admin" || host != "news.example.test" {
+		t.Fatalf("pre-v0.8 settings were not preserved: username=%q host=%q", username, host)
+	}
+	for _, table := range []string{"settings_download", "settings_arr_integrations"} {
+		var exists bool
+		if err := store.db.QueryRowContext(t.Context(), `
+			SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?)`, table).Scan(&exists); err != nil {
+			t.Fatalf("inspect retired table %s: %v", table, err)
+		}
+		if exists {
+			t.Fatalf("retired table %s survived upgrade", table)
+		}
+	}
+}
 
 func TestNewStoreRestrictsDatabasePermissions(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "settings.db")
