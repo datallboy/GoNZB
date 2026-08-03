@@ -15,13 +15,8 @@ export function getPublicRelease(id: string) {
   return apiRequest<PublicReleaseDetail>(`/api/v1/indexer/releases/${id}`)
 }
 
-export function enqueueReleaseToDownloader(releaseID: string, title: string) {
-  return apiRequest('/api/v1/queue', {
-    method: 'POST',
-    body: {
-      source_kind: 'usenet_index',
-      release_id: releaseID,
-      title,
-    },
-  })
+export function sendReleaseToDownloadClient(releaseID: string) {
+	return apiRequest(`/api/v1/indexer/releases/${encodeURIComponent(releaseID)}/actions/send-to-download-client`, {
+		method: 'POST',
+	})
 }

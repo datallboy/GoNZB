@@ -24,7 +24,6 @@ const managedModules: ModuleDefinition[] = [
   { key: 'usenet_indexer', label: 'Indexer', route: '/admin/indexer/dashboard', permission: 'indexer.runtime.read' },
   { key: 'gonzbnet', label: 'GoNZBNet', route: '/admin/gonzbnet', permission: 'gonzbnet.admin.read' },
   { key: 'aggregator', label: 'Aggregator', route: '/admin/settings?tab=aggregator', permission: 'admin.settings.read' },
-  { key: 'downloader', label: 'Downloader', route: '/admin/settings?tab=downloader', permission: 'admin.settings.read' },
 ]
 
 const runtimeModules: ModuleDefinition[] = [
