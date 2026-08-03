@@ -46,8 +46,8 @@ func BootstrapStores(appCtx *app.Context) error {
 	cfg := appCtx.BootstrapConfig
 	modules := cfg.Modules
 
-	needsJobStore := modules.Downloader.Enabled || (modules.Aggregator.Enabled && cfg.Store.SearchPersistenceEnabled)
-	needsSettingsStore := modules.Downloader.Enabled || modules.Aggregator.Enabled || modules.UsenetIndexer.Enabled || modules.GoNZBNet.Enabled || modules.API.Enabled || modules.WebUI.Enabled
+	needsJobStore := modules.Aggregator.Enabled && cfg.Store.SearchPersistenceEnabled
+	needsSettingsStore := modules.Aggregator.Enabled || modules.UsenetIndexer.Enabled || modules.GoNZBNet.Enabled || modules.API.Enabled || modules.WebUI.Enabled
 
 	closers := make([]io.Closer, 0, 3)
 	closeCreated := func() {
@@ -59,10 +59,9 @@ func BootstrapStores(appCtx *app.Context) error {
 	if needsJobStore {
 		jobStore, err := sqlitejob.NewStore(cfg.Store.SQLitePath, cfg.Store.BlobDir)
 		if err != nil {
-			return fmt.Errorf("failed to initialize sqlite job store: %w", err)
+			return fmt.Errorf("failed to initialize SQLite cache store: %w", err)
 		}
 		appCtx.JobStore = jobStore
-		appCtx.QueueFileStore = jobStore
 		closers = append(closers, jobStore)
 	}
 

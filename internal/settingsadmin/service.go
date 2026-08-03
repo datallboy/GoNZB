@@ -86,7 +86,7 @@ func (s *Service) Update(ctx context.Context, patch *app.RuntimeSettingsPatch) (
 	if err := ValidateRuntimeSettingsMutation(base, current, next); err != nil {
 		return nil, ValidationError{message: err.Error()}
 	}
-	if err := app.ValidateArrIntegrations(next.ArrIntegrations); err != nil {
+	if err := app.ValidateDownloadClients(next.DownloadClients); err != nil {
 		return nil, ValidationError{message: err.Error()}
 	}
 	if err := ValidateRuntimeSettings(base, next); err != nil {
@@ -114,9 +114,7 @@ func preserveRuntimeSecrets(current, next *app.RuntimeSettings) {
 	}
 
 	preserveServerPasswords(current.Servers, next.Servers)
-	preserveServerPasswords(current.DownloaderServers, next.Servers)
 	preserveServerPasswords(current.IndexerServers, next.Servers)
-	preserveServerPasswords(current.DownloaderServers, next.DownloaderServers)
 	preserveServerPasswords(current.IndexerServers, next.IndexerServers)
 
 	indexerKeys := make(map[string]string, len(current.Indexers))
@@ -129,13 +127,13 @@ func preserveRuntimeSecrets(current, next *app.RuntimeSettings) {
 		}
 	}
 
-	arrKeys := make(map[string]string, len(current.ArrIntegrations))
-	for _, integration := range current.ArrIntegrations {
-		arrKeys[integration.ID] = integration.APIKey
+	clientKeys := make(map[string]string, len(current.DownloadClients))
+	for _, client := range current.DownloadClients {
+		clientKeys[client.ID] = client.APIKey
 	}
-	for i := range next.ArrIntegrations {
-		if strings.TrimSpace(next.ArrIntegrations[i].APIKey) == "" {
-			next.ArrIntegrations[i].APIKey = arrKeys[next.ArrIntegrations[i].ID]
+	for i := range next.DownloadClients {
+		if strings.TrimSpace(next.DownloadClients[i].APIKey) == "" {
+			next.DownloadClients[i].APIKey = clientKeys[next.DownloadClients[i].ID]
 		}
 	}
 
@@ -172,7 +170,6 @@ func ValidateRuntimeSettings(base *config.Config, runtime *app.RuntimeSettings) 
 
 	issues = append(issues, validateServers("servers", runtime.Servers)...)
 	issues = append(issues, validateIndexers(runtime.Indexers)...)
-	issues = append(issues, validateDownload(runtime.Download)...)
 	issues = append(issues, validateNNTPPool(runtime.NNTPPool)...)
 	issues = append(issues, validateIndexing(runtime.Indexing)...)
 	issues = append(issues, validateGoNZBNet(runtime.GoNZBNet)...)
@@ -254,14 +251,8 @@ func validateNNTPPool(pool *app.NNTPPoolRuntimeSettings) []string {
 		return nil
 	}
 	issues := make([]string, 0)
-	if pool.IndexerMaxPercent < 1 || pool.IndexerMaxPercent > 100 {
-		issues = append(issues, "nntp_pool.indexer_max_percent must be between 1 and 100")
-	}
-	if pool.DownloaderReservePercent < 1 || pool.DownloaderReservePercent > 100 {
-		issues = append(issues, "nntp_pool.downloader_reserve_percent must be between 1 and 100")
-	}
-	if pool.DemandWindowSeconds < 1 {
-		issues = append(issues, "nntp_pool.demand_window_seconds must be at least 1")
+	if pool.IndexerStageTargetPercent < 1 || pool.IndexerStageTargetPercent > 100 {
+		issues = append(issues, "nntp_pool.indexer_stage_target_percent must be between 1 and 100")
 	}
 	return issues
 }
@@ -311,7 +302,7 @@ func validateServers(field string, servers []app.ServerRuntimeSettings) []string
 		}
 		for j, role := range server.Roles {
 			if !validNNTPProviderRole(role) {
-				issues = append(issues, fmt.Sprintf("%s.roles[%d] must be one of scrape, yenc_recovery, inspection, download", prefix, j))
+				issues = append(issues, fmt.Sprintf("%s.roles[%d] must be one of scrape, yenc_recovery, inspection", prefix, j))
 			}
 		}
 	}
@@ -320,7 +311,7 @@ func validateServers(field string, servers []app.ServerRuntimeSettings) []string
 
 func validNNTPProviderRole(role string) bool {
 	switch strings.TrimSpace(strings.ToLower(role)) {
-	case "scrape", "yenc_recovery", "inspection", "download":
+	case "scrape", "yenc_recovery", "inspection":
 		return true
 	default:
 		return false
@@ -357,20 +348,6 @@ func validateIndexers(indexers []app.IndexerRuntimeSettings) []string {
 				issues = append(issues, fmt.Sprintf("%s.allowed_cidrs contains invalid CIDR %q", prefix, raw))
 			}
 		}
-	}
-	return issues
-}
-
-func validateDownload(download *app.DownloadRuntimeSettings) []string {
-	if download == nil {
-		return nil
-	}
-	issues := make([]string, 0, 2)
-	if strings.TrimSpace(download.OutDir) == "" {
-		issues = append(issues, "download.out_dir is required when downloader runtime settings are present")
-	}
-	if strings.TrimSpace(download.CompletedDir) == "" {
-		issues = append(issues, "download.completed_dir is required when downloader runtime settings are present")
 	}
 	return issues
 }
@@ -652,20 +629,10 @@ func ValidateRuntimeSettingsMutation(base *config.Config, current, next *app.Run
 	if current == nil || next == nil {
 		return nil
 	}
-	if base != nil && base.Modules.Downloader.Enabled &&
-		len(next.Servers) < len(current.Servers) &&
-		downloaderConfigured(current) {
-		return fmt.Errorf("removing NNTP servers while downloader runtime is configured requires a restart")
-	}
 	if base != nil && base.Modules.Aggregator.Enabled &&
 		len(next.Indexers) < len(current.Indexers) &&
 		aggregatorConfigured(current) {
 		return fmt.Errorf("removing external Newznab sources while aggregator runtime is configured requires a restart")
-	}
-	if base != nil && base.Modules.Downloader.Enabled &&
-		len(next.ArrIntegrations) < len(current.ArrIntegrations) &&
-		downloaderConfigured(current) {
-		return fmt.Errorf("removing ARR integrations while downloader runtime is configured requires a restart")
 	}
 	if err := validateIndexerMaintenanceTasks(next); err != nil {
 		return err
@@ -709,7 +676,6 @@ func BuildCapabilities(base *config.Config, runtime *app.RuntimeSettings) *app.C
 	}
 
 	modules := map[string]app.ModuleCapability{
-		"downloader":     moduleCapability(base.Modules.Downloader.Enabled, downloaderConfigured(runtime), nil),
 		"aggregator":     moduleCapability(base.Modules.Aggregator.Enabled, aggregatorConfigured(runtime), aggregatorRequirements(base, runtime)),
 		"usenet_indexer": moduleCapability(base.Modules.UsenetIndexer.Enabled, indexerConfigured(runtime), indexerRequirements(runtime)),
 		"gonzbnet":       moduleCapability(base.Modules.GoNZBNet.Enabled, gonzbnetConfigured(base), gonzbnetRequirements(base)),
@@ -747,11 +713,6 @@ func moduleCapability(enabled, configured bool, requirements []string) app.Modul
 		Reason:       reason,
 		Requirements: requirements,
 	}
-}
-
-func downloaderConfigured(runtime *app.RuntimeSettings) bool {
-	return runtime != nil && len(app.DownloaderNNTPServers(runtime)) > 0 && runtime.Download != nil &&
-		strings.TrimSpace(runtime.Download.OutDir) != ""
 }
 
 func aggregatorConfigured(runtime *app.RuntimeSettings) bool {

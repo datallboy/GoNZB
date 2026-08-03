@@ -863,7 +863,7 @@ func indexerNNTPManager(appCtx *app.Context, runtimeCfg usenetIndexerConfig) (*n
 	}
 	managerCtx := *appCtx
 	managerCtx.Config = &managerConfig
-	manager, err := nntp.NewManagerWithOptions(&managerCtx, managerOptionsFromRuntime(indexerRuntimeSettings(appCtx), nntp.CapacityWaitQueue))
+	manager, err := nntp.NewManagerWithOptions(&managerCtx, nntp.ManagerOptions{CapacityPolicy: nntp.CapacityWaitQueue})
 	if err != nil {
 		return nil, false, fmt.Errorf("scrape manager initialization failed: %w", err)
 	}

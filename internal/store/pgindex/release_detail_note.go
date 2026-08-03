@@ -136,7 +136,7 @@ func buildReleaseReadinessNote(release IndexerReleaseSummary, diag ReleaseDetail
 		return "Payload completeness is unknown. Archive inspection found archive payload files, but no expected archive file count has been established yet."
 	}
 	if !diag.PayloadComplete {
-		return "Payload files are still incomplete. This release should not generate a downloader-facing NZB yet."
+		return "Payload files are still incomplete. This release should not generate a client-facing NZB yet."
 	}
 	if diag.ExpectedFileCountComplete {
 		return ""

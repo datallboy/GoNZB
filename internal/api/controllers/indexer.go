@@ -216,6 +216,17 @@ func (ctrl *IndexerController) GetRelease(c *echo.Context) error {
 	return c.JSON(http.StatusOK, release)
 }
 
+func (ctrl *IndexerController) SendReleaseToDownloadClient(c *echo.Context) error {
+	if ctrl == nil || ctrl.Service == nil {
+		return jsonError(c, http.StatusServiceUnavailable, "indexer api is unavailable")
+	}
+	result, err := ctrl.Service.SendReleaseToDownloadClient(c.Request().Context(), pathParamTrimmed(c, "id"))
+	if err != nil {
+		return jsonError(c, http.StatusBadGateway, err.Error())
+	}
+	return c.JSON(http.StatusAccepted, result)
+}
+
 func (ctrl *IndexerController) GetBinary(c *echo.Context) error {
 	if ctrl == nil || ctrl.Service == nil {
 		return jsonError(c, http.StatusServiceUnavailable, "indexer api is unavailable")

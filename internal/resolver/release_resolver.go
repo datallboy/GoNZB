@@ -15,18 +15,15 @@ type sourceResolver interface {
 }
 
 type DefaultReleaseResolver struct {
-	manual      sourceResolver
 	aggregator  sourceResolver
 	usenetIndex sourceResolver
 }
 
 func NewDefaultReleaseResolver(
-	manual sourceResolver,
 	aggregator sourceResolver,
 	usenetIndex sourceResolver,
 ) *DefaultReleaseResolver {
 	return &DefaultReleaseResolver{
-		manual:      manual,
 		aggregator:  aggregator,
 		usenetIndex: usenetIndex,
 	}
@@ -52,11 +49,6 @@ func (r *DefaultReleaseResolver) GetNZB(ctx context.Context, sourceKind string, 
 
 func (r *DefaultReleaseResolver) pickResolver(sourceKind string) (sourceResolver, error) {
 	switch strings.TrimSpace(strings.ToLower(sourceKind)) {
-	case "manual":
-		if r.manual == nil {
-			return nil, fmt.Errorf("manual resolver is not configured")
-		}
-		return r.manual, nil
 	case "aggregator":
 		if r.aggregator == nil {
 			return nil, fmt.Errorf("aggregator resolver is not configured")
