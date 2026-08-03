@@ -38,4 +38,7 @@ testdata
 # Web dist
 internal/webui/dist
 
+# Generated documentation site
+site/
+
 .codex

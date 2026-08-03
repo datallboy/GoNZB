@@ -1,0 +1,83 @@
+site_name: GoNZB Documentation
+site_description: Setup, operation, and development documentation for GoNZB
+site_url: https://datallboy.github.io/GoNZB/
+repo_url: https://github.com/datallboy/GoNZB
+repo_name: datallboy/GoNZB
+edit_uri: edit/dev/docs/
+
+docs_dir: docs
+site_dir: site
+strict: true
+exclude_docs: |
+  archive/
+
+theme:
+  name: material
+  features:
+    - navigation.instant
+    - navigation.sections
+    - navigation.top
+    - search.highlight
+    - content.code.copy
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: blue grey
+      accent: blue
+      toggle:
+        icon: material/brightness-7
+        name: Use dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: blue grey
+      accent: light blue
+      toggle:
+        icon: material/brightness-4
+        name: Use light mode
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - Overview: getting-started/index.md
+      - Install with Docker: getting-started/docker.md
+      - First-run setup: getting-started/first-run.md
+      - Deployment recommendations: getting-started/deployment.md
+      - Upgrades and backups: getting-started/upgrades.md
+      - Troubleshooting: getting-started/troubleshooting.md
+  - Integrations: wiki/integrations/README.md
+  - Indexer:
+      - Overview: wiki/indexer/README.md
+      - Stage flow: wiki/indexer/stage-flow.md
+      - Stage ownership: wiki/indexer/stage-ownership.md
+      - Binary grouping: wiki/indexer/binary-grouping-evidence.md
+      - yEnc recovery: wiki/indexer/yenc-recovery-queueing.md
+      - Release formation: wiki/indexer/release-formation.md
+      - Schema and partitions: wiki/indexer/schema-and-partitions.md
+      - Retention: wiki/indexer/retention.md
+      - Operations: wiki/indexer/operations-playbook.md
+  - GoNZBNet:
+      - Overview: wiki/gonzbnet/README.md
+      - Private pool quickstart: wiki/gonzbnet/private-pool-quickstart.md
+      - Networking and exposure: wiki/gonzbnet/networking-and-exposure.md
+      - Deployment topologies: wiki/gonzbnet/deployment-topologies.md
+      - Configuration: wiki/gonzbnet/configuration-and-deployment.md
+      - Runtime settings: wiki/gonzbnet/runtime-settings-reference.md
+      - Administration: wiki/gonzbnet/administration-and-operations.md
+      - Protocol and security: wiki/gonzbnet/federation-protocol-and-security.md
+      - Architecture and data flow: wiki/gonzbnet/architecture-and-data-flow.md
+      - End-to-end testing: wiki/gonzbnet/e2e-testing.md
+      - Development reference: wiki/gonzbnet/development-reference.md
+  - Architecture: ARCHITECTURE.md
