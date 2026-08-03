@@ -172,6 +172,13 @@ Production peers should use HTTPS. Plain HTTP is rejected except loopback or
 when `allow_insecure_peer_http` is explicitly enabled. The checked-in E2E
 fixture enables it only for loopback processes.
 
+GoNZBNet does not perform NAT traversal or connection hole punching. The
+advertised URL may be private, but it must be reachable by the relevant pool
+members. A WireGuard, Tailscale, or Headscale network is the recommended
+default for a private pool. The relay forwards authorized signed events and
+admission material; it is not a reverse tunnel for manifest or binary-evidence
+requests. See [Networking And Exposure](./networking-and-exposure.md).
+
 The GoNZBNet **Overview** includes a production-readiness panel for the
 effective configuration. Resolve failed transport and identity-key checks
 before internet exposure. Warnings identify deliberate operator choices—such
@@ -203,7 +210,9 @@ not bypass pool membership or capability grants.
 
 `manifest_cache_max_bytes` and `manifest_cache_ttl_days` bound verified cache
 storage. `manifest_cache_serve_to_trusted_pools` controls whether eligible pool
-members can use cached manifests. Event, manifest, batch, request-rate,
+members can fetch a manifest this node cached from another author. It does not
+prevent a publisher from serving a manifest it authored locally. Event,
+manifest, batch, request-rate,
 timestamp, nonce, and fetch-timeout settings bound protocol work before it
 reaches expensive storage or projection paths.
 
