@@ -80,7 +80,7 @@ downloader/ARR settings, and creates external SAB-compatible client settings.
 Do not point v0.9 at the old PostgreSQL catalog and manually change its schema
 version. The schemas are not equivalent.
 
-## v0.9 downloader change
+## v0.9 embedded downloader removal
 
 GoNZB no longer contains a downloader, download queue, repair/extraction
 pipeline, SAB server API, or direct ARR notifier. Retired queue and downloader

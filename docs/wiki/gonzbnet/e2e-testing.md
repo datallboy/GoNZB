@@ -110,7 +110,8 @@ membership.
    prior accepted events remain append-only.
 
 This validates node authentication and pool membership without sharing local
-users, sessions, API keys, searches, grabs, or download history.
+users, sessions, API keys, searches, grabs, or external download-client
+activity.
 
 ## Multi-Administrator Quorum Test
 

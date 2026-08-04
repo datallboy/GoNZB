@@ -190,8 +190,8 @@ delivery, diagnostics, and tests; documenting a type alone does not enable it.
 Federation may contain release metadata, article Message-IDs, signed node and
 pool governance, capability, provider-scope hashes, and operational evidence.
 It must not contain local usernames, session cookies, API keys, searches,
-result selections, grabs, download history, Usenet credentials, or raw provider
-account identity.
+result selections, grabs, external download-client activity, Usenet
+credentials, or raw provider account identity.
 
 Search always uses the home node's local federated projection. Live remote
 querying and user-context forwarding are rejected by configuration validation.

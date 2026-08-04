@@ -3,8 +3,8 @@
 GoNZBNet is GoNZB's pool-scoped federation module. It lets independently
 operated nodes exchange signed release metadata, resolution manifests,
 validation results, health statements, scanner coordination, and bounded
-binary-recovery evidence without
-sharing local accounts, API keys, searches, grabs, or download history.
+binary-recovery evidence without sharing local accounts, API keys, searches,
+grabs, or external download-client activity.
 
 The module runs inside the `gonzb` modular monolith. There is no separate
 GoNZBNet service. A deployment can participate as a consumer, scanner,
@@ -105,7 +105,8 @@ GoNZBNet module is enabled.
 - Protocol v1 accepts exactly one pool per protected event.
 - Unknown pools fail closed.
 - Local sessions and API keys authenticate only to the home node.
-- Search, grab, and download history remain local.
+- Search and grab activity remain local; external download-client activity is
+  never federated.
 - Live federated search and user-context forwarding are disabled by validation.
 - HTTPS is required for non-loopback peers unless insecure HTTP is explicitly
   enabled for a private local test.
