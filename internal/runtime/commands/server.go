@@ -2,14 +2,15 @@ package commands
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/datallboy/gonzb/internal/api"
-	"github.com/datallboy/gonzb/internal/engine"
 	"github.com/datallboy/gonzb/internal/runtime/wiring"
 	"github.com/datallboy/gonzb/internal/telemetry"
 	"github.com/labstack/echo/v5"
@@ -27,9 +28,6 @@ func (r *Runner) ExecuteServerWithOptions(opts ServerOptions) {
 		appCtx.Logger.Fatal("%v", err)
 	}
 
-	if appCtx.Config.Modules.Downloader.Enabled {
-		appCtx.Queue = engine.NewQueueManager(appCtx, true)
-	}
 	wiring.BindApplicationModules(appCtx)
 
 	// Server mode must stay reachable for the control plane even when
@@ -68,14 +66,10 @@ func (r *Runner) ExecuteServerWithOptions(opts ServerOptions) {
 		appCtx.Logger.Info("server mode will not start the built-in usenet indexer supervisor")
 	}
 
-	if err := wiring.StartServerBackgroundLoops(ctx, appCtx, startOpts); err != nil {
-		appCtx.Logger.Fatal("%v", err)
-	}
-
 	api.RegisterRoutes(e, appCtx)
 
 	srv := &http.Server{
-		Addr:              ":" + appCtx.Config.Port,
+		Addr:              httpListenAddress(appCtx.Config.BindAddress, appCtx.Config.Port),
 		Handler:           e,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
@@ -85,9 +79,8 @@ func (r *Runner) ExecuteServerWithOptions(opts ServerOptions) {
 	}
 
 	appCtx.Logger.Info(
-		"starting server addr=%s downloader=%t aggregator=%t usenet_indexer=%t api=%t web_ui=%t indexer_supervisor=%t",
+		"starting server addr=%s aggregator=%t usenet_indexer=%t api=%t web_ui=%t indexer_supervisor=%t",
 		srv.Addr,
-		appCtx.Config.Modules.Downloader.Enabled,
 		appCtx.Config.Modules.Aggregator.Enabled,
 		appCtx.Config.Modules.UsenetIndexer.Enabled,
 		appCtx.Config.Modules.API.Enabled,
@@ -99,25 +92,46 @@ func (r *Runner) ExecuteServerWithOptions(opts ServerOptions) {
 	go func() {
 		errCh <- srv.ListenAndServe()
 	}()
+	runtimeErrCh := make(chan error, 1)
+	go func() {
+		if err := wiring.StartServerBackgroundLoops(ctx, appCtx, startOpts); err != nil {
+			runtimeErrCh <- err
+		}
+	}()
 
+	shutdownServer := false
 	select {
 	case <-ctx.Done():
 		appCtx.Logger.Info("shutdown signal received, stopping HTTP server")
+		shutdownServer = true
 
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-
-		if err := srv.Shutdown(shutdownCtx); err != nil {
-			appCtx.Logger.Error("graceful shutdown failed: %v", err)
-		}
+	case err := <-runtimeErrCh:
+		appCtx.Logger.Error("server background runtime failed to start: %v", err)
+		shutdownServer = true
 
 	case err := <-errCh:
 		if err != nil && err != http.ErrServerClosed {
 			appCtx.Logger.Error("server exited with error: %v", err)
 		}
 	}
+	stop()
+	if shutdownServer {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			appCtx.Logger.Error("graceful shutdown failed: %v", err)
+		}
+	}
 
 	appCtx.Logger.Info("finalizing application resources")
 	appCtx.Close()
 	appCtx.Logger.Info("server shutdown complete")
+}
+
+func httpListenAddress(bindAddress, port string) string {
+	bindAddress = strings.TrimSpace(bindAddress)
+	if bindAddress == "" {
+		return ":" + port
+	}
+	return net.JoinHostPort(bindAddress, port)
 }

@@ -4,99 +4,16 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/infra/config"
 )
 
 const (
-	moduleNameDownloader    = "downloader"
 	moduleNameAggregator    = "aggregator"
 	moduleNameUsenetIndexer = "usenet_indexer"
-	moduleNameArrNotifier   = "arr_notifier"
 )
-
-type downloaderRuntimeModule struct {
-	appCtx *app.Context
-}
-
-func (m *downloaderRuntimeModule) Name() string { return moduleNameDownloader }
-
-func (m *downloaderRuntimeModule) Enabled() bool {
-	return m.appCtx != nil && m.appCtx.Config != nil && m.appCtx.Config.Modules.Downloader.Enabled
-}
-
-func (m *downloaderRuntimeModule) Build(context.Context) error {
-	if !m.Enabled() {
-		return BuildDownloader(m.appCtx)
-	}
-	return BuildDownloader(m.appCtx)
-}
-
-func (m *downloaderRuntimeModule) Start(ctx context.Context) error {
-	if !m.Enabled() {
-		return nil
-	}
-	if m.appCtx.Queue == nil {
-		return fmt.Errorf("downloader module is enabled but queue manager is not initialized")
-	}
-
-	m.appCtx.Logger.Info("starting downloader queue manager")
-	go m.appCtx.Queue.Start(ctx)
-	return nil
-}
-
-func (m *downloaderRuntimeModule) Reload(ctx context.Context) error {
-	if m.appCtx == nil {
-		return nil
-	}
-	if !m.Enabled() {
-		return BuildDownloader(m.appCtx)
-	}
-	if m.appCtx.Queue != nil {
-		m.appCtx.Queue.ReloadRuntime(m.appCtx)
-	}
-	if err := ReloadDownloaderIfIdle(m.appCtx); err != nil {
-		return err
-	}
-	BindApplicationModules(m.appCtx)
-	return nil
-}
-
-func (m *downloaderRuntimeModule) Close() error {
-	if m.appCtx == nil {
-		return nil
-	}
-	if m.appCtx.Queue != nil {
-		m.appCtx.Queue.Stop()
-	}
-	if m.appCtx.NNTP != nil {
-		return m.appCtx.NNTP.Close()
-	}
-	return nil
-}
-
-func (m *downloaderRuntimeModule) ReadinessChecks(ctx context.Context) []app.RuntimeCheck {
-	if !m.Enabled() {
-		return nil
-	}
-
-	checks := []app.RuntimeCheck{
-		runtimeBoolCheck("job_store", m.appCtx.JobStore != nil, "downloader job store is required"),
-		runtimeBoolCheck("queue_file_store", m.appCtx.QueueFileStore != nil, "queue file store is required"),
-		runtimeBoolCheck("queue_manager", m.appCtx.Queue != nil, "queue manager is required"),
-		runtimeBoolCheck("downloader_runtime", m.appCtx.Downloader != nil, "downloader runtime is required"),
-		runtimeBoolCheck("nntp_manager", m.appCtx.NNTP != nil, "NNTP manager is required"),
-		runtimeBoolCheck("nzb_parser", m.appCtx.NZBParser != nil, "NZB parser is required"),
-	}
-
-	if m.appCtx.JobStore != nil {
-		checks = append(checks, runtimeErrorCheck("job_store_ping", m.appCtx.JobStore.Ping(ctx)))
-		checks = append(checks, runtimeErrorCheck("job_store_schema", m.appCtx.JobStore.ValidateSchema(ctx)))
-	}
-
-	return checks
-}
 
 type aggregatorRuntimeModule struct {
 	appCtx *app.Context
@@ -146,20 +63,21 @@ func aggregatorHasSource(cfg *config.Config) bool {
 	}
 	return len(cfg.Indexers) > 0 ||
 		cfg.Aggregator.Sources.LocalBlob.Enabled ||
-		cfg.Aggregator.Sources.UsenetIndexer.Enabled
+		cfg.Aggregator.Sources.UsenetIndexer.Enabled ||
+		cfg.Aggregator.Sources.GoNZBNet.Enabled
 }
 
 type usenetIndexerRuntimeModule struct {
-	appCtx                    *app.Context
-	current                   io.Closer
-	telemetry                 io.Closer
-	runParent                 context.Context
-	runCancel                 context.CancelFunc
-	running                   bool
-	stageOwner                string
-	nntpStats                 func() app.NNTPRuntimeStats
-	partitionCreateDaysBefore int
-	partitionCreateDaysAhead  int
+	appCtx                   *app.Context
+	current                  io.Closer
+	telemetry                io.Closer
+	runParent                context.Context
+	runCancel                context.CancelFunc
+	running                  bool
+	stageOwner               string
+	nntpStats                func() app.NNTPRuntimeStats
+	partitionCreateDaysAhead int
+	partitionDDLLockTimeout  time.Duration
 }
 
 func (m *usenetIndexerRuntimeModule) Name() string { return moduleNameUsenetIndexer }
@@ -256,8 +174,8 @@ func (m *usenetIndexerRuntimeModule) rebuild(parent context.Context) error {
 	m.appCtx.UsenetIndexer = rt.service
 	m.current = rt.scrapeProvider
 	m.nntpStats = rt.nntpStats
-	m.partitionCreateDaysBefore = rt.partitionCreateDaysBefore
 	m.partitionCreateDaysAhead = rt.partitionCreateDaysAhead
+	m.partitionDDLLockTimeout = rt.partitionDDLLockTimeout
 	if wasRunning {
 		m.stopRuntime()
 		m.running = true
@@ -294,8 +212,9 @@ func (m *usenetIndexerRuntimeModule) startCurrentRuntime() {
 
 	service := m.appCtx.UsenetIndexer
 	if m.appCtx.PGIndexStore != nil {
-		m.appCtx.Logger.Info("pre-provisioning usenet indexer native partitions days_before=%d days_ahead=%d", m.partitionCreateDaysBefore, m.partitionCreateDaysAhead)
-		if err := m.appCtx.PGIndexStore.ProvisionSourceWorkPartitions(childCtx, m.partitionCreateDaysBefore, m.partitionCreateDaysAhead); err != nil {
+		m.appCtx.PGIndexStore.ConfigurePartitionProvisioning(m.partitionDDLLockTimeout)
+		m.appCtx.Logger.Info("pre-provisioning scrape partitions current_day=true days_ahead=%d ddl_lock_timeout=%s", m.partitionCreateDaysAhead, m.partitionDDLLockTimeout)
+		if err := m.appCtx.PGIndexStore.ProvisionSourceWorkPartitions(childCtx, 0, m.partitionCreateDaysAhead); err != nil {
 			childCancel()
 			m.runCancel = nil
 			m.running = false
@@ -304,11 +223,32 @@ func (m *usenetIndexerRuntimeModule) startCurrentRuntime() {
 		}
 	}
 	m.appCtx.Logger.Info("starting usenet indexer supervisor")
+	go m.runPartitionProvisioner(childCtx, m.partitionCreateDaysAhead)
 	go func() {
 		if err := service.Start(childCtx, 0); err != nil && childCtx.Err() == nil {
 			m.appCtx.Logger.Error("usenet indexer supervisor failed: %v", err)
 		}
 	}()
+}
+
+func (m *usenetIndexerRuntimeModule) runPartitionProvisioner(ctx context.Context, daysAhead int) {
+	for {
+		now := time.Now().UTC()
+		nextUTCRefresh := now.Truncate(24 * time.Hour).Add(24*time.Hour + time.Minute)
+		timer := time.NewTimer(time.Until(nextUTCRefresh))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+			if m.appCtx == nil || m.appCtx.PGIndexStore == nil {
+				continue
+			}
+			if err := m.appCtx.PGIndexStore.ProvisionSourceWorkPartitions(ctx, 0, daysAhead); err != nil && ctx.Err() == nil {
+				m.appCtx.Logger.Error("usenet indexer UTC rollover partition provisioning failed: %v", err)
+			}
+		}
+	}
 }
 
 func (m *usenetIndexerRuntimeModule) stopRuntime() {
@@ -323,38 +263,15 @@ func (m *usenetIndexerRuntimeModule) stopRuntime() {
 	m.running = false
 }
 
-type arrNotifierRuntimeModule struct {
-	appCtx *app.Context
-}
-
-func (m *arrNotifierRuntimeModule) Name() string { return moduleNameArrNotifier }
-
-func (m *arrNotifierRuntimeModule) Enabled() bool {
-	return m.appCtx != nil && m.appCtx.SettingsStore != nil
-}
-
-func (m *arrNotifierRuntimeModule) Build(ctx context.Context) error {
-	return BuildArrNotifier(ctx, m.appCtx)
-}
-func (m *arrNotifierRuntimeModule) Start(context.Context) error { return nil }
-func (m *arrNotifierRuntimeModule) Reload(ctx context.Context) error {
-	return BuildArrNotifier(ctx, m.appCtx)
-}
-func (m *arrNotifierRuntimeModule) Close() error { return nil }
-func (m *arrNotifierRuntimeModule) ReadinessChecks(context.Context) []app.RuntimeCheck {
-	return nil
-}
-
 func registerRuntimeModules(appCtx *app.Context) {
 	if appCtx == nil {
 		return
 	}
 
 	appCtx.RegisterRuntimeModules(
-		&downloaderRuntimeModule{appCtx: appCtx},
 		&aggregatorRuntimeModule{appCtx: appCtx},
 		&usenetIndexerRuntimeModule{appCtx: appCtx},
-		&arrNotifierRuntimeModule{appCtx: appCtx},
+		&gonzbnetRuntimeModule{appCtx: appCtx},
 	)
 }
 

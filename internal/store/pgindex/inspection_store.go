@@ -25,7 +25,6 @@ var (
 	par2CoverageRARFamilyRE    = regexp.MustCompile(`(?i)\.part\d+\.rar$|\.r\d{2,3}$`)
 	par2CoverageSeparatorRE    = regexp.MustCompile(`[\[\]\(\)\{\}\-_=+,;:]+`)
 	par2CoverageMultiSpaceRE   = regexp.MustCompile(`\s+`)
-	par2CoverageNonKeyCharsRE  = regexp.MustCompile(`[^\pL\pN]+`)
 )
 
 func execInspectionReplaceBatch(ctx context.Context, tx *sql.Tx, insertPrefix string, rows [][]any) error {
@@ -119,14 +118,6 @@ func (s *Store) existingReleaseIDsForInspectionRows(ctx context.Context, q inspe
 		return nil, err
 	}
 	return existing, nil
-}
-
-func binaryStillExistsInTx(ctx context.Context, tx *sql.Tx, binaryID int64) (bool, error) {
-	var exists bool
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM binary_core WHERE binary_id = $1)`, binaryID).Scan(&exists); err != nil {
-		return false, fmt.Errorf("check binary existence %d: %w", binaryID, err)
-	}
-	return exists, nil
 }
 
 func binarySourcePostedAtInTx(ctx context.Context, tx *sql.Tx, binaryID int64) (time.Time, bool, error) {
@@ -1256,12 +1247,20 @@ func (s *Store) listBinaryInspectionCandidates(ctx context.Context, q binaryInsp
 			return candidates, nil
 		}
 		if db, ok := q.(*sql.DB); ok && db == s.db {
+			now := time.Now()
+			if stageName == "inspect_discovery" && s.shouldBackoffInspectDiscoverySeed(now) {
+				return candidates, nil
+			}
 			refreshLimit := limit * 10
 			if refreshLimit < 1000 {
 				refreshLimit = 1000
 			}
-			if _, err := s.RefreshInspectionReadyQueue(ctx, stageName, refreshLimit); err != nil {
+			result, err := s.RefreshInspectionReadyQueue(ctx, stageName, refreshLimit)
+			if err != nil {
 				return nil, err
+			}
+			if stageName == "inspect_discovery" {
+				s.recordInspectDiscoverySeedResult(now, result.ReadyUpserted)
 			}
 			return s.listInspectionReadyQueueCandidates(ctx, q, stageName, limit)
 		}
@@ -1292,6 +1291,15 @@ func (s *Store) listBinaryInspectionCandidatesRaw(ctx context.Context, q binaryI
 	if stageName == "inspect_archive" {
 		errorRerunPredicate += `
 			OR COALESCE(bi.summary_json->>'probe_error_detail', '') ILIKE '%has no articles%'
+			OR (
+				bi.status = 'completed' AND
+				COALESCE(r.password_state, '') = 'unknown' AND
+				COALESCE(bi.summary_json->>'encrypted', '') = 'false' AND
+				CASE
+					WHEN jsonb_typeof(bi.summary_json->'archive_entries') = 'array' THEN jsonb_array_length(bi.summary_json->'archive_entries')
+					ELSE 0
+				END > 0
+			)
 			OR (
 				COALESCE(bi.summary_json->>'probe_strategy', '') = 'metadata_only' AND
 				CASE
@@ -1324,7 +1332,7 @@ func (s *Store) listBinaryInspectionCandidatesRaw(ctx context.Context, q binaryI
 		  )`
 	rerunPredicate := `
 			bi.id IS NULL OR
-			bi.status = 'failed' OR
+			(bi.status = 'failed' AND bi.updated_at <= NOW() - INTERVAL '5 minutes') OR
 			(
 				bi.status = 'running' AND
 				(
@@ -1418,6 +1426,7 @@ func (s *Store) listBinaryInspectionCandidatesRaw(ctx context.Context, q binaryI
 					) AS completed_zero_targets,
 					(
 						` + rerunPredicate + `
+						OR bi.release_id IS DISTINCT FROM b.release_id
 					) AS needs_rerun
 				FROM binary_state b
 				LEFT JOIN posters p ON p.id = b.poster_id
@@ -1520,83 +1529,6 @@ func (s *Store) listBinaryInspectionCandidatesRaw(ctx context.Context, q binaryI
 		return scanBinaryInspectionCandidates(ctx, q, query, stageName, limit)
 	}
 
-	if stageName == "inspect_discovery" {
-		query := `
-			SELECT
-				$1 AS stage_name,
-				bic.binary_id AS binary_id,
-				'' AS release_id,
-				bc.provider_id,
-				'' AS title,
-				'' AS source_title,
-				'' AS deobfuscated_title,
-				COALESCE(NULLIF(bic.release_family_key, ''), NULLIF(bic.base_stem, ''), '') AS group_name,
-				COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '') AS file_name,
-				bic.binary_name,
-				bic.release_name,
-				COALESCE(p.poster_name, '') AS poster,
-				bos.posted_at,
-				bos.total_bytes,
-				bos.total_parts,
-				bic.match_confidence,
-				GREATEST(
-					bc.updated_at,
-					bic.updated_at,
-					bos.updated_at,
-					COALESCE(brc.updated_at, TIMESTAMPTZ 'epoch')
-				) AS source_updated_at,
-				COALESCE(bi.status, '') AS current_status,
-				bi.updated_at AS current_updated_at,
-				COALESCE(bi.summary_json, '{}'::jsonb) AS current_summary_json,
-				'{}'::jsonb AS archive_summary_json
-			FROM binary_identity_current bic
-			JOIN binary_core bc
-			  ON bc.source_posted_at = bic.source_posted_at
-			 AND bc.binary_id = bic.binary_id
-			JOIN binary_observation_stats bos
-			  ON bos.source_posted_at = bic.source_posted_at
-			 AND bos.binary_id = bic.binary_id
-			LEFT JOIN binary_recovery_current brc
-			  ON brc.source_posted_at = bic.source_posted_at
-			 AND brc.binary_id = bic.binary_id
-			LEFT JOIN posters p ON p.id = bc.poster_id
-			LEFT JOIN binary_inspections bi
-			  ON bi.source_posted_at = bic.source_posted_at
-			 AND bi.stage_name = $1
-			 AND bi.binary_id = bic.binary_id
-			WHERE COALESCE(brc.recovered_extension, '') = ''
-			  AND (bic.is_main_payload = TRUE OR bic.is_auxiliary = FALSE)
-			  AND (
-				LOWER(COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '')) LIKE '%.bin' OR
-				COALESCE(NULLIF(bic.file_name, ''), NULLIF(bic.binary_name, ''), '') !~ '\.[A-Za-z0-9]{1,8}$'
-			  )
-			  AND (
-				bi.id IS NULL OR
-				bi.status = 'failed' OR
-				(
-					bi.status = 'running' AND
-					(
-						bi.inspection_claimed_until IS NULL OR
-						bi.inspection_claimed_until < NOW()
-					)
-				) OR
-				GREATEST(
-					bc.updated_at,
-					bic.updated_at,
-					bos.updated_at,
-					COALESCE(brc.updated_at, TIMESTAMPTZ 'epoch')
-				) > bi.updated_at OR
-				` + errorRerunPredicate + `
-			  )
-			  AND (
-				bi.inspection_claimed_until IS NULL OR
-				bi.inspection_claimed_until < NOW()
-			  )
-			ORDER BY bic.updated_at DESC, bic.binary_id DESC
-			LIMIT $2`
-		return scanBinaryInspectionCandidates(ctx, q, query, stageName, limit)
-	}
-
 	query := `
 		WITH ` + binaryInspectionCandidateStateCTE + `
 		SELECT
@@ -1634,7 +1566,8 @@ func (s *Store) listBinaryInspectionCandidatesRaw(ctx context.Context, q binaryI
 		 AND abi.binary_id = b.id
 		WHERE ` + filter + `
 		  AND (
-			` + rerunPredicate + `
+			` + rerunPredicate + ` OR
+			bi.release_id IS DISTINCT FROM r.release_id
 		  )
 		  AND (
 			bi.inspection_claimed_until IS NULL OR
@@ -1716,6 +1649,7 @@ func (s *Store) listBinaryInspectionCandidatesRaw(ctx context.Context, q binaryI
 						)
 					) OR
 					b.updated_at > bi.updated_at OR
+					bi.release_id IS DISTINCT FROM r.release_id OR
 					` + errorRerunPredicate + `
 				  )
 				  AND (
@@ -1895,14 +1829,36 @@ func (s *Store) ClaimBinaryInspectionCandidates(ctx context.Context, req BinaryI
 	if _, err := inspectCandidateFilter(req.StageName, req.Options.RequireExpectedFileCount); err != nil {
 		return nil, err
 	}
+	var (
+		preview []BinaryInspectionCandidate
+		err     error
+	)
 	if isQueuedInspectionStage(req.StageName) {
-		refreshLimit := req.Limit * 10
-		if refreshLimit < 1000 {
-			refreshLimit = 1000
-		}
-		if _, err := s.RefreshInspectionReadyQueue(ctx, req.StageName, refreshLimit); err != nil {
+		preview, err = s.listInspectionReadyQueueCandidates(ctx, s.db, req.StageName, req.Limit)
+		if err != nil {
 			return nil, err
 		}
+		if len(preview) == 0 {
+			refreshLimit := req.Limit * 10
+			if refreshLimit < 1000 {
+				refreshLimit = 1000
+			}
+			if _, err := s.RefreshInspectionReadyQueue(ctx, req.StageName, refreshLimit); err != nil {
+				return nil, err
+			}
+			preview, err = s.listInspectionReadyQueueCandidates(ctx, s.db, req.StageName, req.Limit)
+			if err != nil {
+				return nil, err
+			}
+		}
+	} else {
+		preview, err = s.listBinaryInspectionCandidatesRaw(ctx, s.db, req.StageName, req.Limit, req.Options)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if err := s.ensurePartitionBundleForBinaryIDs(ctx, partitionBundleInspect, inspectionCandidateBinaryIDs(preview)); err != nil {
+		return nil, err
 	}
 
 	var candidates []BinaryInspectionCandidate
@@ -2012,6 +1968,7 @@ func (s *Store) ClaimBinaryInspectionCandidates(ctx context.Context, req BinaryI
 			NOW() + ($3::DOUBLE PRECISION * INTERVAL '1 second'),
 			NOW()
 			FROM locked_binaries req
+			WHERE to_regclass('public.binary_inspections_' || to_char(req.source_posted_at AT TIME ZONE 'UTC', 'YYYYMMDD')) IS NOT NULL
 			ON CONFLICT (source_posted_at, stage_name, binary_id) DO UPDATE
 			SET release_id = COALESCE(EXCLUDED.release_id, binary_inspections.release_id),
 		    status = 'running',
@@ -2051,6 +2008,9 @@ func (s *Store) StartBinaryInspection(ctx context.Context, stageName string, bin
 	}
 	if binaryID <= 0 {
 		return fmt.Errorf("binary id is required")
+	}
+	if err := s.ensurePartitionBundleForBinaryIDs(ctx, partitionBundleInspect, []int64{binaryID}); err != nil {
+		return err
 	}
 
 	var sourceUpdated any
@@ -2491,7 +2451,7 @@ func (s *Store) applyDerivedInspectionTitleUpdate(ctx context.Context, releaseID
 		    updated_at = NOW()
 		WHERE release_id = $1`,
 		releaseID,
-		strings.TrimSpace(best.DisplayTitle),
+		strings.TrimSpace(best.ReleaseTitle),
 		strings.TrimSpace(best.ReleaseTitle),
 		strings.TrimSpace(best.Source),
 		best.Confidence,
@@ -2605,6 +2565,9 @@ func (s *Store) ReplaceBinaryInspectionArtifacts(ctx context.Context, stageName 
 	if stageName == "" {
 		return fmt.Errorf("stage name is required")
 	}
+	if err := s.ensurePartitionBundleForBinaryIDs(ctx, partitionBundleInspect, []int64{binaryID}); err != nil {
+		return err
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -2625,6 +2588,9 @@ func (s *Store) ReplaceBinaryInspectionArtifacts(ctx context.Context, stageName 
 func (s *Store) ReplaceBinaryArchiveEntries(ctx context.Context, binaryID int64, rows []BinaryArchiveEntryRecord) error {
 	if binaryID <= 0 {
 		return fmt.Errorf("binary id is required")
+	}
+	if err := s.ensurePartitionBundleForBinaryIDs(ctx, partitionBundleInspect, []int64{binaryID}); err != nil {
+		return err
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -2705,6 +2671,9 @@ func (s *Store) ReplaceBinaryArchiveEntries(ctx context.Context, binaryID int64,
 func (s *Store) ReplaceBinaryMediaStreams(ctx context.Context, binaryID int64, rows []BinaryMediaStreamRecord) error {
 	if binaryID <= 0 {
 		return fmt.Errorf("binary id is required")
+	}
+	if err := s.ensurePartitionBundleForBinaryIDs(ctx, partitionBundleInspect, []int64{binaryID}); err != nil {
+		return err
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -2800,6 +2769,9 @@ func (s *Store) ReplaceBinaryTextEvidence(ctx context.Context, stageName string,
 	if stageName == "" {
 		return fmt.Errorf("stage name is required")
 	}
+	if err := s.ensurePartitionBundleForBinaryIDs(ctx, partitionBundleInspect, []int64{binaryID}); err != nil {
+		return err
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -2877,6 +2849,9 @@ func (s *Store) ReplaceBinaryPAR2Sets(ctx context.Context, binaryID int64, rows 
 	if binaryID <= 0 {
 		return fmt.Errorf("binary id is required")
 	}
+	if err := s.ensurePartitionBundleForBinaryIDs(ctx, partitionBundleInspect, []int64{binaryID}); err != nil {
+		return err
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -2897,6 +2872,9 @@ func (s *Store) ReplaceBinaryPAR2Sets(ctx context.Context, binaryID int64, rows 
 func (s *Store) ReplaceBinaryPAR2Targets(ctx context.Context, binaryID int64, rows []BinaryPAR2TargetRecord) error {
 	if binaryID <= 0 {
 		return fmt.Errorf("binary id is required")
+	}
+	if err := s.ensurePartitionBundleForBinaryIDs(ctx, partitionBundleInspect, []int64{binaryID}); err != nil {
+		return err
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -2932,6 +2910,13 @@ func (s *Store) ApplyBinaryPAR2TargetCoverage(ctx context.Context, binaryID int6
 func (s *Store) ApplyPAR2InspectionBatch(ctx context.Context, rows []PAR2InspectionBatchRecord) (*PAR2InspectionBatchResult, error) {
 	if len(rows) == 0 {
 		return &PAR2InspectionBatchResult{}, nil
+	}
+	binaryIDs := make([]int64, 0, len(rows))
+	for _, row := range rows {
+		binaryIDs = append(binaryIDs, row.BinaryID)
+	}
+	if err := s.ensurePartitionBundleForBinaryIDs(ctx, partitionBundleInspect, binaryIDs); err != nil {
+		return nil, err
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -3307,11 +3292,6 @@ func par2CoverageBaseStem(fileName string) string {
 	return strings.TrimSpace(lower)
 }
 
-func par2CoverageReleaseKey(baseStem string) string {
-	key := par2CoverageNonKeyCharsRE.ReplaceAllString(strings.ToLower(strings.TrimSpace(baseStem)), "")
-	return strings.TrimSpace(key)
-}
-
 func parseInt64PGIndex(value string) int64 {
 	var out int64
 	for _, r := range strings.TrimSpace(value) {
@@ -3324,7 +3304,18 @@ func parseInt64PGIndex(value string) int64 {
 }
 
 func (s *Store) finishBinaryInspection(ctx context.Context, in BinaryInspectionRecord, fallbackStatus string) error {
+	if err := s.ensurePartitionBundleForBinaryIDs(ctx, partitionBundleInspect, []int64{in.BinaryID}); err != nil {
+		return err
+	}
 	return s.finishBinaryInspectionWithDB(ctx, s.db, in, fallbackStatus)
+}
+
+func inspectionCandidateBinaryIDs(candidates []BinaryInspectionCandidate) []int64 {
+	ids := make([]int64, 0, len(candidates))
+	for _, candidate := range candidates {
+		ids = append(ids, candidate.BinaryID)
+	}
+	return ids
 }
 
 type inspectionExecer interface {
@@ -3406,6 +3397,9 @@ func (s *Store) finishBinaryInspectionWithDB(ctx context.Context, execer inspect
 		if err := finishInspectReadyQueueRow(ctx, execer, in.StageName, in.BinaryID, status, in.ErrorText); err != nil {
 			return err
 		}
+		if err := enqueueInspectionSuccessor(ctx, execer, in, status); err != nil {
+			return err
+		}
 		return nil
 	}
 
@@ -3482,8 +3476,32 @@ func (s *Store) finishBinaryInspectionWithDB(ctx context.Context, execer inspect
 	if err := finishInspectReadyQueueRow(ctx, execer, in.StageName, in.BinaryID, status, in.ErrorText); err != nil {
 		return err
 	}
+	if err := enqueueInspectionSuccessor(ctx, execer, in, status); err != nil {
+		return err
+	}
 
 	return nil
+}
+
+func enqueueInspectionSuccessor(ctx context.Context, execer inspectionExecer, in BinaryInspectionRecord, status string) error {
+	if status != "completed" || strings.TrimSpace(in.ReleaseID) == "" {
+		return nil
+	}
+	if isQueuedInspectionStage(in.StageName) {
+		if _, err := enqueueInspectionReadyForReleases(ctx, execer, in.StageName, []string{in.ReleaseID}); err != nil {
+			return err
+		}
+	}
+	nextStage := ""
+	switch strings.TrimSpace(in.StageName) {
+	case "inspect_archive":
+		nextStage = "inspect_media"
+	}
+	if nextStage == "" {
+		return nil
+	}
+	_, err := enqueueInspectionReadyForReleases(ctx, execer, nextStage, []string{in.ReleaseID})
+	return err
 }
 
 func normalizeBinaryInspectionTerminalState(stageName, status, errorText string, summary map[string]any) (string, string) {
@@ -3527,21 +3545,6 @@ func inspectionSummaryMessage(summary map[string]any, key string) string {
 		return ""
 	}
 	return strings.TrimSpace(fmt.Sprint(raw))
-}
-
-func isRecoverableInspectionError(msg string) bool {
-	msg = strings.ToLower(strings.TrimSpace(msg))
-	if msg == "" {
-		return false
-	}
-	return strings.Contains(msg, "broken pipe") ||
-		strings.Contains(msg, "connection reset by peer") ||
-		strings.Contains(msg, "timeout") ||
-		strings.Contains(msg, "i/o timeout") ||
-		strings.Contains(msg, "unexpected eof") ||
-		strings.Contains(msg, "connection refused") ||
-		strings.Contains(msg, "no such host") ||
-		strings.Contains(msg, "network is unreachable")
 }
 
 func inspectCandidateFilter(stageName string, requireExpectedFileCount bool) (string, error) {

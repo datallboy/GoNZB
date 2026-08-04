@@ -13,6 +13,7 @@ export type SessionResponse = {
 
 export type SetupStatusResponse = {
   setup_required: boolean
+  bootstrap_token_required: boolean
 }
 
 export type PublicReleaseSummary = {
@@ -78,7 +79,7 @@ export type PublicReleaseDetail = {
     metadata_updated_at?: string
   }
   capabilities: {
-    can_send_to_downloader: boolean
+	can_send_to_download_client: boolean
   }
 }
 
@@ -148,6 +149,7 @@ export type IndexerBackfillProgress = {
 }
 
 export type IndexerRecoveryCapacity = {
+  recovery_profile: 'header_only' | 'balanced' | 'exhaustive'
   probes_per_hour_ewma: number
   soft_cap: number
   hard_cap: number
@@ -158,6 +160,11 @@ export type IndexerRecoveryCapacity = {
   oldest_ready_at?: string
   newest_ready_at?: string
   calculated_at?: string
+  body_budget_key: string
+  body_requests_per_hour: number
+  body_requests_used: number
+  body_requests_remaining: number
+  body_budget_started_at?: string
 }
 
 export type IndexerGroupProfile = {
@@ -184,17 +191,48 @@ export type IndexerDeferredArticleRange = {
   provider_key: string
   newsgroup_id: number
   group_name: string
-  range_kind: string
   state: string
   reason: string
   article_low: number
   article_high: number
-  estimated_count: number
-  priority: number
-  attempt_count: number
-  not_before?: string
-  last_attempt_at?: string
-  created_at?: string
+  estimated_article_count: number
+  priority_score: number
+  attempts: number
+  last_error?: string
+  updated_at?: string
+}
+
+export type IndexerSourceBucketOutcome = {
+  provider_id: number
+  provider_key: string
+  newsgroup_id: number
+  group_name: string
+  source_day: string
+  state: string
+  headers_ingested: number
+  open_work_count: number
+  exhausted_work_count: number
+  terminal_release_count: number
+  terminal_reason: string
+  last_ingested_at: string
+  last_progress_at: string
+  settled_at?: string
+  purge_eligible_at?: string
+  purged_at?: string
+  last_reconciled_at?: string
+}
+
+export type IndexerSourceBucketOutcomeReport = {
+  total_buckets: number
+  active_buckets: number
+  success_buckets: number
+  no_yield_buckets: number
+  purge_eligible_buckets: number
+  purged_buckets: number
+  headers_ingested: number
+  open_work_count: number
+  terminal_release_count: number
+  items: IndexerSourceBucketOutcome[]
 }
 
 export type IndexerDeferredArticleRangeResponse = {
@@ -294,16 +332,7 @@ export type IndexerOverviewStreamSnapshot = {
 }
 
 export type NNTPModuleRuntimeStats = {
-  reservations_enabled: boolean
-  idle_borrow_enabled: boolean
-  indexer_max_percent: number
-  downloader_reserve_percent: number
-  downloader_demand_window_ms: number
-  indexer_active: number
-  downloader_active: number
-  indexer_limit: number
-  downloader_limit: number
-  downloader_demand_active: boolean
+	indexer_active: number
 }
 
 export type AdminStage = {
@@ -1148,6 +1177,35 @@ export type ScrapeExplicitGroup = {
   source?: string
 }
 
+export type ScrapeTimeframe = {
+  id: string
+  group_name: string
+  start_date: string
+  start_time?: string
+  end_date: string
+  end_time?: string
+  enabled: boolean
+}
+
+export type ScrapeTimeframeProgress = {
+  timeframe_id: string
+  provider_id: number
+  provider_key: string
+  newsgroup_id: number
+  group_name: string
+  window_start: string
+  window_end: string
+  article_low: number
+  article_high: number
+  next_article: number
+  state: 'pending' | 'active' | 'completed' | 'empty' | 'failed'
+  resolved_at?: string
+  completed_at?: string
+  last_attempt_at?: string
+  last_error?: string
+  updated_at: string
+}
+
 export type ScrapeWildcardRule = {
   id: string
   pattern: string
@@ -1190,12 +1248,16 @@ export type ScrapeCrosspostPopularityItem = {
 export type IndexingRuntimeSettings = {
   newsgroups: string[]
   backfill_until_date_by_group: Record<string, string>
+  recovery_profile: 'header_only' | 'balanced' | 'exhaustive'
   explicit_groups?: ScrapeExplicitGroup[]
   wildcard_rules?: ScrapeWildcardRule[]
   provider_group_inventory?: ScrapeProviderInventoryItem[]
   materialized_groups?: ScrapeMaterializedGroup[]
+  scrape_timeframes?: ScrapeTimeframe[]
   scrape_latest: AdminStageConfigPatch
   scrape_backfill: AdminStageConfigPatch
+  scrape_timeframe: AdminStageConfigPatch
+  scrape_deferred: AdminStageConfigPatch
   poster_materialize: AdminStageConfigPatch
   crosspost_popularity_refresh: AdminStageConfigPatch
   assemble: AdminStageConfigPatch
@@ -1209,14 +1271,29 @@ export type IndexingRuntimeSettings = {
     max_blocking_yenc: number
     resume_blocking_yenc: number
   }
+  partitions?: {
+    precreate_days_ahead: number
+    max_new_source_days_per_pass: number
+    ddl_lock_timeout_seconds: number
+  }
+  retention?: {
+    source_settle_hours: number
+    no_yield_grace_days: number
+    yenc_terminal_attempts: number
+    execute_outcome_purge: boolean
+    [key: string]: number | boolean
+  }
+  recovery_admission?: {
+    latest_reserve_percent: number
+    balanced_body_requests_per_hour: number
+    exhaustive_body_requests_per_hour: number
+    discovery_body_requests_per_hour: number
+    [key: string]: number
+  }
   release_summary_refresh: AdminStageConfigPatch
   release_generate_nzb: AdminStageConfigPatch
   release_archive_nzb: AdminStageConfigPatch
   release_purge_archived_sources?: AdminStageConfigPatch
-  inspect_discovery_ready_refresh: AdminStageConfigPatch
-  inspect_par2_ready_refresh: AdminStageConfigPatch
-  inspect_archive_ready_refresh: AdminStageConfigPatch
-  inspect_media_ready_refresh: AdminStageConfigPatch
   maintenance_tasks?: Record<
     string,
     AdminMaintenanceTaskPatch & { last_dry_run_at?: string }
@@ -1326,7 +1403,89 @@ export type AggregatorRuntimeSettings = {
   sources?: {
     local_blob?: RuntimeToggle
     usenet_indexer?: RuntimeToggle
+    gonzbnet?: RuntimeToggle
   }
+}
+
+export type GoNZBNetRuntimeSettings = {
+  node_alias: string
+  advertise_url: string
+  allow_insecure_peer_http: boolean
+  publish_pool_ids: string[]
+  manual_peers: string[]
+  visibility: string
+  allow_pool_creation: boolean
+  allow_join_requests: boolean
+  admission_relay_enabled: boolean
+  consumer_enabled: boolean
+  scanner_enabled: boolean
+  index_projection_enabled: boolean
+  manifest_builder_enabled: boolean
+  manifest_cache_enabled: boolean
+  validator_enabled: boolean
+  health_checker_enabled: boolean
+  coverage_enabled: boolean
+  scheduler_enabled: boolean
+  publish_release_cards_enabled: boolean
+  publish_release_cards_batch_size: number
+  publish_release_cards_interval_minutes: number
+  manifest_availability_enabled: boolean
+  health_attestations_enabled: boolean
+  health_attestations_batch_size: number
+  health_attestations_interval_minutes: number
+  scanner_max_groups: number
+  scanner_max_articles_per_hour: number
+  scanner_claim_ttl_minutes: number
+  scanner_checkpoint_interval_seconds: number
+  scanner_respect_remote_claims: boolean
+  scanner_allow_unassigned_work: boolean
+  coverage_mode: string
+  coverage_min_trust_for_claim: number
+  coverage_validation_overlap_percent: number
+  coverage_stale_claim_penalty: boolean
+  coverage_provider_scope_mode: string
+  validation_batch_size: number
+  validation_interval_minutes: number
+  validation_tiers: string[]
+  validation_max_manifests_per_hour: number
+  validation_sample_percent: number
+  validation_allow_sample_payload_fetch: boolean
+  validation_allow_par2_validation: boolean
+  validation_publish_provider_scope_hash: boolean
+  checksum_validation_enabled: boolean
+  manifest_cache_max_bytes: number
+  manifest_cache_ttl_days: number
+  manifest_cache_serve_to_trusted_pools: boolean
+  pull_sync_enabled: boolean
+  pull_sync_interval_minutes: number
+  push_sync_enabled: boolean
+  push_sync_interval_minutes: number
+  push_sync_batch_size: number
+  websocket_gossip_enabled: boolean
+  gossip_interval_minutes: number
+  gossip_batch_size: number
+  gossip_ttl: number
+  gossip_fanout: number
+  peer_exchange_enabled: boolean
+  binary_evidence_consume_enabled: boolean
+  binary_evidence_serve_enabled: boolean
+  binary_evidence_peer_timeout_seconds: number
+  binary_evidence_peer_fanout: number
+  binary_evidence_yenc_batch_size: number
+  binary_evidence_segment_limit: number
+  binary_evidence_max_response_bytes: number
+  binary_evidence_circuit_breaker_cooldown_minutes: number
+  relay_enabled: boolean
+  max_event_bytes: number
+  max_manifest_bytes: number
+  manifest_fetch_timeout_seconds: number
+  max_batch_events: number
+  rate_limit_events_per_minute: number
+  time_tolerance_seconds: number
+  max_event_age_hours: number
+  nonce_ttl_seconds: number
+  share_provider_backbone_hash: boolean
+  share_source_indexer_hash: boolean
 }
 
 export type ServerRuntimeSettings = {
@@ -1352,46 +1511,41 @@ export type IndexerRuntimeSettings = {
   api_path: string
   api_key: string
   redirect: boolean
-}
-
-export type DownloadRuntimeSettings = {
-  out_dir: string
-  completed_dir: string
-  cleanup_extensions: string[]
+  allow_private_addresses: boolean
+  allowed_cidrs: string[]
 }
 
 export type NNTPPoolRuntimeSettings = {
-  idle_borrow_enabled: boolean
-  indexer_max_percent: number
-  downloader_reserve_percent: number
-  demand_window_seconds: number
+	indexer_stage_target_percent: number
 }
 
-export type ArrIntegrationRuntimeSettings = {
-  id: string
-  kind: string
-  enabled: boolean
-  base_url: string
-  api_key: string
-  client_name?: string
-  category?: string
+export type DownloadClientRuntimeSettings = {
+	id: string
+	name: string
+	enabled: boolean
+	default: boolean
+	base_url: string
+	api_key: string
+	category: string
+	priority: number
 }
 
 export type RuntimeSettings = {
-  servers?: ServerRuntimeSettings[]
-  downloader_servers?: ServerRuntimeSettings[]
-  indexer_servers?: ServerRuntimeSettings[]
-  indexers?: IndexerRuntimeSettings[]
+	servers?: ServerRuntimeSettings[]
+	indexer_servers?: ServerRuntimeSettings[]
+	indexers?: IndexerRuntimeSettings[]
+	download_clients?: DownloadClientRuntimeSettings[]
   aggregator?: AggregatorRuntimeSettings
-  download?: DownloadRuntimeSettings
-  nntp_pool?: NNTPPoolRuntimeSettings
-  indexing?: IndexingRuntimeSettings
-  arr_integrations?: ArrIntegrationRuntimeSettings[]
+  gonzbnet?: GoNZBNetRuntimeSettings
+	nntp_pool?: NNTPPoolRuntimeSettings
+	indexing?: IndexingRuntimeSettings
   revision?: number
 }
 
 export type AdminScrapeConfigResponse = {
   explicit_groups: ScrapeExplicitGroup[]
+  scrape_timeframes: ScrapeTimeframe[]
+  timeframe_progress: ScrapeTimeframeProgress[]
   wildcard_rules: ScrapeWildcardRule[]
   provider_group_inventory: ScrapeProviderInventoryItem[]
   provider_inventory_count?: number
@@ -1418,4 +1572,861 @@ export type ControlPlaneCapabilities = {
     runtime_configured: boolean
   }
   revision?: number
+}
+
+export type GoNZBNetListResponse<T> = {
+  items: T[]
+  count: number
+}
+
+export type GoNZBNetNodeCapability = {
+  node_id: string
+  alias: string
+  base_url: string
+  status: string
+  capabilities: Record<string, unknown>
+  module_status: Record<string, unknown>
+  scanner_capacity?: Record<string, unknown> | null
+  validator_capacity?: Record<string, unknown> | null
+  updated_at: string
+}
+
+export type GoNZBNetCoverageAssignment = {
+  assignment_id: string
+  pool_id: string
+  group: string
+  assigned_node_id: string
+  range_start?: number
+  range_end?: number
+  window_start?: string
+  window_end?: string
+  priority: number
+  due_at?: string
+  status: string
+  created_at: string
+}
+
+export type GoNZBNetCoverageClaim = {
+  claim_id: string
+  claim_type: string
+  assignment_id?: string
+  pool_id: string
+  group: string
+  node_id: string
+  range_start?: number
+  range_end?: number
+  claimed_at: string
+  expires_at: string
+  status: string
+}
+
+export type GoNZBNetCoverageOutcome = {
+  outcome_id: string
+  outcome_type: string
+  claim_id?: string
+  assignment_id?: string
+  pool_id: string
+  group: string
+  node_id: string
+  range_start: number
+  range_end: number
+  release_count?: number
+  reason?: string
+  occurred_at: string
+}
+
+export type GoNZBNetCoverageDuplicate = {
+  pool_id: string
+  group: string
+  range_start: number
+  range_end: number
+  claim_count: number
+  node_ids: string[]
+}
+
+export type GoNZBNetCoverageDashboard = {
+  assignments: GoNZBNetCoverageAssignment[]
+  claims: GoNZBNetCoverageClaim[]
+  stale_claims: GoNZBNetCoverageClaim[]
+  outcomes: GoNZBNetCoverageOutcome[]
+  gaps: GoNZBNetCoverageAssignment[]
+  duplicates: GoNZBNetCoverageDuplicate[]
+  coverage_score: number
+}
+
+export type GoNZBNetGroupCatalogItem = {
+  pool_id: string
+  group: string
+  observed_at: string
+  low_watermark: number
+  high_watermark: number
+  retention_days: number
+  confidence: number
+  author_node_id: string
+}
+
+export type GoNZBNetValidationGap = {
+  release_id: string
+  manifest_id: string
+  pool_id: string
+  source_node_id: string
+  last_validation_task_at?: string
+  validation_attestation_count: number
+}
+
+export type GoNZBNetCoverageSuggestion = {
+  assignment: GoNZBNetCoverageAssignment
+  reason: string
+}
+
+export type GoNZBNetCoveragePlan = {
+  suggestions: GoNZBNetCoverageSuggestion[]
+  stale_claims: GoNZBNetCoverageClaim[]
+  mode: string
+}
+
+export type GoNZBNetCoverageSuggestionParams = {
+  pool_id?: string
+  node_id?: string
+  mode?: string
+  limit?: number
+  min_blocking_trust?: number
+}
+
+export type GoNZBNetAssignmentRequest = {
+  assignment_id?: string
+  plan_id?: string
+  pool_id?: string
+  group: string
+  assigned_node_id: string
+  range_start?: number
+  range_end?: number
+  window_start?: string
+  window_end?: string
+  priority?: number
+  due_at?: string
+}
+
+export type GoNZBNetClaimRequest = {
+  claim_id?: string
+  assignment_id?: string
+  pool_id?: string
+  group: string
+  range_start?: number
+  range_end?: number
+  window_start?: string
+  window_end?: string
+  expires_at?: string
+}
+
+export type GoNZBNetOutcomeRequest = {
+  outcome_id?: string
+  claim_id?: string
+  assignment_id?: string
+  pool_id?: string
+  group: string
+  range_start: number
+  range_end: number
+  release_count?: number
+  reason?: string
+}
+
+export type GoNZBNetActionResponse = {
+  status: string
+  event_id?: string
+  created?: number
+}
+
+export type GoNZBNetPeerDiagnostic = {
+  id: number
+  node_id: string
+  peer_url: string
+  source: string
+  enabled: boolean
+  status: string
+  cursor: string
+  last_event_id: string
+  failure_count: number
+  last_error: string
+  last_connected_at?: string
+  last_sync_at?: string
+  updated_at: string
+}
+
+export type GoNZBNetEventDiagnostic = {
+  event_id: string
+  event_type: string
+  author_node_id: string
+  sequence: number
+  body_hash: string
+  pool_ids: string[]
+  visibility: string
+  created_at: string
+  received_at: string
+  validation_status: string
+  rejection_reason?: string
+  projected: boolean
+  projected_at?: string
+}
+
+export type GoNZBNetRejectedEventDiagnostic = {
+  id: number
+  event_id: string
+  author_node_id: string
+  event_type: string
+  rejection_reason: string
+  received_at: string
+}
+
+export type GoNZBNetRejectedEventSummary = {
+  author_node_id: string
+  rejection_reason: string
+  total: number
+  last_hour: number
+  last_day: number
+  first_seen_at: string
+  last_seen_at: string
+}
+
+export type GoNZBNetRejectedEventDiagnosticsResponse = GoNZBNetListResponse<GoNZBNetRejectedEventDiagnostic> & {
+  summary: GoNZBNetRejectedEventSummary[]
+}
+
+export type GoNZBNetPeerDeliveryDiagnostic = {
+  peer_id: number
+  peer_url: string
+  event_id: string
+  event_type: string
+  status: string
+  attempts: number
+  last_attempt_at?: string
+  delivered_at?: string
+  last_error: string
+  updated_at: string
+}
+
+export type GoNZBNetValidationTaskDiagnostic = {
+  task_id: number
+  manifest_id: string
+  release_id: string
+  source_node_id: string
+  source_event_id: string
+  pool_id: string
+  status: string
+  priority: number
+  attempts: number
+  last_error: string
+  claimed_by_node_id: string
+  claimed_at?: string
+  due_at: string
+  completed_at?: string
+  created_at: string
+  updated_at: string
+}
+
+export type GoNZBNetTrustPool = {
+  pool_id: string
+  display_name: string
+  description: string
+  genesis_event_id: string
+  policy_json: Record<string, unknown>
+  membership_threshold: number
+  moderation_threshold: number
+  checkpoint_witness_threshold: number
+  accept_mode: string
+  min_node_trust_score: number
+  accepted_event_types: string[]
+  enabled: boolean
+  visibility: string
+  join_mode: string
+  admission_enabled: boolean
+  created_at: string
+  updated_at: string
+}
+
+export type GoNZBNetPoolMember = {
+  pool_id: string
+  node_id: string
+  role: string
+  status: string
+  approved_event_id: string
+  revoked_event_id: string
+  allowed_capabilities: string[]
+  limits_json: Record<string, unknown>
+  joined_at?: string
+  revoked_at?: string
+}
+
+export type GoNZBNetRolePoolAccess = {
+  role_id: string
+  pool_id: string
+  can_search: boolean
+  can_get: boolean
+  can_resolve_manifest: boolean
+  created_at: string
+  updated_at: string
+}
+
+export type GoNZBNetRolePoolAccessRequest = {
+  role_id: string
+  can_search?: boolean
+  can_get?: boolean
+  can_resolve_manifest?: boolean
+}
+
+export type GoNZBNetTrustPoolRequest = {
+  pool_id: string
+  display_name: string
+  description?: string
+  membership_threshold?: number
+  moderation_threshold?: number
+  checkpoint_witness_threshold?: number
+  accept_mode?: string
+  min_node_trust_score?: number
+  accepted_event_types?: string[]
+  enabled?: boolean
+  visibility?: string
+  join_mode?: string
+  admission_enabled?: boolean
+  allow_binary_evidence_exchange?: boolean
+}
+
+export type GoNZBNetAdmissionPool = {
+  pool_id: string
+  display_name: string
+  description?: string
+  genesis_event_id: string
+  membership_threshold: number
+  visibility: string
+  join_mode: string
+  member_count: number
+}
+
+export type GoNZBNetAdmissionRemote = {
+  well_known: { node_id: string; base_url: string }
+  profile: { node_id: string; public_key: string; alias?: string }
+  pools: GoNZBNetAdmissionPool[]
+}
+
+export type GoNZBNetAdmission = {
+  proposal_event_id: string
+  pool_id: string
+  genesis_event_id: string
+  candidate_node_id: string
+  candidate_url: string
+  relay_node_id: string
+  relay_url: string
+  requested_role: string
+  requested_capabilities: string[]
+  status: string
+  final_event_id: string
+  rejection_reason: string
+  created_at: string
+  updated_at: string
+}
+
+export type GoNZBNetAdmissionJoinResponse = {
+  status: string
+  proposal_event_id: string
+  pool_id: string
+  relay_url: string
+}
+
+export type GoNZBNetPoolMemberRequest = {
+  node_id: string
+  role?: string
+  status?: string
+  allowed_capabilities?: string[]
+  limits?: Record<string, unknown>
+}
+
+export type GoNZBNetPoolJoinRequest = {
+  requested_roles?: string[]
+  message?: string
+}
+
+export type GoNZBNetPoolJoinResponse = {
+  status: string
+  event_id: string
+  pool_id: string
+  candidate_node_id: string
+  requested_roles: string[]
+}
+
+export type GoNZBNetPoolApproval = {
+  node_id: string
+  approved_at?: string
+  signature: string
+}
+
+export type GoNZBNetPoolMemberApprovalRequest = {
+  role?: string
+  proposal_event_id: string
+  approvals_required?: number
+  approvals?: GoNZBNetPoolApproval[]
+}
+
+export type GoNZBNetPoolMemberApprovalResponse = {
+  status: string
+  event_id: string
+  pool_id: string
+  subject_node_id: string
+  role: string
+  approvals_required: number
+  approval_count: number
+}
+
+export type GoNZBNetPoolMemberRevocationRequest = {
+  reason: string
+  effective_at?: string
+  approvals_required?: number
+  approvals?: GoNZBNetPoolApproval[]
+}
+
+export type GoNZBNetPoolMemberRevocationResponse = {
+  status: string
+  event_id: string
+  pool_id: string
+  subject_node_id: string
+  reason: string
+  effective_at: string
+  approvals_required: number
+  approval_count: number
+}
+
+export type GoNZBNetPoolControlEvent = {
+  event_id: string
+  event_type: string
+  author_node_id: string
+  pool_ids: string[]
+  body_json: Record<string, unknown>
+  created_at: string
+  received_at: string
+}
+
+export type GoNZBNetTombstone = {
+  id: number
+  target_type: string
+  target_id: string
+  pool_id?: string
+  reason: string
+  severity: string
+  source_event_id: string
+  active: boolean
+  approval_count: number
+  approvals_required: number
+  effective_at: string
+  expires_at?: string
+  created_at: string
+  updated_at: string
+}
+
+export type GoNZBNetTombstoneRequest = {
+  target_type: string
+  target_id: string
+  pool_id?: string
+  reason: string
+  severity?: string
+  evidence_event_ids?: string[]
+  effective_at?: string
+  expires_at?: string
+}
+
+export type GoNZBNetPeerRequest = {
+  peer_url: string
+}
+
+export type GoNZBNetPeerActionResponse = {
+  status: string
+  peer_id?: number
+}
+
+export type GoNZBNetSyncResult = {
+  peers: number
+  accepted: number
+  duplicate: number
+  rejected: number
+  projected: number
+}
+
+export type GoNZBNetSyncActionResponse = {
+  status: string
+  result: GoNZBNetSyncResult
+}
+
+export type GoNZBNetReleaseSourceDiagnostic = {
+  release_id: string
+  manifest_id: string
+  title: string
+  source_node_id: string
+  source_event_id: string
+  pool_id: string
+  trust_score: number
+  availability_score: number
+  manifest_confidence_score: number
+  resolvable: boolean
+  posted_at?: string
+  first_seen_at: string
+  last_seen_at: string
+}
+
+export type GoNZBNetManifestSourceDiagnostic = {
+  manifest_id: string
+  release_id: string
+  source_node_id: string
+  pool_id: string
+  advertised: boolean
+  last_success_at?: string
+  last_failure_at?: string
+  failure_count: number
+  avg_latency_ms: number
+  trust_score: number
+  updated_at: string
+}
+
+export type GoNZBNetHealthAttestationDiagnostic = {
+  attestation_id: string
+  manifest_id: string
+  release_id: string
+  author_node_id: string
+  pool_id: string
+  checked_at: string
+  status: string
+  articles_total: number
+  articles_available: number
+  missing_articles: number
+  repair_available: boolean
+  repair_confidence: number
+  retention_days_observed: number
+  confidence: number
+  availability_score: number
+  method: string
+  source_event_id: string
+  updated_at: string
+}
+
+export type GoNZBNetReputationDiagnostic = {
+  id: number
+  node_id: string
+  pool_id: string
+  event_id: string
+  delta: number
+  reason: string
+  local_trust_score: number
+  created_at: string
+}
+
+export type GoNZBNetNodeProfileResponse = {
+  node_id: string
+  public_key: string
+  profile: GoNZBNetNodeProfile
+}
+
+export type GoNZBNetNodeProfile = {
+  schema_version: string
+  type: string
+  node_id: string
+  alias?: string
+  software: string
+  software_version: string
+  protocols: string[]
+  public_key: string
+  endpoints: Record<string, string>
+  capabilities: Record<string, boolean>
+  limits: Record<string, number>
+  policy: Record<string, boolean>
+  created_at: string
+  updated_at: string
+}
+
+export type GoNZBNetConfigValidation = {
+  valid: boolean
+  summary: GoNZBNetConfigSummary
+  issues: GoNZBNetConfigIssue[]
+}
+
+export type GoNZBNetConfigSummary = {
+  mode: string
+  http_enabled: boolean
+  advertise_url: string
+  http_base_path: string
+  private_network: boolean
+  network_id: string
+  local_pool_id: string
+  manual_peers: number
+  module_enabled: Record<string, boolean>
+  limits: Record<string, number>
+  privacy: Record<string, boolean>
+  publisher: Record<string, unknown>
+  sync: Record<string, unknown>
+  gossip: Record<string, unknown>
+  redacted_sensitive_config_names: string[]
+}
+
+export type GoNZBNetConfigIssue = {
+  severity: string
+  field: string
+  message: string
+}
+
+export type GoNZBNetMetrics = {
+  counters: Record<string, number>
+  durations: Record<string, { count: number; sum_seconds: number }>
+  gauges: Record<string, number>
+}
+
+export type GoNZBNetBinaryEvidenceDiagnostic = {
+  diagnostic_id: number
+  pool_id: string
+  peer_node_id: string
+  direction: 'consume' | 'serve'
+  evidence_kind: 'yenc' | 'segments'
+  request_count: number
+  hit_count: number
+  item_count: number
+  body_requests_avoided: number
+  response_bytes: number
+  conflicts: number
+  quarantines: number
+  latency_ms: number
+  error_text?: string
+  created_at: string
+}
+
+export type GoNZBNetActivityStatus = 'off' | 'starting' | 'ready' | 'working' | 'degraded' | 'blocked'
+
+export type GoNZBNetActivityComponent = {
+  key: string
+  job: string
+  label: string
+  description: string
+  execution_mode: 'scheduled' | 'event_driven' | 'on_demand'
+  configured: boolean
+  eligible: boolean
+  reason?: string
+  status: GoNZBNetActivityStatus
+  pools: string[]
+  running: number
+  attempts: number
+  successes: number
+  failures: number
+  consecutive_failures: number
+  items_in: number
+  items_out: number
+  bytes_in: number
+  bytes_out: number
+  backlog: number
+  last_attempt_at?: string
+  last_success_at?: string
+  last_useful_at?: string
+  last_failure_at?: string
+  next_run_at?: string
+  last_error?: string
+}
+
+export type GoNZBNetRoleJob = {
+  key: string
+  label: string
+  description: string
+  status: GoNZBNetActivityStatus
+  configured: boolean
+  pools: string[]
+  last_useful_at?: string
+  warnings: string[]
+  components: GoNZBNetActivityComponent[]
+}
+
+export type GoNZBNetRolesReport = {
+  generated_at: string
+  node_id: string
+  jobs: GoNZBNetRoleJob[]
+  warnings: string[]
+}
+
+export type GoNZBNetPoolMemberOverview = {
+  node_id: string
+  alias: string
+  base_url: string
+  status: string
+  roles: string[]
+  capabilities: string[]
+  local: boolean
+}
+
+export type GoNZBNetProductionCheck = {
+  key: string
+  label: string
+  status: 'pass' | 'warning' | 'fail'
+  details: string
+}
+
+export type GoNZBNetStorageRelation = {
+  name: string
+  category: 'protocol' | 'projection' | 'evidence'
+  estimated_rows: number
+  total_bytes: number
+}
+
+export type GoNZBNetStorageReport = {
+  available: boolean
+  database_bytes: number
+  gonzbnet_bytes: number
+  protocol_bytes: number
+  projection_bytes: number
+  evidence_bytes: number
+  relations: GoNZBNetStorageRelation[]
+}
+
+export type GoNZBNetOverviewReport = {
+  generated_at: string
+  node_id: string
+  node_alias: string
+  module_enabled: boolean
+  jobs_healthy: number
+  jobs_configured: number
+  peers_connected: number
+  peers_total: number
+  pools: Array<{ pool_id: string; display_name: string; enabled: boolean; members: number; member_nodes?: GoNZBNetPoolMemberOverview[] }>
+  pending_admissions: number
+  release_evidence: GoNZBNetEvidenceSummary
+  article_evidence: GoNZBNetEvidenceSummary
+  warnings: string[]
+  jobs: GoNZBNetRoleJob[]
+  production_ready: boolean
+  production_checks: GoNZBNetProductionCheck[]
+  storage: GoNZBNetStorageReport
+}
+
+export type GoNZBNetActivityRollup = {
+  bucket_start: string
+  bucket_seconds: number
+  node_id: string
+  pool_id: string
+  component: string
+  job: string
+  attempts: number
+  successes: number
+  failures: number
+  items_in: number
+  items_out: number
+  bytes_in: number
+  bytes_out: number
+  duration_ms: number
+  last_error?: string
+  last_attempt_at?: string
+  last_success_at?: string
+  last_failure_at?: string
+}
+
+export type GoNZBNetActivityReport = {
+  generated_at: string
+  window: string
+  from: string
+  to: string
+  five_minute_until: string
+  retained_until: string
+  partial: boolean
+  items: GoNZBNetActivityRollup[]
+}
+
+export type GoNZBNetEvidenceSummary = {
+  total: number
+  fresh: number
+  aging: number
+  stale: number
+  reporters: number
+  statuses: Record<string, number>
+  last_checked_at?: string
+}
+
+export type GoNZBNetPoolHealthReport = {
+  pool_id: string
+  generated_at: string
+  fresh_before: string
+  stale_before: string
+  release_health: GoNZBNetEvidenceSummary
+  article_availability: GoNZBNetEvidenceSummary
+  contributors: Array<{
+    node_id: string
+    alias: string
+    release_cards: number
+    manifests: number
+    health_attestations: number
+    article_availability: number
+    coverage_events: number
+    total_events: number
+    last_contribution_at?: string
+  }>
+}
+
+export type GoNZBNetArticleAvailabilityDiagnostic = {
+  attestation_id: string
+  manifest_id: string
+  release_id: string
+  author_node_id: string
+  pool_id: string
+  checked_at: string
+  status: string
+  articles_total: number
+  articles_available: number
+  missing_articles: number
+  retention_days_observed: number
+  confidence: number
+  validation_score: number
+  method: string
+  source_event_id: string
+  updated_at: string
+}
+
+export type GoNZBNetManifestResolveRequest = {
+  release_id: string
+}
+
+export type GoNZBNetManifestResolveResponse = {
+  status: string
+  release_id: string
+  nzb_bytes: number
+  resolved: boolean
+}
+
+export type GoNZBNetScoreRecomputeRequest = {
+  pool_id?: string
+}
+
+export type GoNZBNetScoreRecomputeResponse = {
+  status: string
+  result: {
+    pool_id: string
+    source_updates: number
+    card_updates: number
+  }
+}
+
+export type GoNZBNetKeyExportRequest = {
+  backup_password: string
+  confirmation: string
+}
+
+export type GoNZBNetKeyExportResponse = {
+  status: string
+  node_id: string
+  public_key: string
+  format: string
+  encrypted_key: string
+  created_at: string
+}
+
+export type GoNZBNetKeyRotateRequest = {
+  confirmation: string
+}
+
+export type GoNZBNetKeyRotateResponse = {
+  status: string
+  old_node_id: string
+  old_public_key: string
+  new_node_id: string
+  new_public_key: string
+  backup_path: string
+  rotated_at: string
+  warning: string
 }

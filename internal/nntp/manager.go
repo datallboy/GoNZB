@@ -34,12 +34,7 @@ const (
 )
 
 type ManagerOptions struct {
-	CapacityPolicy            CapacityPolicy
-	ModuleReservationsEnabled bool
-	IdleBorrowEnabled         bool
-	IndexerMaxPercent         int
-	DownloaderReservePercent  int
-	DownloaderDemandWindow    time.Duration
+	CapacityPolicy CapacityPolicy
 }
 
 type ManagerStats struct {
@@ -63,16 +58,7 @@ type ManagerStats struct {
 }
 
 type ManagerModuleStats struct {
-	ReservationsEnabled      bool
-	IdleBorrowEnabled        bool
-	IndexerMaxPercent        int
-	DownloaderReservePercent int
-	DownloaderDemandWindowMS int64
-	IndexerActive            int64
-	DownloaderActive         int64
-	IndexerLimit             int
-	DownloaderLimit          int
-	DownloaderDemandActive   bool
+	IndexerActive int64
 }
 
 type ManagerScopeStats struct {
@@ -119,22 +105,20 @@ type Manager struct {
 }
 
 type managerStats struct {
-	mu               sync.Mutex
-	scopes           map[string]*managerScopeStats
-	waiting          atomic.Int64
-	busyReturns      atomic.Int64
-	waitCount        atomic.Int64
-	waitDurationNS   atomic.Int64
-	waitMaxNS        atomic.Int64
-	fetches          atomic.Int64
-	fetchBodyPrefix  atomic.Int64
-	groupStats       atomic.Int64
-	xover            atomic.Int64
-	articleNotFound  atomic.Int64
-	operationErrors  atomic.Int64
-	indexerActive    atomic.Int64
-	downloaderActive atomic.Int64
-	downloaderDemand atomic.Int64
+	mu              sync.Mutex
+	scopes          map[string]*managerScopeStats
+	waiting         atomic.Int64
+	busyReturns     atomic.Int64
+	waitCount       atomic.Int64
+	waitDurationNS  atomic.Int64
+	waitMaxNS       atomic.Int64
+	fetches         atomic.Int64
+	fetchBodyPrefix atomic.Int64
+	groupStats      atomic.Int64
+	xover           atomic.Int64
+	articleNotFound atomic.Int64
+	operationErrors atomic.Int64
+	indexerActive   atomic.Int64
 }
 
 type managerScopeStats struct {
@@ -187,21 +171,6 @@ func newManagerWithProviders(ctx *app.Context, providers []*managedProvider, opt
 	if opts.CapacityPolicy == "" {
 		opts.CapacityPolicy = CapacityReturnBusy
 	}
-	if opts.IndexerMaxPercent <= 0 {
-		opts.IndexerMaxPercent = 80
-	}
-	if opts.IndexerMaxPercent > 100 {
-		opts.IndexerMaxPercent = 100
-	}
-	if opts.DownloaderReservePercent <= 0 {
-		opts.DownloaderReservePercent = 20
-	}
-	if opts.DownloaderReservePercent > 100 {
-		opts.DownloaderReservePercent = 100
-	}
-	if opts.DownloaderDemandWindow <= 0 {
-		opts.DownloaderDemandWindow = 30 * time.Second
-	}
 	return &Manager{ctx: ctx, providers: providers, opts: opts}
 }
 
@@ -227,22 +196,19 @@ func normalizeProviderRoles(roles []string) map[string]bool {
 			out["yenc_recovery"] = true
 		case "inspection", "inspect":
 			out["inspection"] = true
-		case "download", "downloader":
-			out["download"] = true
 		}
 	}
 	if len(out) == 0 {
 		out["scrape"] = true
 		out["yenc_recovery"] = true
 		out["inspection"] = true
-		out["download"] = true
 	}
 	return out
 }
 
 func providerRoleList(roles map[string]bool) []string {
 	if len(roles) == 0 {
-		return []string{"download", "inspection", "scrape", "yenc_recovery"}
+		return []string{"inspection", "scrape", "yenc_recovery"}
 	}
 	out := make([]string, 0, len(roles))
 	for role, enabled := range roles {
@@ -331,6 +297,13 @@ func (c *ManagerClient) XOverWithProvider(ctx context.Context, group string, fro
 	return c.manager.xoverForScopeWithProvider(ctx, c.scope, c.policy, group, from, to)
 }
 
+func (c *ManagerClient) XOverOnProvider(ctx context.Context, providerID, group string, from, to int64) ([]OverviewHeader, string, error) {
+	if c == nil || c.manager == nil {
+		return nil, "", fmt.Errorf("nntp manager client is nil")
+	}
+	return c.manager.xoverForScopeOnProvider(ctx, c.scope, c.policy, providerID, group, from, to)
+}
+
 func (m *Manager) ID() string {
 	if m == nil || len(m.providers) == 0 {
 		return ""
@@ -343,9 +316,9 @@ func (m *Manager) Fetch(ctx context.Context, seg *domain.Segment, groups []strin
 		return nil, fmt.Errorf("segment is required")
 	}
 	m.stats.fetches.Add(1)
-	scopeStats := m.scopeStats("downloader")
+	scopeStats := m.scopeStats("unscoped")
 	scopeStats.fetches.Add(1)
-	return m.fetch(ctx, "downloader", CapacityReturnBusy, seg, groups)
+	return m.fetch(ctx, "unscoped", m.opts.CapacityPolicy, seg, groups)
 }
 
 func (m *Manager) listGroupsForScope(ctx context.Context, scope string, policy CapacityPolicy, pattern string) ([]GroupListing, error) {
@@ -704,6 +677,49 @@ func (m *Manager) xoverForScopeWithProvider(ctx context.Context, scope string, p
 	return nil, "", ErrProviderBusy
 }
 
+func (m *Manager) xoverForScopeOnProvider(ctx context.Context, scope string, policy CapacityPolicy, providerID, group string, from, to int64) ([]OverviewHeader, string, error) {
+	m.stats.xover.Add(1)
+	scopeStats := m.scopeStats(scope)
+	scopeStats.xover.Add(1)
+	if err := ctx.Err(); err != nil {
+		return nil, "", err
+	}
+
+	var selected *managedProvider
+	for _, mp := range m.providers {
+		if mp != nil && strings.EqualFold(strings.TrimSpace(mp.ID()), strings.TrimSpace(providerID)) {
+			selected = mp
+			break
+		}
+	}
+	if selected == nil || !selected.allowsScope(scope) {
+		return nil, "", fmt.Errorf("nntp provider %q is not available for %s", providerID, scope)
+	}
+
+	acquired, err := m.acquire(ctx, scope, selected)
+	if err != nil {
+		return nil, "", err
+	}
+	if !acquired {
+		if policy != CapacityWaitQueue {
+			m.stats.busyReturns.Add(1)
+			return nil, "", ErrProviderBusy
+		}
+		selected, err = m.waitForProviderFromList(ctx, scope, []*managedProvider{selected})
+		if err != nil {
+			return nil, "", err
+		}
+	}
+
+	result, err := selected.Provider.XOver(ctx, group, from, to)
+	m.releaseForScope(scope, selected)
+	if err != nil {
+		m.recordOperationError(scope, err)
+		return nil, selected.ID(), err
+	}
+	return result, selected.ID(), nil
+}
+
 func (m *Manager) acquire(ctx context.Context, scope string, mp *managedProvider) (bool, error) {
 	if mp == nil {
 		return false, nil
@@ -711,16 +727,9 @@ func (m *Manager) acquire(ctx context.Context, scope string, mp *managedProvider
 	if !mp.allowsScope(scope) {
 		return false, nil
 	}
-	module := moduleForScope(scope)
-	if module == "downloader" {
-		m.recordDownloaderDemand()
-	}
-	if !m.moduleCanAcquire(module) {
-		return false, nil
-	}
 	select {
 	case mp.semaphore <- struct{}{}:
-		m.recordActive(scope, module, 1)
+		m.recordActive(scope, 1)
 		return true, nil
 	default:
 	}
@@ -729,41 +738,6 @@ func (m *Manager) acquire(ctx context.Context, scope string, mp *managedProvider
 	}
 
 	return false, nil
-}
-
-func (m *Manager) waitAcquire(ctx context.Context, scope string, mp *managedProvider) error {
-	if mp == nil {
-		return ErrProviderBusy
-	}
-	start := time.Now()
-	scopeStats := m.scopeStats(scope)
-	module := moduleForScope(scope)
-	m.stats.waiting.Add(1)
-	scopeStats.waiting.Add(1)
-	defer m.stats.waiting.Add(-1)
-	defer scopeStats.waiting.Add(-1)
-	ticker := time.NewTicker(10 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		if module == "downloader" {
-			m.recordDownloaderDemand()
-		}
-		if m.moduleCanAcquire(module) {
-			select {
-			case mp.semaphore <- struct{}{}:
-				m.recordActive(scope, module, 1)
-				m.recordWait(scopeStats, time.Since(start))
-				return nil
-			default:
-			}
-		}
-		select {
-		case <-ctx.Done():
-			m.recordWait(scopeStats, time.Since(start))
-			return ctx.Err()
-		case <-ticker.C:
-		}
-	}
 }
 
 func (m *Manager) waitForProvider(ctx context.Context, scope string) (*managedProvider, error) {
@@ -798,7 +772,6 @@ func (m *Manager) waitForProviderFromList(ctx context.Context, scope string, pro
 	}
 	start := time.Now()
 	scopeStats := m.scopeStats(scope)
-	module := moduleForScope(scope)
 	m.stats.waiting.Add(1)
 	scopeStats.waiting.Add(1)
 	defer m.stats.waiting.Add(-1)
@@ -806,18 +779,13 @@ func (m *Manager) waitForProviderFromList(ctx context.Context, scope string, pro
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		if module == "downloader" {
-			m.recordDownloaderDemand()
-		}
-		if m.moduleCanAcquire(module) {
-			for _, mp := range m.providerAcquireOrder(scope, providers) {
-				select {
-				case mp.semaphore <- struct{}{}:
-					m.recordActive(scope, module, 1)
-					m.recordWait(scopeStats, time.Since(start))
-					return mp, nil
-				default:
-				}
+		for _, mp := range m.providerAcquireOrder(scope, providers) {
+			select {
+			case mp.semaphore <- struct{}{}:
+				m.recordActive(scope, 1)
+				m.recordWait(scopeStats, time.Since(start))
+				return mp, nil
+			default:
 			}
 		}
 		select {
@@ -827,19 +795,6 @@ func (m *Manager) waitForProviderFromList(ctx context.Context, scope string, pro
 		case <-ticker.C:
 		}
 	}
-}
-
-func (m *Manager) firstFetchProvider(scope string, seg *domain.Segment) *managedProvider {
-	for _, mp := range m.providers {
-		if !mp.allowsScope(scope) {
-			continue
-		}
-		if seg != nil && seg.MissingFrom != nil && seg.MissingFrom[mp.ID()] {
-			continue
-		}
-		return mp
-	}
-	return nil
 }
 
 func (m *Manager) eligibleProviders(scope string) []*managedProvider {
@@ -941,16 +896,12 @@ func (m *Manager) missingEligibleProviderCount(scope string, seg *domain.Segment
 	return count
 }
 
-func (m *Manager) release(mp *managedProvider) {
-	m.releaseForScope("unscoped", mp)
-}
-
 func (m *Manager) releaseForScope(scope string, mp *managedProvider) {
 	if mp == nil {
 		return
 	}
 	<-mp.semaphore
-	m.recordActive(scope, moduleForScope(scope), -1)
+	m.recordActive(scope, -1)
 }
 
 func (m *Manager) recordWait(scopeStats *managerScopeStats, d time.Duration) {
@@ -1020,8 +971,6 @@ func normalizeScope(scope string) string {
 
 func roleForScope(scope string) string {
 	switch normalizeScope(scope) {
-	case "downloader":
-		return "download"
 	case "recover_yenc":
 		return "yenc_recovery"
 	case "scrape":
@@ -1047,102 +996,9 @@ func (mp *managedProvider) allowsScope(scope string) bool {
 	return mp.roles[role]
 }
 
-func moduleForScope(scope string) string {
-	if normalizeScope(scope) == "downloader" {
-		return "downloader"
-	}
-	return "indexer"
-}
-
-func (m *Manager) recordDownloaderDemand() {
-	if m == nil {
-		return
-	}
-	m.stats.downloaderDemand.Store(time.Now().UnixNano())
-}
-
-func (m *Manager) downloaderDemandActive(now time.Time) bool {
-	if m == nil {
-		return false
-	}
-	last := m.stats.downloaderDemand.Load()
-	if last == 0 {
-		return m.stats.downloaderActive.Load() > 0
-	}
-	return m.stats.downloaderActive.Load() > 0 || now.Sub(time.Unix(0, last)) <= m.opts.DownloaderDemandWindow
-}
-
-func (m *Manager) moduleCanAcquire(module string) bool {
-	if m == nil {
-		return false
-	}
-	if !m.opts.ModuleReservationsEnabled {
-		return true
-	}
-	limits := m.moduleLimits(time.Now())
-	switch module {
-	case "downloader":
-		return m.stats.downloaderActive.Load() < int64(limits.downloader)
-	default:
-		return m.stats.indexerActive.Load() < int64(limits.indexer)
-	}
-}
-
-type moduleLimits struct {
-	indexer              int
-	downloader           int
-	downloaderDemandLive bool
-}
-
-func (m *Manager) moduleLimits(now time.Time) moduleLimits {
-	capacity := m.TotalCapacity()
-	if capacity <= 0 {
-		return moduleLimits{}
-	}
-
-	indexerLimit := capacity
-	downloaderLimit := capacity
-	downloaderDemand := m.downloaderDemandActive(now)
-	if !m.opts.IdleBorrowEnabled || downloaderDemand {
-		indexerLimit = percentOfCapacity(capacity, m.opts.IndexerMaxPercent)
-	}
-	if !m.opts.IdleBorrowEnabled {
-		downloaderLimit = percentOfCapacity(capacity, 100-m.opts.IndexerMaxPercent)
-		if downloaderLimit <= 0 {
-			downloaderLimit = percentOfCapacity(capacity, m.opts.DownloaderReservePercent)
-		}
-	}
-	if downloaderLimit <= 0 {
-		downloaderLimit = 1
-	}
-	return moduleLimits{indexer: indexerLimit, downloader: downloaderLimit, downloaderDemandLive: downloaderDemand}
-}
-
-func percentOfCapacity(capacity, percent int) int {
-	if capacity <= 0 {
-		return 0
-	}
-	if percent <= 0 {
-		return 1
-	}
-	if percent > 100 {
-		percent = 100
-	}
-	limit := capacity * percent / 100
-	if limit <= 0 {
-		return 1
-	}
-	return limit
-}
-
-func (m *Manager) recordActive(scope, module string, delta int64) {
+func (m *Manager) recordActive(scope string, delta int64) {
 	m.scopeStats(scope).active.Add(delta)
-	switch module {
-	case "downloader":
-		m.stats.downloaderActive.Add(delta)
-	default:
-		m.stats.indexerActive.Add(delta)
-	}
+	m.stats.indexerActive.Add(delta)
 }
 
 // try fetch will attempt to fetch an article from a provider
@@ -1254,18 +1110,8 @@ func (m *Manager) moduleStats() ManagerModuleStats {
 	if m == nil {
 		return ManagerModuleStats{}
 	}
-	limits := m.moduleLimits(time.Now())
 	return ManagerModuleStats{
-		ReservationsEnabled:      m.opts.ModuleReservationsEnabled,
-		IdleBorrowEnabled:        m.opts.IdleBorrowEnabled,
-		IndexerMaxPercent:        m.opts.IndexerMaxPercent,
-		DownloaderReservePercent: m.opts.DownloaderReservePercent,
-		DownloaderDemandWindowMS: m.opts.DownloaderDemandWindow.Milliseconds(),
-		IndexerActive:            m.stats.indexerActive.Load(),
-		DownloaderActive:         m.stats.downloaderActive.Load(),
-		IndexerLimit:             limits.indexer,
-		DownloaderLimit:          limits.downloader,
-		DownloaderDemandActive:   limits.downloaderDemandLive,
+		IndexerActive: m.stats.indexerActive.Load(),
 	}
 }
 
@@ -1315,16 +1161,7 @@ func (m *Manager) RuntimeStats(scope string) app.NNTPRuntimeStats {
 		ArticleNotFound: stats.ArticleNotFound,
 		OperationErrors: stats.OperationErrors,
 		Modules: app.NNTPModuleRuntimeStats{
-			ReservationsEnabled:      stats.Modules.ReservationsEnabled,
-			IdleBorrowEnabled:        stats.Modules.IdleBorrowEnabled,
-			IndexerMaxPercent:        stats.Modules.IndexerMaxPercent,
-			DownloaderReservePercent: stats.Modules.DownloaderReservePercent,
-			DownloaderDemandWindowMS: stats.Modules.DownloaderDemandWindowMS,
-			IndexerActive:            stats.Modules.IndexerActive,
-			DownloaderActive:         stats.Modules.DownloaderActive,
-			IndexerLimit:             stats.Modules.IndexerLimit,
-			DownloaderLimit:          stats.Modules.DownloaderLimit,
-			DownloaderDemandActive:   stats.Modules.DownloaderDemandActive,
+			IndexerActive: stats.Modules.IndexerActive,
 		},
 		Providers: make([]app.NNTPProviderRuntimeStats, 0, len(stats.Providers)),
 		Scopes:    make([]app.NNTPScopeRuntimeStats, 0, len(stats.Scopes)),
@@ -1377,7 +1214,7 @@ func (m *Manager) policyForRuntimeScope(scope string) CapacityPolicy {
 	return m.opts.CapacityPolicy
 }
 
-// allows safe teardown when reloading downloader runtime while idle
+// Close releases all provider connections.
 func (m *Manager) Close() error {
 	if m == nil {
 		return nil

@@ -7,35 +7,22 @@ import (
 
 	"github.com/datallboy/gonzb/internal/domain"
 	"github.com/datallboy/gonzb/internal/infra/config"
-	"github.com/datallboy/gonzb/internal/nzb"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
 )
 
-type DownloaderCommands interface {
-	EnqueueByReleaseID(ctx context.Context, sourceKind, releaseID, title string) (*domain.QueueItem, error)
-	EnqueueNZB(ctx context.Context, filename string, file io.Reader) (*domain.QueueItem, error)
-	EnqueueNZBWithCategory(ctx context.Context, filename, category string, file io.Reader) (*domain.QueueItem, error)
-	Cancel(id string) bool
-	CancelMany(ids []string) int
-	DeleteMany(ctx context.Context, ids []string) (int64, error)
-	ClearHistory(ctx context.Context) (int64, error)
-	Pause() bool
-	Resume() bool
+type DownloadClientSubmission struct {
+	SourceKind string
+	ReleaseID  string
 }
 
-type DownloaderQueries interface {
-	ListActive() []*domain.QueueItem
-	ListHistory(ctx context.Context, status string, limit, offset int) ([]*domain.QueueItem, int, error)
-	GetActiveItem() *domain.QueueItem
-	GetItem(ctx context.Context, id string) (*domain.QueueItem, error)
-	GetItemFiles(ctx context.Context, id string) ([]*domain.DownloadFile, error)
-	GetItemEvents(ctx context.Context, id string) ([]*domain.QueueItemEvent, error)
-	IsPaused() bool
+type DownloadClientResult struct {
+	ClientID string `json:"client_id"`
+	JobID    string `json:"job_id,omitempty"`
 }
 
-type DownloaderModule interface {
-	Commands() DownloaderCommands
-	Queries() DownloaderQueries
+type DownloadClient interface {
+	SendRelease(ctx context.Context, submission DownloadClientSubmission) (*DownloadClientResult, error)
+	Test(ctx context.Context, client DownloadClientRuntimeSettings) error
 }
 
 type AggregatorDownloadResult struct {
@@ -72,10 +59,7 @@ type RuntimeModule interface {
 }
 
 type NNTPManager interface {
-	// This allows the engine to call the manager without importing the nntp package
-	Fetch(ctx context.Context, seg *domain.Segment, groups []string) (io.Reader, error)
-	TotalCapacity() int
-	Close() error // allows idle runtime swaps on settings reload
+	Close() error
 }
 
 type NNTPRuntimeStats struct {
@@ -101,16 +85,7 @@ type NNTPRuntimeStats struct {
 }
 
 type NNTPModuleRuntimeStats struct {
-	ReservationsEnabled      bool  `json:"reservations_enabled"`
-	IdleBorrowEnabled        bool  `json:"idle_borrow_enabled"`
-	IndexerMaxPercent        int   `json:"indexer_max_percent"`
-	DownloaderReservePercent int   `json:"downloader_reserve_percent"`
-	DownloaderDemandWindowMS int64 `json:"downloader_demand_window_ms"`
-	IndexerActive            int64 `json:"indexer_active"`
-	DownloaderActive         int64 `json:"downloader_active"`
-	IndexerLimit             int   `json:"indexer_limit"`
-	DownloaderLimit          int   `json:"downloader_limit"`
-	DownloaderDemandActive   bool  `json:"downloader_demand_active"`
+	IndexerActive int64 `json:"indexer_active"`
 }
 
 type NNTPScopeRuntimeStats struct {
@@ -149,7 +124,7 @@ type NNTPProviderRuntimeStats struct {
 	RecoverableErrors int64    `json:"recoverable_errors"`
 }
 
-// Manager defines the contract for our NZB search and download engine.
+// IndexerAggregator defines release search and NZB retrieval for aggregator sources.
 type IndexerAggregator interface {
 	SearchAll(ctx context.Context, query string) ([]*domain.Release, error)
 	SearchAllWithRequest(ctx context.Context, req SearchRequest) ([]*domain.Release, error)
@@ -235,8 +210,18 @@ type UsenetIndexStore interface {
 	UpsertIndexerGroupProfile(ctx context.Context, providerID, newsgroupID int64, tier, reason string) error
 	RefreshIndexerGroupProfiles(ctx context.Context) (int64, error)
 	UpsertDeferredArticleRange(ctx context.Context, in pgindex.DeferredArticleRangeRecord) error
+	ExistingScrapeSourceDays(ctx context.Context, sourcePostedAt []time.Time) (map[string]bool, error)
+	FindScrapedArticleRangeForDateWindow(ctx context.Context, providerID, newsgroupID int64, windowStart, windowEnd time.Time) (int64, int64, bool, error)
+	EnsureScrapeTimeframeProgress(ctx context.Context, timeframeID string, providerID, newsgroupID int64, windowStart, windowEnd time.Time) (*pgindex.ScrapeTimeframeProgress, error)
+	ResolveScrapeTimeframeProgress(ctx context.Context, timeframeID string, providerID, newsgroupID, articleLow, articleHigh int64, empty bool) error
+	AdvanceScrapeTimeframeProgress(ctx context.Context, timeframeID string, providerID, newsgroupID, nextArticle int64, completed bool) error
+	FailScrapeTimeframeProgress(ctx context.Context, timeframeID string, providerID, newsgroupID int64, cause string) error
+	ClaimDeferredArticleRange(ctx context.Context, owner string, lease time.Duration) (*pgindex.DeferredArticleRangeClaim, error)
+	CompleteDeferredArticleRange(ctx context.Context, id int64, owner string) error
+	FailDeferredArticleRange(ctx context.Context, id int64, owner, cause string, maxAttempts int) error
 	ListIndexerGroupProfiles(ctx context.Context, limit int) ([]pgindex.IndexerGroupProfileSummary, error)
 	ListDeferredArticleRanges(ctx context.Context, state string, limit int) ([]pgindex.DeferredArticleRangeSummary, error)
+	GetSourceBucketOutcomeReport(ctx context.Context, limit int) (*pgindex.SourceBucketOutcomeReport, error)
 	RunArticleCohortScheduler(ctx context.Context, req pgindex.ArticleCohortSchedulerRequest) (*pgindex.ArticleCohortSchedulerResult, error)
 
 	ListUnassembledArticleHeaders(ctx context.Context, limit int) ([]pgindex.AssemblyCandidate, error)
@@ -285,6 +270,8 @@ type UsenetIndexStore interface {
 	RunPartitionRetentionTask(ctx context.Context, batchSize int) (*pgindex.MaintenanceTaskResult, error)
 	DryRunPartitionDefaultRehomeTask(ctx context.Context, batchSize int) (*pgindex.MaintenanceTaskResult, error)
 	RunPartitionDefaultRehomeTask(ctx context.Context, batchSize int) (*pgindex.MaintenanceTaskResult, error)
+	ReconcileSourceBucketOutcomes(ctx context.Context, batchSize int, policy pgindex.SourceBucketOutcomePolicy) (*pgindex.MaintenanceTaskResult, error)
+	ConfigurePartitionProvisioning(ddlLockTimeout time.Duration)
 	ProvisionSourceWorkPartitions(ctx context.Context, daysBefore, daysAhead int) error
 	ListIndexerBinaries(ctx context.Context, params pgindex.IndexerBinaryListParams) ([]pgindex.IndexerBinarySummary, int, error)
 	PurgeArticleHeaderPayloads(ctx context.Context) (int64, error)
@@ -370,76 +357,11 @@ type UsenetIndexerService interface {
 	NNTPStats(ctx context.Context) (*NNTPRuntimeStats, error)
 }
 
-type Processor interface {
-	// processor now needs the queue item so it can use a per-job work dir
-	Prepare(ctx context.Context, item *domain.QueueItem, nzbModel *nzb.Model, nzbFilename string) (*domain.PreparationResult, error)
-	Finalize(ctx context.Context, tasks []*domain.DownloadFile) error
-	PostProcess(ctx context.Context, item *domain.QueueItem, tasks []*domain.DownloadFile) error
-}
-
-type Downloader interface {
-	// The engine's ability to process a specific item
-	Download(ctx context.Context, item *domain.QueueItem) error
-	RenderCLIProgress(item *domain.QueueItem, speedMbps float64, final bool)
-	SetProgressHandler(fn func(*domain.QueueItem))
-}
-
-// explicit queue enqueue contract so downloader does not infer source provenance.
-type QueueAddRequest struct {
-	SourceKind      string
-	SourceReleaseID string
-	Release         *domain.Release
-	Title           string
-}
-
-type QueueManager interface {
-	Start(ctx context.Context)
-	Add(ctx context.Context, req QueueAddRequest) (*domain.QueueItem, error)
-	GetActiveItem() *domain.QueueItem
-	GetItem(ctx context.Context, id string) (*domain.QueueItem, bool)
-	GetAllItems() []*domain.QueueItem
-	Cancel(id string) bool
-	Delete(id string) bool
-	Stop()
-
-	Pause() bool
-	Resume() bool
-	IsPaused() bool
-
-	HydrateItem(ctx context.Context, item *domain.QueueItem) error
-	UpdateStatus(ctx context.Context, item *domain.QueueItem, status domain.JobStatus)
-	ReloadRuntime(appCtx *Context) // refresh future-job dependencies after settings reload
-}
-
-type NZBParser interface {
-	ParseFile(nzbPath string) (*nzb.Model, error)
-	Parse(r io.Reader) (*nzb.Model, error)
-}
-
-// JobStore defines downloader queue/event/history persistence.
 type JobStore interface {
-	// Downloader Queue: SQLite
-	SaveQueueItem(ctx context.Context, item *domain.QueueItem) error
-	GetQueueItem(ctx context.Context, id string) (*domain.QueueItem, error)
-	GetQueueItems(ctx context.Context) ([]*domain.QueueItem, error)
-	GetActiveQueueItems(ctx context.Context) ([]*domain.QueueItem, error)
-	DeleteQueueItems(ctx context.Context, ids []string) (int64, error)
-	ClearQueueHistory(ctx context.Context, statuses []domain.JobStatus) (int64, error)
-	SaveQueueEvent(ctx context.Context, ev *domain.QueueItemEvent) error
-	GetQueueEvents(ctx context.Context, queueID string) ([]*domain.QueueItemEvent, error)
-	ResetStuckQueueItems(ctx context.Context, newStatus domain.JobStatus, oldStatuses ...domain.JobStatus) error
-
-	// store liveness + schema handshake.
 	Ping(ctx context.Context) error
 	SchemaVersion(ctx context.Context) (int, error)
 	ExpectedSchemaVersion() int
 	ValidateSchema(ctx context.Context) error
-}
-
-// downloader-owned queue item file metadata
-type QueueFileStore interface {
-	SaveQueueItemFiles(ctx context.Context, queueItemID string, files []*domain.DownloadFile) error
-	GetQueueItemFiles(ctx context.Context, queueItemID string) ([]*domain.DownloadFile, error)
 }
 
 type BlobStore interface {
@@ -482,8 +404,4 @@ type SettingsStore interface {
 	SchemaVersion(ctx context.Context) (int, error)
 	ExpectedSchemaVersion() int
 	ValidateSchema(ctx context.Context) error
-}
-
-type ArrNotifier interface {
-	NotifyQueueTerminal(ctx context.Context, item *domain.QueueItem) error
 }

@@ -10,8 +10,11 @@ import (
 )
 
 const (
-	yencRecoveryWorkItemSeedLimit          = 5000
-	yencRecoveryWorkItemSyncChunk          = 2000
+	yencRecoveryWorkItemSeedLimit = 5000
+	// Keep the eligibility/readiness join and upsert bounded during large
+	// assembly catch-up runs. Larger batches spill heavily under concurrent
+	// recovery and can exceed the per-statement timeout.
+	yencRecoveryWorkItemSyncChunk          = 20
 	yencRecoveryOpaqueCohortMin            = 20
 	yencRecoveryOpaqueCohortScanMultiplier = 200
 	yencRecoveryOpaqueCohortScanMax        = 250000
@@ -39,11 +42,12 @@ const yencRecoveryWeakFamilyEligibilityPredicate = `
 			  )`
 const yencRecoveryWorkItemPriorityRankSQL = `
 				CASE
-					WHEN GREATEST(COALESCE(bic.expected_file_count, 0), COALESCE(bic.expected_archive_file_count, 0)) > 1
-						OR COALESCE(bic.file_index, 0) > 0
-						OR COALESCE(bos.total_parts, 0) > 1
-						OR COALESCE(p.subject_file_total, 0) > 1
-						OR COALESCE(p.yenc_total_parts, 0) > 1
+					WHEN COALESCE(s.recover_pending, FALSE) = TRUE
+						AND BTRIM(COALESCE(bic.release_family_key, '')) <> ''
+						AND (
+							COALESCE(s.binary_count, 0) > 1 OR
+							COALESCE(s.complete_binary_count, 0) > 0
+						)
 					THEN 0
 					WHEN COALESCE(s.binary_count, 0) > 1
 						OR COALESCE(s.complete_binary_count, 0) > 0
@@ -64,14 +68,6 @@ func isStatementTimeoutError(err error) bool {
 	return strings.Contains(msg, "statement timeout") ||
 		strings.Contains(msg, "sqlstate 57014") ||
 		strings.Contains(msg, "context deadline exceeded")
-}
-
-func (s *Store) ensureYEncRecoveryWorkItemsSeed(ctx context.Context, limit int) error {
-	if limit <= 0 {
-		limit = yencRecoveryWorkItemSeedLimit
-	}
-	_, _, err := s.BackfillYEncRecoveryWorkItems(ctx, limit)
-	return err
 }
 
 func configureYEncRecoveryWorkItemQueryTx(ctx context.Context, tx *sql.Tx) error {
@@ -105,7 +101,7 @@ func (s *Store) BackfillYEncRecoveryWorkItems(ctx context.Context, limit int) (i
 	if len(binaryIDs) == 0 {
 		return 0, 0, nil
 	}
-	if err := s.ensureSourceWorkPartitionsForBinaryIDs(ctx, binaryIDs); err != nil {
+	if err := s.ensurePartitionBundleForBinaryIDs(ctx, partitionBundleYEnc, binaryIDs); err != nil {
 		return 0, 0, err
 	}
 
@@ -160,7 +156,7 @@ func (s *Store) BackfillPriorityYEncRecoveryWorkItems(ctx context.Context, limit
 			return 0, 0, fmt.Errorf("commit scheduled priority yenc selection tx: %w", err)
 		}
 		selectionCommitted = true
-		if err := s.ensureSourceWorkPartitionsForBinaryIDs(ctx, scheduledBinaryIDs); err != nil {
+		if err := s.ensurePartitionBundleForBinaryIDs(ctx, partitionBundleYEnc, scheduledBinaryIDs); err != nil {
 			return 0, 0, err
 		}
 		writeTx, err := s.db.BeginTx(ctx, nil)
@@ -183,8 +179,22 @@ func (s *Store) BackfillPriorityYEncRecoveryWorkItems(ctx context.Context, limit
 		}
 		return upserted, retired, nil
 	}
+	recoveryProfile := "balanced"
+	if err := tx.QueryRowContext(ctx, `
+		SELECT recovery_profile
+		FROM indexer_recovery_capacity_state
+		WHERE id = true`).Scan(&recoveryProfile); err != nil && err != sql.ErrNoRows {
+		return 0, 0, fmt.Errorf("load priority yenc recovery profile: %w", err)
+	}
+	if strings.TrimSpace(recoveryProfile) != "exhaustive" {
+		if err := tx.Commit(); err != nil {
+			return 0, 0, fmt.Errorf("commit sampled priority yenc selection tx: %w", err)
+		}
+		selectionCommitted = true
+		return 0, 0, nil
+	}
 
-	openWork, err := countOpenYEncRecoveryWorkItemsInTx(ctx, tx, limit)
+	openWork, err := countOpenPriority0YEncRecoveryWorkItemsInTx(ctx, tx, limit)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -218,7 +228,7 @@ func (s *Store) BackfillPriorityYEncRecoveryWorkItems(ctx context.Context, limit
 		return 0, 0, fmt.Errorf("commit priority yenc selection tx: %w", err)
 	}
 	selectionCommitted = true
-	if err := s.ensureSourceWorkPartitionsForBinaryIDs(ctx, binaryIDs); err != nil {
+	if err := s.ensurePartitionBundleForBinaryIDs(ctx, partitionBundleYEnc, binaryIDs); err != nil {
 		return 0, 0, err
 	}
 
@@ -236,6 +246,75 @@ func (s *Store) BackfillPriorityYEncRecoveryWorkItems(ctx context.Context, limit
 	}
 	if err := writeTx.Commit(); err != nil {
 		return 0, 0, fmt.Errorf("commit priority yenc recovery work item backfill tx: %w", err)
+	}
+	return upserted, retired, nil
+}
+
+func (s *Store) backfillPriorityYEncRecoveryWorkItemsForWindow(
+	ctx context.Context,
+	limit int,
+	windowStart time.Time,
+	windowEnd time.Time,
+) (int64, int64, error) {
+	if limit <= 0 {
+		limit = yencRecoveryWorkItemSeedLimit
+	}
+	windowStart = windowStart.UTC()
+	windowEnd = windowEnd.UTC()
+	if !windowEnd.After(windowStart) {
+		return 0, 0, nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, 0, fmt.Errorf("begin windowed priority yenc recovery selection tx: %w", err)
+	}
+	defer rollbackTx(tx)
+	if err := configureYEncRecoveryWorkItemQueryTx(ctx, tx); err != nil {
+		return 0, 0, err
+	}
+	bucketSeconds, err := yEncOpaqueCohortBucketSecondsInTx(ctx, tx)
+	if err != nil {
+		return 0, 0, err
+	}
+	binaryIDs, err := selectOpaqueNearTimeYEncRecoveryBackfillBinaryIDsForWindowInTx(
+		ctx,
+		tx,
+		limit,
+		bucketSeconds,
+		windowStart,
+		windowEnd,
+	)
+	if err != nil {
+		if isStatementTimeoutError(err) {
+			return 0, 0, nil
+		}
+		return 0, 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, 0, fmt.Errorf("commit windowed priority yenc recovery selection tx: %w", err)
+	}
+	if len(binaryIDs) == 0 {
+		return 0, 0, nil
+	}
+	if err := s.ensurePartitionBundleForBinaryIDs(ctx, partitionBundleYEnc, binaryIDs); err != nil {
+		return 0, 0, err
+	}
+
+	writeTx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, 0, fmt.Errorf("begin windowed priority yenc recovery write tx: %w", err)
+	}
+	defer rollbackTx(writeTx)
+	if err := configureYEncRecoveryWorkItemQueryTx(ctx, writeTx); err != nil {
+		return 0, 0, err
+	}
+	upserted, retired, err := s.syncYEncRecoveryWorkItemsForBinariesInTx(ctx, writeTx, binaryIDs)
+	if err != nil {
+		return 0, 0, err
+	}
+	if err := writeTx.Commit(); err != nil {
+		return 0, 0, fmt.Errorf("commit windowed priority yenc recovery write tx: %w", err)
 	}
 	return upserted, retired, nil
 }
@@ -290,6 +369,33 @@ func countOpenYEncRecoveryWorkItemsInTx(ctx context.Context, tx *sql.Tx, limit i
 			LIMIT $1
 		) open_work`, limit).Scan(&open); err != nil {
 		return 0, fmt.Errorf("count open yenc recovery work items from partitions: %w", err)
+	}
+	return open, nil
+}
+
+func countOpenPriority0YEncRecoveryWorkItemsInTx(ctx context.Context, tx *sql.Tx, limit int) (int, error) {
+	if tx == nil {
+		return 0, fmt.Errorf("yenc recovery work item tx is required")
+	}
+	if limit <= 0 {
+		limit = yencRecoveryWorkItemSeedLimit
+	}
+
+	var open int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM (
+			SELECT 1
+			FROM yenc_recovery_work_items
+			WHERE priority_rank = 0
+			  AND BTRIM(COALESCE(message_id, '')) <> ''
+			  AND (
+			    (status = 'ready' AND ready_at <= NOW())
+			    OR (status = 'running' AND (lease_expires_at IS NULL OR lease_expires_at > NOW()))
+			  )
+			LIMIT $1
+		) open_priority0`, limit).Scan(&open); err != nil {
+		return 0, fmt.Errorf("count open priority0 yenc recovery work items: %w", err)
 	}
 	return open, nil
 }
@@ -451,52 +557,6 @@ func markArticleCohortYEncQueueAdmittedInTx(ctx context.Context, tx *sql.Tx, bin
 	return nil
 }
 
-func (s *Store) BackfillPriorityYEncRecoveryWorkItemsForBinaries(ctx context.Context, binaryIDs []int64) (int64, int64, error) {
-	if len(binaryIDs) == 0 {
-		return 0, 0, nil
-	}
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, 0, fmt.Errorf("begin priority yenc recovery work item binary backfill tx: %w", err)
-	}
-	defer rollbackTx(tx)
-	if err := configureYEncRecoveryWorkItemQueryTx(ctx, tx); err != nil {
-		return 0, 0, err
-	}
-
-	siblingLimit := len(binaryIDs) * 20
-	if siblingLimit < yencRecoveryWorkItemSeedLimit {
-		siblingLimit = yencRecoveryWorkItemSeedLimit
-	}
-	if siblingLimit > yencRecoveryWorkItemSeedLimit {
-		siblingLimit = yencRecoveryWorkItemSeedLimit
-	}
-	bucketSeconds, err := yEncOpaqueCohortBucketSecondsInTx(ctx, tx)
-	if err != nil {
-		return 0, 0, err
-	}
-	siblingIDs, err := selectOpaqueNearTimeYEncRecoverySiblingBinaryIDsInTx(ctx, tx, binaryIDs, siblingLimit, bucketSeconds)
-	if err != nil {
-		return 0, 0, err
-	}
-	if len(siblingIDs) == 0 {
-		if err := tx.Commit(); err != nil {
-			return 0, 0, fmt.Errorf("commit empty priority yenc recovery work item binary backfill tx: %w", err)
-		}
-		return 0, 0, nil
-	}
-
-	upserted, retired, err := s.syncYEncRecoveryWorkItemsForBinariesInTx(ctx, tx, siblingIDs)
-	if err != nil {
-		return 0, 0, err
-	}
-	if err := tx.Commit(); err != nil {
-		return 0, 0, fmt.Errorf("commit priority yenc recovery work item binary backfill tx: %w", err)
-	}
-	return upserted, retired, nil
-}
-
 func yEncOpaqueCohortBucketSecondsInTx(ctx context.Context, tx *sql.Tx) (int, error) {
 	if tx == nil {
 		return defaultYEncAdmissionNearTimeBucketMinutes * 60, nil
@@ -514,136 +574,6 @@ func yEncOpaqueCohortBucketSecondsInTx(ctx context.Context, tx *sql.Tx) (int, er
 		return 0, fmt.Errorf("load yenc opaque cohort bucket seconds: %w", err)
 	}
 	return seconds, nil
-}
-
-func selectOpaqueNearTimeYEncRecoverySiblingBinaryIDsInTx(ctx context.Context, tx *sql.Tx, binaryIDs []int64, limit int, bucketSeconds int) ([]int64, error) {
-	if tx == nil {
-		return nil, fmt.Errorf("yenc recovery work item tx is required")
-	}
-	if limit <= 0 || len(binaryIDs) == 0 {
-		return nil, nil
-	}
-	unique := make([]int64, 0, len(binaryIDs))
-	seen := make(map[int64]struct{}, len(binaryIDs))
-	for _, binaryID := range binaryIDs {
-		if binaryID <= 0 {
-			continue
-		}
-		if _, ok := seen[binaryID]; ok {
-			continue
-		}
-		seen[binaryID] = struct{}{}
-		unique = append(unique, binaryID)
-	}
-	if len(unique) == 0 {
-		return nil, nil
-	}
-	if len(unique) > yencRecoveryPrioritySeedMax {
-		unique = unique[:yencRecoveryPrioritySeedMax]
-	}
-
-	placeholders := make([]string, 0, len(unique))
-	args := make([]interface{}, 0, len(unique)+1)
-	for i, binaryID := range unique {
-		placeholders = append(placeholders, fmt.Sprintf("($%d::bigint)", i+1))
-		args = append(args, binaryID)
-	}
-	limitParam := len(args) + 1
-	args = append(args, limit)
-	bucketParam := len(args) + 1
-	args = append(args, bucketSeconds)
-
-	query := `
-		WITH requested_ids(binary_id) AS (
-			VALUES ` + strings.Join(placeholders, ",") + `
-		),
-		requested AS MATERIALIZED (
-			SELECT bc.binary_id, bc.source_posted_at
-			FROM requested_ids r
-			JOIN binary_core bc ON bc.binary_id = r.binary_id
-			WHERE bc.source_posted_at IS NOT NULL
-		),
-		eligible AS MATERIALIZED (
-			SELECT
-				bic.binary_id,
-				bic.source_posted_at,
-				bic.provider_id,
-				bic.newsgroup_id,
-				FLOOR(EXTRACT(EPOCH FROM bos.posted_at) / $` + fmt.Sprintf("%d", bucketParam) + `::double precision)::bigint AS posted_bucket,
-				bos.posted_at,
-				bos.total_bytes
-			FROM requested r
-			JOIN binary_identity_current bic
-			  ON bic.source_posted_at = r.source_posted_at
-			 AND bic.binary_id = r.binary_id
-			JOIN binary_observation_stats bos
-			  ON bos.source_posted_at = bic.source_posted_at
-			 AND bos.binary_id = bic.binary_id
-			LEFT JOIN binary_recovery_current brc
-			  ON brc.source_posted_at = bic.source_posted_at
-			 AND brc.binary_id = bic.binary_id
-			LEFT JOIN binary_lifecycle bl
-			  ON bl.source_posted_at = bic.source_posted_at
-			 AND bl.binary_id = bic.binary_id
-			WHERE bic.family_kind = 'opaque_set'
-			  AND bic.identity_reason = 'opaque_subject_set'
-			  AND bic.is_main_payload = TRUE
-			  AND LOWER(BTRIM(COALESCE(bic.identity_strength, ''))) IN ('weak', 'provisional')
-			  AND COALESCE(bos.total_parts, 0) <= 1
-			  AND COALESCE(bos.observed_parts, 0) <= 1
-			  AND bos.posted_at IS NOT NULL
-			  AND COALESCE(brc.recovered_source, '') <> 'yenc_header'
-			  AND COALESCE(bl.lifecycle_status, 'active') <> 'superseded'
-			  AND NOT EXISTS (
-			  	SELECT 1
-			  	FROM yenc_recovery_work_items wi
-				WHERE wi.source_posted_at = bic.source_posted_at
-				  AND wi.binary_id = bic.binary_id
-			  	  AND wi.status IN ('ready', 'running', 'done')
-			  )
-		),
-		cohorts AS MATERIALIZED (
-			SELECT
-				e.provider_id,
-				e.newsgroup_id,
-				e.posted_bucket,
-				MAX(e.posted_at) AS latest_posted_at,
-				COUNT(*) AS cohort_size
-			FROM eligible e
-			GROUP BY e.provider_id, e.newsgroup_id, e.posted_bucket
-			HAVING COUNT(*) >= ` + fmt.Sprintf("%d", yencRecoveryOpaqueCohortMin) + `
-		)
-		SELECT e.binary_id
-		FROM cohorts c
-		JOIN eligible e
-		  ON e.provider_id = c.provider_id
-		 AND e.newsgroup_id = c.newsgroup_id
-		 AND e.posted_bucket = c.posted_bucket
-		ORDER BY c.latest_posted_at DESC, c.cohort_size DESC, e.total_bytes DESC, e.binary_id
-		LIMIT $` + fmt.Sprintf("%d", limitParam)
-
-	rows, err := tx.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("select opaque near-time yenc recovery sibling binaries: %w", err)
-	}
-	defer rows.Close()
-	out := make([]int64, 0, limit)
-	seen = make(map[int64]struct{}, limit)
-	for rows.Next() {
-		var binaryID int64
-		if err := rows.Scan(&binaryID); err != nil {
-			return nil, fmt.Errorf("scan opaque near-time yenc recovery sibling binary: %w", err)
-		}
-		if _, ok := seen[binaryID]; ok {
-			continue
-		}
-		seen[binaryID] = struct{}{}
-		out = append(out, binaryID)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate opaque near-time yenc recovery sibling binaries: %w", err)
-	}
-	return out, nil
 }
 
 func selectOpaqueNearTimeYEncRecoveryBackfillBinaryIDsInTx(ctx context.Context, tx *sql.Tx, limit int, bucketSeconds int) ([]int64, error) {
@@ -703,11 +633,11 @@ func selectOpaqueNearTimeYEncRecoveryBackfillBinaryIDsInTx(ctx context.Context, 
 			  AND COALESCE(brc.recovered_source, '') <> 'yenc_header'
 			  AND COALESCE(bl.lifecycle_status, 'active') <> 'superseded'
 			  AND NOT EXISTS (
-			  	SELECT 1
-			  	FROM yenc_recovery_work_items wi
+				SELECT 1
+				FROM yenc_recovery_work_items wi
 				WHERE wi.source_posted_at = bc.source_posted_at
 				  AND wi.binary_id = bc.binary_id
-			  	  AND wi.status IN ('ready', 'running', 'done')
+				  AND wi.status IN ('ready', 'running', 'done')
 			  )
 			ORDER BY rb.posted_at DESC, rb.total_bytes DESC, bc.binary_id DESC
 			LIMIT $3
@@ -751,6 +681,128 @@ func selectOpaqueNearTimeYEncRecoveryBackfillBinaryIDsInTx(ctx context.Context, 
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate opaque near-time yenc recovery binaries: %w", err)
+	}
+	return binaryIDs, nil
+}
+
+func selectOpaqueNearTimeYEncRecoveryBackfillBinaryIDsForWindowInTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	limit int,
+	bucketSeconds int,
+	windowStart time.Time,
+	windowEnd time.Time,
+) ([]int64, error) {
+	if tx == nil {
+		return nil, fmt.Errorf("yenc recovery work item tx is required")
+	}
+	if limit <= 0 || !windowEnd.After(windowStart) {
+		return nil, nil
+	}
+	scanLimit := limit * yencRecoveryOpaqueCohortScanMultiplier
+	if scanLimit < limit {
+		scanLimit = limit
+	}
+	if scanLimit > yencRecoveryOpaqueCohortScanMax {
+		scanLimit = yencRecoveryOpaqueCohortScanMax
+	}
+
+	rows, err := tx.QueryContext(ctx, `
+		WITH window_bos AS MATERIALIZED (
+			SELECT
+				binary_id,
+				source_posted_at,
+				provider_id,
+				newsgroup_id,
+				posted_at,
+				total_bytes,
+				updated_at
+			FROM binary_observation_stats
+			WHERE total_parts <= 1
+			  AND observed_parts <= 1
+			  AND posted_at >= $3
+			  AND posted_at < $4
+			ORDER BY posted_at DESC, source_posted_at DESC, binary_id DESC
+			LIMIT $5
+		),
+		eligible AS MATERIALIZED (
+			SELECT
+				rb.binary_id,
+				bic.provider_id,
+				bic.newsgroup_id,
+				FLOOR(EXTRACT(EPOCH FROM rb.posted_at) / $2::double precision)::bigint AS posted_bucket,
+				rb.posted_at,
+				rb.total_bytes
+			FROM window_bos rb
+			JOIN binary_identity_current bic
+			  ON bic.source_posted_at = rb.source_posted_at
+			 AND bic.binary_id = rb.binary_id
+			JOIN binary_core bc
+			  ON bc.source_posted_at = bic.source_posted_at
+			 AND bc.binary_id = bic.binary_id
+			LEFT JOIN binary_recovery_current brc
+			  ON brc.source_posted_at = bic.source_posted_at
+			 AND brc.binary_id = bic.binary_id
+			LEFT JOIN binary_lifecycle bl
+			  ON bl.source_posted_at = bic.source_posted_at
+			 AND bl.binary_id = bic.binary_id
+			WHERE bic.family_kind = 'opaque_set'
+			  AND bic.identity_reason = 'opaque_subject_set'
+			  AND bic.is_main_payload = TRUE
+			  AND LOWER(BTRIM(COALESCE(bic.identity_strength, ''))) IN ('weak', 'provisional')
+			  AND COALESCE(brc.recovered_source, '') <> 'yenc_header'
+			  AND COALESCE(bl.lifecycle_status, 'active') <> 'superseded'
+			  AND NOT EXISTS (
+				SELECT 1
+				FROM yenc_recovery_work_items wi
+				WHERE wi.source_posted_at = bc.source_posted_at
+				  AND wi.binary_id = bc.binary_id
+				  AND wi.status IN ('ready', 'running', 'done')
+			  )
+		),
+		cohorts AS MATERIALIZED (
+			SELECT
+				provider_id,
+				newsgroup_id,
+				posted_bucket,
+				MAX(posted_at) AS latest_posted_at,
+				COUNT(*) AS cohort_size
+			FROM eligible
+			GROUP BY provider_id, newsgroup_id, posted_bucket
+			HAVING COUNT(*) >= $6
+		)
+		SELECT e.binary_id
+		FROM eligible e
+		JOIN cohorts c
+		  ON c.provider_id = e.provider_id
+		 AND c.newsgroup_id = e.newsgroup_id
+		 AND c.posted_bucket = e.posted_bucket
+		ORDER BY c.latest_posted_at DESC, c.cohort_size DESC, e.total_bytes DESC, e.binary_id
+		LIMIT $1`,
+		limit,
+		bucketSeconds,
+		windowStart,
+		windowEnd,
+		scanLimit,
+		yencRecoveryOpaqueCohortMin,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("select windowed opaque near-time yenc recovery binaries: %w", err)
+	}
+	defer rows.Close()
+
+	binaryIDs := make([]int64, 0, limit)
+	for rows.Next() {
+		var binaryID int64
+		if err := rows.Scan(&binaryID); err != nil {
+			return nil, fmt.Errorf("scan windowed opaque near-time yenc recovery binary: %w", err)
+		}
+		if binaryID > 0 {
+			binaryIDs = append(binaryIDs, binaryID)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate windowed opaque near-time yenc recovery binaries: %w", err)
 	}
 	return binaryIDs, nil
 }
@@ -1199,7 +1251,7 @@ func (s *Store) syncYEncRecoveryWorkItemsChunkInTx(ctx context.Context, tx *sql.
 				END AS group_tier,
 				CASE
 					WHEN bc.scheduler_backed AND BTRIM(bc.scheduler_admission_reason) <> '' THEN bc.scheduler_admission_reason
-					WHEN `+yencRecoveryWorkItemPriorityRankSQL+` = 0 THEN 'near_complete_or_multipart'
+					WHEN `+yencRecoveryWorkItemPriorityRankSQL+` = 0 THEN 'release_blocker'
 					ELSE 'bounded_admission'
 				END AS admission_reason,
 				CASE

@@ -46,6 +46,10 @@ type subjectMultipartRegroupRepository interface {
 	RegroupSubjectMultipartBinaries(ctx context.Context, limit int) (*pgindex.SubjectMultipartRegroupResult, error)
 }
 
+type crossGroupSubjectMultipartRegroupRepository interface {
+	RegroupCrossGroupSubjectMultipartBinaries(ctx context.Context, req pgindex.CrossGroupSubjectMultipartRegroupRequest) (*pgindex.CrossGroupSubjectMultipartRegroupResult, error)
+}
+
 // narrow matcher dependency.
 type subjectMatcher interface {
 	Match(candidate match.Candidate) match.Result
@@ -66,6 +70,9 @@ type Options struct {
 	LaneATargetPct          int
 	LaneBMinPct             int
 	LaneATimeWindowMinutes  int
+	TargetWindowEnabled     bool
+	TargetWindowStart       string
+	TargetWindowEnd         string
 }
 
 type recoveryCounters struct {
@@ -106,6 +113,8 @@ type Service struct {
 	opts                        Options
 	subjectMultipartRegroupMu   sync.Mutex
 	lastSubjectMultipartRegroup time.Time
+	crossGroupRegroupMu         sync.Mutex
+	lastCrossGroupRegroup       time.Time
 }
 
 func NewService(repo repository, matcher subjectMatcher, fetcher articleFetcher, log logger, opts Options) *Service {
@@ -181,6 +190,8 @@ func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error
 		LaneATargetPct:         s.opts.LaneATargetPct,
 		LaneBMinPct:            s.opts.LaneBMinPct,
 		LaneATimeWindowMinutes: s.opts.LaneATimeWindowMinutes,
+		TargetWindowStart:      s.targetWindowStart(),
+		TargetWindowEnd:        s.targetWindowEnd(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("claim unassembled article headers: %w", err)
@@ -294,49 +305,28 @@ func (s *Service) claimAssemblyQueueBatch(ctx context.Context, req pgindex.Assem
 	return headers, stats, err
 }
 
-type claimedBatchRepository struct {
-	delegate repository
-	headers  []pgindex.AssemblyCandidate
+func (s *Service) targetWindowStart() *time.Time {
+	start, _ := s.targetWindow()
+	return start
 }
 
-func (r claimedBatchRepository) ListUnassembledArticleHeaders(context.Context, int) ([]pgindex.AssemblyCandidate, error) {
-	return r.headers, nil
+func (s *Service) targetWindowEnd() *time.Time {
+	_, end := s.targetWindow()
+	return end
 }
 
-func (r claimedBatchRepository) ClaimUnassembledArticleHeaders(context.Context, pgindex.AssemblyClaimRequest) ([]pgindex.AssemblyCandidate, error) {
-	return r.headers, nil
-}
-
-func (r claimedBatchRepository) ClaimAssemblyQueueBatch(context.Context, pgindex.AssemblyClaimRequest) ([]pgindex.AssemblyCandidate, error) {
-	return r.headers, nil
-}
-
-func (r claimedBatchRepository) CleanupStaleAssemblyQueueRows(context.Context, int) (int, error) {
-	return 0, nil
-}
-
-func (r claimedBatchRepository) UpsertBinary(ctx context.Context, in pgindex.BinaryRecord) (int64, error) {
-	return r.delegate.UpsertBinary(ctx, in)
-}
-
-func (r claimedBatchRepository) UpsertBinaries(ctx context.Context, records []pgindex.BinaryRecord) ([]int64, error) {
-	return r.delegate.UpsertBinaries(ctx, records)
-}
-
-func (r claimedBatchRepository) UpsertBinaryParts(ctx context.Context, records []pgindex.BinaryPartRecord) error {
-	return r.delegate.UpsertBinaryParts(ctx, records)
-}
-
-func (r claimedBatchRepository) RefreshBinaryStats(ctx context.Context, binaryID int64) error {
-	return r.delegate.RefreshBinaryStats(ctx, binaryID)
-}
-
-func (r claimedBatchRepository) RefreshBinaryStatsBatch(ctx context.Context, binaryIDs []int64) error {
-	return r.delegate.RefreshBinaryStatsBatch(ctx, binaryIDs)
-}
-
-func (r claimedBatchRepository) RecordYEncRecoveryNotFound(ctx context.Context, articleHeaderID int64) error {
-	return r.delegate.RecordYEncRecoveryNotFound(ctx, articleHeaderID)
+func (s *Service) targetWindow() (*time.Time, *time.Time) {
+	if !s.opts.TargetWindowEnabled {
+		return nil, nil
+	}
+	start, startErr := time.Parse(time.RFC3339, strings.TrimSpace(s.opts.TargetWindowStart))
+	end, endErr := time.Parse(time.RFC3339, strings.TrimSpace(s.opts.TargetWindowEnd))
+	if startErr != nil || endErr != nil || !start.Before(end) {
+		return nil, nil
+	}
+	start = start.UTC()
+	end = end.UTC()
+	return &start, &end
 }
 
 func (s *Service) runOnceWithMetricsSingle(ctx context.Context, batchSize int, claimOwner string) (map[string]any, error) {
@@ -358,6 +348,8 @@ func (s *Service) runOnceWithMetricsSingle(ctx context.Context, batchSize int, c
 		LaneATargetPct:         s.opts.LaneATargetPct,
 		LaneBMinPct:            s.opts.LaneBMinPct,
 		LaneATimeWindowMinutes: s.opts.LaneATimeWindowMinutes,
+		TargetWindowStart:      s.targetWindowStart(),
+		TargetWindowEnd:        s.targetWindowEnd(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("claim unassembled article headers: %w", err)
@@ -406,11 +398,93 @@ func (s *Service) regroupSubjectMultipartBinaries(ctx context.Context, metrics m
 	metrics["subject_multipart_regroup_sources"] = int64(0)
 	metrics["subject_multipart_regroup_parts_moved"] = int64(0)
 	metrics["subject_multipart_regroup_duplicate_parts_deleted"] = int64(0)
-	repo, ok := s.repo.(subjectMultipartRegroupRepository)
-	if !ok {
+	metrics["cross_group_multipart_regroup_groups"] = int64(0)
+	metrics["cross_group_multipart_regroup_sources"] = int64(0)
+	metrics["cross_group_multipart_regroup_parts_moved"] = int64(0)
+	metrics["cross_group_multipart_regroup_duplicate_parts_deleted"] = int64(0)
+	localRepo, hasLocalRegroup := s.repo.(subjectMultipartRegroupRepository)
+	crossGroupRepo, hasCrossGroupRegroup := s.repo.(crossGroupSubjectMultipartRegroupRepository)
+	if !hasLocalRegroup && !hasCrossGroupRegroup {
 		return
 	}
 	const regroupInterval = 30 * time.Minute
+	if limit <= 0 {
+		limit = s.opts.BatchSize
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	crossGroupLimit := limit
+	if crossGroupLimit > 1000 {
+		crossGroupLimit = 1000
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	if hasCrossGroupRegroup {
+		selectedHeaders, _ := metrics["selected_headers"].(int)
+		if selectedHeaders > 0 {
+			metrics["cross_group_multipart_regroup_skipped_busy"] = true
+		} else {
+			s.crossGroupRegroupMu.Lock()
+			recentlyRan := !s.lastCrossGroupRegroup.IsZero() && time.Since(s.lastCrossGroupRegroup) < regroupInterval
+			if !recentlyRan {
+				s.lastCrossGroupRegroup = time.Now()
+			}
+			s.crossGroupRegroupMu.Unlock()
+			if recentlyRan {
+				metrics["cross_group_multipart_regroup_skipped"] = true
+			} else {
+				started := time.Now()
+				result, err := crossGroupRepo.RegroupCrossGroupSubjectMultipartBinaries(ctx, pgindex.CrossGroupSubjectMultipartRegroupRequest{
+					Limit:             crossGroupLimit,
+					TargetWindowStart: s.targetWindowStart(),
+					TargetWindowEnd:   s.targetWindowEnd(),
+				})
+				metrics["cross_group_multipart_regroup_duration_ms"] = durationMillis(time.Since(started))
+				if err != nil {
+					s.crossGroupRegroupMu.Lock()
+					s.lastCrossGroupRegroup = time.Time{}
+					s.crossGroupRegroupMu.Unlock()
+					metrics["cross_group_multipart_regroup_error"] = err.Error()
+					if s.log != nil {
+						s.log.Warn("assemble: cross-group multipart regroup skipped err=%v", err)
+					}
+				} else if result != nil {
+					metrics["cross_group_multipart_regroup_groups"] = result.Groups
+					metrics["cross_group_multipart_regroup_sources"] = result.SourceBinaries
+					metrics["cross_group_multipart_regroup_parts_moved"] = result.PartsMoved
+					metrics["cross_group_multipart_regroup_duplicate_parts_deleted"] = result.DuplicatePartsDeleted
+					if len(result.TargetBinaryIDs) > 0 {
+						if err := s.repo.RefreshBinaryStatsBatch(ctx, result.TargetBinaryIDs); err != nil {
+							metrics["cross_group_multipart_regroup_refresh_error"] = err.Error()
+							if s.log != nil {
+								s.log.Warn("assemble: cross-group multipart stats refresh skipped err=%v", err)
+							}
+						}
+					}
+					if result.Groups > 0 && s.log != nil {
+						s.log.Info(
+							"assemble: cross-group multipart regroup groups=%d sources=%d parts_moved=%d duplicate_parts_deleted=%d duration_ms=%.2f",
+							result.Groups,
+							result.SourceBinaries,
+							result.PartsMoved,
+							result.DuplicatePartsDeleted,
+							metrics["cross_group_multipart_regroup_duration_ms"],
+						)
+					}
+				}
+			}
+		}
+	}
+	if !hasLocalRegroup {
+		return
+	}
+	selectedHeaders, _ := metrics["selected_headers"].(int)
+	if selectedHeaders > 0 {
+		metrics["subject_multipart_regroup_skipped_busy"] = true
+		return
+	}
 	s.subjectMultipartRegroupMu.Lock()
 	if !s.lastSubjectMultipartRegroup.IsZero() && time.Since(s.lastSubjectMultipartRegroup) < regroupInterval {
 		s.subjectMultipartRegroupMu.Unlock()
@@ -419,18 +493,8 @@ func (s *Service) regroupSubjectMultipartBinaries(ctx context.Context, metrics m
 	}
 	s.lastSubjectMultipartRegroup = time.Now()
 	s.subjectMultipartRegroupMu.Unlock()
-
-	if limit <= 0 {
-		limit = s.opts.BatchSize
-	}
-	if limit <= 0 {
-		limit = 100
-	}
-	if limit > 100 {
-		limit = 100
-	}
 	started := time.Now()
-	result, err := repo.RegroupSubjectMultipartBinaries(ctx, limit)
+	result, err := localRepo.RegroupSubjectMultipartBinaries(ctx, limit)
 	metrics["subject_multipart_regroup_duration_ms"] = durationMillis(time.Since(started))
 	if err != nil {
 		metrics["subject_multipart_regroup_error"] = err.Error()
@@ -583,7 +647,6 @@ func (s *Service) persistAssembleWork(ctx context.Context, started time.Time, me
 			batchRecords = append(batchRecords, work.binaryRecordsByKey[key])
 		}
 		upsertCtx := pgindex.WithBinaryUpsertChunkSize(ctx, s.opts.BinaryUpsertDBChunkSize)
-		upsertCtx = pgindex.WithDeferredReleaseFamilySummaryRefresh(upsertCtx)
 		upsertTelemetry := &pgindex.BinaryUpsertTelemetry{}
 		upsertCtx = pgindex.WithBinaryUpsertTelemetry(upsertCtx, upsertTelemetry)
 		binaryIDs, err := s.repo.UpsertBinaries(upsertCtx, batchRecords)
@@ -654,8 +717,11 @@ func (s *Service) persistAssembleWork(ctx context.Context, started time.Time, me
 	sort.Slice(refreshIDs, func(i, j int) bool { return refreshIDs[i] < refreshIDs[j] })
 	if len(refreshIDs) > 0 {
 		refreshStarted := time.Now()
-		refreshCtx := pgindex.WithDeferredReleaseFamilySummaryRefresh(ctx)
-		refreshCtx = pgindex.WithSkipYEncRecoveryWorkItemRetire(refreshCtx)
+		refreshCtx := pgindex.WithSkipYEncRecoveryWorkItemRetire(ctx)
+		// Assembly owns binary formation and aggregate refresh. Recovery queue
+		// admission is handled by recover_yenc's priority and generic backfill
+		// paths, and must not hold or roll back the assembly refresh transaction.
+		refreshCtx = pgindex.WithSkipYEncRecoveryWorkItemSync(refreshCtx)
 		refreshTelemetry := &pgindex.BinaryStatsRefreshTelemetry{}
 		refreshCtx = pgindex.WithBinaryStatsRefreshTelemetry(refreshCtx, refreshTelemetry)
 		if err := s.repo.RefreshBinaryStatsBatch(refreshCtx, refreshIDs); err != nil {
@@ -799,70 +865,6 @@ func mergeAssembleWorks(works []assembleWork) assembleWork {
 	return merged
 }
 
-func mergeAssembleMetrics(dst map[string]any, src map[string]any) {
-	for key, value := range src {
-		switch key {
-		case "batch_size", "total_duration_ms", "headers_per_second", "refreshed_binaries_per_second":
-			continue
-		case "binary_upsert_chunk_max_ms",
-			"binary_upsert_lock_max_ms",
-			"binary_upsert_stage_max_ms",
-			"binary_upsert_existing_snapshot_max_ms",
-			"binary_upsert_update_max_ms",
-			"binary_upsert_insert_max_ms",
-			"binary_upsert_readback_max_ms",
-			"binary_upsert_query_max_ms",
-			"binary_upsert_evidence_max_ms",
-			"binary_refresh_stats_update_max_ms",
-			"binary_refresh_summary_mark_max_ms",
-			"binary_refresh_yenc_sync_max_ms",
-			"binary_refresh_yenc_admission_max_ms",
-			"binary_refresh_yenc_priority_open_max_ms",
-			"binary_refresh_yenc_sync_upsert_max_ms",
-			"binary_refresh_yenc_sync_retire_max_ms",
-			"binary_refresh_yenc_promotion_max_ms":
-			if current := numericMetricFloat64(dst, key); numericMetricFloat64(src, key) > current {
-				dst[key] = numericMetricFloat64(src, key)
-			}
-			continue
-		}
-		switch tv := value.(type) {
-		case int:
-			dst[key] = numericMetricFloat64(dst, key) + float64(tv)
-		case int64:
-			dst[key] = numericMetricFloat64(dst, key) + float64(tv)
-		case float64:
-			dst[key] = numericMetricFloat64(dst, key) + tv
-		}
-	}
-}
-
-func numericMetricFloat64(metrics map[string]any, key string) float64 {
-	switch value := metrics[key].(type) {
-	case int:
-		return float64(value)
-	case int64:
-		return float64(value)
-	case float64:
-		return value
-	default:
-		return 0
-	}
-}
-
-func numericMetricInt64(metrics map[string]any, key string) (int64, bool) {
-	switch value := metrics[key].(type) {
-	case int:
-		return int64(value), true
-	case int64:
-		return value, true
-	case float64:
-		return int64(value), true
-	default:
-		return 0, false
-	}
-}
-
 func addAssembleTimingMetrics(metrics map[string]any, started time.Time, headerMatchDuration, binaryUpsertDuration, binaryPartUpsertDuration, binaryRefreshDuration time.Duration, processedHeaders, refreshedBinaries int) {
 	totalDuration := time.Since(started)
 	metrics["header_match_duration_ms"] = durationMillis(headerMatchDuration)
@@ -874,7 +876,7 @@ func addAssembleTimingMetrics(metrics map[string]any, started time.Time, headerM
 	metrics["refreshed_binaries_per_second"] = throughputPerSecond(refreshedBinaries, totalDuration)
 }
 
-func addBinaryUpsertTelemetryMetrics(metrics map[string]any, telemetry pgindex.BinaryUpsertTelemetry) {
+func addBinaryUpsertTelemetryMetrics(metrics map[string]any, telemetry *pgindex.BinaryUpsertTelemetry) {
 	metrics["binary_upsert_chunk_count"] = telemetry.ChunkCount
 	metrics["binary_upsert_chunk_rows"] = telemetry.ChunkRows
 	metrics["binary_upsert_chunk_retries"] = telemetry.ChunkRetries
@@ -912,7 +914,7 @@ func addBinaryUpsertTelemetryMetrics(metrics map[string]any, telemetry pgindex.B
 	metrics["binary_upsert_deferred_summary_keys"] = telemetry.DeferredSummaryKeyCount
 }
 
-func addBinaryStatsRefreshTelemetryMetrics(metrics map[string]any, telemetry pgindex.BinaryStatsRefreshTelemetry) {
+func addBinaryStatsRefreshTelemetryMetrics(metrics map[string]any, telemetry *pgindex.BinaryStatsRefreshTelemetry) {
 	metrics["binary_refresh_tx_count"] = telemetry.TxCount
 	metrics["binary_refresh_batch_count"] = telemetry.BatchCount
 	metrics["binary_refresh_binary_count"] = telemetry.BinaryCount

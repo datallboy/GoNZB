@@ -1,11 +1,15 @@
 import { useEffect, useState } from 'react'
 import {
+  getAdminDeferredRanges,
   getAdminGroupProfiles,
   getAdminRecoveryCapacity,
+  getAdminSourceBucketOutcomes,
 } from '../../shared/api/admin'
 import type {
+  IndexerDeferredArticleRangeResponse,
   IndexerGroupProfileResponse,
   IndexerRecoveryCapacity,
+  IndexerSourceBucketOutcomeReport,
 } from '../../shared/types'
 
 function formatNumber(value?: number) {
@@ -29,19 +33,36 @@ function formatTime(value?: string) {
   return new Date(value).toLocaleString()
 }
 
+function formatRecoveryProfile(value?: IndexerRecoveryCapacity['recovery_profile']) {
+  switch (value) {
+    case 'header_only':
+      return 'Header only'
+    case 'exhaustive':
+      return 'Exhaustive'
+    default:
+      return 'Balanced'
+  }
+}
+
 export function AdminIndexerWorkPage() {
   const [capacity, setCapacity] = useState<IndexerRecoveryCapacity | null>(null)
   const [profiles, setProfiles] = useState<IndexerGroupProfileResponse | null>(null)
+  const [outcomes, setOutcomes] = useState<IndexerSourceBucketOutcomeReport | null>(null)
+  const [deferred, setDeferred] = useState<IndexerDeferredArticleRangeResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   async function refresh() {
     try {
-      const [nextCapacity, nextProfiles] = await Promise.all([
+      const [nextCapacity, nextProfiles, nextOutcomes, nextDeferred] = await Promise.all([
         getAdminRecoveryCapacity(),
         getAdminGroupProfiles(25),
+        getAdminSourceBucketOutcomes(100),
+        getAdminDeferredRanges(50, ''),
       ])
       setCapacity(nextCapacity)
       setProfiles(nextProfiles)
+      setOutcomes(nextOutcomes)
+      setDeferred(nextDeferred)
       setError(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load indexer work state')
@@ -49,9 +70,12 @@ export function AdminIndexerWorkPage() {
   }
 
   useEffect(() => {
-    void refresh()
+    const initial = window.setTimeout(() => void refresh(), 0)
     const timer = window.setInterval(() => void refresh(), 15000)
-    return () => window.clearInterval(timer)
+    return () => {
+      window.clearTimeout(initial)
+      window.clearInterval(timer)
+    }
   }, [])
 
   return (
@@ -60,7 +84,7 @@ export function AdminIndexerWorkPage() {
         <div className="page-header">
           <div>
             <p className="eyebrow">Indexer Work</p>
-            <h1 className="page-title">Recovery capacity and group tiers.</h1>
+            <h1 className="page-title">Queue capacity and source outcomes.</h1>
           </div>
           <button className="secondary-button" type="button" onClick={() => void refresh()}>
             Refresh
@@ -71,12 +95,12 @@ export function AdminIndexerWorkPage() {
           <div className="stat-card">
             <span>yEnc open</span>
             <strong>{formatNumber(capacity?.open_total)}</strong>
-            <small>{formatNumber(capacity?.remaining_to_hard)} until hard cap</small>
+            <small>{formatRecoveryProfile(capacity?.recovery_profile)} · {formatNumber(capacity?.remaining_to_hard)} until hard cap</small>
           </div>
           <div className="stat-card">
-            <span>Recovery rate</span>
-            <strong>{formatRate(capacity?.probes_per_hour_ewma)}</strong>
-            <small>EWMA probe throughput</small>
+            <span>BODY budget</span>
+            <strong>{formatNumber(capacity?.body_requests_remaining)}</strong>
+            <small>{formatNumber(capacity?.body_requests_used)} of {formatNumber(capacity?.body_requests_per_hour)} used this UTC hour</small>
           </div>
           <div className="stat-card">
             <span>Queue caps</span>
@@ -84,10 +108,102 @@ export function AdminIndexerWorkPage() {
             <small>soft {formatNumber(capacity?.soft_cap)}</small>
           </div>
           <div className="stat-card">
-            <span>Ready age</span>
-            <strong>{formatTime(capacity?.oldest_ready_at)}</strong>
-            <small>oldest ready work item</small>
+            <span>Recovery rate / age</span>
+            <strong>{formatRate(capacity?.probes_per_hour_ewma)}</strong>
+            <small>oldest ready {formatTime(capacity?.oldest_ready_at)}</small>
           </div>
+        </div>
+      </div>
+
+      <div className="page-card stack">
+        <div>
+          <h2 className="section-title">Source-day outcomes</h2>
+          <p className="muted-copy">Every provider, group, and posted-date bucket stays active until its work is finished, or becomes terminal through an archived release or bounded no-yield decision.</p>
+        </div>
+        <div className="stat-grid">
+          <div className="stat-card">
+            <span>Active buckets</span>
+            <strong>{formatNumber(outcomes?.active_buckets)}</strong>
+            <small>{formatNumber(outcomes?.open_work_count)} open work items</small>
+          </div>
+          <div className="stat-card">
+            <span>Successful buckets</span>
+            <strong>{formatNumber(outcomes?.success_buckets)}</strong>
+            <small>{formatNumber(outcomes?.terminal_release_count)} durable releases</small>
+          </div>
+          <div className="stat-card">
+            <span>No-yield buckets</span>
+            <strong>{formatNumber(outcomes?.no_yield_buckets)}</strong>
+            <small>settled after bounded processing</small>
+          </div>
+          <div className="stat-card">
+            <span>Purge eligible</span>
+            <strong>{formatNumber(outcomes?.purge_eligible_buckets)}</strong>
+            <small>{formatNumber(outcomes?.purged_buckets)} already purged</small>
+          </div>
+        </div>
+        <div className="table-shell">
+          <table className="data-table data-table--compact">
+            <thead>
+              <tr>
+                <th>Provider / group</th>
+                <th>Source day</th>
+                <th>Outcome</th>
+                <th>Headers</th>
+                <th>Open work</th>
+                <th>Releases</th>
+                <th>Reason / progress</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(outcomes?.items || []).map((item) => (
+                <tr key={`${item.provider_id}-${item.newsgroup_id}-${item.source_day}`}>
+                  <td>{item.provider_key} / {item.group_name}</td>
+                  <td>{item.source_day}</td>
+                  <td><span className="status-pill status-pill--table">{item.state}</span></td>
+                  <td>{formatNumber(item.headers_ingested)}</td>
+                  <td>{formatNumber(item.open_work_count)}</td>
+                  <td>{formatNumber(item.terminal_release_count)}</td>
+                  <td>{item.terminal_reason || `last progress ${formatTime(item.last_progress_at)}`}</td>
+                </tr>
+              ))}
+              {(outcomes?.items.length ?? 0) === 0 ? <tr><td colSpan={7}>No source buckets have been ingested yet.</td></tr> : null}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="page-card stack">
+        <div>
+          <h2 className="section-title">Deferred scrape ranges</h2>
+          <p className="muted-copy">Ranges postponed by partition-day or recovery-cap limits. Ready and running work is drained by <code>scrape_deferred</code>; abandoned work needs operator review.</p>
+        </div>
+        <div className="table-shell">
+          <table className="data-table data-table--compact">
+            <thead>
+              <tr>
+                <th>Provider / group</th>
+                <th>Article range</th>
+                <th>State</th>
+                <th>Reason</th>
+                <th>Attempts</th>
+                <th>Last error</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(deferred?.items || []).map((item) => (
+                <tr key={item.id}>
+                  <td>{item.provider_key} / {item.group_name}</td>
+                  <td>{formatNumber(item.article_low)}–{formatNumber(item.article_high)}</td>
+                  <td><span className="status-pill status-pill--table">{item.state}</span></td>
+                  <td>{item.reason || 'n/a'}</td>
+                  <td>{formatNumber(item.attempts)}</td>
+                  <td>{item.last_error || 'none'}</td>
+                </tr>
+              ))}
+              {(deferred?.items.length ?? 0) === 0 ? <tr><td colSpan={6}>No deferred scrape ranges.</td></tr> : null}
+            </tbody>
+          </table>
         </div>
       </div>
 

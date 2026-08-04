@@ -42,22 +42,25 @@ export function AdminBinariesPage() {
 
   useEffect(() => {
     let cancelled = false
-    setLoading(true)
-    void getAdminBinaries(submittedFilters)
-      .then((response) => {
-        if (cancelled) return
-        setData(response)
-        setError(null)
-      })
-      .catch((err) => {
-        if (cancelled) return
-        setError(err instanceof Error ? err.message : 'Failed to load binaries')
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false)
-      })
+    const timer = window.setTimeout(() => {
+      setLoading(true)
+      void getAdminBinaries(submittedFilters)
+        .then((response) => {
+          if (cancelled) return
+          setData(response)
+          setError(null)
+        })
+        .catch((err) => {
+          if (cancelled) return
+          setError(err instanceof Error ? err.message : 'Failed to load binaries')
+        })
+        .finally(() => {
+          if (!cancelled) setLoading(false)
+        })
+    }, 0)
     return () => {
       cancelled = true
+      window.clearTimeout(timer)
     }
   }, [submittedFilters])
 

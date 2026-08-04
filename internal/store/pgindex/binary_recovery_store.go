@@ -245,11 +245,73 @@ func (s *Store) ApplyBinaryRecovery(ctx context.Context, in BinaryRecoveryRecord
 	if err := markReleaseFamilyDirty(ctx, tx, seed.ProviderID, seed.NewsgroupID, "release_family", seed.ReleaseFamilyKey); err != nil {
 		return err
 	}
+	releaseIDs, err := listReleaseIDsForBinaryIDsInTx(ctx, tx, completionKeyIDs)
+	if err != nil {
+		return err
+	}
+	nextStage := ""
+	switch in.Kind {
+	case "par2":
+		nextStage = "inspect_par2"
+	case "archive":
+		nextStage = "inspect_archive"
+	case "media":
+		nextStage = "inspect_media"
+	}
+	if nextStage != "" && len(releaseIDs) > 0 {
+		if _, err := enqueueInspectionReadyForReleases(ctx, tx, nextStage, releaseIDs); err != nil {
+			return err
+		}
+	}
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit binary recovery tx: %w", err)
 	}
 	return nil
+}
+
+func listReleaseIDsForBinaryIDsInTx(ctx context.Context, tx *sql.Tx, binaryIDs []int64) ([]string, error) {
+	if len(binaryIDs) == 0 {
+		return nil, nil
+	}
+	args := make([]any, 0, len(binaryIDs))
+	placeholders := make([]string, 0, len(binaryIDs))
+	seen := make(map[int64]struct{}, len(binaryIDs))
+	for _, binaryID := range binaryIDs {
+		if binaryID <= 0 {
+			continue
+		}
+		if _, ok := seen[binaryID]; ok {
+			continue
+		}
+		seen[binaryID] = struct{}{}
+		args = append(args, binaryID)
+		placeholders = append(placeholders, fmt.Sprintf("$%d", len(args)))
+	}
+	if len(args) == 0 {
+		return nil, nil
+	}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT DISTINCT release_id
+		FROM release_files
+		WHERE binary_id IN (`+strings.Join(placeholders, ",")+`)
+		ORDER BY release_id`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list releases for recovered binaries: %w", err)
+	}
+	defer rows.Close()
+	var releaseIDs []string
+	for rows.Next() {
+		var releaseID string
+		if err := rows.Scan(&releaseID); err != nil {
+			return nil, fmt.Errorf("scan release for recovered binary: %w", err)
+		}
+		releaseIDs = append(releaseIDs, releaseID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate releases for recovered binaries: %w", err)
+	}
+	return releaseIDs, nil
 }
 
 func loadBinaryRecoverySeed(ctx context.Context, tx *sql.Tx, binaryID int64) (binaryRecoverySeed, error) {

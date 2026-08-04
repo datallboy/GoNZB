@@ -1073,8 +1073,22 @@ func (s *Store) ListBinaryPartArticlesBatch(ctx context.Context, binaryIDs []int
 		}
 		rows, err := s.db.QueryContext(ctx, `
 			SELECT binary_id, article_header_id, part_number
-			FROM binary_parts
-			WHERE binary_id IN (`+strings.Join(placeholders, ",")+`)
+			FROM (
+				SELECT
+					binary_id,
+					article_header_id,
+					part_number,
+					ROW_NUMBER() OVER (
+						PARTITION BY
+							binary_id,
+							(part_number > 0),
+							CASE WHEN part_number > 0 THEN part_number::bigint ELSE article_header_id END
+						ORDER BY segment_bytes DESC, updated_at DESC, article_header_id DESC
+					) AS ordinal_rank
+				FROM binary_parts
+				WHERE binary_id IN (`+strings.Join(placeholders, ",")+`)
+			) ranked
+			WHERE ordinal_rank = 1
 			ORDER BY binary_id, part_number`, args...)
 		if err != nil {
 			return nil, fmt.Errorf("list binary part articles batch: %w", err)
@@ -1403,6 +1417,12 @@ func (s *Store) DeleteStaleReleasesForSourceKey(ctx context.Context, providerID 
 	if keyKind == ReleaseCandidateKeyKindRecoveredFileSet {
 		return s.deleteStaleRecoveredFileSetReleases(ctx, providerID, releaseFamilyKey, keep)
 	}
+	// A base-stem candidate is a fallback grouping projection and can overlap a
+	// stronger release-family candidate. Without replacement groups of its own,
+	// it must not delete a release owned by that stronger projection.
+	if !canDeleteStaleReleasesForCandidate(keyKind, keep) {
+		return nil
+	}
 	if len(keep) == 0 {
 		_, err := s.db.ExecContext(ctx, `
 			DELETE FROM releases
@@ -1501,6 +1521,10 @@ func (s *Store) DeleteAuxiliaryOnlySiblingReleases(ctx context.Context, provider
 	return nil
 }
 
+func canDeleteStaleReleasesForCandidate(keyKind string, keepGroupNames []string) bool {
+	return strings.TrimSpace(keyKind) != ReleaseCandidateKeyKindBaseStem || len(keepGroupNames) > 0
+}
+
 func (s *Store) deleteStaleRecoveredFileSetReleases(ctx context.Context, providerID int64, fileSetKey string, keepGroupNames []string) error {
 	if len(keepGroupNames) == 0 {
 		_, err := s.db.ExecContext(ctx, `
@@ -1567,6 +1591,9 @@ func (s *Store) deleteStaleRecoveredFileSetReleases(ctx context.Context, provide
 
 // CHANGED: replace release_files atomically for one release.
 func (s *Store) ReplaceReleaseFiles(ctx context.Context, releaseID string, files []ReleaseFileRecord) error {
+	if err := s.ensurePartitionBundleForBinaryIDs(ctx, partitionBundleInspect, releaseFileBinaryIDs(files)); err != nil {
+		return err
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -1576,12 +1603,33 @@ func (s *Store) ReplaceReleaseFiles(ctx context.Context, releaseID string, files
 	if err := replaceReleaseFilesInRunner(ctx, tx, releaseID, files); err != nil {
 		return err
 	}
+	for _, stageName := range []string{"inspect_discovery", "inspect_par2", "inspect_archive", "inspect_media"} {
+		if _, err := enqueueInspectionReadyForReleases(ctx, tx, stageName, []string{releaseID}); err != nil {
+			return err
+		}
+	}
 
 	if err := tx.Commit(); err != nil {
 		return err
 	}
 
 	return nil
+}
+
+func releaseFileBinaryIDs(files []ReleaseFileRecord) []int64 {
+	out := make([]int64, 0, len(files))
+	seen := make(map[int64]struct{}, len(files))
+	for _, file := range files {
+		if file.BinaryID <= 0 {
+			continue
+		}
+		if _, ok := seen[file.BinaryID]; ok {
+			continue
+		}
+		seen[file.BinaryID] = struct{}{}
+		out = append(out, file.BinaryID)
+	}
+	return out
 }
 
 func replaceReleaseFilesInRunner(ctx context.Context, runner sqlExecQueryer, releaseID string, files []ReleaseFileRecord) error {
@@ -1824,6 +1872,9 @@ func replaceReleaseNewsgroupsInRunner(ctx context.Context, runner sqlExecQueryer
 }
 
 func (s *Store) PersistReleaseSnapshot(ctx context.Context, in ReleaseRecord, files []ReleaseFileRecord, newsgroupIDs []int64) (ReleaseSnapshotResult, error) {
+	if err := s.ensurePartitionBundleForBinaryIDs(ctx, partitionBundleInspect, releaseFileBinaryIDs(files)); err != nil {
+		return ReleaseSnapshotResult{}, err
+	}
 	var result ReleaseSnapshotResult
 	err := retryRetryablePostgresTx(ctx, defaultRetryableTxAttempts, func() error {
 		tx, err := s.db.BeginTx(ctx, nil)
@@ -1848,6 +1899,11 @@ func (s *Store) PersistReleaseSnapshot(ctx context.Context, in ReleaseRecord, fi
 		}
 		if err := replaceReleaseNewsgroupsInRunner(ctx, tx, persisted.ReleaseID, newsgroupIDs); err != nil {
 			return err
+		}
+		for _, stageName := range []string{"inspect_discovery", "inspect_par2", "inspect_archive", "inspect_media"} {
+			if _, err := enqueueInspectionReadyForReleases(ctx, tx, stageName, []string{persisted.ReleaseID}); err != nil {
+				return err
+			}
 		}
 		if err := upsertNZBCacheWithRunner(ctx, tx, persisted.ReleaseID, "pending", "", ""); err != nil {
 			return err

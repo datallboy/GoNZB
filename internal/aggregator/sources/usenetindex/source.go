@@ -58,13 +58,17 @@ func (s *Source) Search(ctx context.Context, req aggregator.SearchRequest) ([]*d
 
 	params := pgindex.PublicIndexerReleaseListParams{
 		Query:       strings.TrimSpace(req.Query),
-		Limit:       100,
+		Limit:       req.Limit,
+		CategoryIDs: append([]int(nil), req.Categories...),
 		Sort:        "posted_at_desc",
 		IMDBID:      req.IMDbID,
 		TVDBID:      parseInt64(req.TVDBID),
 		Season:      parseInt(req.Season),
 		Episode:     parseInt(req.Episode),
 		ReadyPolicy: s.releaseReadyPolicy(ctx),
+	}
+	if params.Limit <= 0 {
+		params.Limit = 100
 	}
 
 	switch req.Type {

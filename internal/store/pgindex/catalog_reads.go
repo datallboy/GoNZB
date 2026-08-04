@@ -28,6 +28,7 @@ type CatalogArticleRef struct {
 	MessageID  string
 	Bytes      int64
 	PartNumber int
+	GroupName  string
 }
 
 type binaryPartSourceSpan struct {
@@ -342,79 +343,58 @@ func (s *Store) ListCatalogReleaseFileArticles(ctx context.Context, releaseFileI
 	if span == nil || span.BinaryID <= 0 {
 		return []CatalogArticleRef{}, nil
 	}
-	out, err := s.listCatalogArticlesForBinarySpan(ctx, *span)
+	out, err := s.ListCatalogBinaryArticles(ctx, span.BinaryID)
 	if err != nil {
-		return nil, fmt.Errorf("list catalog release file articles %d: %w", releaseFileID, err)
+		return nil, fmt.Errorf("list effective release file articles %d binary %d: %w", releaseFileID, span.BinaryID, err)
 	}
-	if len(out) > 0 {
-		return out, nil
-	}
-
-	fallback, err := s.ListCatalogBinaryArticles(ctx, span.BinaryID)
-	if err != nil {
-		return nil, fmt.Errorf("fallback binary articles for release file %d binary %d: %w", releaseFileID, span.BinaryID, err)
-	}
-	return fallback, nil
+	return out, nil
 }
 
 func (s *Store) ListCatalogBinaryArticles(ctx context.Context, binaryID int64) ([]CatalogArticleRef, error) {
 	if binaryID <= 0 {
 		return nil, fmt.Errorf("binary id is required")
 	}
-
-	span, err := s.loadBinaryPartSourceSpan(ctx, binaryID)
-	if err != nil {
-		return nil, err
-	}
-	if span == nil {
-		return []CatalogArticleRef{}, nil
-	}
-	return s.listCatalogArticlesForBinarySpan(ctx, *span)
+	return s.listCatalogEffectiveArticles(ctx, binaryID)
 }
 
-func (s *Store) listCatalogArticlesForBinarySpan(ctx context.Context, span binaryPartSourceSpan) ([]CatalogArticleRef, error) {
+func (s *Store) listCatalogEffectiveArticles(ctx context.Context, binaryID int64) ([]CatalogArticleRef, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		WITH ranked_parts AS (
 			SELECT
-				ah.message_id,
-				ah.bytes,
-				bp.part_number,
+				part.message_id,
+				part.segment_bytes,
+				part.part_number,
+				CASE
+				  WHEN part.part_source = 'local' THEN ng.group_name
+				  ELSE COALESCE(NULLIF(part.observed_groups->>0, ''), ng.group_name)
+				END AS group_name,
 				ROW_NUMBER() OVER (
-					PARTITION BY bp.part_number
-					ORDER BY bp.source_posted_at, ah.article_number, bp.id
+					PARTITION BY part.part_number
+					ORDER BY CASE part.part_source WHEN 'local' THEN 0 ELSE 1 END,
+					         part.source_posted_at, part.message_id
 				) AS keep_rank
-			FROM binary_parts bp
-			JOIN article_headers ah
-			  ON ah.source_posted_at = bp.source_posted_at
-			 AND ah.id = bp.article_header_id
-			 AND ah.source_posted_at >= $1
-			 AND ah.source_posted_at <= $2
-			WHERE bp.source_posted_at >= $1
-			  AND bp.source_posted_at <= $2
-			  AND bp.binary_id = $3
+			FROM binary_effective_parts part
+			JOIN binary_core bc ON bc.binary_id = part.binary_id
+			JOIN newsgroups ng ON ng.id = bc.newsgroup_id
+			WHERE part.binary_id = $1
 		)
-		SELECT message_id, bytes, part_number
+		SELECT message_id, segment_bytes, part_number, group_name
 		FROM ranked_parts
 		WHERE keep_rank = 1
-		ORDER BY part_number`, span.Min, span.Max, span.BinaryID)
+		ORDER BY part_number`, binaryID)
 	if err != nil {
-		return nil, fmt.Errorf("list catalog articles for binary %d span %s..%s: %w", span.BinaryID, span.Min, span.Max, err)
+		return nil, fmt.Errorf("list effective catalog articles for binary %d: %w", binaryID, err)
 	}
 	defer rows.Close()
-
 	out := make([]CatalogArticleRef, 0, 128)
 	for rows.Next() {
 		var item CatalogArticleRef
-		if err := rows.Scan(&item.MessageID, &item.Bytes, &item.PartNumber); err != nil {
-			return nil, fmt.Errorf("scan catalog article ref: %w", err)
+		if err := rows.Scan(&item.MessageID, &item.Bytes, &item.PartNumber, &item.GroupName); err != nil {
+			return nil, fmt.Errorf("scan effective catalog article ref: %w", err)
 		}
 		out = append(out, item)
 	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate catalog article refs: %w", err)
-	}
-	return out, nil
+	return out, rows.Err()
 }
 
 func (s *Store) ListCatalogBinaryNewsgroups(ctx context.Context, binaryID int64) ([]string, error) {
@@ -479,12 +459,21 @@ func (s *Store) ListCatalogReleaseNewsgroups(ctx context.Context, releaseID stri
 			 AND ahcg.article_header_id = bp.article_header_id
 			WHERE rf.release_id = $1
 			  AND BTRIM(COALESCE(ahcg.observed_group_name, '')) <> ''
+		),
+		peer_groups AS (
+			SELECT DISTINCT jsonb_array_elements_text(parts.observed_groups) AS group_name
+			FROM release_files rf
+			JOIN binary_effective_parts parts ON parts.binary_id = rf.binary_id
+			WHERE rf.release_id = $1
+			  AND parts.part_source = 'peer'
 		)
 		SELECT DISTINCT group_name
 		FROM (
 			SELECT group_name FROM release_groups
 			UNION ALL
 			SELECT group_name FROM crosspost_groups
+			UNION ALL
+			SELECT group_name FROM peer_groups
 		) groups
 		WHERE BTRIM(COALESCE(group_name, '')) <> ''
 		ORDER BY group_name`, releaseID)

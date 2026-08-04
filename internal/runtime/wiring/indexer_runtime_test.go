@@ -1,17 +1,12 @@
 package wiring
 
 import (
-	"bufio"
 	"context"
-	"fmt"
-	"net"
 	"testing"
 	"time"
 
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/infra/config"
-	"github.com/datallboy/gonzb/internal/infra/logger"
-	"github.com/datallboy/gonzb/internal/nntp"
 )
 
 type fakeSettingsStore struct {
@@ -247,6 +242,80 @@ func TestDeriveUsenetIndexerConfigKeepsExplicitBackfillCutoff(t *testing.T) {
 	}
 }
 
+func TestDeriveUsenetIndexerConfigUsesPersistedHistoricalScrapeSettings(t *testing.T) {
+	cfg := &config.Config{
+		Indexing: config.IndexingConfig{
+			Newsgroups: []string{"alt.binaries.bootstrap"},
+		},
+	}
+	runtime := app.DefaultRuntimeSettings().Indexing
+	runtime.Newsgroups = []string{}
+	runtime.ExplicitGroups = []app.IndexingScrapeGroupRuntimeSettings{}
+	runtime.MaterializedGroups = []app.IndexingMaterializedGroupRuntimeSettings{}
+	runtime.ScrapeLatest.Enabled = false
+	runtime.ScrapeBackfill.Enabled = false
+	runtime.ScrapeTimeframe.Enabled = true
+	runtime.ScrapeTimeframe.BatchSize = 1234
+	runtime.ScrapeTimeframes = []app.IndexingScrapeTimeframeRuntimeSettings{{
+		ID:        "january-test",
+		GroupName: "alt.binaries.history",
+		StartDate: "2026-01-12",
+		EndDate:   "2026-01-18",
+		Enabled:   true,
+	}}
+
+	got, err := deriveUsenetIndexerConfig(cfg, runtime)
+	if err != nil {
+		t.Fatalf("derive config: %v", err)
+	}
+	if len(got.Newsgroups) != 0 {
+		t.Fatalf("expected persisted empty active groups to override bootstrap groups, got %+v", got.Newsgroups)
+	}
+	if !got.ScrapeTimeframe.Enabled || got.ScrapeTimeframe.BatchSize != 1234 {
+		t.Fatalf("expected persisted timeframe stage settings, got %+v", got.ScrapeTimeframe)
+	}
+	if got.ScrapeLatest.Enabled || got.ScrapeBackfill.Enabled {
+		t.Fatalf("expected latest and backfill disabled, got latest=%+v backfill=%+v", got.ScrapeLatest, got.ScrapeBackfill)
+	}
+	if len(got.ScrapeTimeframes) != 1 {
+		t.Fatalf("expected one historical timeframe, got %+v", got.ScrapeTimeframes)
+	}
+	if got.ScrapeTimeframes[0].Group != "alt.binaries.history" {
+		t.Fatalf("unexpected timeframe group %+v", got.ScrapeTimeframes[0])
+	}
+	wantEnd := time.Date(2026, 1, 19, 0, 0, 0, 0, time.UTC)
+	if !got.ScrapeTimeframes[0].End.Equal(wantEnd) {
+		t.Fatalf("expected inclusive end date to become %s exclusive, got %s", wantEnd, got.ScrapeTimeframes[0].End)
+	}
+}
+
+func TestDeriveUsenetIndexerConfigNarrowsHistoricalScrapeWithUTCTimes(t *testing.T) {
+	cfg := &config.Config{}
+	runtime := app.DefaultRuntimeSettings().Indexing
+	runtime.ScrapeTimeframes = []app.IndexingScrapeTimeframeRuntimeSettings{{
+		ID:        "upload-window",
+		GroupName: "alt.binaries.history",
+		StartDate: "2026-07-24",
+		StartTime: "14:47:00",
+		EndDate:   "2026-07-24",
+		EndTime:   "14:49:30",
+		Enabled:   true,
+	}}
+
+	got, err := deriveUsenetIndexerConfig(cfg, runtime)
+	if err != nil {
+		t.Fatalf("derive config: %v", err)
+	}
+	if len(got.ScrapeTimeframes) != 1 {
+		t.Fatalf("expected one historical timeframe, got %+v", got.ScrapeTimeframes)
+	}
+	wantStart := time.Date(2026, 7, 24, 14, 47, 0, 0, time.UTC)
+	wantEnd := time.Date(2026, 7, 24, 14, 49, 30, 0, time.UTC)
+	if !got.ScrapeTimeframes[0].Start.Equal(wantStart) || !got.ScrapeTimeframes[0].End.Equal(wantEnd) {
+		t.Fatalf("expected exact UTC window %s-%s, got %+v", wantStart, wantEnd, got.ScrapeTimeframes[0])
+	}
+}
+
 func TestScopedIndexerServersUsesSharedRuntimeServers(t *testing.T) {
 	appCtx := &app.Context{
 		BootstrapConfig: &config.Config{},
@@ -307,144 +376,28 @@ func TestDeriveUsenetIndexerConfigPreservesAllIndexerServers(t *testing.T) {
 	}
 }
 
-func TestScopedDownloaderServersUsesSharedRuntimeServers(t *testing.T) {
-	appCtx := &app.Context{
-		BootstrapConfig: &config.Config{},
-		SettingsStore: fakeSettingsStore{
-			runtime: &app.RuntimeSettings{
-				Servers: []app.ServerRuntimeSettings{{
-					ID:       "shared",
-					Host:     "shared.example.com",
-					Port:     563,
-					Username: "shared-user",
-					Password: "shared-pass",
-					TLS:      true,
-				}},
-				DownloaderServers: []app.ServerRuntimeSettings{{
-					ID:       "downloader",
-					Host:     "downloader.example.com",
-					Port:     563,
-					Username: "downloader-user",
-					Password: "downloader-pass",
-					TLS:      true,
-				}},
-			},
-		},
+func TestIndexerStageTargetWindow(t *testing.T) {
+	start, end := indexerStageTargetWindow(indexerStageConfig{
+		TargetWindowEnabled: true,
+		TargetWindowStart:   "2026-07-24T14:05:00-04:00",
+		TargetWindowEnd:     "2026-07-24T14:21:00-04:00",
+	})
+	if start == nil || end == nil {
+		t.Fatal("expected valid target window")
+	}
+	if got := start.Format(time.RFC3339); got != "2026-07-24T18:05:00Z" {
+		t.Fatalf("start = %s", got)
+	}
+	if got := end.Format(time.RFC3339); got != "2026-07-24T18:21:00Z" {
+		t.Fatalf("end = %s", got)
 	}
 
-	servers := scopedDownloaderServers(appCtx)
-	if len(servers) != 1 {
-		t.Fatalf("expected one shared downloader server, got %+v", servers)
+	start, end = indexerStageTargetWindow(indexerStageConfig{
+		TargetWindowEnabled: true,
+		TargetWindowStart:   "invalid",
+		TargetWindowEnd:     "2026-07-24T14:21:00Z",
+	})
+	if start != nil || end != nil {
+		t.Fatalf("expected invalid target window to be disabled, got %v..%v", start, end)
 	}
-	if servers[0].ID != "shared" || servers[0].Host != "shared.example.com" || servers[0].Username != "shared-user" {
-		t.Fatalf("expected shared server selection, got %+v", servers[0])
-	}
-}
-
-func TestIndexerNNTPManagerReusesSharedDownloaderManager(t *testing.T) {
-	indexerAddr := startTestNNTPServer(t)
-	downloaderAddr := startTestNNTPServer(t)
-
-	indexerHost, indexerPort := splitHostPort(t, indexerAddr)
-	downloaderHost, downloaderPort := splitHostPort(t, downloaderAddr)
-
-	log, err := logger.New("/dev/null", logger.LevelError, false)
-	if err != nil {
-		t.Fatalf("new logger: %v", err)
-	}
-	appCtx := &app.Context{
-		Logger: log,
-		Config: &config.Config{
-			Servers: []config.ServerConfig{{
-				ID:            "downloader",
-				Host:          downloaderHost,
-				Port:          downloaderPort,
-				MaxConnection: 1,
-			}},
-		},
-	}
-
-	sharedManager, err := nntp.NewManagerWithOptions(appCtx, nntp.ManagerOptions{CapacityPolicy: nntp.CapacityReturnBusy})
-	if err != nil {
-		t.Fatalf("build shared manager: %v", err)
-	}
-	defer sharedManager.Close()
-	appCtx.NNTP = sharedManager
-
-	runtimeCfg := usenetIndexerConfig{
-		ScrapeServer: &config.ServerConfig{
-			ID:            "indexer",
-			Host:          indexerHost,
-			Port:          indexerPort,
-			MaxConnection: 1,
-		},
-	}
-
-	manager, owned, err := indexerNNTPManager(appCtx, runtimeCfg)
-	if err != nil {
-		t.Fatalf("indexerNNTPManager: %v", err)
-	}
-
-	if owned {
-		t.Fatalf("expected shared downloader manager reuse, got owned=%v", owned)
-	}
-	if manager != sharedManager {
-		t.Fatalf("expected shared downloader manager to be reused")
-	}
-}
-
-func startTestNNTPServer(t *testing.T) string {
-	t.Helper()
-
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen nntp test server: %v", err)
-	}
-	t.Cleanup(func() { _ = ln.Close() })
-
-	go func() {
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			go handleTestNNTPConn(conn)
-		}
-	}()
-
-	return ln.Addr().String()
-}
-
-func handleTestNNTPConn(conn net.Conn) {
-	defer conn.Close()
-	_, _ = fmt.Fprintf(conn, "200 test server ready\r\n")
-	reader := bufio.NewReader(conn)
-	for {
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			return
-		}
-		switch {
-		case line == "DATE\r\n":
-			_, _ = fmt.Fprintf(conn, "111 20260604120000\r\n")
-		case line == "QUIT\r\n":
-			_, _ = fmt.Fprintf(conn, "205 closing connection\r\n")
-			return
-		default:
-			_, _ = fmt.Fprintf(conn, "500 unsupported\r\n")
-		}
-	}
-}
-
-func splitHostPort(t *testing.T, addr string) (string, int) {
-	t.Helper()
-	host, portText, err := net.SplitHostPort(addr)
-	if err != nil {
-		t.Fatalf("split host port %q: %v", addr, err)
-	}
-	port, err := net.LookupPort("tcp", portText)
-	if err != nil {
-		t.Fatalf("lookup port %q: %v", portText, err)
-	}
-	return host, port
 }

@@ -50,6 +50,13 @@ func ShouldAdoptInspectionTitle(sourceTitle string, candidate InspectionTitle) b
 		return false
 	}
 	sourceTitle = strings.TrimSpace(sourceTitle)
+	if candidate.Source == "media_title" &&
+		sourceTitle != "" &&
+		looksReadableTitle(sourceTitle) &&
+		!looksObfuscatedTitle(sourceTitle) &&
+		hasReleaseIdentityQualifiers(sourceTitle) {
+		return false
+	}
 	if sourceTitle != "" && looksReadableTitle(sourceTitle) && !looksObfuscatedTitle(sourceTitle) && !titlesLookRelated(candidate.DisplayTitle, sourceTitle) {
 		return false
 	}
@@ -57,6 +64,14 @@ func ShouldAdoptInspectionTitle(sourceTitle string, candidate InspectionTitle) b
 		return true
 	}
 	return candidate.Confidence >= 0.70 && (sourceTitle == "" || looksObfuscatedTitle(sourceTitle) || !looksReadableTitle(sourceTitle))
+}
+
+func hasReleaseIdentityQualifiers(title string) bool {
+	return yearLineRE.MatchString(title) ||
+		resolutionRE.MatchString(title) ||
+		videoCodecRE.MatchString(title) ||
+		audioCodecRE.MatchString(title) ||
+		sourceTagRE.MatchString(title)
 }
 
 func NormalizeSearchTitle(v string) string {

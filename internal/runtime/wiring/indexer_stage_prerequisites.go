@@ -25,6 +25,17 @@ func newIndexerPrerequisiteGate(appCtx *app.Context) supervisor.StageGateFunc {
 			if runtime == nil || runtime.Indexing == nil || len(app.EffectiveNewsgroupNames(runtime.Indexing)) == 0 {
 				return supervisor.StageGateDecision{Allowed: false, Reason: "configure at least one scrape group"}, nil
 			}
+		case supervisor.StageScrapeTimeframe:
+			if len(app.IndexerNNTPServers(runtime)) == 0 {
+				return supervisor.StageGateDecision{Allowed: false, Reason: "configure at least one NNTP server"}, nil
+			}
+			if runtime == nil || runtime.Indexing == nil || len(runtime.Indexing.ScrapeTimeframes) == 0 {
+				return supervisor.StageGateDecision{Allowed: false, Reason: "configure at least one historical scrape timeframe"}, nil
+			}
+		case supervisor.StageScrapeDeferred:
+			if len(app.IndexerNNTPServers(runtime)) == 0 {
+				return supervisor.StageGateDecision{Allowed: false, Reason: "configure at least one NNTP server"}, nil
+			}
 		case supervisor.StageAssemble,
 			supervisor.StageRecoverYEnc,
 			supervisor.StageInspectDiscovery,

@@ -6,9 +6,9 @@ GOARCH=$(shell go env GOARCH)
 DIST_NAME=$(BINARY_NAME)_$(VERSION)_$(GOOS)_$(GOARCH)
 PKG=./cmd/gonzb
 
-LDFLAGS=-ldflags "-X main.Version=$(VERSION) -X main.BuildTime=$(BUILD_TIME)"
+LDFLAGS=-ldflags "-X github.com/datallboy/gonzb/internal/buildinfo.Version=$(VERSION) -X github.com/datallboy/gonzb/internal/buildinfo.BuildTime=$(BUILD_TIME)"
 
-.PHONY: all build build-release ui-build clean test vet lint install
+.PHONY: all build build-release ui-build clean test test-ci test-postgres vet lint install gonzbnet-e2e-test gonzbnet-e2e-start gonzbnet-e2e-bootstrap gonzbnet-e2e-verify gonzbnet-e2e-stop gonzbnet-e2e-status gonzbnet-e2e-reset
 
 all: build
 
@@ -24,7 +24,7 @@ build-release: ui-build
 		GOARCH=$${target#*/}; \
 		EXT=""; \
 		if [ "$$GOOS" = "windows" ]; then EXT=".exe"; fi; \
-		OUT="bin/$(BINARY_NAME)_$(VERSION)_$$GOOS_$$GOARCH$$EXT"; \
+		OUT="bin/$(BINARY_NAME)_$(VERSION)_$${GOOS}_$${GOARCH}$${EXT}"; \
 		echo "Building $$OUT"; \
 		CGO_ENABLED=0 GOCACHE=$${GOCACHE:-/tmp/gocache} GOOS=$$GOOS GOARCH=$$GOARCH go build $(LDFLAGS) -o "$$OUT" $(PKG); \
 	done
@@ -36,6 +36,14 @@ ui-build:
 test:
 	@echo "Running tests..."
 	GOCACHE=$${GOCACHE:-/tmp/gocache} go test ./...
+
+test-ci:
+	@echo "Running CI tests with skipped-test enforcement..."
+	GOCACHE=$${GOCACHE:-/tmp/gocache} ./scripts/test_ci.sh
+
+test-postgres:
+	@echo "Running all tests with disposable PostgreSQL..."
+	GOCACHE=$${GOCACHE:-/tmp/gocache} ./scripts/test_postgres.sh
 
 vet:
 	@echo "Running go vet..."
@@ -56,5 +64,33 @@ install: build
 clean:
 	@echo "Cleaning up..."
 	rm -rf bin/
-	rm -f downloads/
 	rm -f *.nzb
+
+gonzbnet-e2e-test:
+	./scripts/gonzbnet_e2e.sh test
+
+gonzbnet-e2e-start:
+	./scripts/gonzbnet_e2e.sh start
+
+gonzbnet-e2e-bootstrap:
+	./scripts/gonzbnet_e2e.sh bootstrap
+	./scripts/gonzbnet_e2e.sh configure-pool
+	./scripts/gonzbnet_e2e.sh admission-smoke
+
+gonzbnet-e2e-verify:
+	./scripts/gonzbnet_e2e.sh smoke
+	./scripts/gonzbnet_e2e.sh quorum-smoke
+	./scripts/gonzbnet_e2e.sh federation-smoke
+	./scripts/gonzbnet_e2e.sh release-smoke
+	./scripts/gonzbnet_e2e.sh indexer-federation-smoke
+	./scripts/gonzbnet_e2e.sh nntp-smoke
+	./scripts/gonzbnet_e2e.sh observability-smoke
+
+gonzbnet-e2e-stop:
+	./scripts/gonzbnet_e2e.sh stop
+
+gonzbnet-e2e-status:
+	./scripts/gonzbnet_e2e.sh status
+
+gonzbnet-e2e-reset:
+	./scripts/gonzbnet_e2e.sh reset

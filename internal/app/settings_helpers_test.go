@@ -1,10 +1,29 @@
 package app
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/datallboy/gonzb/internal/infra/config"
 )
+
+func TestIndexingRecoveryProfileDefaultsAndNormalizes(t *testing.T) {
+	defaults := DefaultRuntimeSettings()
+	if defaults.Indexing == nil || defaults.Indexing.RecoveryProfile != IndexingRecoveryProfileBalanced {
+		t.Fatalf("expected balanced default recovery profile, got %+v", defaults.Indexing)
+	}
+	for input, want := range map[string]string{
+		"":            IndexingRecoveryProfileBalanced,
+		" BALANCED ":  IndexingRecoveryProfileBalanced,
+		"header_only": IndexingRecoveryProfileHeaderOnly,
+		"EXHAUSTIVE":  IndexingRecoveryProfileExhaustive,
+		"unknown":     IndexingRecoveryProfileBalanced,
+	} {
+		if got := NormalizeIndexingRecoveryProfile(input); got != want {
+			t.Fatalf("NormalizeIndexingRecoveryProfile(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
 
 func TestIndexingRuntimeFromConfigUsesExpandedSettings(t *testing.T) {
 	enabled := true
@@ -144,6 +163,105 @@ func TestDefaultRuntimeSettingsAreOperationallyDisabled(t *testing.T) {
 	if runtime.Indexing.InspectPAR2.Concurrency != 4 {
 		t.Fatalf("expected inspect_par2 concurrency default, got %+v", runtime.Indexing.InspectPAR2)
 	}
+	if runtime.Indexing.Retention.CreatePartitionsDaysBefore != 0 || runtime.Indexing.Retention.CreatePartitionsDaysAhead != 2 {
+		t.Fatalf("expected legacy partition settings to avoid historical precreation, got %+v", runtime.Indexing.Retention)
+	}
+	if runtime.Indexing.Partitions.PrecreateDaysAhead != 2 || runtime.Indexing.Partitions.MaxNewSourceDaysPerPass != 32 || runtime.Indexing.Partitions.DDLLockTimeoutSeconds != 5 {
+		t.Fatalf("unexpected sparse partition defaults: %+v", runtime.Indexing.Partitions)
+	}
+	if runtime.Indexing.Retention.SourceSettleHours != 24 || runtime.Indexing.Retention.NoYieldGraceDays != 7 || runtime.Indexing.Retention.YEncTerminalAttempts != 4 || runtime.Indexing.Retention.ExecuteOutcomePurge {
+		t.Fatalf("unexpected outcome retention defaults: %+v", runtime.Indexing.Retention)
+	}
+	if runtime.Indexing.RecoveryAdmission.LatestReservePercent != 10 {
+		t.Fatalf("expected latest-work capacity reserve, got %+v", runtime.Indexing.RecoveryAdmission)
+	}
+	if runtime.Indexing.RecoveryAdmission.BalancedBodyRequestsPerHour != 25000 ||
+		runtime.Indexing.RecoveryAdmission.ExhaustiveBodyRequestsPerHour != 100000 ||
+		runtime.Indexing.RecoveryAdmission.DiscoveryBodyRequestsPerHour != 1000 {
+		t.Fatalf("unexpected BODY request budgets: %+v", runtime.Indexing.RecoveryAdmission)
+	}
+}
+
+func TestWithRuntimeDefaultsMapsLegacyPartitionAheadSetting(t *testing.T) {
+	runtime := WithRuntimeDefaults(&RuntimeSettings{
+		Indexing: &IndexingRuntimeSettings{
+			Retention: IndexingRetentionRuntimeSettings{CreatePartitionsDaysAhead: 6},
+		},
+	})
+
+	if runtime.Indexing == nil || runtime.Indexing.Partitions.PrecreateDaysAhead != 6 {
+		t.Fatalf("expected legacy partition-ahead setting to populate the partition policy, got %+v", runtime.Indexing)
+	}
+}
+
+func TestGoNZBNetRuntimeSettingsRoundTripPreservesBootstrapBoundaries(t *testing.T) {
+	base := &config.Config{GoNZBNet: config.GoNZBNetConfig{
+		Mode:                        "federation",
+		KeysDir:                     "/keys/bootstrap",
+		HTTPBasePath:                "/federation/v1",
+		NetworkID:                   "network-a",
+		LocalPoolID:                 "pool-a",
+		NodeAlias:                   "before",
+		ManualPeers:                 []string{"https://peer-a.example"},
+		ConsumerEnabled:             true,
+		ScannerEnabled:              true,
+		ValidationTiers:             []string{"metadata"},
+		ManifestCacheMaxBytes:       1024,
+		ManifestCacheTTLDays:        7,
+		PullSyncIntervalMin:         5,
+		PushSyncIntervalMin:         5,
+		PushSyncBatchSize:           25,
+		GossipIntervalMin:           1,
+		GossipBatchSize:             25,
+		GossipTTL:                   3,
+		GossipFanout:                2,
+		MaxEventBytes:               4096,
+		MaxManifestBytes:            8192,
+		ManifestFetchTimeoutSeconds: 15,
+		MaxBatchEvents:              50,
+		RateLimitEventsPerMinute:    60,
+		TimeToleranceSeconds:        120,
+		MaxEventAgeHours:            24,
+		NonceTTLSeconds:             300,
+	}}
+
+	runtime := FromConfig(base)
+	if runtime.GoNZBNet == nil || runtime.GoNZBNet.NodeAlias != "before" || !runtime.GoNZBNet.ScannerEnabled {
+		t.Fatalf("expected GoNZBNet bootstrap values in runtime settings, got %+v", runtime.GoNZBNet)
+	}
+	runtime.GoNZBNet.NodeAlias = "after"
+	runtime.GoNZBNet.ScannerEnabled = false
+	runtime.GoNZBNet.ManualPeers = []string{"https://peer-b.example"}
+	runtime.GoNZBNet.ValidationTiers = []string{"metadata", "article_stat"}
+
+	effective := ApplyToConfig(base, runtime)
+	if effective.GoNZBNet.NodeAlias != "after" || effective.GoNZBNet.ScannerEnabled {
+		t.Fatalf("expected runtime GoNZBNet values to apply, got %+v", effective.GoNZBNet)
+	}
+	if len(effective.GoNZBNet.ManualPeers) != 1 || effective.GoNZBNet.ManualPeers[0] != "https://peer-b.example" {
+		t.Fatalf("expected runtime manual peers to apply, got %+v", effective.GoNZBNet.ManualPeers)
+	}
+	if effective.GoNZBNet.KeysDir != "/keys/bootstrap" || effective.GoNZBNet.HTTPBasePath != "/federation/v1" || effective.GoNZBNet.NetworkID != "network-a" || effective.GoNZBNet.LocalPoolID != "pool-a" {
+		t.Fatalf("expected bootstrap-only fields to remain unchanged, got %+v", effective.GoNZBNet)
+	}
+}
+
+func TestWithRuntimeDefaultsFromConfigBackfillsGoNZBNetFromBootstrap(t *testing.T) {
+	runtime := DefaultRuntimeSettings()
+	runtime.GoNZBNet = nil
+	base := &config.Config{GoNZBNet: config.GoNZBNetConfig{
+		NodeAlias:      "bootstrap-node",
+		ScannerEnabled: true,
+		PublishPoolIDs: []string{"pool-a"},
+	}}
+
+	got := WithRuntimeDefaultsFromConfig(runtime, base)
+	if got.GoNZBNet == nil || got.GoNZBNet.NodeAlias != "bootstrap-node" || !got.GoNZBNet.ScannerEnabled {
+		t.Fatalf("expected bootstrap GoNZBNet settings to backfill older snapshot, got %+v", got.GoNZBNet)
+	}
+	if len(got.GoNZBNet.PublishPoolIDs) != 1 || got.GoNZBNet.PublishPoolIDs[0] != "pool-a" {
+		t.Fatalf("expected bootstrap publish pools, got %+v", got.GoNZBNet.PublishPoolIDs)
+	}
 }
 
 func TestWithRuntimeDefaultsBackfillsAssembleStageDefaults(t *testing.T) {
@@ -183,21 +301,20 @@ func TestToStageConfigOmitsUnsetBinaryUpsertChunkSize(t *testing.T) {
 	}
 }
 
-func TestApplyPatchPreservesExistingArrIntegrations(t *testing.T) {
+func TestApplyPatchPreservesExistingDownloadClients(t *testing.T) {
 	current := &RuntimeSettings{
-		ArrIntegrations: []ArrIntegrationRuntimeSettings{{
-			ID:      "sonarr",
-			Kind:    "sonarr",
+		DownloadClients: []DownloadClientRuntimeSettings{{
+			ID:      "sab",
 			Enabled: true,
 		}},
 	}
 
 	next := ApplyPatch(current, &RuntimeSettingsPatch{
-		Download: &DownloadRuntimeSettings{OutDir: "/downloads"},
+		Aggregator: &AggregatorRuntimeSettings{},
 	})
 
-	if len(next.ArrIntegrations) != 1 || next.ArrIntegrations[0].ID != "sonarr" {
-		t.Fatalf("expected arr integrations to be preserved, got %+v", next.ArrIntegrations)
+	if len(next.DownloadClients) != 1 || next.DownloadClients[0].ID != "sab" {
+		t.Fatalf("expected download clients to be preserved, got %+v", next.DownloadClients)
 	}
 }
 
@@ -364,6 +481,25 @@ func TestRedactedCopyRemovesNestedIndexerSecrets(t *testing.T) {
 
 	if redacted.Indexing.EnrichTMDB.TVDBAPIKey != "" || redacted.Indexing.EnrichTMDB.TVDBPIN != "" {
 		t.Fatalf("expected nested TVDB secrets to be redacted, got %+v", redacted.Indexing.EnrichTMDB)
+	}
+}
+
+func TestRedactedCopyRemovesDownloadClientAPIKey(t *testing.T) {
+	redacted := RedactedCopy(&RuntimeSettings{
+		DownloadClients: []DownloadClientRuntimeSettings{{ID: "sab", APIKey: "secret"}},
+	})
+
+	if len(redacted.DownloadClients) != 1 || redacted.DownloadClients[0].APIKey != "" {
+		t.Fatalf("expected download client API key to be redacted, got %+v", redacted.DownloadClients)
+	}
+}
+
+func TestValidateDownloadClientsRejectsEmbeddedCredentials(t *testing.T) {
+	err := ValidateDownloadClients([]DownloadClientRuntimeSettings{{
+		ID: "sab", Enabled: true, BaseURL: "https://user:password@example.test", APIKey: "secret",
+	}})
+	if err == nil || !strings.Contains(err.Error(), "must not contain credentials") {
+		t.Fatalf("expected embedded credentials to be rejected, got %v", err)
 	}
 }
 

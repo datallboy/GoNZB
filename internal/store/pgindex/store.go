@@ -14,15 +14,46 @@ import (
 type Store struct {
 	db *sql.DB
 
-	yencSeedScanMu               sync.Mutex
-	yencSeedScanBackoffUntil     time.Time
-	yencSeedScanConsecutiveEmpty int
+	manifestCacheMu       sync.RWMutex
+	manifestCacheMaxBytes int64
+	manifestCacheTTLDays  int
+	partitionPolicyMu     sync.RWMutex
+	partitionDDLLockLimit time.Duration
+
+	yencSeedScanMu                       sync.Mutex
+	yencSeedScanBackoffUntil             time.Time
+	yencSeedScanConsecutiveEmpty         int
+	yencPrioritySeedScanMu               sync.Mutex
+	yencPrioritySeedScanBackoffUntil     time.Time
+	yencPrioritySeedScanConsecutiveEmpty int
+
+	inspectDiscoverySeedMu               sync.Mutex
+	inspectDiscoverySeedBackoffUntil     time.Time
+	inspectDiscoverySeedConsecutiveEmpty int
 
 	yencSelectionMu        sync.Mutex
 	yencLastSelectionStats YEncRecoverySelectionStats
 
 	yencApplyMu        sync.Mutex
 	yencLastApplyStats YEncRecoveryApplyStats
+}
+
+// SetGoNZBNetManifestCachePolicy applies the runtime limits used by the
+// federation manifest cache. A non-positive value disables that constraint.
+func (s *Store) SetGoNZBNetManifestCachePolicy(maxBytes int64, ttlDays int) {
+	if s == nil {
+		return
+	}
+	s.manifestCacheMu.Lock()
+	s.manifestCacheMaxBytes = maxBytes
+	s.manifestCacheTTLDays = ttlDays
+	s.manifestCacheMu.Unlock()
+}
+
+func (s *Store) manifestCachePolicy() (int64, int) {
+	s.manifestCacheMu.RLock()
+	defer s.manifestCacheMu.RUnlock()
+	return s.manifestCacheMaxBytes, s.manifestCacheTTLDays
 }
 
 // NewStore opens PostgreSQL by DSN and runs application-owned migrations.
@@ -68,7 +99,7 @@ func newStore(dsn string, runMigrations bool) (*Store, error) {
 		return nil, fmt.Errorf("ping pg connection: %w", err)
 	}
 
-	s := &Store{db: db}
+	s := &Store{db: db, partitionDDLLockLimit: 5 * time.Second}
 
 	if runMigrations {
 		// run module migrations on startup.

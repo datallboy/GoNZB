@@ -146,11 +146,6 @@ func (s *Service) RunReformReleasesOnce(ctx context.Context, releaseIDs []string
 	return s.flushDeferredAcks(ctx, deferredAcks, &timings)
 }
 
-func (s *Service) runOnce(ctx context.Context, reform bool) error {
-	_, err := s.runOnceWithMetrics(ctx, reform)
-	return err
-}
-
 func (s *Service) RunOnceWithMetrics(ctx context.Context) (map[string]any, error) {
 	return s.runOnceWithMetrics(ctx, false)
 }

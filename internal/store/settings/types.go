@@ -14,9 +14,9 @@ type RuntimeSettingsPatch = app.RuntimeSettingsPatch
 type ServerRuntimeSettings = app.ServerRuntimeSettings
 type IndexerRuntimeSettings = app.IndexerRuntimeSettings
 type AggregatorRuntimeSettings = app.AggregatorRuntimeSettings
-type DownloadRuntimeSettings = app.DownloadRuntimeSettings
+type GoNZBNetRuntimeSettings = app.GoNZBNetRuntimeSettings
+type DownloadClientRuntimeSettings = app.DownloadClientRuntimeSettings
 type IndexingRuntimeSettings = app.IndexingRuntimeSettings
-type ArrIntegrationRuntimeSettings = app.ArrIntegrationRuntimeSettings
 
 // derive editable runtime state from current effective config.
 func FromConfig(cfg *config.Config) *RuntimeSettings {
@@ -49,10 +49,6 @@ func CloneRuntimeSettings(in *RuntimeSettings) *RuntimeSettings {
 // redact runtime secrets before returning settings through API.
 func RedactedCopy(in *RuntimeSettings) *RuntimeSettings {
 	return app.RedactedCopy(in)
-}
-
-func ValidateArrIntegrations(integrations []ArrIntegrationRuntimeSettings) error {
-	return app.ValidateArrIntegrations(integrations)
 }
 
 func encodeRuntimeSettings(v *RuntimeSettings) ([]byte, error) {

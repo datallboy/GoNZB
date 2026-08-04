@@ -50,15 +50,25 @@ func (ctrl *IndexerScrapeAdminController) UpdateConfig(c *echo.Context) error {
 		current.Indexing = app.DefaultRuntimeSettings().Indexing
 	}
 	next := app.CloneRuntimeSettings(current)
-	next.Indexing.ExplicitGroups = append([]app.IndexingScrapeGroupRuntimeSettings(nil), body.ExplicitGroups...)
-	next.Indexing.WildcardRules = append([]app.IndexingWildcardRuleRuntimeSettings(nil), body.WildcardRules...)
-	next.Indexing.MaterializedGroups = append([]app.IndexingMaterializedGroupRuntimeSettings(nil), body.MaterializedGroups...)
+	// Keep submitted empty arrays non-nil. A nil scrape configuration is the
+	// legacy-migration signal, so collapsing [] to nil can resurrect the old
+	// derived newsgroups list when the operator removes the final group.
+	next.Indexing.ExplicitGroups = cloneScrapeAdminSlice(body.ExplicitGroups)
+	next.Indexing.ScrapeTimeframes = cloneScrapeAdminSlice(body.ScrapeTimeframes)
+	next.Indexing.WildcardRules = cloneScrapeAdminSlice(body.WildcardRules)
+	next.Indexing.MaterializedGroups = cloneScrapeAdminSlice(body.MaterializedGroups)
 
 	updated, err := ctrl.appCtx.SettingsAdmin.Update(c.Request().Context(), &app.RuntimeSettingsPatch{Indexing: next.Indexing})
 	if err != nil {
 		return jsonError(c, settingsErrorStatus(err), err.Error())
 	}
 	return c.JSON(http.StatusOK, buildScrapeAdminResponse(c.Request().Context(), ctrl.appCtx, updated))
+}
+
+func cloneScrapeAdminSlice[T any](in []T) []T {
+	out := make([]T, len(in))
+	copy(out, in)
+	return out
 }
 
 func (ctrl *IndexerScrapeAdminController) ScanProviders(c *echo.Context) error {
@@ -270,6 +280,7 @@ func (ctrl *IndexerScrapeAdminController) ApplyWildcardGroups(c *echo.Context) e
 
 type scrapeAdminConfigPatch struct {
 	ExplicitGroups     []app.IndexingScrapeGroupRuntimeSettings       `json:"explicit_groups"`
+	ScrapeTimeframes   []app.IndexingScrapeTimeframeRuntimeSettings   `json:"scrape_timeframes"`
 	WildcardRules      []app.IndexingWildcardRuleRuntimeSettings      `json:"wildcard_rules"`
 	MaterializedGroups []app.IndexingMaterializedGroupRuntimeSettings `json:"materialized_groups"`
 }
@@ -361,6 +372,8 @@ func buildScrapeAdminResponse(ctx context.Context, appCtx *app.Context, runtime 
 	stats := loadProviderInventoryStats(ctx, appCtx, indexing)
 	return map[string]any{
 		"explicit_groups":                ensureExplicitGroups(indexing.ExplicitGroups),
+		"scrape_timeframes":              ensureScrapeTimeframes(indexing.ScrapeTimeframes),
+		"timeframe_progress":             loadScrapeTimeframeProgress(ctx, appCtx),
 		"wildcard_rules":                 ensureWildcardRules(indexing.WildcardRules),
 		"provider_group_inventory":       []app.IndexingProviderGroupInventoryRuntimeSettings{},
 		"provider_inventory_count":       stats.Count,
@@ -371,6 +384,25 @@ func buildScrapeAdminResponse(ctx context.Context, appCtx *app.Context, runtime 
 		"preview_total":                  0,
 		"crosspost_popularity":           []scrapeCrosspostPopularityItem{},
 	}
+}
+
+type scrapeTimeframeProgressReader interface {
+	ListScrapeTimeframeProgress(ctx context.Context, limit int) ([]pgindex.ScrapeTimeframeProgressSummary, error)
+}
+
+func loadScrapeTimeframeProgress(ctx context.Context, appCtx *app.Context) []pgindex.ScrapeTimeframeProgressSummary {
+	if appCtx == nil || appCtx.PGIndexStore == nil {
+		return []pgindex.ScrapeTimeframeProgressSummary{}
+	}
+	reader, ok := appCtx.PGIndexStore.(scrapeTimeframeProgressReader)
+	if !ok {
+		return []pgindex.ScrapeTimeframeProgressSummary{}
+	}
+	items, err := reader.ListScrapeTimeframeProgress(ctx, 500)
+	if err != nil {
+		return []pgindex.ScrapeTimeframeProgressSummary{}
+	}
+	return items
 }
 
 func loadCrosspostPopularity(ctx context.Context, appCtx *app.Context, indexing *app.IndexingRuntimeSettings, limit int) []scrapeCrosspostPopularityItem {
@@ -614,6 +646,13 @@ func ensureExplicitGroups(in []app.IndexingScrapeGroupRuntimeSettings) []app.Ind
 	return in
 }
 
+func ensureScrapeTimeframes(in []app.IndexingScrapeTimeframeRuntimeSettings) []app.IndexingScrapeTimeframeRuntimeSettings {
+	if in == nil {
+		return []app.IndexingScrapeTimeframeRuntimeSettings{}
+	}
+	return in
+}
+
 func ensureWildcardRules(in []app.IndexingWildcardRuleRuntimeSettings) []app.IndexingWildcardRuleRuntimeSettings {
 	if in == nil {
 		return []app.IndexingWildcardRuleRuntimeSettings{}
@@ -621,23 +660,9 @@ func ensureWildcardRules(in []app.IndexingWildcardRuleRuntimeSettings) []app.Ind
 	return in
 }
 
-func ensureProviderInventory(in []app.IndexingProviderGroupInventoryRuntimeSettings) []app.IndexingProviderGroupInventoryRuntimeSettings {
-	if in == nil {
-		return []app.IndexingProviderGroupInventoryRuntimeSettings{}
-	}
-	return in
-}
-
 func ensureMaterializedGroups(in []app.IndexingMaterializedGroupRuntimeSettings) []app.IndexingMaterializedGroupRuntimeSettings {
 	if in == nil {
 		return []app.IndexingMaterializedGroupRuntimeSettings{}
-	}
-	return in
-}
-
-func ensurePreviewGroups(in []scrapePreviewItem) []scrapePreviewItem {
-	if in == nil {
-		return []scrapePreviewItem{}
 	}
 	return in
 }

@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"time"
 
 	"github.com/datallboy/gonzb/internal/aggregator"
 	"github.com/datallboy/gonzb/internal/domain"
@@ -23,24 +22,73 @@ type Client struct {
 	httpClient      *http.Client
 }
 
-func New(name, baseURL, apiPath, apiKey string, redirect bool) *Client {
+const maxSearchResponseBytes int64 = 16 << 20
+const maxCapabilitiesResponseBytes int64 = 1 << 20
+
+func New(name, baseURL, apiPath, apiKey string, redirect bool, policies ...OutboundPolicy) *Client {
+	var policy OutboundPolicy
+	if len(policies) > 0 {
+		policy = policies[0]
+	}
 	return &Client{
 		name:            name,
 		BaseURL:         baseURL,
 		ApiPath:         apiPath,
 		APIKey:          apiKey,
 		redirectAllowed: redirect,
-		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
-		},
+		httpClient:      newPolicyHTTPClient(policy),
 	}
 }
 
 func (c *Client) Name() string { return c.name }
 
+func (c *Client) TestConnection(ctx context.Context) error {
+	base, err := url.Parse(c.BaseURL)
+	if err != nil {
+		return fmt.Errorf("invalid indexer base URL %q: %w", c.BaseURL, err)
+	}
+	if err := validateHTTPURL(base); err != nil {
+		return fmt.Errorf("invalid indexer base URL %q: %w", c.BaseURL, err)
+	}
+	capsURL := base.ResolveReference(&url.URL{Path: c.ApiPath})
+	params := capsURL.Query()
+	params.Set("t", "caps")
+	params.Set("apikey", c.APIKey)
+	params.Set("o", "xml")
+	capsURL.RawQuery = params.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, capsURL.String(), nil)
+	if err != nil {
+		return fmt.Errorf("create capabilities request: %w", err)
+	}
+	req.Header.Set("User-Agent", "GoNZB/1.0")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("indexer %s capabilities returned status: %d", c.name, resp.StatusCode)
+	}
+	if resp.ContentLength > maxCapabilitiesResponseBytes {
+		return fmt.Errorf("indexer %s capabilities response exceeds %d bytes", c.name, maxCapabilitiesResponseBytes)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxCapabilitiesResponseBytes+1))
+	if err != nil {
+		return fmt.Errorf("read capabilities response: %w", err)
+	}
+	if len(body) == 0 || int64(len(body)) > maxCapabilitiesResponseBytes {
+		return fmt.Errorf("indexer %s returned an invalid capabilities response", c.name)
+	}
+	return nil
+}
+
 func (c *Client) Search(ctx context.Context, req aggregator.SearchRequest) ([]*domain.Release, error) {
 	base, err := url.Parse(c.BaseURL)
 	if err != nil {
+		return nil, fmt.Errorf("invalid indexer base URL %q: %w", c.BaseURL, err)
+	}
+	if err := validateHTTPURL(base); err != nil {
 		return nil, fmt.Errorf("invalid indexer base URL %q: %w", c.BaseURL, err)
 	}
 
@@ -54,6 +102,20 @@ func (c *Client) Search(ctx context.Context, req aggregator.SearchRequest) ([]*d
 	params.Set("t", searchType)
 	params.Set("apikey", c.APIKey)
 	params.Set("o", "xml")
+	if req.Limit > 0 {
+		params.Set("limit", fmt.Sprintf("%d", req.Limit))
+	}
+	if len(req.Categories) > 0 {
+		categories := make([]string, 0, len(req.Categories))
+		for _, category := range req.Categories {
+			if category > 0 {
+				categories = append(categories, fmt.Sprintf("%d", category))
+			}
+		}
+		if len(categories) > 0 {
+			params.Set("cat", strings.Join(categories, ","))
+		}
+	}
 
 	// CHANGED: pass through real Newznab movie/tvsearch parameters.
 	switch req.Type {
@@ -91,8 +153,11 @@ func (c *Client) Search(ctx context.Context, req aggregator.SearchRequest) ([]*d
 		return nil, fmt.Errorf("indexer %s returned status: %d", c.name, resp.StatusCode)
 	}
 
+	if resp.ContentLength > maxSearchResponseBytes {
+		return nil, fmt.Errorf("indexer %s search response exceeds %d bytes", c.name, maxSearchResponseBytes)
+	}
 	var rss RSSResponse
-	if err := xml.NewDecoder(resp.Body).Decode(&rss); err != nil {
+	if err := xml.NewDecoder(io.LimitReader(resp.Body, maxSearchResponseBytes+1)).Decode(&rss); err != nil {
 		return nil, err
 	}
 
@@ -108,6 +173,9 @@ func (c *Client) Search(ctx context.Context, req aggregator.SearchRequest) ([]*d
 func (c *Client) GetNZB(ctx context.Context, res *domain.Release) (io.ReadCloser, error) {
 	downloadURL, err := url.Parse(res.DownloadURL)
 	if err != nil {
+		return nil, fmt.Errorf("invalid release download URL %q: %w", res.DownloadURL, err)
+	}
+	if err := validateHTTPURL(downloadURL); err != nil {
 		return nil, fmt.Errorf("invalid release download URL %q: %w", res.DownloadURL, err)
 	}
 	params := downloadURL.Query()
@@ -132,6 +200,19 @@ func (c *Client) GetNZB(ctx context.Context, res *domain.Release) (io.ReadCloser
 	}
 
 	return resp.Body, nil
+}
+
+func validateHTTPURL(value *url.URL) error {
+	if value == nil || (value.Scheme != "http" && value.Scheme != "https") {
+		return fmt.Errorf("scheme must be http or https")
+	}
+	if value.Hostname() == "" {
+		return fmt.Errorf("host is required")
+	}
+	if value.User != nil {
+		return fmt.Errorf("embedded credentials are not allowed")
+	}
+	return nil
 }
 
 func setIfNotEmpty(values url.Values, key, value string) {

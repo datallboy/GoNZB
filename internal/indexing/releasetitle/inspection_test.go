@@ -47,6 +47,21 @@ func TestShouldAdoptMediaTitleForObfuscatedSource(t *testing.T) {
 	}
 }
 
+func TestShouldAdoptMediaTitleKeepsQualifiedReleaseName(t *testing.T) {
+	source := "The.Christophers.2025.iNTERNAL.BluRay.1080p.REMUX.AVC.Atmos.7.1-Aisha"
+	candidate, ok := ChooseBestInspectionTitle(source, []InspectionCandidate{{
+		Source:     "media_title",
+		Value:      "The Christophers",
+		Confidence: 0.96,
+	}})
+	if !ok {
+		t.Fatalf("expected media title candidate")
+	}
+	if ShouldAdoptInspectionTitle(source, candidate) {
+		t.Fatalf("embedded media title must not replace a qualified release name: %+v", candidate)
+	}
+}
+
 func TestShouldAdoptInspectionTitleAllowsRelatedReadableSource(t *testing.T) {
 	candidate, ok := ChooseBestInspectionTitle("Example Show S01E01 1080p", []InspectionCandidate{{
 		Source:     "archive_entry",

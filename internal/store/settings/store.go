@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/infra/config"
 	_ "modernc.org/sqlite"
 )
@@ -16,8 +17,9 @@ import (
 const (
 	usenetIndexerModuleName = "usenet_indexer"
 	aggregatorModuleName    = "aggregator"
+	goNZBNetModuleName      = "gonzbnet"
 )
-const expectedSchemaVersion = 1
+const expectedSchemaVersion = 3
 
 type Store struct {
 	db *sql.DB
@@ -25,7 +27,7 @@ type Store struct {
 
 func NewStore(dbPath string) (*Store, error) {
 	dbDir := filepath.Dir(dbPath)
-	if err := os.MkdirAll(dbDir, 0755); err != nil {
+	if err := os.MkdirAll(dbDir, 0700); err != nil {
 		return nil, fmt.Errorf("failed to create settings db dir: %w", err)
 	}
 
@@ -47,8 +49,21 @@ func NewStore(dbPath string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("validate settings schema: %w", err)
 	}
+	if err := restrictSettingsFilePermissions(dbPath); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 
 	return s, nil
+}
+
+func restrictSettingsFilePermissions(dbPath string) error {
+	for _, path := range []string{dbPath, dbPath + "-wal", dbPath + "-shm"} {
+		if err := os.Chmod(path, 0600); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("restrict settings file permissions for %s: %w", path, err)
+		}
+	}
+	return nil
 }
 
 func (s *Store) Close() error {
@@ -143,7 +158,7 @@ func (s *Store) GetRuntimeSettings(ctx context.Context, base ...*config.Config) 
 		if revErr == nil {
 			runtime.Revision = revisionID
 		}
-		return WithRuntimeDefaults(runtime), nil
+		return app.WithRuntimeDefaultsFromConfig(runtime, firstBaseConfig(base)), nil
 	}
 
 	legacyRevision, err := s.readLatestRevisionSnapshot(ctx)
@@ -151,12 +166,22 @@ func (s *Store) GetRuntimeSettings(ctx context.Context, base ...*config.Config) 
 		return nil, fmt.Errorf("read latest settings revision: %w", err)
 	}
 	if err == nil && legacyRevision != nil {
-		return WithRuntimeDefaults(legacyRevision), nil
+		return app.WithRuntimeDefaultsFromConfig(legacyRevision, firstBaseConfig(base)), nil
 	}
 
 	out := DefaultRuntimeSettings()
+	if len(base) > 0 && base[0] != nil {
+		out = app.FromConfig(base[0])
+	}
 	out.Revision = 0
 	return out, nil
+}
+
+func firstBaseConfig(values []*config.Config) *config.Config {
+	if len(values) == 0 {
+		return nil
+	}
+	return values[0]
 }
 
 // patch and persist the latest runtime settings state as a new atomic revision.
@@ -187,17 +212,17 @@ func (s *Store) UpdateSettings(ctx context.Context, next *RuntimeSettings) error
 	if err := s.writeIndexers(ctx, tx, next.Indexers); err != nil {
 		return fmt.Errorf("write settings_indexers: %w", err)
 	}
+	if err := s.writeDownloadClients(ctx, tx, next.DownloadClients); err != nil {
+		return fmt.Errorf("write settings_download_clients: %w", err)
+	}
 	if err := s.writeAggregatorOptions(ctx, tx, next.Aggregator); err != nil {
 		return fmt.Errorf("write aggregator module options: %w", err)
 	}
-	if err := s.writeDownload(ctx, tx, next.Download); err != nil {
-		return fmt.Errorf("write settings_download: %w", err)
+	if err := s.writeGoNZBNetOptions(ctx, tx, next.GoNZBNet); err != nil {
+		return fmt.Errorf("write gonzbnet module options: %w", err)
 	}
 	if err := s.writeUsenetIndexerOptions(ctx, tx, next.Indexing); err != nil {
 		return fmt.Errorf("write settings_module_options: %w", err)
-	}
-	if err := s.writeArrIntegrations(ctx, tx, next.ArrIntegrations); err != nil {
-		return fmt.Errorf("write settings_arr_integrations: %w", err)
 	}
 
 	if _, err := tx.ExecContext(ctx, `
@@ -296,11 +321,10 @@ func (s *Store) readLatestRevisionSnapshot(ctx context.Context) (*RuntimeSetting
 
 func (s *Store) readStructuredSettings(ctx context.Context) (*RuntimeSettings, bool, error) {
 	out := &RuntimeSettings{
-		Servers:           make([]ServerRuntimeSettings, 0),
-		DownloaderServers: make([]ServerRuntimeSettings, 0),
-		IndexerServers:    make([]ServerRuntimeSettings, 0),
-		Indexers:          make([]IndexerRuntimeSettings, 0),
-		ArrIntegrations:   make([]ArrIntegrationRuntimeSettings, 0),
+		Servers:         make([]ServerRuntimeSettings, 0),
+		IndexerServers:  make([]ServerRuntimeSettings, 0),
+		Indexers:        make([]IndexerRuntimeSettings, 0),
+		DownloadClients: make([]DownloadClientRuntimeSettings, 0),
 	}
 
 	hasState := false
@@ -349,7 +373,8 @@ func (s *Store) readStructuredSettings(ctx context.Context) (*RuntimeSettings, b
 	}
 
 	indexerRows, err := s.db.QueryContext(ctx, `
-		SELECT id, base_url, api_path, api_key_ciphertext, redirect
+		SELECT id, base_url, api_path, api_key_ciphertext, redirect,
+		       allow_private_addresses, allowed_cidrs_json
 		FROM settings_indexers
 		ORDER BY id`)
 	if err != nil {
@@ -361,14 +386,20 @@ func (s *Store) readStructuredSettings(ctx context.Context) (*RuntimeSettings, b
 		hasState = true
 
 		var item IndexerRuntimeSettings
+		var allowedCIDRsJSON string
 		if err := indexerRows.Scan(
 			&item.ID,
 			&item.BaseURL,
 			&item.APIPath,
 			&item.APIKey,
 			&item.Redirect,
+			&item.AllowPrivateAddresses,
+			&allowedCIDRsJSON,
 		); err != nil {
 			return nil, false, err
+		}
+		if err := json.Unmarshal([]byte(allowedCIDRsJSON), &item.AllowedCIDRs); err != nil {
+			return nil, false, fmt.Errorf("decode settings_indexers.allowed_cidrs_json for %s: %w", item.ID, err)
 		}
 		out.Indexers = append(out.Indexers, item)
 	}
@@ -376,55 +407,25 @@ func (s *Store) readStructuredSettings(ctx context.Context) (*RuntimeSettings, b
 		return nil, false, err
 	}
 
-	arrRows, err := s.db.QueryContext(ctx, `
-		SELECT id, kind, enabled, base_url, api_key_ciphertext, client_name, category
-		FROM settings_arr_integrations
-		ORDER BY kind, id`)
+	clientRows, err := s.db.QueryContext(ctx, `
+		SELECT id, name, enabled, is_default, base_url, api_key_ciphertext, category, priority
+		FROM settings_download_clients
+		ORDER BY is_default DESC, name, id`)
 	if err != nil {
 		return nil, false, err
 	}
-	defer arrRows.Close()
+	defer clientRows.Close()
 
-	for arrRows.Next() {
+	for clientRows.Next() {
 		hasState = true
-		var item ArrIntegrationRuntimeSettings
-		if err := arrRows.Scan(&item.ID, &item.Kind, &item.Enabled, &item.BaseURL, &item.APIKey, &item.ClientName, &item.Category); err != nil {
+		var item DownloadClientRuntimeSettings
+		if err := clientRows.Scan(&item.ID, &item.Name, &item.Enabled, &item.Default, &item.BaseURL, &item.APIKey, &item.Category, &item.Priority); err != nil {
 			return nil, false, err
 		}
-		out.ArrIntegrations = append(out.ArrIntegrations, item)
+		out.DownloadClients = append(out.DownloadClients, item)
 	}
-	if err := arrRows.Err(); err != nil {
+	if err := clientRows.Err(); err != nil {
 		return nil, false, err
-	}
-
-	var (
-		outDir      string
-		completed   string
-		cleanupJSON string
-	)
-	err = s.db.QueryRowContext(ctx, `
-		SELECT out_dir, completed_dir, cleanup_extensions_json
-		FROM settings_download
-		WHERE singleton_id = 1`).Scan(&outDir, &completed, &cleanupJSON)
-	if err != nil && err != sql.ErrNoRows {
-		return nil, false, err
-	}
-	if err == nil {
-		hasState = true
-
-		var cleanup []string
-		if cleanupJSON == "" {
-			cleanupJSON = "[]"
-		}
-		if unmarshalErr := json.Unmarshal([]byte(cleanupJSON), &cleanup); unmarshalErr != nil {
-			return nil, false, fmt.Errorf("unmarshal settings_download.cleanup_extensions_json: %w", unmarshalErr)
-		}
-
-		out.Download = &DownloadRuntimeSettings{
-			OutDir:            outDir,
-			CompletedDir:      completed,
-			CleanupExtensions: cleanup,
-		}
 	}
 
 	var optionsJSON string
@@ -467,6 +468,27 @@ func (s *Store) readStructuredSettings(ctx context.Context) (*RuntimeSettings, b
 			return nil, false, fmt.Errorf("unmarshal aggregator module options: %w", unmarshalErr)
 		}
 		out.Aggregator = &aggregator
+	}
+
+	var goNZBNetOptionsJSON string
+	err = s.db.QueryRowContext(ctx, `
+		SELECT options_json
+		FROM settings_module_options
+		WHERE module_name = ?`, goNZBNetModuleName).Scan(&goNZBNetOptionsJSON)
+	if err != nil && err != sql.ErrNoRows {
+		return nil, false, err
+	}
+	if err == nil {
+		hasState = true
+
+		var goNZBNet GoNZBNetRuntimeSettings
+		if goNZBNetOptionsJSON == "" {
+			goNZBNetOptionsJSON = "{}"
+		}
+		if unmarshalErr := json.Unmarshal([]byte(goNZBNetOptionsJSON), &goNZBNet); unmarshalErr != nil {
+			return nil, false, fmt.Errorf("unmarshal gonzbnet module options: %w", unmarshalErr)
+		}
+		out.GoNZBNet = &goNZBNet
 	}
 
 	return out, hasState, nil
@@ -524,16 +546,23 @@ func (s *Store) writeIndexers(ctx context.Context, tx *sql.Tx, indexers []Indexe
 	}
 
 	for _, item := range indexers {
+		allowedCIDRsJSON, err := json.Marshal(item.AllowedCIDRs)
+		if err != nil {
+			return fmt.Errorf("encode allowed CIDRs for indexer %s: %w", item.ID, err)
+		}
 		// CHANGED: store in ciphertext-shaped columns; real encryption remains a later step.
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO settings_indexers (
-				id, base_url, api_path, api_key_ciphertext, redirect, updated_at
-			) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+				id, base_url, api_path, api_key_ciphertext, redirect,
+				allow_private_addresses, allowed_cidrs_json, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
 			item.ID,
 			item.BaseURL,
 			item.APIPath,
 			item.APIKey,
 			item.Redirect,
+			item.AllowPrivateAddresses,
+			string(allowedCIDRsJSON),
 		); err != nil {
 			return err
 		}
@@ -542,46 +571,22 @@ func (s *Store) writeIndexers(ctx context.Context, tx *sql.Tx, indexers []Indexe
 	return nil
 }
 
-func (s *Store) writeArrIntegrations(ctx context.Context, tx *sql.Tx, integrations []ArrIntegrationRuntimeSettings) error {
-	if _, err := tx.ExecContext(ctx, `DELETE FROM settings_arr_integrations`); err != nil {
+func (s *Store) writeDownloadClients(ctx context.Context, tx *sql.Tx, clients []DownloadClientRuntimeSettings) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM settings_download_clients`); err != nil {
 		return err
 	}
 
-	for _, item := range integrations {
+	for _, item := range clients {
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO settings_arr_integrations (
-				id, kind, enabled, base_url, api_key_ciphertext, client_name, category, updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
-			item.ID, item.Kind, item.Enabled, item.BaseURL, item.APIKey, item.ClientName, item.Category,
+			INSERT INTO settings_download_clients (
+				id, name, enabled, is_default, base_url, api_key_ciphertext, category, priority, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+			item.ID, item.Name, item.Enabled, item.Default, item.BaseURL, item.APIKey, item.Category, item.Priority,
 		); err != nil {
 			return err
 		}
 	}
 	return nil
-}
-
-func (s *Store) writeDownload(ctx context.Context, tx *sql.Tx, download *DownloadRuntimeSettings) error {
-	if _, err := tx.ExecContext(ctx, `DELETE FROM settings_download WHERE singleton_id = 1`); err != nil {
-		return err
-	}
-	if download == nil {
-		return nil
-	}
-
-	cleanupJSON, err := json.Marshal(download.CleanupExtensions)
-	if err != nil {
-		return fmt.Errorf("marshal cleanup extensions: %w", err)
-	}
-
-	_, err = tx.ExecContext(ctx, `
-		INSERT INTO settings_download (
-			singleton_id, out_dir, completed_dir, cleanup_extensions_json, updated_at
-		) VALUES (1, ?, ?, ?, CURRENT_TIMESTAMP)`,
-		download.OutDir,
-		download.CompletedDir,
-		string(cleanupJSON),
-	)
-	return err
 }
 
 func (s *Store) writeUsenetIndexerOptions(ctx context.Context, tx *sql.Tx, indexing *IndexingRuntimeSettings) error {
@@ -609,6 +614,26 @@ func (s *Store) writeUsenetIndexerOptions(ctx context.Context, tx *sql.Tx, index
 		usenetIndexerModuleName,
 		string(optionsJSON),
 	)
+	return err
+}
+
+func (s *Store) writeGoNZBNetOptions(ctx context.Context, tx *sql.Tx, goNZBNet *GoNZBNetRuntimeSettings) error {
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM settings_module_options
+		WHERE module_name = ?`, goNZBNetModuleName); err != nil {
+		return err
+	}
+	if goNZBNet == nil {
+		return nil
+	}
+
+	payload, err := json.Marshal(goNZBNet)
+	if err != nil {
+		return fmt.Errorf("marshal gonzbnet module options: %w", err)
+	}
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO settings_module_options (module_name, options_json, updated_at)
+		VALUES (?, ?, CURRENT_TIMESTAMP)`, goNZBNetModuleName, string(payload))
 	return err
 }
 

@@ -153,6 +153,110 @@ func TestAuthSetupAndRBACFlow(t *testing.T) {
 	}
 }
 
+func TestInitialSetupRequiresConfiguredBootstrapToken(t *testing.T) {
+	e := echo.New()
+	appCtx := newAuthTestAppContext(t)
+	appCtx.Config.API.BootstrapToken = "one-time-bootstrap-secret"
+	RegisterRoutes(e, appCtx)
+
+	statusResp := performJSONRequest(t, e, http.MethodGet, "/api/v1/auth/setup", nil, nil, "")
+	if statusResp.Code != http.StatusOK {
+		t.Fatalf("expected setup status 200, got %d", statusResp.Code)
+	}
+	var statusBody struct {
+		SetupRequired          bool `json:"setup_required"`
+		BootstrapTokenRequired bool `json:"bootstrap_token_required"`
+	}
+	mustDecodeJSON(t, statusResp, &statusBody)
+	if !statusBody.SetupRequired || !statusBody.BootstrapTokenRequired {
+		t.Fatalf("expected setup and bootstrap token to be required: %s", statusResp.Body.String())
+	}
+
+	for name, token := range map[string]string{
+		"missing": "",
+		"wrong":   "wrong-secret",
+	} {
+		t.Run(name, func(t *testing.T) {
+			resp := performJSONRequest(t, e, http.MethodPost, "/api/v1/auth/setup", map[string]string{
+				"username":        "owner",
+				"password":        "very-secure-pass",
+				"bootstrap_token": token,
+			}, nil, "")
+			if resp.Code != http.StatusUnauthorized {
+				t.Fatalf("expected 401, got %d body=%s", resp.Code, resp.Body.String())
+			}
+		})
+	}
+
+	setupResp := performJSONRequest(t, e, http.MethodPost, "/api/v1/auth/setup", map[string]string{
+		"username":        "owner",
+		"password":        "very-secure-pass",
+		"bootstrap_token": "one-time-bootstrap-secret",
+	}, nil, "")
+	if setupResp.Code != http.StatusCreated {
+		t.Fatalf("expected valid token to create owner, got %d body=%s", setupResp.Code, setupResp.Body.String())
+	}
+	repeatResp := performJSONRequest(t, e, http.MethodPost, "/api/v1/auth/setup", map[string]string{
+		"username": "other-owner",
+		"password": "another-secure-pass",
+	}, nil, "")
+	if repeatResp.Code != http.StatusConflict {
+		t.Fatalf("expected completed setup to hide token validation, got %d body=%s", repeatResp.Code, repeatResp.Body.String())
+	}
+}
+
+func TestForwardedHTTPSRequiresTrustedProxy(t *testing.T) {
+	tests := []struct {
+		name              string
+		trustedProxyCIDRs []string
+		wantSecure        bool
+	}{
+		{name: "untrusted proxy header is ignored", wantSecure: false},
+		{name: "trusted proxy header is honored", trustedProxyCIDRs: []string{"192.0.2.0/24"}, wantSecure: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := echo.New()
+			appCtx := newAuthTestAppContext(t)
+			appCtx.Config.API.TrustedProxyCIDRs = tt.trustedProxyCIDRs
+			authStore := any(appCtx.SettingsStore).(auth.Store)
+			authSvc := auth.NewService(authStore)
+			if err := authSvc.Bootstrap(t.Context()); err != nil {
+				t.Fatalf("bootstrap auth: %v", err)
+			}
+			if _, _, err := authSvc.SetupInitialUser(t.Context(), "owner", "very-secure-pass"); err != nil {
+				t.Fatalf("setup owner: %v", err)
+			}
+			RegisterRoutes(e, appCtx)
+
+			rawBody, err := json.Marshal(map[string]string{
+				"username": "owner",
+				"password": "very-secure-pass",
+			})
+			if err != nil {
+				t.Fatalf("marshal login: %v", err)
+			}
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/session", bytes.NewReader(rawBody))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("X-Forwarded-Proto", "https")
+			req.RemoteAddr = "192.0.2.10:43120"
+			rec := httptest.NewRecorder()
+			e.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected login 200, got %d body=%s", rec.Code, rec.Body.String())
+			}
+			sessionCookie := cookieMap(rec.Result().Cookies())["gonzb_session"]
+			if sessionCookie == nil {
+				t.Fatal("expected session cookie")
+			}
+			if sessionCookie.Secure != tt.wantSecure {
+				t.Fatalf("session cookie Secure=%v, want %v", sessionCookie.Secure, tt.wantSecure)
+			}
+		})
+	}
+}
+
 func TestAPIKeyMiddlewareUsesUserTokenRBAC(t *testing.T) {
 	e := echo.New()
 	appCtx := newAuthTestAppContext(t)

@@ -16,6 +16,10 @@ type nntpStageBacklogReader interface {
 	CountPendingYEncRecoveryBinaries(ctx context.Context) (int64, error)
 }
 
+type nntpStageProfileBacklogReader interface {
+	CountPendingYEncRecoveryBinariesByMaxPriority(ctx context.Context, maxPriorityRank int) (int64, error)
+}
+
 type cachedNNTPTrafficGuard struct {
 	settingsStore app.SettingsStore
 	repo          nntpStageBacklogReader
@@ -110,11 +114,24 @@ func (g *cachedNNTPTrafficGuard) evaluate(ctx context.Context, runtime *app.Runt
 		return results, nil
 	}
 
-	yencBacklog, err := g.repo.CountPendingYEncRecoveryBinaries(ctx)
+	recoveryProfile := app.NormalizeIndexingRecoveryProfile(runtime.Indexing.RecoveryProfile)
+	yencBacklog := int64(0)
+	var err error
+	if recoveryProfile != app.IndexingRecoveryProfileHeaderOnly {
+		if profileRepo, ok := g.repo.(nntpStageProfileBacklogReader); ok {
+			maxPriorityRank := 2
+			if recoveryProfile == app.IndexingRecoveryProfileBalanced {
+				maxPriorityRank = 0
+			}
+			yencBacklog, err = profileRepo.CountPendingYEncRecoveryBinariesByMaxPriority(ctx, maxPriorityRank)
+		} else {
+			yencBacklog, err = g.repo.CountPendingYEncRecoveryBinaries(ctx)
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("count pending yenc recovery backlog for nntp guard: %w", err)
 	}
-	yencHot := runtime.Indexing.RecoverYEnc.Enabled && yencBacklog >= yencHotThreshold(runtime.Indexing)
+	yencHot := recoverYEncEnabled(runtime.Indexing) && yencBacklog >= yencHotThreshold(runtime.Indexing)
 
 	scopeActivity := make(map[string]app.NNTPScopeRuntimeStats, len(stats.Scopes))
 	for _, scope := range stats.Scopes {
@@ -129,6 +146,12 @@ func (g *cachedNNTPTrafficGuard) evaluate(ctx context.Context, runtime *app.Runt
 			Reason:  fmt.Sprintf("inspect_par2 paused for nntp catch-up: active=%d capacity=%d waiting=%d", stats.Active, stats.Capacity, stats.Waiting),
 		}
 	}
+	if runtime.Indexing.InspectDiscovery.Enabled && (yencHot || scopeHot(scopeActivity, "recover_yenc") || scopeHot(scopeActivity, "scrape")) {
+		results[supervisor.StageInspectDiscovery] = supervisor.StageGateDecision{
+			Allowed: false,
+			Reason:  fmt.Sprintf("inspect_discovery paused for nntp catch-up: active=%d capacity=%d waiting=%d", stats.Active, stats.Capacity, stats.Waiting),
+		}
+	}
 
 	// Backfill is lower priority than latest freshness and yEnc identity recovery.
 	if runtime.Indexing.ScrapeBackfill.Enabled && (yencHot || runtime.Indexing.ScrapeLatest.Enabled || scopeHot(scopeActivity, "recover_yenc")) {
@@ -137,12 +160,24 @@ func (g *cachedNNTPTrafficGuard) evaluate(ctx context.Context, runtime *app.Runt
 			Reason:  fmt.Sprintf("scrape_backfill paused for nntp catch-up: active=%d capacity=%d waiting=%d", stats.Active, stats.Capacity, stats.Waiting),
 		}
 	}
-
-	// Latest scraping yields only when yEnc has a meaningful backlog and the pool is already hot.
-	if runtime.Indexing.ScrapeLatest.Enabled && yencHot {
-		results[supervisor.StageScrapeLatest] = supervisor.StageGateDecision{
+	if runtime.Indexing.ScrapeTimeframe.Enabled && (yencHot || runtime.Indexing.ScrapeLatest.Enabled || scopeHot(scopeActivity, "recover_yenc")) {
+		results[supervisor.StageScrapeTimeframe] = supervisor.StageGateDecision{
 			Allowed: false,
-			Reason:  fmt.Sprintf("scrape_latest paused for recover_yenc catch-up: pending_yenc=%d active=%d capacity=%d", yencBacklog, stats.Active, stats.Capacity),
+			Reason:  fmt.Sprintf("scrape_timeframe paused for nntp catch-up: active=%d capacity=%d waiting=%d", stats.Active, stats.Capacity, stats.Waiting),
+		}
+	}
+	if runtime.Indexing.ScrapeDeferred.Enabled && (yencHot || runtime.Indexing.ScrapeLatest.Enabled || scopeHot(scopeActivity, "recover_yenc")) {
+		results[supervisor.StageScrapeDeferred] = supervisor.StageGateDecision{
+			Allowed: false,
+			Reason:  fmt.Sprintf("scrape_deferred paused for nntp catch-up: active=%d capacity=%d waiting=%d", stats.Active, stats.Capacity, stats.Waiting),
+		}
+	}
+
+	// Recovery is opportunistic. Fresh XOVER traffic always wins an already-hot pool.
+	if recoverYEncEnabled(runtime.Indexing) && scopeHot(scopeActivity, "scrape") {
+		results[supervisor.StageRecoverYEnc] = supervisor.StageGateDecision{
+			Allowed: false,
+			Reason:  fmt.Sprintf("recover_yenc paused for scrape_latest freshness: active=%d capacity=%d waiting=%d", stats.Active, stats.Capacity, stats.Waiting),
 		}
 	}
 
@@ -151,7 +186,7 @@ func (g *cachedNNTPTrafficGuard) evaluate(ctx context.Context, runtime *app.Runt
 
 func nntpGuardApplies(stageName supervisor.StageName) bool {
 	switch stageName {
-	case supervisor.StageScrapeLatest, supervisor.StageScrapeBackfill, supervisor.StageRecoverYEnc, supervisor.StageInspectPAR2:
+	case supervisor.StageScrapeLatest, supervisor.StageScrapeBackfill, supervisor.StageScrapeTimeframe, supervisor.StageScrapeDeferred, supervisor.StageRecoverYEnc, supervisor.StageInspectDiscovery, supervisor.StageInspectPAR2:
 		return true
 	default:
 		return false

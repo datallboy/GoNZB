@@ -21,6 +21,7 @@ type stubIndexerService struct {
 	capacity     *pgindex.YEncRecoveryAdmissionSnapshot
 	profiles     []pgindex.IndexerGroupProfileSummary
 	deferred     []pgindex.DeferredArticleRangeSummary
+	outcomes     *pgindex.SourceBucketOutcomeReport
 	throughput   *pgindex.IndexerStageThroughput
 	nntpStats    *app.NNTPRuntimeStats
 	stages       []indexerStageView
@@ -71,6 +72,10 @@ func (s *stubIndexerService) GroupProfiles(ctx context.Context, limit int) ([]pg
 
 func (s *stubIndexerService) DeferredArticleRanges(ctx context.Context, state string, limit int) ([]pgindex.DeferredArticleRangeSummary, error) {
 	return s.deferred, nil
+}
+
+func (s *stubIndexerService) SourceBucketOutcomes(context.Context, int) (*pgindex.SourceBucketOutcomeReport, error) {
+	return s.outcomes, nil
 }
 
 func (s *stubIndexerService) StageThroughput(ctx context.Context) (*pgindex.IndexerStageThroughput, error) {
@@ -185,6 +190,10 @@ func (s *stubIndexerService) ListArticleCohorts(ctx context.Context, params pgin
 
 func (s *stubIndexerService) GetRelease(ctx context.Context, releaseID string) (*pgindex.PublicIndexerReleaseDetail, error) {
 	return s.release, nil
+}
+
+func (s *stubIndexerService) SendReleaseToDownloadClient(context.Context, string) (*app.DownloadClientResult, error) {
+	return &app.DownloadClientResult{ClientID: "sab", JobID: "job-1"}, nil
 }
 
 func (s *stubIndexerService) ListAdminReleases(ctx context.Context, params pgindex.AdminIndexerReleaseListParams) ([]pgindex.IndexerReleaseSummary, int, error) {
@@ -832,7 +841,7 @@ func TestIndexerControllerGetReleaseReturnsStablePublicContract(t *testing.T) {
 					ExternalYear:      1963,
 				},
 				Capabilities: pgindex.PublicIndexerReleaseCapabilities{
-					CanSendToDownloader: true,
+					CanSendToDownloadClient: true,
 				},
 			},
 		},
@@ -856,7 +865,7 @@ func TestIndexerControllerGetReleaseReturnsStablePublicContract(t *testing.T) {
 		`"tmdb_id":123`,
 		`"external_media_type":"movie"`,
 		`"runtime_seconds":5400`,
-		`"can_send_to_downloader":true`,
+		`"can_send_to_download_client":true`,
 	} {
 		if !strings.Contains(body, needle) {
 			t.Fatalf("expected %s in response, got %s", needle, body)

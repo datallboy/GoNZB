@@ -247,49 +247,27 @@ func TestManagerClientExposesIndexerStyleCalls(t *testing.T) {
 	}
 }
 
-func TestManagerReservationsCapIndexerWhenDownloaderHasDemand(t *testing.T) {
-	provider := newBlockingProvider(5)
-	manager := newManagerWithProviders(nil, []*managedProvider{newManagedProvider(provider)}, ManagerOptions{
-		CapacityPolicy:            CapacityReturnBusy,
-		ModuleReservationsEnabled: true,
-		IdleBorrowEnabled:         true,
-		IndexerMaxPercent:         80,
-		DownloaderReservePercent:  20,
-		DownloaderDemandWindow:    time.Minute,
-	})
+func TestManagerClientPinsXOverToRequestedProvider(t *testing.T) {
+	first := &roleTestProvider{id: "easynews", priority: 0}
+	second := &roleTestProvider{id: "newshosting", priority: 1}
+	manager := newManagerWithProviders(nil, []*managedProvider{
+		newManagedProvider(first),
+		newManagedProvider(second),
+	}, ManagerOptions{CapacityPolicy: CapacityWaitQueue})
+	client := manager.ClientForScope("scrape")
 
-	readers := make([]io.Closer, 0, 5)
-	for i := 0; i < 5; i++ {
-		reader, err := manager.FetchMessageForScope(context.Background(), "inspect_par2", "indexer@example", nil)
-		if err != nil {
-			t.Fatalf("indexer fetch %d: %v", i, err)
-		}
-		readers = append(readers, reader.(io.Closer))
-	}
-
-	if _, err := manager.FetchMessageForScope(context.Background(), "downloader", "download@example", nil); err != ErrProviderBusy {
-		t.Fatalf("expected downloader to see busy pool and record demand, got %v", err)
-	}
-	if err := readers[0].Close(); err != nil {
-		t.Fatalf("close indexer reader: %v", err)
-	}
-
-	if _, err := manager.FetchMessageForScope(context.Background(), "inspect_par2", "indexer-2@example", nil); err != ErrProviderBusy {
-		t.Fatalf("expected indexer to be capped while downloader demand is active, got %v", err)
-	}
-	downloaderReader, err := manager.FetchMessageForScope(context.Background(), "downloader", "download-2@example", nil)
+	_, providerID, err := client.XOverOnProvider(
+		context.Background(),
+		"newshosting",
+		"alt.binaries.test",
+		1,
+		1,
+	)
 	if err != nil {
-		t.Fatalf("expected downloader to borrow released slot: %v", err)
+		t.Fatalf("provider-pinned xover: %v", err)
 	}
-	readers = append(readers, downloaderReader.(io.Closer))
-
-	stats := manager.Stats()
-	if !stats.Modules.DownloaderDemandActive || stats.Modules.IndexerLimit != 4 {
-		t.Fatalf("unexpected module stats: %#v", stats.Modules)
-	}
-
-	for _, reader := range readers {
-		_ = reader.Close()
+	if providerID != "newshosting" {
+		t.Fatalf("expected newshosting, got %q", providerID)
 	}
 }
 

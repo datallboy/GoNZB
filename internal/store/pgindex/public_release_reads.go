@@ -19,6 +19,7 @@ type PublicIndexerReleaseListParams struct {
 	Classification    string
 	BrowseCategory    string
 	BrowseSubcategory string
+	CategoryIDs       []int
 	HasNFO            *bool
 	HasPAR2           *bool
 	PasswordState     string
@@ -107,10 +108,13 @@ type PublicIndexerReleaseExternal struct {
 }
 
 type PublicIndexerReleaseCapabilities struct {
-	CanSendToDownloader bool `json:"can_send_to_downloader"`
+	CanSendToDownloadClient bool `json:"can_send_to_download_client"`
 }
 
 func publicIndexerReleaseVisibilityClause(alias string, policy ReleaseReadyPolicy) string {
+	if policy == (ReleaseReadyPolicy{}) {
+		policy = DefaultReleaseReadyPolicy()
+	}
 	return releaseReadyVisibilityClause(alias, policy)
 }
 
@@ -234,6 +238,9 @@ func buildPublicIndexerFilterSQL(params PublicIndexerReleaseListParams) (string,
 	if clause, values := publicBrowseClause(params.BrowseCategory, params.BrowseSubcategory, arg); clause != "" {
 		add(clause, values...)
 	}
+	if clause, values := publicNumericCategoryClause(params.CategoryIDs, arg); clause != "" {
+		add(clause, values...)
+	}
 	if params.HasNFO != nil {
 		add(fmt.Sprintf("r.has_nfo = $%d", arg), *params.HasNFO)
 	}
@@ -284,6 +291,35 @@ func buildPublicIndexerFilterSQL(params PublicIndexerReleaseListParams) (string,
 	}
 
 	return strings.Join(clauses, "\n  AND "), args
+}
+
+func publicNumericCategoryClause(categoryIDs []int, argStart int) (string, []any) {
+	clauses := make([]string, 0, len(categoryIDs))
+	args := make([]any, 0, len(categoryIDs)*2)
+	seen := make(map[int]struct{}, len(categoryIDs))
+	arg := argStart
+	for _, id := range categoryIDs {
+		if id <= 0 {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		if id%1000 == 0 {
+			clauses = append(clauses, fmt.Sprintf("COALESCE(r.category_id, %d) BETWEEN $%d AND $%d", newsnab.OtherMisc, arg, arg+1))
+			args = append(args, id, id+999)
+			arg += 2
+			continue
+		}
+		clauses = append(clauses, fmt.Sprintf("COALESCE(r.category_id, %d) = $%d", newsnab.OtherMisc, arg))
+		args = append(args, id)
+		arg++
+	}
+	if len(clauses) == 0 {
+		return "", nil
+	}
+	return "(" + strings.Join(clauses, " OR ") + ")", args
 }
 
 func normalizePublicIMDBID(value string) string {
@@ -351,7 +387,7 @@ func (s *Store) ListPublicIndexerReleases(ctx context.Context, params PublicInde
 			CASE WHEN COALESCE(ro.tmdb_id_override, 0) > 0 THEN ro.tmdb_id_override ELSE r.tmdb_id END,
 			CASE WHEN COALESCE(ro.tvdb_id_override, 0) > 0 THEN ro.tvdb_id_override ELSE r.tvdb_id END,
 			r.external_media_type,
-			COALESCE(NULLIF(ro.display_title, ''), NULLIF(r.original_media_title, ''), r.title),
+			COALESCE(NULLIF(ro.display_title, ''), r.title),
 			r.external_year,
 			COALESCE(ro.imdb_id_override, '') AS imdb_id,
 			r.metadata_updated_at
@@ -415,7 +451,7 @@ func (s *Store) GetPublicIndexerReleaseDetailWithPolicy(ctx context.Context, rel
 			CASE WHEN COALESCE(ro.tmdb_id_override, 0) > 0 THEN ro.tmdb_id_override ELSE r.tmdb_id END,
 			CASE WHEN COALESCE(ro.tvdb_id_override, 0) > 0 THEN ro.tvdb_id_override ELSE r.tvdb_id END,
 			r.external_media_type,
-			COALESCE(NULLIF(ro.display_title, ''), NULLIF(r.original_media_title, ''), r.title),
+			COALESCE(NULLIF(ro.display_title, ''), r.title),
 			r.external_year,
 			COALESCE(ro.imdb_id_override, '') AS imdb_id,
 			r.metadata_updated_at

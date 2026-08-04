@@ -16,8 +16,23 @@ const (
 	PermissionAggregatorReleasesRead     = "aggregator.releases.read"
 	PermissionAggregatorRuntimeRead      = "aggregator.runtime.read"
 	PermissionAggregatorRuntimeConfigure = "aggregator.runtime.configure"
-	PermissionDownloaderRuntimeRead      = "downloader.runtime.read"
-	PermissionDownloaderRuntimeConfigure = "downloader.runtime.configure"
+	PermissionGoNZBNetSearch             = "gonzbnet.search"
+	PermissionGoNZBNetGet                = "gonzbnet.get"
+	PermissionGoNZBNetResolveManifest    = "gonzbnet.resolve_manifest"
+	PermissionGoNZBNetViewTrustScore     = "gonzbnet.view_trust_score"
+	PermissionGoNZBNetViewSourceNode     = "gonzbnet.view_source_node"
+	PermissionGoNZBNetViewCoverage       = "gonzbnet.view.coverage"
+	PermissionGoNZBNetAdminRead          = "gonzbnet.admin.read"
+	PermissionGoNZBNetAdminWrite         = "gonzbnet.admin.write"
+	PermissionGoNZBNetAdminPeers         = "gonzbnet.admin.peers"
+	PermissionGoNZBNetAdminPools         = "gonzbnet.admin.pools"
+	PermissionGoNZBNetAdminModeration    = "gonzbnet.admin.moderation"
+	PermissionGoNZBNetAdminKeys          = "gonzbnet.admin.keys"
+	PermissionGoNZBNetAdminCoverage      = "gonzbnet.admin.coverage"
+	PermissionGoNZBNetAdminScanner       = "gonzbnet.admin.scanner"
+	PermissionGoNZBNetAdminValidator     = "gonzbnet.admin.validator"
+	PermissionGoNZBNetAdminScheduler     = "gonzbnet.admin.scheduler"
+	PermissionDownloadClientsSend        = "download_clients.send"
 	PermissionAuthUsersRead              = "auth.users.read"
 	PermissionAuthUsersWrite             = "auth.users.write"
 	PermissionAuthRolesRead              = "auth.roles.read"
@@ -58,6 +73,7 @@ type Token struct {
 type Principal struct {
 	UserID      string
 	Username    string
+	RoleIDs     []string
 	Permissions map[string]struct{}
 }
 
@@ -92,7 +108,7 @@ func DefaultRoles() []Role {
 				PermissionAdminSettingsRead,
 				PermissionAggregatorReleasesRead,
 				PermissionAggregatorRuntimeRead,
-				PermissionDownloaderRuntimeRead,
+				PermissionDownloadClientsSend,
 			},
 		},
 		{
@@ -113,8 +129,23 @@ func DefaultRoles() []Role {
 				PermissionAggregatorReleasesRead,
 				PermissionAggregatorRuntimeRead,
 				PermissionAggregatorRuntimeConfigure,
-				PermissionDownloaderRuntimeRead,
-				PermissionDownloaderRuntimeConfigure,
+				PermissionGoNZBNetSearch,
+				PermissionGoNZBNetGet,
+				PermissionGoNZBNetResolveManifest,
+				PermissionGoNZBNetViewTrustScore,
+				PermissionGoNZBNetViewSourceNode,
+				PermissionGoNZBNetViewCoverage,
+				PermissionGoNZBNetAdminRead,
+				PermissionGoNZBNetAdminWrite,
+				PermissionGoNZBNetAdminPeers,
+				PermissionGoNZBNetAdminPools,
+				PermissionGoNZBNetAdminModeration,
+				PermissionGoNZBNetAdminKeys,
+				PermissionGoNZBNetAdminCoverage,
+				PermissionGoNZBNetAdminScanner,
+				PermissionGoNZBNetAdminValidator,
+				PermissionGoNZBNetAdminScheduler,
+				PermissionDownloadClientsSend,
 				PermissionAuthUsersRead,
 				PermissionAuthUsersWrite,
 				PermissionAuthRolesRead,

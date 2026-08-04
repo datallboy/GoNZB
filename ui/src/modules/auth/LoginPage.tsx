@@ -2,7 +2,14 @@ import { useState } from 'react'
 import type { FormEvent } from 'react'
 import { Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { createSession } from '../../shared/api/auth'
-import { useAuth } from '../../shared/auth/AuthContext'
+import { useAuth } from '../../shared/auth/useAuth'
+
+function safePostLoginPath(value: unknown) {
+  if (typeof value !== 'string' || !value.startsWith('/') || value.startsWith('//') || value.includes('\\')) {
+    return '/indexer/releases'
+  }
+  return value
+}
 
 export function LoginPage() {
   const { session, refreshSession } = useAuth()
@@ -27,7 +34,7 @@ export function LoginPage() {
     try {
       await createSession({ username, password })
       await refreshSession()
-      const next = (location.state as { from?: string } | null)?.from ?? '/indexer/releases'
+      const next = safePostLoginPath((location.state as { from?: string } | null)?.from)
       navigate(next, { replace: true })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed')
@@ -42,8 +49,7 @@ export function LoginPage() {
         <p className="eyebrow">Indexer Control</p>
         <h1 className="auth-title">Sign in to the new indexer workspace.</h1>
         <p className="auth-copy">
-          This UI is dedicated to the indexer and admin surfaces. Downloader and aggregator stay
-          plugin-bound behind explicit capabilities.
+          Browse indexed releases, operate enabled modules, and manage integrations from one place.
         </p>
         <form className="stack" onSubmit={handleSubmit}>
           <label className="field">

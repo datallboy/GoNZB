@@ -66,12 +66,11 @@ func (ctrl *SettingsController) UpdateSettings(c *echo.Context) error {
 
 func hasAnySettingsPatchField(patch *settingsPatch) bool {
 	return patch != nil && (patch.Servers != nil ||
-		patch.DownloaderServers != nil ||
 		patch.IndexerServers != nil ||
 		patch.NNTPPool != nil ||
 		patch.Indexers != nil ||
+		patch.DownloadClients != nil ||
 		patch.Aggregator != nil ||
-		patch.Download != nil ||
-		patch.Indexing != nil ||
-		patch.ArrIntegrations != nil)
+		patch.GoNZBNet != nil ||
+		patch.Indexing != nil)
 }

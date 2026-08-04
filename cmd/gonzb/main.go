@@ -4,16 +4,14 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/datallboy/gonzb/internal/buildinfo"
 	"github.com/datallboy/gonzb/internal/runtime/commands"
 
 	"github.com/spf13/cobra"
 )
 
 var (
-	Version   = "dev"
-	BuildTime = "unknown"
-	nzbPath   string
-	cfgFile   string = "config.yaml"
+	cfgFile string = "config.yaml"
 
 	serveWithoutIndexerSupervisor      bool
 	disableReleasePurgeArchivedSources bool
@@ -37,21 +35,18 @@ var (
 	indexerCrosspostBackfillMaxBatches int
 	indexerPosterMaterializeBatchSize  int
 	indexerCrosspostRefreshBatchSize   int
+	gonzbnetSyncLimit                  int
+	gonzbnetNNTPGroup                  string
+	gonzbnetNNTPMessageID              string
 )
 
 var rootCmd = &cobra.Command{
 	Use:     "gonzb",
-	Short:   "GONZB is a simple Usenet downloader",
-	Long:    `A lightweight, concurrent NNTP downloaer written in Go.`,
-	Version: Version,
+	Short:   "GoNZB indexes and shares Usenet release metadata",
+	Long:    `A Usenet indexer, Newznab aggregator, and decentralized GoNZBNet node.`,
+	Version: buildinfo.Version,
 	Run: func(cmd *cobra.Command, args []string) {
-		if nzbPath == "" {
-			fmt.Println("Error: --file or -f is required")
-			cmd.Help()
-			return
-		}
-
-		commands.New(cfgFile).ExecuteDownload(nzbPath)
+		_ = cmd.Help()
 	},
 }
 
@@ -59,7 +54,7 @@ var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print the version number of GoNZB",
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Printf("GoNZB Version: %s\nBuild Time: %s\n", Version, BuildTime)
+		fmt.Printf("GoNZB Version: %s\nBuild Time: %s\n", buildinfo.Version, buildinfo.BuildTime)
 	},
 }
 
@@ -71,6 +66,53 @@ var serveCmd = &cobra.Command{
 			DisableIndexerSupervisor:           serveWithoutIndexerSupervisor,
 			DisableReleasePurgeArchivedSources: disableReleasePurgeArchivedSources,
 		})
+	},
+}
+
+var gonzbnetCmd = &cobra.Command{
+	Use:   "gonzbnet",
+	Short: "GoNZBNet federation operations",
+}
+
+var gonzbnetStatusCmd = &cobra.Command{
+	Use:   "status",
+	Short: "Show the local node identity and enabled federation capabilities",
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteGoNZBNetStatus()
+	},
+}
+
+var gonzbnetPoolsCmd = &cobra.Command{
+	Use:   "pools",
+	Short: "List trust pools and local membership",
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteGoNZBNetPools()
+	},
+}
+
+var gonzbnetPeersCmd = &cobra.Command{
+	Use:   "peers",
+	Short: "List enabled federation peers and sync state",
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteGoNZBNetPeers()
+	},
+}
+
+var gonzbnetSyncCmd = &cobra.Command{
+	Use:       "sync <pull|push>",
+	Short:     "Run one local federation synchronization pass",
+	Args:      cobra.ExactArgs(1),
+	ValidArgs: []string{"pull", "push"},
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteGoNZBNetSync(args[0], gonzbnetSyncLimit)
+	},
+}
+
+var gonzbnetNNTPCheckCmd = &cobra.Command{
+	Use:   "nntp-check",
+	Short: "Check scanner and validator NNTP access through configured providers",
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteGoNZBNetNNTPCheck(gonzbnetNNTPGroup, gonzbnetNNTPMessageID)
 	},
 }
 
@@ -102,6 +144,14 @@ var indexerScrapeBackfillCmd = &cobra.Command{
 	Short: "Scrape older article ranges continuously; use --once for a single backfill pass",
 	Run: func(cmd *cobra.Command, args []string) {
 		commands.New(cfgFile).ExecuteIndexerScrapeBackfill(scrapeOnce)
+	},
+}
+
+var indexerScrapeTimeframeCmd = &cobra.Command{
+	Use:   "timeframe",
+	Short: "Scrape configured historical date windows; use --once for a single pass",
+	Run: func(cmd *cobra.Command, args []string) {
+		commands.New(cfgFile).ExecuteIndexerScrapeTimeframe(scrapeOnce)
 	},
 }
 
@@ -367,9 +417,8 @@ var indexerEnrichTMDBCmd = &cobra.Command{
 func init() {
 	// Define flags
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "config.yaml", "config file (default is ./config.yaml)")
-	rootCmd.Flags().StringVarP(&nzbPath, "file", "f", "", "Path to the NZB file (required)")
 
-	rootCmd.SetVersionTemplate(fmt.Sprintf("GoNZB Version: %s\nBuild Time: %s\n", Version, BuildTime))
+	rootCmd.SetVersionTemplate(fmt.Sprintf("GoNZB Version: %s\nBuild Time: %s\n", buildinfo.Version, buildinfo.BuildTime))
 	rootCmd.Flags().BoolP("version", "v", false, "display version information")
 	serveCmd.Flags().BoolVar(&serveWithoutIndexerSupervisor, "no-indexer-supervisor", false, "serve API/UI without starting the built-in indexer supervisor")
 	serveCmd.Flags().BoolVar(&disableReleasePurgeArchivedSources, "disable-release-purge-archived-sources", false, "disable the release_purge_archived_sources indexer stage")
@@ -377,6 +426,7 @@ func init() {
 	indexerScrapeCmd.Flags().BoolVar(&scrapeOnce, "once", false, "Run one scrape pass and exit")
 	indexerScrapeLatestCmd.Flags().BoolVar(&scrapeOnce, "once", false, "Run one latest scrape pass and exit")
 	indexerScrapeBackfillCmd.Flags().BoolVar(&scrapeOnce, "once", false, "Run one backfill scrape pass and exit instead of continuous backfill mode")
+	indexerScrapeTimeframeCmd.Flags().BoolVar(&scrapeOnce, "once", false, "Run one historical timeframe scrape pass and exit instead of continuous mode")
 
 	indexerAssembleCmd.Flags().BoolVar(&assembleOnce, "once", false, "Run one assemble pass and exit instead of continuous mode")
 	indexerRecoverYEncCmd.Flags().BoolVar(&recoverYEncOnce, "once", false, "Run one yEnc recovery pass and exit instead of continuous mode")
@@ -410,10 +460,20 @@ func init() {
 	indexerMaintenanceBackfillCrosspostGroupsCmd.Flags().IntVar(&indexerCrosspostBackfillMaxBatches, "max-batches", 1, "Maximum number of backfill batches to process in one run")
 	indexerMaintenanceMaterializePostersCmd.Flags().IntVar(&indexerPosterMaterializeBatchSize, "batch-size", 10000, "Maximum queued poster rows to materialize")
 	indexerMaintenanceRefreshCrosspostPopularityCmd.Flags().IntVar(&indexerCrosspostRefreshBatchSize, "batch-size", 1000, "Maximum queued observed cross-post groups to refresh")
+	gonzbnetSyncCmd.Flags().IntVar(&gonzbnetSyncLimit, "limit", 100, "Maximum events to push per peer")
+	gonzbnetNNTPCheckCmd.Flags().StringVar(&gonzbnetNNTPGroup, "group", "alt.binaries.test", "Newsgroup to inspect")
+	gonzbnetNNTPCheckCmd.Flags().StringVar(&gonzbnetNNTPMessageID, "message-id", "<gonzbnet-e2e-1@example.invalid>", "Article message ID to fetch")
+
+	gonzbnetCmd.AddCommand(gonzbnetStatusCmd)
+	gonzbnetCmd.AddCommand(gonzbnetPoolsCmd)
+	gonzbnetCmd.AddCommand(gonzbnetPeersCmd)
+	gonzbnetCmd.AddCommand(gonzbnetSyncCmd)
+	gonzbnetCmd.AddCommand(gonzbnetNNTPCheckCmd)
 
 	indexerCmd.AddCommand(indexerScrapeCmd)
 	indexerScrapeCmd.AddCommand(indexerScrapeLatestCmd)
 	indexerScrapeCmd.AddCommand(indexerScrapeBackfillCmd)
+	indexerScrapeCmd.AddCommand(indexerScrapeTimeframeCmd)
 
 	indexerCmd.AddCommand(indexerAssembleCmd)
 	indexerCmd.AddCommand(indexerRecoverYEncCmd)
@@ -454,6 +514,7 @@ func main() {
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(serveCmd)
 	rootCmd.AddCommand(indexerCmd)
+	rootCmd.AddCommand(gonzbnetCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)

@@ -16,7 +16,6 @@ const (
 )
 
 type binaryUpsertChunkSizeContextKey struct{}
-type deferReleaseFamilySummaryRefreshContextKey struct{}
 type binaryUpsertTelemetryContextKey struct{}
 type binaryStatsRefreshTelemetryContextKey struct{}
 type skipYEncRecoveryWorkItemSyncContextKey struct{}
@@ -39,21 +38,6 @@ func binaryUpsertChunkSizeFromContext(ctx context.Context) int {
 		}
 	}
 	return defaultBinaryUpsertDBChunkSize
-}
-
-func WithDeferredReleaseFamilySummaryRefresh(ctx context.Context) context.Context {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	return context.WithValue(ctx, deferReleaseFamilySummaryRefreshContextKey{}, true)
-}
-
-func deferReleaseFamilySummaryRefreshFromContext(ctx context.Context) bool {
-	if ctx == nil {
-		return false
-	}
-	value, _ := ctx.Value(deferReleaseFamilySummaryRefreshContextKey{}).(bool)
-	return value
 }
 
 func WithSkipYEncRecoveryWorkItemSync(ctx context.Context) context.Context {
@@ -166,13 +150,13 @@ func (t *BinaryUpsertTelemetry) recordDeferredSummaryRefresh(keys int) {
 	t.DeferredSummaryKeyCount += keys
 }
 
-func (t *BinaryUpsertTelemetry) Snapshot() BinaryUpsertTelemetry {
+func (t *BinaryUpsertTelemetry) Snapshot() *BinaryUpsertTelemetry {
 	if t == nil {
-		return BinaryUpsertTelemetry{}
+		return &BinaryUpsertTelemetry{}
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return BinaryUpsertTelemetry{
+	return &BinaryUpsertTelemetry{
 		ChunkCount:                     t.ChunkCount,
 		ChunkRows:                      t.ChunkRows,
 		ChunkRetries:                   t.ChunkRetries,
@@ -540,13 +524,13 @@ func recordTelemetryDurationLocked(total *float64, max *float64, d time.Duration
 	}
 }
 
-func (t *BinaryStatsRefreshTelemetry) Snapshot() BinaryStatsRefreshTelemetry {
+func (t *BinaryStatsRefreshTelemetry) Snapshot() *BinaryStatsRefreshTelemetry {
 	if t == nil {
-		return BinaryStatsRefreshTelemetry{}
+		return &BinaryStatsRefreshTelemetry{}
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return BinaryStatsRefreshTelemetry{
+	return &BinaryStatsRefreshTelemetry{
 		TxCount:                       t.TxCount,
 		BatchCount:                    t.BatchCount,
 		BinaryCount:                   t.BinaryCount,

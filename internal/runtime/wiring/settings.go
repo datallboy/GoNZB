@@ -3,7 +3,6 @@ package wiring
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/datallboy/gonzb/internal/app"
 )
@@ -15,11 +14,6 @@ func WatchSettings(ctx context.Context, appCtx *app.Context) {
 		appCtx.Logger.Error("Failed to start settings watcher: %v", err)
 		return
 	}
-
-	retryTicker := time.NewTicker(2 * time.Second)
-	defer retryTicker.Stop()
-
-	pendingReloads := make(map[string]app.RuntimeModule)
 
 	for {
 		select {
@@ -38,38 +32,14 @@ func WatchSettings(ctx context.Context, appCtx *app.Context) {
 
 			for _, module := range appCtx.RuntimeModules() {
 				if err := module.Reload(ctx); err != nil {
-					if module.Name() == "downloader" && IsDownloaderReloadDeferred(err) {
-						pendingReloads[module.Name()] = module
-						appCtx.Logger.Warn("Runtime settings applied; downloader runtime reload deferred until queue is idle")
-						continue
-					}
 					appCtx.Logger.Warn("Runtime settings applied, but %s reload failed: %v", module.Name(), err)
 					continue
 				}
-				delete(pendingReloads, module.Name())
 			}
 
 			BindApplicationModules(appCtx)
 			appCtx.Logger.Info("Applied runtime settings update")
 
-		case <-retryTicker.C:
-			if len(pendingReloads) == 0 {
-				continue
-			}
-
-			for name, module := range pendingReloads {
-				if err := module.Reload(ctx); err != nil {
-					if name == "downloader" && IsDownloaderReloadDeferred(err) {
-						continue
-					}
-					appCtx.Logger.Warn("Deferred %s runtime reload failed: %v", name, err)
-					delete(pendingReloads, name)
-					continue
-				}
-
-				delete(pendingReloads, name)
-				appCtx.Logger.Info("Applied deferred %s runtime reload", name)
-			}
 		}
 	}
 }
