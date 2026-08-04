@@ -7,6 +7,10 @@ on:
     pull_request:
             branches: [ main ]
 
+permissions:
+    contents: write
+    packages: write
+
 jobs:
     build-and-publish:
         runs-on: ubuntu-latest
@@ -35,9 +39,23 @@ jobs:
             - name: Install UI dependencies
               run: npm --prefix ui ci
 
+            - name: Audit UI dependencies
+              run: npm --prefix ui audit --audit-level=high
+
+            - name: Prepare build metadata
+              shell: bash
+              run: |
+                if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+                  version="${GITHUB_REF_NAME}"
+                else
+                  version="$(git describe --tags --always --dirty)"
+                fi
+                echo "RELEASE_VERSION=${version}" >> "${GITHUB_ENV}"
+                echo "RELEASE_BUILD_TIME=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "${GITHUB_ENV}"
+
             # 1. Build binaries via Makefile
             - name: Build Binaries
-              run: make build-release
+              run: make build-release VERSION="${RELEASE_VERSION}" BUILD_TIME="${RELEASE_BUILD_TIME}"
 
             # 2. Generate Checksums
             - name: Generate Checksums
@@ -67,9 +85,10 @@ jobs:
                 push: ${{ startsWith(github.ref, 'refs/tags/') }}
                 tags: |
                   ghcr.io/${{ env.REPO_LOWER }}:latest
-                  ghcr.io/${{ env.REPO_LOWER }}:${{ github.ref_name }}
+                  ghcr.io/${{ env.REPO_LOWER }}:${{ env.RELEASE_VERSION }}
                 build-args: |
-                  VERSION=${{ github.ref_name }}
+                  VERSION=${{ env.RELEASE_VERSION }}
+                  BUILD_TIME=${{ env.RELEASE_BUILD_TIME }}
 
             # 5. Create GitHub Release and Upload Binary
             - name: Release

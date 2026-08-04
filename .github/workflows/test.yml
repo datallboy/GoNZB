@@ -60,10 +60,10 @@ jobs:
         run: npm --prefix ui run build
 
       - name: Audit production UI dependencies
-        # The current React Router high advisory only affects unstable RSC APIs,
-        # which this Vite SPA does not use. Keep critical findings blocking
-        # until the patched 8.3 release is available from npm.
-        run: npm --prefix ui audit --omit=dev --audit-level=critical
+        # The remaining React Router v6 advisories affect server rendering,
+        # which this browser-only SPA does not use. Dynamic login redirects are
+        # also constrained to local absolute paths. Block every high finding.
+        run: npm --prefix ui audit --audit-level=high
 
       - name: Install test tools
         run: |

@@ -24,23 +24,28 @@ export function IndexerReleaseDetailPage() {
 
   useEffect(() => {
     let cancelled = false
-    setLoading(true)
-    setError(null)
-    void getPublicRelease(id)
-      .then((response) => {
-        if (!cancelled) {
-          setData(response)
-        }
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : 'Failed to load release')
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setLoading(false)
-        }
+    void Promise.resolve().then(() => {
+      if (cancelled) {
+        return
+      }
+      setLoading(true)
+      setError(null)
+      return getPublicRelease(id)
+        .then((response) => {
+          if (!cancelled) {
+            setData(response)
+          }
+        })
+        .catch((err) => {
+          if (!cancelled) {
+            setError(err instanceof Error ? err.message : 'Failed to load release')
+          }
+        })
+        .finally(() => {
+          if (!cancelled) {
+            setLoading(false)
+          }
+        })
       })
     return () => {
       cancelled = true

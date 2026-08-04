@@ -16,7 +16,7 @@ RUN go mod download
 # Inject version info during Docker build
 ARG VERSION=dev
 ARG BUILD_TIME=unknown
-RUN go build -ldflags "-X main.Version=${VERSION} -X main.BuildTime=${BUILD_TIME}" -o gonzb cmd/gonzb/main.go
+RUN go build -ldflags "-X github.com/datallboy/gonzb/internal/buildinfo.Version=${VERSION} -X github.com/datallboy/gonzb/internal/buildinfo.BuildTime=${BUILD_TIME}" -o gonzb cmd/gonzb/main.go
 
 # Stage 3: Build real unrar for Alpine
 FROM alpine:3.23 AS unrar-builder

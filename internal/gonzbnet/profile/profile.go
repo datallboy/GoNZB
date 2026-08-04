@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/datallboy/gonzb/internal/buildinfo"
 	"github.com/datallboy/gonzb/internal/gonzbnet/canonical"
 )
 
@@ -255,7 +256,7 @@ func NodeProfileFor(ctx context.Context, identity Identity, cfg Config, now time
 		NodeID:          nodeID,
 		Alias:           strings.TrimSpace(cfg.Alias),
 		Software:        "GoNZB",
-		SoftwareVersion: "0.8.0",
+		SoftwareVersion: buildinfo.Version,
 		Protocols:       []string{SpecVersion},
 		PublicKey:       canonical.Base64URL(publicKey),
 		Endpoints: Endpoints{
