@@ -1,5 +1,5 @@
 site_name: GoNZB Documentation
-site_description: Setup, operation, and development documentation for GoNZB
+site_description: Setup and operation documentation for GoNZB
 site_url: https://datallboy.github.io/GoNZB/
 repo_url: https://github.com/datallboy/GoNZB
 repo_name: datallboy/GoNZB
@@ -10,6 +10,9 @@ site_dir: site
 strict: true
 exclude_docs: |
   archive/
+  ARCHITECTURE.md
+  wiki/indexer/
+  wiki/gonzbnet/
 
 theme:
   name: material
@@ -58,27 +61,8 @@ nav:
       - Upgrades and backups: getting-started/upgrades.md
       - Troubleshooting: getting-started/troubleshooting.md
   - Integrations: wiki/integrations/README.md
-  - Indexer:
-      - Overview: wiki/indexer/README.md
-      - Stage flow: wiki/indexer/stage-flow.md
-      - Stage ownership: wiki/indexer/stage-ownership.md
-      - Binary grouping: wiki/indexer/binary-grouping-evidence.md
-      - yEnc recovery: wiki/indexer/yenc-recovery-queueing.md
-      - Release formation: wiki/indexer/release-formation.md
-      - Schema and partitions: wiki/indexer/schema-and-partitions.md
-      - Schema migrations: wiki/indexer/schema-migrations.md
-      - Retention: wiki/indexer/retention.md
-      - Operations: wiki/indexer/operations-playbook.md
+  - Usenet indexer: modules/indexer.md
   - GoNZBNet:
-      - Overview: wiki/gonzbnet/README.md
-      - Private pool quickstart: wiki/gonzbnet/private-pool-quickstart.md
-      - Networking and exposure: wiki/gonzbnet/networking-and-exposure.md
-      - Deployment topologies: wiki/gonzbnet/deployment-topologies.md
-      - Configuration: wiki/gonzbnet/configuration-and-deployment.md
-      - Runtime settings: wiki/gonzbnet/runtime-settings-reference.md
-      - Administration: wiki/gonzbnet/administration-and-operations.md
-      - Protocol and security: wiki/gonzbnet/federation-protocol-and-security.md
-      - Architecture and data flow: wiki/gonzbnet/architecture-and-data-flow.md
-      - End-to-end testing: wiki/gonzbnet/e2e-testing.md
-      - Development reference: wiki/gonzbnet/development-reference.md
-  - Architecture: ARCHITECTURE.md
+      - Overview and roles: modules/gonzbnet.md
+      - Private pool quickstart: modules/private-pool.md
+      - Networking and exposure: modules/networking.md
