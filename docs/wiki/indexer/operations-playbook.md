@@ -1,0 +1,131 @@
+# Indexer Operations Playbook
+
+## Quick Checks
+
+Run targeted tests after hot query or schema changes:
+
+```sh
+go test ./internal/store/pgindex ./internal/indexing/assemble ./internal/runtime/wiring
+```
+
+Check patch hygiene:
+
+```sh
+git diff --check
+```
+
+Run the opt-in query soak only against a disposable PostgreSQL database whose
+name contains `test` or `soak`:
+
+```sh
+GONZB_QUERY_SOAK=1 \
+GONZB_TEST_PG_DSN='postgres://user:password@127.0.0.1:55433/gonzb_soak?sslmode=disable' \
+go test ./internal/store/pgindex -run '^TestIndexerQuerySoak$' -count=1 -v
+```
+
+Enable `pg_stat_statements` and reset it immediately before the run. Review
+total/mean execution time, temporary blocks, WAL, deadlocks, table scans, index
+usage, and default-partition row counts afterward. Set
+`GONZB_QUERY_SOAK_KEEP_DATA=1` only when the cohort is needed for follow-up
+`EXPLAIN` work; otherwise the test removes its rows.
+
+## Database Checks
+
+List partitioned target tables:
+
+```sql
+SELECT cls.relname
+FROM pg_class cls
+JOIN pg_namespace ns ON ns.oid = cls.relnamespace
+JOIN pg_partitioned_table pt ON pt.partrelid = cls.oid
+WHERE ns.nspname = 'public'
+ORDER BY cls.relname;
+```
+
+Check default partitions:
+
+```sql
+SELECT inhparent::regclass AS parent, inhrelid::regclass AS child
+FROM pg_inherits
+JOIN pg_class child ON child.oid = inhrelid
+WHERE pg_get_expr(child.relpartbound, child.oid) = 'DEFAULT'
+ORDER BY parent::text;
+```
+
+Normal latest indexing proactively provisions the scrape bundle for the current
+UTC day and two days ahead. Exact older days are provisioned from the dates
+actually returned by XOVER before their rows are written. Backfill does not
+require widening a date horizon.
+
+A scrape pass introduces at most 32 new source days by default. Additional
+article-number ranges appear in the deferred-range view and drain separately so
+they do not block latest checks.
+
+Keep `scrape_deferred` enabled. It is the durable queue consumer for both
+partition-cap and recovery-pressure deferrals. `ready` rows are waiting,
+`running` rows hold a renewable claim, `completed` rows were ingested, and
+`abandoned` rows exhausted repeated fetch attempts and need an operator to
+inspect the recorded error/provider availability.
+
+Use **Indexer > Newsgroups and Wildcards > Historical scrape timeframes** for
+bounded historical work. Give each row a unique stable ID, select an inclusive
+start/end date, optionally narrow either boundary with a UTC time, save it,
+then enable the `scrape_timeframe` command under
+**Settings > Indexer**. Multiple rows may use the same group. The command keeps
+separate progress for every row and never rewrites latest/backfill cursors.
+A time uses 24-hour UTC notation (`HH:MM` or `HH:MM:SS`).
+A date-only end includes that whole UTC day. When an end time is supplied, it
+is the exact exclusive end of the scrape window.
+Run one pass without starting the supervisor with:
+
+```sh
+go run ./cmd/gonzb --config config.yaml indexer scrape timeframe --once
+```
+
+Any default-partition row is an operator-visible fault. Pause all indexer
+writers, run the default-rehome dry-run for the affected day, then execute the
+offline rehome. Do not schedule default rehome while indexer stages are active.
+
+Outcome retention is audit-only by default. Review terminal reasons, archive
+durability, and default-partition health before enabling destructive purge.
+The **Indexer Work** page shows the source-day ledger and deferred scrape queue;
+use it to distinguish active downstream work from successful/no-yield terminal
+buckets before running the retention dry-run.
+
+## Runtime Checks
+
+Use the admin API for runtime settings and maintenance tasks. Prefer `gonzb
+serve` for supervisor testing. Use one-shot commands only for explicit
+maintenance or cleanup tasks.
+
+Set **Settings > Indexer > Recovery effort** according to the workload:
+
+- **Balanced** is the normal unattended default. It spends BODY requests only
+  on priority-0 work likely to unlock a multipart binary or release.
+- **Header only** is the lowest-cost discovery mode and makes no yEnc recovery
+  BODY requests.
+- **Exhaustive** processes the full bounded recovery queue and is most useful
+  for targeted historical work.
+
+For Balanced or Exhaustive, also enable the advanced `recover_yenc` runtime
+stage. That switch is an independent circuit breaker; a selected profile does
+not force a disabled stage to run. The **Indexer Work** page reports the
+effective profile and only counts queue rows eligible under that profile
+toward recovery capacity.
+
+The recovery controls also expose durable hourly NNTP limits:
+
+- **Balanced BODY requests/hour** limits the normal evidence-driven profile;
+- **Exhaustive BODY requests/hour** limits deep recovery;
+- **Discovery BODY requests/hour** limits representative inspection probes.
+
+The defaults are 25,000, 100,000, and 1,000 respectively. They are safety
+ceilings, not targets. Balanced can use substantially less because an
+unproductive opaque cohort stops after 16 completed samples. The **Indexer
+Work** page shows the active recovery budget's used and remaining requests for
+the current UTC hour.
+
+Inspect `article_cohort_candidates.recovery_decision` when BODY traffic is not
+producing releases. `sample` is still gathering evidence, `promoted` found
+repeatable identity/grouping value, and `no_yield` exhausted the bounded sample.
+New articles reopen a no-yield cohort automatically.
