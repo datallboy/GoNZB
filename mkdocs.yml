@@ -61,6 +61,7 @@ nav:
       - Upgrades and backups: getting-started/upgrades.md
       - Troubleshooting: getting-started/troubleshooting.md
   - Integrations: wiki/integrations/README.md
+  - Completed-NZB uploader: modules/uploader.md
   - Usenet indexer: modules/indexer.md
   - GoNZBNet:
       - Overview and roles: modules/gonzbnet.md

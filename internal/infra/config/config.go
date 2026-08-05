@@ -22,6 +22,7 @@ type Config struct {
 	Indexing   IndexingConfig   `mapstructure:"indexing" yaml:"indexing"`
 	Aggregator AggregatorConfig `mapstructure:"aggregator" yaml:"aggregator"`
 	GoNZBNet   GoNZBNetConfig   `mapstructure:"gonzbnet" yaml:"gonzbnet"`
+	Uploader   UploaderConfig   `mapstructure:"uploader" yaml:"uploader"`
 	Modules    ModulesConfig    `mapstructure:"modules" yaml:"modules"`
 
 	Port        string `mapstructure:"port" yaml:"port"`
@@ -87,6 +88,24 @@ type AggregatorSourcesConfig struct {
 	LocalBlob     ModuleToggle `mapstructure:"local_blob" yaml:"local_blob"`
 	UsenetIndexer ModuleToggle `mapstructure:"usenet_indexer" yaml:"usenet_indexer"`
 	GoNZBNet      ModuleToggle `mapstructure:"gonzbnet" yaml:"gonzbnet"`
+}
+
+type UploaderConfig struct {
+	Inbox              UploaderInboxConfig `mapstructure:"inbox" yaml:"inbox"`
+	MaxNZBBytes        int64               `mapstructure:"max_nzb_bytes" yaml:"max_nzb_bytes"`
+	MaxFiles           int                 `mapstructure:"max_files" yaml:"max_files"`
+	MaxSegments        int                 `mapstructure:"max_segments" yaml:"max_segments"`
+	MaxXMLDepth        int                 `mapstructure:"max_xml_depth" yaml:"max_xml_depth"`
+	MaxMetadataLength  int                 `mapstructure:"max_metadata_length" yaml:"max_metadata_length"`
+	MaxArtifactBytes   int64               `mapstructure:"max_artifact_bytes" yaml:"max_artifact_bytes"`
+	MaxSubmissionBytes int64               `mapstructure:"max_submission_bytes" yaml:"max_submission_bytes"`
+}
+
+type UploaderInboxConfig struct {
+	Enabled             bool   `mapstructure:"enabled" yaml:"enabled"`
+	Path                string `mapstructure:"path" yaml:"path"`
+	ScanIntervalSeconds int    `mapstructure:"scan_interval_seconds" yaml:"scan_interval_seconds"`
+	SettleAgeSeconds    int    `mapstructure:"settle_age_seconds" yaml:"settle_age_seconds"`
 }
 
 type GoNZBNetConfig struct {
@@ -329,6 +348,7 @@ type ModulesConfig struct {
 	Aggregator    ModuleToggle `mapstructure:"aggregator" yaml:"aggregator"`
 	UsenetIndexer ModuleToggle `mapstructure:"usenet_indexer" yaml:"usenet_indexer"`
 	GoNZBNet      ModuleToggle `mapstructure:"gonzbnet" yaml:"gonzbnet"`
+	Uploader      ModuleToggle `mapstructure:"uploader" yaml:"uploader"`
 	WebUI         ModuleToggle `mapstructure:"web_ui" yaml:"web_ui"`
 	API           ModuleToggle `mapstructure:"api" yaml:"api"`
 }
@@ -521,11 +541,23 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("modules.aggregator.enabled", true)
 	v.SetDefault("modules.usenet_indexer.enabled", true)
 	v.SetDefault("modules.gonzbnet.enabled", false)
+	v.SetDefault("modules.uploader.enabled", false)
 	v.SetDefault("modules.web_ui.enabled", true)
 	v.SetDefault("modules.api.enabled", true)
 	v.SetDefault("aggregator.sources.local_blob.enabled", false)
 	v.SetDefault("aggregator.sources.usenet_indexer.enabled", false)
 	v.SetDefault("aggregator.sources.gonzbnet.enabled", false)
+	v.SetDefault("uploader.inbox.enabled", false)
+	v.SetDefault("uploader.inbox.path", "./data/uploader-inbox")
+	v.SetDefault("uploader.inbox.scan_interval_seconds", 15)
+	v.SetDefault("uploader.inbox.settle_age_seconds", 60)
+	v.SetDefault("uploader.max_nzb_bytes", int64(64<<20))
+	v.SetDefault("uploader.max_files", 100000)
+	v.SetDefault("uploader.max_segments", 5000000)
+	v.SetDefault("uploader.max_xml_depth", 32)
+	v.SetDefault("uploader.max_metadata_length", 16384)
+	v.SetDefault("uploader.max_artifact_bytes", int64(32<<20))
+	v.SetDefault("uploader.max_submission_bytes", int64(128<<20))
 	v.SetDefault("gonzbnet.mode", "integrated")
 	v.SetDefault("gonzbnet.node_alias", "")
 	v.SetDefault("gonzbnet.advertise_url", "")
@@ -731,6 +763,22 @@ func (c *Config) validate() error {
 	if err := validateGoNZBNetConfig(c.GoNZBNet, c.Modules.GoNZBNet.Enabled); err != nil {
 		return err
 	}
+	if c.Modules.Uploader.Enabled && c.Uploader.Inbox.ScanIntervalSeconds <= 0 {
+		return errors.New("uploader.inbox.scan_interval_seconds must be greater than 0")
+	}
+	if c.Uploader.Inbox.SettleAgeSeconds < 0 {
+		return errors.New("uploader.inbox.settle_age_seconds must be greater than or equal to 0")
+	}
+	if c.Uploader.Inbox.Enabled && strings.TrimSpace(c.Uploader.Inbox.Path) == "" {
+		return errors.New("uploader.inbox.path is required when uploader.inbox.enabled is true")
+	}
+	if c.Modules.Uploader.Enabled && (c.Uploader.MaxNZBBytes <= 0 || c.Uploader.MaxFiles <= 0 || c.Uploader.MaxSegments <= 0 ||
+		c.Uploader.MaxXMLDepth <= 0 || c.Uploader.MaxMetadataLength <= 0 || c.Uploader.MaxArtifactBytes <= 0 || c.Uploader.MaxSubmissionBytes <= 0) {
+		return errors.New("uploader validation limits must be greater than 0")
+	}
+	if c.Modules.Uploader.Enabled && c.Uploader.MaxSubmissionBytes < c.Uploader.MaxNZBBytes {
+		return errors.New("uploader.max_submission_bytes must be at least max_nzb_bytes")
+	}
 	if err := validateIndexingStageConfig("indexing.scrape_latest", c.Indexing.ScrapeLatest); err != nil {
 		return err
 	}
@@ -917,6 +965,7 @@ func (c *Config) validate() error {
 	if !c.Modules.Aggregator.Enabled &&
 		!c.Modules.UsenetIndexer.Enabled &&
 		!c.Modules.GoNZBNet.Enabled &&
+		!c.Modules.Uploader.Enabled &&
 		!c.Modules.API.Enabled &&
 		!c.Modules.WebUI.Enabled {
 		return errors.New("at least one module must be enabled")

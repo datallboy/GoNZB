@@ -11,9 +11,11 @@ import (
 	"github.com/datallboy/gonzb/internal/gonzbnet/coverage"
 	"github.com/datallboy/gonzb/internal/gonzbnet/events"
 	"github.com/datallboy/gonzb/internal/gonzbnet/health"
+	"github.com/datallboy/gonzb/internal/gonzbnet/manifest"
 	"github.com/datallboy/gonzb/internal/gonzbnet/manifestavailability"
 	"github.com/datallboy/gonzb/internal/gonzbnet/moderation"
 	"github.com/datallboy/gonzb/internal/gonzbnet/pools"
+	"github.com/datallboy/gonzb/internal/gonzbnet/publicationstate"
 	"github.com/datallboy/gonzb/internal/gonzbnet/releasecard"
 	"github.com/datallboy/gonzb/internal/gonzbnet/trust"
 	"github.com/datallboy/gonzb/internal/gonzbnet/validation"
@@ -76,6 +78,19 @@ func Validate(event *events.SignedEvent, now time.Time, futureTolerance time.Dur
 			return err
 		}
 		return releasecard.Validate(body, now, futureTolerance)
+	case pools.EventTypeResolutionManifest:
+		var body manifest.ResolutionManifest
+		if err := decode(event.Body, &body); err != nil {
+			return err
+		}
+		_, err := manifest.Validate(body)
+		return err
+	case pools.EventTypeReleasePublicationState:
+		var body publicationstate.State
+		if err := decode(event.Body, &body); err != nil {
+			return err
+		}
+		return publicationstate.Validate(body, now, futureTolerance)
 	case pools.EventTypeHealthAttestation:
 		var body health.Attestation
 		if err := decode(event.Body, &body); err != nil {

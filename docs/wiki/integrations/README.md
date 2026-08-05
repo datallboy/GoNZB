@@ -1,5 +1,9 @@
 # Newznab and Download-Client Integrations
 
+For posting pipelines that already produce completed NZBs, use the
+[completed-NZB uploader](../../modules/uploader.md). That boundary does not
+connect GoNZB to torrents, source downloads, or NNTP posting tools.
+
 GoNZB is the indexer in an automation stack. Radarr, Sonarr, Prowlarr,
 NZBHydra, and similar software search GoNZB through Newznab. SABnzbd or another
 SAB-compatible program downloads and processes the selected NZB.

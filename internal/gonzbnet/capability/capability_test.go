@@ -18,6 +18,11 @@ func TestRequiredForEvent(t *testing.T) {
 	if !HasAny([]string{Scanner}, RequiredForEvent("ManifestAvailability")...) {
 		t.Fatalf("expected scanner to satisfy ManifestAvailability")
 	}
+	for _, eventType := range []string{"ReleaseCard", "ResolutionManifest", "ManifestAvailability", "ReleasePublicationState"} {
+		if !HasAny([]string{ReleasePublisher}, RequiredForEvent(eventType)...) {
+			t.Fatalf("expected release publisher to satisfy %s", eventType)
+		}
+	}
 }
 
 func TestNormalizeDeduplicates(t *testing.T) {

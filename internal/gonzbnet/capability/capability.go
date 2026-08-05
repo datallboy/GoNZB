@@ -6,6 +6,7 @@ const (
 	Consumer               = "consumer"
 	Scanner                = "scanner"
 	Indexer                = "indexer"
+	ReleasePublisher       = "release_publisher"
 	ManifestBuilder        = "manifest_builder"
 	ManifestCache          = "manifest_cache"
 	Validator              = "validator"
@@ -52,10 +53,10 @@ func HasAny(allowed []string, required ...string) bool {
 
 func RequiredForEvent(eventType string) []string {
 	switch strings.TrimSpace(eventType) {
-	case "ReleaseCard":
-		return []string{Scanner, Indexer}
+	case "ReleaseCard", "ReleasePublicationState":
+		return []string{Scanner, Indexer, ReleasePublisher}
 	case "ResolutionManifest":
-		return []string{ManifestBuilder, ManifestCache}
+		return []string{ManifestBuilder, ManifestCache, ReleasePublisher}
 	case "HealthAttestation":
 		return []string{Validator, HealthChecker}
 	case "TrustAttestation":
@@ -63,7 +64,7 @@ func RequiredForEvent(eventType string) []string {
 	case "ValidatorCapacity", "ArticleAvailabilityAttestation", "ChecksumAttestation":
 		return []string{Validator}
 	case "ManifestAvailability":
-		return []string{Scanner, ManifestBuilder, ManifestCache}
+		return []string{Scanner, ManifestBuilder, ManifestCache, ReleasePublisher}
 	case "ScannerCapacity", "ScannerHeartbeat", "GroupObservation", "RangeClaim", "TimeWindowClaim", "RangeComplete", "RangeFailed":
 		return []string{Scanner, Coverage}
 	case "CoveragePlan", "CoverageAssignment", "CoverageCheckpoint":

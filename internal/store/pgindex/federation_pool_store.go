@@ -905,6 +905,7 @@ func defaultAllowedCapabilities(role string, allowed []string) []string {
 		capability.Admin,
 		capability.Scanner,
 		capability.Indexer,
+		capability.ReleasePublisher,
 		capability.ManifestBuilder,
 		capability.ManifestCache,
 		capability.Validator,

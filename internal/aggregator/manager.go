@@ -16,6 +16,7 @@ import (
 )
 
 const gonzbnetSourceName = "gonzbnet"
+const uploaderSourceName = "uploader"
 
 const maxCachedNZBBytes int64 = 64 << 20
 
@@ -94,7 +95,7 @@ func (m *Manager) SearchAllWithRequest(ctx context.Context, req app.SearchReques
 			for _, rel := range cacheResults {
 				// The shared cache does not retain federation pool identity. GoNZBNet
 				// search results must come from its pool-filtered PostgreSQL source.
-				if isGoNZBNetRelease(rel) {
+				if isAuthoritativeOnlyRelease(rel) {
 					continue
 				}
 				addOrMerge(rel, false)
@@ -189,23 +190,21 @@ func (m *Manager) GetNZB(ctx context.Context, rel *domain.Release) (io.ReadClose
 		return nil, fmt.Errorf("gonzbnet get permission is required")
 	}
 
-	var src catalogSource
-	if isGoNZBNetRelease(rel) {
-		// Resolve the source before consulting the shared blob cache so pool
-		// authorization cannot be bypassed by a prior user's cached download.
-		m.mu.RLock()
-		src = m.sources[rel.Source]
-		m.mu.RUnlock()
-		if src == nil {
-			return nil, fmt.Errorf("aggregator source %s not found", rel.Source)
-		}
-		authorizer, ok := src.(getAuthorizer)
-		if !ok {
-			return nil, fmt.Errorf("gonzbnet source does not provide get authorization")
-		}
+	// Resolve and authorize every policy-aware source before consulting the
+	// shared blob cache. This prevents stale cached payloads from bypassing a
+	// later uploader unapproval or federation pool-access change.
+	m.mu.RLock()
+	src := m.sources[rel.Source]
+	m.mu.RUnlock()
+	if src == nil {
+		return nil, fmt.Errorf("aggregator source %s not found", rel.Source)
+	}
+	if authorizer, ok := src.(getAuthorizer); ok {
 		if err := authorizer.AuthorizeGet(ctx, rel); err != nil {
 			return nil, err
 		}
+	} else if isGoNZBNetRelease(rel) {
+		return nil, fmt.Errorf("gonzbnet source does not provide get authorization")
 	}
 
 	// Check the file store
@@ -222,15 +221,6 @@ func (m *Manager) GetNZB(ctx context.Context, rel *domain.Release) (io.ReadClose
 
 		return m.store.GetNZBReader(rel.ID)
 	}
-	if src == nil {
-		m.mu.RLock()
-		src = m.sources[rel.Source]
-		m.mu.RUnlock()
-		if src == nil {
-			return nil, fmt.Errorf("aggregator source %s not found", rel.Source)
-		}
-	}
-
 	// This calls either the raw DownloadNZB or the local store indexer.
 	body, err := src.GetNZB(ctx, rel)
 	if err != nil {
@@ -274,6 +264,14 @@ func (m *Manager) GetNZB(ctx context.Context, rel *domain.Release) (io.ReadClose
 
 func isGoNZBNetRelease(rel *domain.Release) bool {
 	return rel != nil && strings.TrimSpace(rel.Source) == gonzbnetSourceName
+}
+
+func isAuthoritativeOnlyRelease(rel *domain.Release) bool {
+	if rel == nil {
+		return false
+	}
+	source := strings.TrimSpace(rel.Source)
+	return source == gonzbnetSourceName || source == uploaderSourceName
 }
 
 func principalHas(ctx context.Context, permission string) bool {

@@ -28,6 +28,7 @@ type LocalRelease struct {
 	HasPAR2           bool
 	HasNFO            bool
 	PasswordState     string
+	ArchivePassword   string
 	Availability      float64
 	TMDBID            int64
 	TVDBID            int64

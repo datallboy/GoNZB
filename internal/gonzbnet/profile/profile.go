@@ -60,25 +60,27 @@ type Endpoints struct {
 }
 
 type Capabilities struct {
-	ReleaseCards           bool `json:"release_cards"`
-	ResolutionManifests    bool `json:"resolution_manifests"`
-	HealthAttestations     bool `json:"health_attestations"`
-	TrustPools             bool `json:"trust_pools"`
-	PoolWitness            bool `json:"pool_witness"`
-	WebSocketGossip        bool `json:"websocket_gossip"`
-	PeerExchange           bool `json:"peer_exchange"`
-	RelayMode              bool `json:"relay_mode"`
-	Consumer               bool `json:"consumer"`
-	Scanner                bool `json:"scanner"`
-	Indexer                bool `json:"indexer"`
-	ManifestBuilder        bool `json:"manifest_builder"`
-	ManifestCache          bool `json:"manifest_cache"`
-	Validator              bool `json:"validator"`
-	HealthChecker          bool `json:"health_checker"`
-	Coverage               bool `json:"coverage"`
-	Scheduler              bool `json:"scheduler"`
-	AdmissionRelay         bool `json:"admission_relay"`
-	BinaryEvidenceExchange bool `json:"binary_evidence_exchange"`
+	ReleaseCards            bool `json:"release_cards"`
+	ResolutionManifests     bool `json:"resolution_manifests"`
+	HealthAttestations      bool `json:"health_attestations"`
+	TrustPools              bool `json:"trust_pools"`
+	PoolWitness             bool `json:"pool_witness"`
+	WebSocketGossip         bool `json:"websocket_gossip"`
+	PeerExchange            bool `json:"peer_exchange"`
+	RelayMode               bool `json:"relay_mode"`
+	Consumer                bool `json:"consumer"`
+	Scanner                 bool `json:"scanner"`
+	Indexer                 bool `json:"indexer"`
+	ReleasePublisher        bool `json:"release_publisher"`
+	ManifestBuilder         bool `json:"manifest_builder"`
+	ManifestCache           bool `json:"manifest_cache"`
+	Validator               bool `json:"validator"`
+	HealthChecker           bool `json:"health_checker"`
+	Coverage                bool `json:"coverage"`
+	Scheduler               bool `json:"scheduler"`
+	AdmissionRelay          bool `json:"admission_relay"`
+	BinaryEvidenceExchange  bool `json:"binary_evidence_exchange"`
+	ManifestArchivePassword bool `json:"manifest_archive_password"`
 }
 
 type ModuleStatus struct {
@@ -135,6 +137,7 @@ type Caps struct {
 	Encodings        []string `json:"encodings"`
 	Compressions     []string `json:"compressions"`
 	Transports       []string `json:"transports"`
+	Features         []string `json:"features"`
 	MaxEventBytes    int      `json:"max_event_bytes"`
 	MaxManifestBytes int      `json:"max_manifest_bytes"`
 }
@@ -151,6 +154,7 @@ type Config struct {
 	Consumer                      bool
 	Scanner                       bool
 	Indexer                       bool
+	ReleasePublisher              bool
 	IndexProjection               bool
 	PublishReleaseCards           bool
 	PublishHealthAttestations     bool
@@ -268,25 +272,27 @@ func NodeProfileFor(ctx context.Context, identity Identity, cfg Config, now time
 			WS:        webSocketEndpoint,
 		},
 		Capabilities: Capabilities{
-			ReleaseCards:           cfg.Scanner && cfg.PublishReleaseCards,
-			ResolutionManifests:    cfg.ManifestCache,
-			HealthAttestations:     cfg.HealthChecker && cfg.PublishHealthAttestations,
-			TrustPools:             true,
-			PoolWitness:            false,
-			WebSocketGossip:        cfg.WebSocketGossip,
-			PeerExchange:           cfg.PeerExchange,
-			RelayMode:              cfg.RelayMode,
-			Consumer:               cfg.Consumer,
-			Scanner:                cfg.Scanner,
-			Indexer:                cfg.Indexer,
-			ManifestBuilder:        cfg.ManifestBuilder && cfg.Scanner && cfg.PublishReleaseCards,
-			ManifestCache:          cfg.ManifestCache,
-			Validator:              cfg.Validator,
-			HealthChecker:          cfg.HealthChecker,
-			Coverage:               cfg.Coverage,
-			Scheduler:              cfg.Scheduler,
-			AdmissionRelay:         cfg.AdmissionRelay,
-			BinaryEvidenceExchange: cfg.BinaryEvidenceExchange,
+			ReleaseCards:            (cfg.Scanner && cfg.PublishReleaseCards) || cfg.ReleasePublisher,
+			ResolutionManifests:     cfg.ManifestCache || cfg.ReleasePublisher,
+			HealthAttestations:      cfg.HealthChecker && cfg.PublishHealthAttestations,
+			TrustPools:              true,
+			PoolWitness:             false,
+			WebSocketGossip:         cfg.WebSocketGossip,
+			PeerExchange:            cfg.PeerExchange,
+			RelayMode:               cfg.RelayMode,
+			Consumer:                cfg.Consumer,
+			Scanner:                 cfg.Scanner,
+			Indexer:                 cfg.Indexer,
+			ReleasePublisher:        cfg.ReleasePublisher,
+			ManifestBuilder:         cfg.ManifestBuilder && cfg.Scanner && cfg.PublishReleaseCards,
+			ManifestCache:           cfg.ManifestCache,
+			Validator:               cfg.Validator,
+			HealthChecker:           cfg.HealthChecker,
+			Coverage:                cfg.Coverage,
+			Scheduler:               cfg.Scheduler,
+			AdmissionRelay:          cfg.AdmissionRelay,
+			BinaryEvidenceExchange:  cfg.BinaryEvidenceExchange,
+			ManifestArchivePassword: true,
 		},
 		ModuleStatus: ModuleStatus{
 			Scanner:         enabledStatus(cfg.Scanner),
@@ -375,6 +381,7 @@ func CapsFor(maxEventBytes, maxManifestBytes int) Caps {
 			"ArticleAvailabilityAttestation",
 			"ChecksumAttestation",
 			"ManifestAvailability",
+			"ReleasePublicationState",
 			"ScannerCapacity",
 			"ScannerHeartbeat",
 			"GroupObservation",
@@ -395,6 +402,7 @@ func CapsFor(maxEventBytes, maxManifestBytes int) Caps {
 		Encodings:        []string{"jcs-json"},
 		Compressions:     []string{"none"},
 		Transports:       []string{"https"},
+		Features:         []string{"manifest_archive_password"},
 		MaxEventBytes:    maxEventBytes,
 		MaxManifestBytes: maxManifestBytes,
 	}

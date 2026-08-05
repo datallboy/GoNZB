@@ -86,6 +86,10 @@ func (s *Store) FindFederatedManifestSource(ctx context.Context, releaseID strin
 		WHERE c.release_id = $1
 		  AND c.manifest_id IS NOT NULL
 		  AND fs.advertised = TRUE
+		  AND (
+		    COALESCE(c.flags_json->>'passworded', 'unknown') <> 'passworded'
+		    OR COALESCE((n.capabilities->>'manifest_archive_password')::boolean, FALSE) = TRUE
+		  )
 		  AND NOT EXISTS (
 		    SELECT 1
 		    FROM tombstones t

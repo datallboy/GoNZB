@@ -36,6 +36,7 @@ type ValidatorCapacity struct {
 	ChecksumValidation      bool          `json:"checksum_validation"`
 	ProviderScope           ProviderScope `json:"provider_scope"`
 	AcceptedManifestSchemas []string      `json:"accepted_manifest_schemas"`
+	ManifestFeatures        []string      `json:"manifest_features,omitempty"`
 }
 
 type ArticleAvailabilityAttestation struct {

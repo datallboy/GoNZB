@@ -38,6 +38,8 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 			echo.HeaderAccept,
 			echo.HeaderAuthorization,
 			"X-API-Key",
+			"Idempotency-Key",
+			echo.HeaderXCSRFToken,
 		},
 	}))
 
@@ -69,6 +71,7 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 	modules := appCtx.Config.Modules
 	settingsCtrl := controllers.NewSettingsController(appCtx.SettingsAdmin)
 	settingsConnectionCtrl := controllers.NewSettingsConnectionController(appCtx)
+	uploaderCtrl := controllers.NewUploaderController(appCtx.Uploader, appCtx.UploaderFederation, appCtx.Config.Uploader.MaxNZBBytes, int64(appCtx.Config.Uploader.MaxMetadataLength), appCtx.Config.Uploader.MaxArtifactBytes, appCtx.Config.Uploader.MaxSubmissionBytes)
 	indexerCtrl := controllers.NewIndexerController(appCtx)
 	indexerAdminCtrl := controllers.NewIndexerAdminController(indexerCtrl.Service)
 	indexerScrapeAdminCtrl := controllers.NewIndexerScrapeAdminController(appCtx)
@@ -140,6 +143,64 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 			code, report := telemetry.Readiness(c.Request().Context(), appCtx)
 			return c.JSON(code, report)
 		})
+	}
+
+	if modules.API.Enabled && modules.Uploader.Enabled {
+		multipartLimit := appCtx.Config.Uploader.MaxSubmissionBytes
+		if multipartLimit <= 0 {
+			multipartLimit = 128 << 20
+		}
+		multipartLimit += 1 << 20
+		v1Uploader := e.Group("/api/v1/uploader", bodyLimitMiddleware(defaultJSONBodyLimit, multipartLimit))
+		v1Uploader.Use(auditLogMiddleware(appCtx, "uploader"))
+		v1Uploader.GET("/submissions", uploaderCtrl.List, authMiddleware(authSvc, false, auth.PermissionUploaderSubmissionsRead))
+		v1Uploader.GET("/submissions/:id", uploaderCtrl.Get, authMiddleware(authSvc, false, auth.PermissionUploaderSubmissionsRead))
+		v1Uploader.GET("/submissions/:id/nzb", uploaderCtrl.DownloadNZB, authMiddleware(authSvc, false, auth.PermissionUploaderSubmissionsReview))
+		v1Uploader.GET("/submissions/:id/artifacts/:artifact_id", uploaderCtrl.DownloadArtifact, authMiddleware(authSvc, false, auth.PermissionUploaderSubmissionsRead))
+		v1Uploader.GET("/federation-pools", uploaderCtrl.EligibleFederationPools, authMiddleware(authSvc, false, auth.PermissionUploaderPublicationsManage))
+		v1Uploader.GET("/submissions/:id/federation-publications", uploaderCtrl.ListFederationPublications, authMiddleware(authSvc, false, auth.PermissionUploaderSubmissionsRead))
+		v1Uploader.POST(
+			"/submissions",
+			uploaderCtrl.Create,
+			authMiddleware(authSvc, false, auth.PermissionUploaderSubmissionsCreate),
+			csrfProtectionMiddleware(),
+		)
+		v1Uploader.PATCH(
+			"/submissions/:id",
+			uploaderCtrl.Update,
+			authMiddleware(authSvc, false, auth.PermissionUploaderSubmissionsReview),
+			csrfProtectionMiddleware(),
+		)
+		v1Uploader.POST(
+			"/submissions/:id/federation-publications",
+			uploaderCtrl.CreateFederationPublications,
+			authMiddleware(authSvc, false, auth.PermissionUploaderPublicationsManage),
+			csrfProtectionMiddleware(),
+		)
+		v1Uploader.DELETE(
+			"/submissions/:id/federation-publications/:pool_id",
+			uploaderCtrl.WithdrawFederationPublication,
+			authMiddleware(authSvc, false, auth.PermissionUploaderPublicationsManage),
+			csrfProtectionMiddleware(),
+		)
+		v1Uploader.POST(
+			"/submissions/:id/actions/approve",
+			uploaderCtrl.Approve,
+			authMiddleware(authSvc, false, auth.PermissionUploaderSubmissionsReview),
+			csrfProtectionMiddleware(),
+		)
+		v1Uploader.POST(
+			"/submissions/:id/actions/reject",
+			uploaderCtrl.Reject,
+			authMiddleware(authSvc, false, auth.PermissionUploaderSubmissionsReview),
+			csrfProtectionMiddleware(),
+		)
+		v1Uploader.POST(
+			"/submissions/:id/actions/return-to-pending",
+			uploaderCtrl.ReturnToPending,
+			authMiddleware(authSvc, false, auth.PermissionUploaderSubmissionsReview),
+			csrfProtectionMiddleware(),
+		)
 	}
 
 	if modules.API.Enabled && modules.GoNZBNet.Enabled {

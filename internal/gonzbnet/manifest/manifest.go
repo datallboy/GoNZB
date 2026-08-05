@@ -54,13 +54,14 @@ type Response struct {
 }
 
 type ManifestCore struct {
-	Groups   []string       `json:"groups"`
-	Poster   string         `json:"poster,omitempty"`
-	PostedAt string         `json:"posted_at,omitempty"`
-	Files    []ManifestFile `json:"files"`
-	PAR2     PAR2           `json:"par2"`
-	Hashes   Hashes         `json:"hashes"`
-	NZB      NZBInfo        `json:"nzb"`
+	Groups          []string       `json:"groups"`
+	Poster          string         `json:"poster,omitempty"`
+	PostedAt        string         `json:"posted_at,omitempty"`
+	ArchivePassword string         `json:"archive_password,omitempty"`
+	Files           []ManifestFile `json:"files"`
+	PAR2            PAR2           `json:"par2"`
+	Hashes          Hashes         `json:"hashes"`
+	NZB             NZBInfo        `json:"nzb"`
 }
 
 type ManifestFile struct {
@@ -122,6 +123,9 @@ func Validate(in ResolutionManifest) ([]byte, error) {
 	if len(in.ManifestCore.Files) == 0 {
 		return nil, fmt.Errorf("manifest_core.files is required")
 	}
+	if len(in.ManifestCore.ArchivePassword) > 16<<10 {
+		return nil, fmt.Errorf("manifest_core.archive_password exceeds field limit")
+	}
 	expected, canonicalCore, err := ComputeID(in.ManifestCore)
 	if err != nil {
 		return nil, err
@@ -164,9 +168,17 @@ func GenerateNZB(in ResolutionManifest) ([]byte, error) {
 		Groups   []groupXML   `xml:"groups>group"`
 		Segments []segmentXML `xml:"segments>segment"`
 	}
+	type metaXML struct {
+		Type  string `xml:"type,attr"`
+		Value string `xml:",chardata"`
+	}
+	type headXML struct {
+		Meta []metaXML `xml:"meta"`
+	}
 	type nzbXML struct {
 		XMLName xml.Name  `xml:"nzb"`
 		Xmlns   string    `xml:"xmlns,attr"`
+		Head    *headXML  `xml:"head,omitempty"`
 		Files   []fileXML `xml:"file"`
 	}
 
@@ -175,6 +187,9 @@ func GenerateNZB(in ResolutionManifest) ([]byte, error) {
 	doc := nzbXML{
 		Xmlns: "http://www.newzbin.com/DTD/2003/nzb",
 		Files: make([]fileXML, 0, len(in.ManifestCore.Files)),
+	}
+	if password := in.ManifestCore.ArchivePassword; password != "" {
+		doc.Head = &headXML{Meta: []metaXML{{Type: "password", Value: password}}}
 	}
 	for _, file := range in.ManifestCore.Files {
 		segments := make([]segmentXML, 0, len(file.Segments))

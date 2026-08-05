@@ -15,6 +15,7 @@ import (
 
 const (
 	EventTypeReleaseCard                    = "ReleaseCard"
+	EventTypeResolutionManifest             = "ResolutionManifest"
 	EventTypeHealthAttestation              = "HealthAttestation"
 	EventTypeTrustAttestation               = "TrustAttestation"
 	EventTypeTombstone                      = "Tombstone"
@@ -22,6 +23,7 @@ const (
 	EventTypeArticleAvailabilityAttestation = "ArticleAvailabilityAttestation"
 	EventTypeChecksumAttestation            = "ChecksumAttestation"
 	EventTypeManifestAvailability           = "ManifestAvailability"
+	EventTypeReleasePublicationState        = "ReleasePublicationState"
 	EventTypeScannerCapacity                = "ScannerCapacity"
 	EventTypeScannerHeartbeat               = "ScannerHeartbeat"
 	EventTypeGroupObservation               = "GroupObservation"
@@ -186,6 +188,7 @@ func NormalizePolicy(policy Policy, adminCount int) Policy {
 	if len(out.AcceptedEventTypes) == 0 {
 		out.AcceptedEventTypes = []string{
 			EventTypeReleaseCard,
+			EventTypeResolutionManifest,
 			EventTypeHealthAttestation,
 			EventTypeTrustAttestation,
 			EventTypeTombstone,
@@ -193,6 +196,7 @@ func NormalizePolicy(policy Policy, adminCount int) Policy {
 			EventTypeArticleAvailabilityAttestation,
 			EventTypeChecksumAttestation,
 			EventTypeManifestAvailability,
+			EventTypeReleasePublicationState,
 			EventTypeScannerCapacity,
 			EventTypeScannerHeartbeat,
 			EventTypeGroupObservation,
@@ -220,6 +224,7 @@ func EventIsPoolControl(eventType string) bool {
 func EventTypeSupported(eventType string) bool {
 	switch strings.TrimSpace(eventType) {
 	case EventTypeReleaseCard,
+		EventTypeResolutionManifest,
 		EventTypeHealthAttestation,
 		EventTypeTrustAttestation,
 		EventTypeTombstone,
@@ -227,6 +232,7 @@ func EventTypeSupported(eventType string) bool {
 		EventTypeArticleAvailabilityAttestation,
 		EventTypeChecksumAttestation,
 		EventTypeManifestAvailability,
+		EventTypeReleasePublicationState,
 		EventTypeScannerCapacity,
 		EventTypeScannerHeartbeat,
 		EventTypeGroupObservation,

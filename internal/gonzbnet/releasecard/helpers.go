@@ -94,12 +94,13 @@ func ManifestCoreForLocalRelease(in LocalRelease) (manifest.ManifestCore, error)
 		return coreFiles[i].Name < coreFiles[j].Name
 	})
 	return manifest.ManifestCore{
-		Groups:   groups,
-		Poster:   poster,
-		PostedAt: formatOptionalTime(in.PostedAt),
-		Files:    coreFiles,
-		PAR2:     manifest.PAR2{Present: in.HasPAR2, BaseFiles: baseFiles, VolumeFiles: volumeFiles},
-		NZB:      manifest.NZBInfo{Generator: "GoNZBNet", XMLCharset: "utf-8"},
+		Groups:          groups,
+		Poster:          poster,
+		PostedAt:        formatOptionalTime(in.PostedAt),
+		ArchivePassword: in.ArchivePassword,
+		Files:           coreFiles,
+		PAR2:            manifest.PAR2{Present: in.HasPAR2, BaseFiles: baseFiles, VolumeFiles: volumeFiles},
+		NZB:             manifest.NZBInfo{Generator: "GoNZBNet", XMLCharset: "utf-8"},
 	}, nil
 }
 

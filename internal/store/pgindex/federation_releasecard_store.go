@@ -420,6 +420,13 @@ func (s *Store) CanGetFederatedReleaseForPrincipal(ctx context.Context, releaseI
 		  SELECT 1
 		  FROM federated_release_sources source
 		  WHERE source.release_id = $1
+		    AND NOT EXISTS (
+		      SELECT 1 FROM federated_release_publication_states ps
+		      WHERE ps.release_id = source.release_id
+		        AND ps.source_node_id = source.source_node_id
+		        AND ps.pool_id = source.pool_id
+		        AND ps.state = 'withdrawn'
+		    )
 		    AND source.pool_id IN (
 		      SELECT pool_id
 		      FROM user_federation_pool_access
@@ -543,6 +550,14 @@ func (s *Store) SearchFederatedReleaseCards(ctx context.Context, params Federate
 		"c.status = 'accepted'",
 		"(c.expires_at IS NULL OR c.expires_at > NOW())",
 		"s.trust_score > 0",
+		`NOT EXISTS (
+			SELECT 1
+			FROM federated_release_publication_states ps
+			WHERE ps.release_id = s.release_id
+			  AND ps.source_node_id = s.source_node_id
+			  AND ps.pool_id = s.pool_id
+			  AND ps.state = 'withdrawn'
+		)`,
 		`NOT EXISTS (
 			SELECT 1
 			FROM tombstones t

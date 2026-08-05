@@ -2438,6 +2438,7 @@ func (ctrl *GoNZBNetAdminController) adminProfileConfig(c *echo.Context) profile
 		Consumer:                      cfg.ConsumerEnabled,
 		Scanner:                       cfg.ScannerEnabled,
 		Indexer:                       ctrl.appCtx.Config.Modules.UsenetIndexer.Enabled,
+		ReleasePublisher:              ctrl.appCtx.Config.Modules.Uploader.Enabled,
 		IndexProjection:               cfg.IndexProjectionEnabled,
 		ManifestBuilder:               cfg.ManifestBuilderEnabled,
 		ManifestCache:                 cfg.ManifestCacheEnabled,
@@ -2476,6 +2477,9 @@ func (ctrl *GoNZBNetAdminController) recommendedLocalCapabilities() []string {
 	}
 	if ctrl.appCtx.Config.Modules.UsenetIndexer.Enabled || cfg.IndexProjectionEnabled {
 		values = append(values, capability.Indexer)
+	}
+	if ctrl.appCtx.Config.Modules.Uploader.Enabled {
+		values = append(values, capability.ReleasePublisher)
 	}
 	if cfg.ManifestBuilderEnabled {
 		values = append(values, capability.ManifestBuilder)

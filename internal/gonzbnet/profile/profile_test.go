@@ -81,6 +81,26 @@ func TestNodeProfileAdvertisesConsumerOnlyCapabilities(t *testing.T) {
 	}
 }
 
+func TestNodeProfileAdvertisesUploaderReleasePublisher(t *testing.T) {
+	node, err := identity.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("identity: %v", err)
+	}
+	got, err := NodeProfileFor(context.Background(), node, Config{
+		AdvertiseURL:     "https://node.example/gonzbnet/v1",
+		ReleasePublisher: true,
+	}, time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("node profile: %v", err)
+	}
+	if !got.Capabilities.ReleasePublisher || !got.Capabilities.ReleaseCards || !got.Capabilities.ResolutionManifests {
+		t.Fatalf("uploader publication capabilities not advertised: %+v", got.Capabilities)
+	}
+	if got.Capabilities.Scanner || got.Capabilities.Indexer {
+		t.Fatalf("release publisher must not claim scanner or indexer capabilities: %+v", got.Capabilities)
+	}
+}
+
 func TestNodeProfileDoesNotAdvertiseLiveQuery(t *testing.T) {
 	node, err := identity.LoadOrCreate(t.TempDir())
 	if err != nil {
@@ -211,6 +231,9 @@ func TestNodeProfileAdvertisesEnabledReleaseAndHealthPublishers(t *testing.T) {
 
 func TestCapsOnlyAdvertiseImplementedWireFeatures(t *testing.T) {
 	caps := CapsFor(1, 2)
+	if len(caps.Features) != 1 || caps.Features[0] != "manifest_archive_password" {
+		t.Fatalf("archive-password manifest feature not advertised: %+v", caps.Features)
+	}
 	if len(caps.Compressions) != 1 || caps.Compressions[0] != "none" {
 		t.Fatalf("unexpected compression advertisement: %+v", caps.Compressions)
 	}

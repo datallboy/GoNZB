@@ -13,6 +13,7 @@ import (
 	"github.com/datallboy/gonzb/internal/gonzbnet/manifest"
 	"github.com/datallboy/gonzb/internal/gonzbnet/manifestavailability"
 	"github.com/datallboy/gonzb/internal/gonzbnet/pools"
+	"github.com/datallboy/gonzb/internal/gonzbnet/publicationstate"
 	"github.com/datallboy/gonzb/internal/gonzbnet/releasecard"
 	"github.com/datallboy/gonzb/internal/gonzbnet/validation"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
@@ -32,6 +33,7 @@ type Store interface {
 	FindFederationEventByBodyHash(ctx context.Context, authorNodeID, eventType, bodyHash, poolID string) (string, error)
 	AppendVerifiedFederationEvent(ctx context.Context, event *events.SignedEvent, validation *events.ValidationResult) error
 	UpsertFederatedReleaseCardProjection(ctx context.Context, projection releasecard.Projection) error
+	ProjectReleasePublicationState(ctx context.Context, projection publicationstate.Projection) error
 	StoreResolutionManifest(ctx context.Context, record pgindex.ResolutionManifestRecord) error
 	ProjectManifestAvailability(ctx context.Context, projection pgindex.ManifestAvailabilityProjection) error
 	ProjectHealthAttestation(ctx context.Context, projection pgindex.HealthAttestationProjection) error
@@ -41,6 +43,10 @@ type Store interface {
 	ProjectArticleAvailabilityAttestation(ctx context.Context, projection pgindex.ArticleAvailabilityProjection) error
 	ProjectChecksumAttestation(ctx context.Context, projection pgindex.ChecksumAttestationProjection) error
 	CompleteValidationTask(ctx context.Context, taskID int64, status, message string) error
+}
+
+type transactionalProjectionStore interface {
+	AppendVerifiedFederationEventWithProjection(context.Context, *events.SignedEvent, *events.ValidationResult, func(context.Context) error) error
 }
 
 type Service struct {
@@ -59,6 +65,20 @@ type Result struct {
 	Published int
 	Skipped   int
 	Projected int
+}
+
+// CandidateResult identifies the durable events created (or reused) while
+// publishing one caller-supplied release into this service's pool.
+type CandidateResult struct {
+	Card               releasecard.ReleaseCard
+	ReleaseCardEventID string
+	ManifestEventID    string
+	Published          bool
+}
+
+type PublicationStateResult struct {
+	EventID string
+	State   publicationstate.State
 }
 
 type HealthResult struct {
@@ -122,18 +142,8 @@ func (s *Service) SetArticleChecker(checker func(context.Context, string, []stri
 
 func (s *Service) PublishOnce(ctx context.Context, limit int) (Result, error) {
 	var result Result
-	if s == nil || s.identity == nil || s.store == nil {
-		return result, fmt.Errorf("publisher dependencies are required")
-	}
-	nodeID, err := s.identity.NodeID(ctx)
+	nodeID, err := s.prepare(ctx)
 	if err != nil {
-		return result, err
-	}
-	publicKey, err := s.identity.PublicKey(ctx)
-	if err != nil {
-		return result, err
-	}
-	if err := s.store.UpsertFederationNodeIdentity(ctx, nodeID, publicKey); err != nil {
 		return result, err
 	}
 
@@ -153,54 +163,125 @@ func (s *Service) PublishOnce(ctx context.Context, limit int) (Result, error) {
 	result.Scanned = len(candidates)
 
 	for _, candidate := range candidates {
-		card, err := releasecard.MapLocalRelease(candidate)
-		if err != nil {
-			return result, fmt.Errorf("map release %s: %w", candidate.LocalReleaseID, err)
-		}
-		bodyHash, err := releasecard.HashBody(card)
-		if err != nil {
-			return result, fmt.Errorf("hash release card %s: %w", card.ReleaseID, err)
-		}
-
-		existingEventID, err := s.store.FindFederationEventByBodyHash(ctx, nodeID, pools.EventTypeReleaseCard, bodyHash, s.poolID)
+		published, err := s.publishCandidate(ctx, nodeID, candidate)
 		if err != nil {
 			return result, err
 		}
-		if existingEventID != "" {
+		if published.Published {
+			result.Published++
+		} else {
 			result.Skipped++
-			if err := s.store.UpsertFederatedReleaseCardProjection(ctx, releasecard.Projection{
-				Card:         card,
-				EventID:      existingEventID,
-				SourceNodeID: nodeID,
-				PoolID:       s.poolID,
-			}); err != nil {
-				return result, err
-			}
-			if candidate.SourceKind == "local_scan_output" {
-				_ = s.store.MarkGoNZBNetScanOutputPublished(ctx, candidate.LocalReleaseID, existingEventID, s.poolID)
-			}
-			result.Projected++
-			if s.buildManifests && strings.TrimSpace(card.ManifestID) != "" {
-				if err := s.buildAndStoreManifest(ctx, candidate, card, nodeID); err != nil {
-					return result, err
-				}
-			}
-			continue
 		}
+		result.Projected++
+	}
 
+	return result, nil
+}
+
+// PublishCandidate publishes a supplied release without requiring it to be a
+// PostgreSQL indexer candidate. This is the explicit uploader integration
+// boundary and does not inspect torrents, magnets, or source files.
+func (s *Service) PublishCandidate(ctx context.Context, candidate releasecard.LocalRelease) (CandidateResult, error) {
+	nodeID, err := s.prepare(ctx)
+	if err != nil {
+		return CandidateResult{}, err
+	}
+	return s.publishCandidate(ctx, nodeID, candidate)
+}
+
+// PublishReleaseState emits an author-scoped withdrawal or restoration event
+// and applies it locally before federation delivery.
+func (s *Service) PublishReleaseState(ctx context.Context, releaseID, manifestID, state, supersedesEventID, reason string) (PublicationStateResult, error) {
+	nodeID, err := s.prepare(ctx)
+	if err != nil {
+		return PublicationStateResult{}, err
+	}
+	body := publicationstate.State{
+		SchemaVersion: "1.0", Type: publicationstate.Type, PoolID: s.poolID,
+		ReleaseID: strings.TrimSpace(releaseID), ManifestID: strings.TrimSpace(manifestID),
+		State: strings.TrimSpace(state), Reason: strings.TrimSpace(reason),
+		ChangedAt: s.now().UTC().Format(time.RFC3339), SupersedesEventID: strings.TrimSpace(supersedesEventID),
+	}
+	if err := publicationstate.Validate(body, s.now().UTC(), 0); err != nil {
+		return PublicationStateResult{}, err
+	}
+	sequence, previousEventID, err := s.store.NextFederationEventSequence(ctx, nodeID)
+	if err != nil {
+		return PublicationStateResult{}, err
+	}
+	event, validation, err := events.Create(ctx, s.identity, events.CreateOptions{
+		EventType: publicationstate.Type, Sequence: sequence, PreviousEventID: previousEventID,
+		CreatedAt: s.now().UTC(), PoolIDs: []string{s.poolID}, Visibility: "pool",
+		BodySchema: publicationstate.BodySchema, Body: body,
+	})
+	if err != nil {
+		return PublicationStateResult{}, err
+	}
+	if validation == nil || !validation.OK {
+		return PublicationStateResult{}, fmt.Errorf("signed release publication state did not verify: %s", validationReason(validation))
+	}
+	projection := publicationstate.Projection{
+		Publication: body, EventID: event.EventID, AuthorNodeID: nodeID, Sequence: event.Sequence,
+	}
+	if store, ok := s.store.(transactionalProjectionStore); ok {
+		if err := store.AppendVerifiedFederationEventWithProjection(ctx, event, validation, func(projectCtx context.Context) error {
+			return s.store.ProjectReleasePublicationState(projectCtx, projection)
+		}); err != nil {
+			return PublicationStateResult{}, err
+		}
+	} else {
+		if err := s.store.AppendVerifiedFederationEvent(ctx, event, validation); err != nil {
+			return PublicationStateResult{}, err
+		}
+		if err := s.store.ProjectReleasePublicationState(ctx, projection); err != nil {
+			return PublicationStateResult{}, err
+		}
+	}
+	return PublicationStateResult{EventID: event.EventID, State: body}, nil
+}
+
+func (s *Service) prepare(ctx context.Context) (string, error) {
+	if s == nil || s.identity == nil || s.store == nil {
+		return "", fmt.Errorf("publisher dependencies are required")
+	}
+	nodeID, err := s.identity.NodeID(ctx)
+	if err != nil {
+		return "", err
+	}
+	publicKey, err := s.identity.PublicKey(ctx)
+	if err != nil {
+		return "", err
+	}
+	if err := s.store.UpsertFederationNodeIdentity(ctx, nodeID, publicKey); err != nil {
+		return "", err
+	}
+	return nodeID, nil
+}
+
+func (s *Service) publishCandidate(ctx context.Context, nodeID string, candidate releasecard.LocalRelease) (CandidateResult, error) {
+	card, err := releasecard.MapLocalRelease(candidate)
+	if err != nil {
+		return CandidateResult{}, fmt.Errorf("map release %s: %w", candidate.LocalReleaseID, err)
+	}
+	result := CandidateResult{Card: card}
+	bodyHash, err := releasecard.HashBody(card)
+	if err != nil {
+		return result, fmt.Errorf("hash release card %s: %w", card.ReleaseID, err)
+	}
+
+	eventID, err := s.store.FindFederationEventByBodyHash(ctx, nodeID, pools.EventTypeReleaseCard, bodyHash, s.poolID)
+	if err != nil {
+		return result, err
+	}
+	if eventID == "" {
 		sequence, previousEventID, err := s.store.NextFederationEventSequence(ctx, nodeID)
 		if err != nil {
 			return result, err
 		}
 		event, validation, err := events.Create(ctx, s.identity, events.CreateOptions{
-			EventType:       pools.EventTypeReleaseCard,
-			Sequence:        sequence,
-			PreviousEventID: previousEventID,
-			CreatedAt:       s.now().UTC(),
-			PoolIDs:         []string{s.poolID},
-			Visibility:      "pool",
-			BodySchema:      releasecard.BodySchema,
-			Body:            card,
+			EventType: pools.EventTypeReleaseCard, Sequence: sequence, PreviousEventID: previousEventID,
+			CreatedAt: s.now().UTC(), PoolIDs: []string{s.poolID}, Visibility: "pool",
+			BodySchema: releasecard.BodySchema, Body: card,
 		})
 		if err != nil {
 			return result, fmt.Errorf("sign release card %s: %w", card.ReleaseID, err)
@@ -211,57 +292,55 @@ func (s *Service) PublishOnce(ctx context.Context, limit int) (Result, error) {
 		if err := s.store.AppendVerifiedFederationEvent(ctx, event, validation); err != nil {
 			return result, err
 		}
-		result.Published++
-		if err := s.store.UpsertFederatedReleaseCardProjection(ctx, releasecard.Projection{
-			Card:         card,
-			EventID:      event.EventID,
-			SourceNodeID: nodeID,
-			PoolID:       s.poolID,
-		}); err != nil {
+		eventID = event.EventID
+		result.Published = true
+	}
+	result.ReleaseCardEventID = eventID
+	if err := s.store.UpsertFederatedReleaseCardProjection(ctx, releasecard.Projection{
+		Card: card, EventID: eventID, SourceNodeID: nodeID, PoolID: s.poolID,
+	}); err != nil {
+		return result, err
+	}
+	if candidate.SourceKind == "local_scan_output" {
+		if err := s.store.MarkGoNZBNetScanOutputPublished(ctx, candidate.LocalReleaseID, eventID, s.poolID); err != nil {
 			return result, err
 		}
-		if candidate.SourceKind == "local_scan_output" {
-			if err := s.store.MarkGoNZBNetScanOutputPublished(ctx, candidate.LocalReleaseID, event.EventID, s.poolID); err != nil {
-				return result, err
-			}
-			if s.publishManifestAvailability && strings.TrimSpace(card.ManifestID) != "" {
-				if err := s.publishManifestAvailabilityOnce(ctx, nodeID, card); err != nil {
-					return result, err
-				}
-			}
-		}
-		if s.buildManifests && strings.TrimSpace(card.ManifestID) != "" {
-			if err := s.buildAndStoreManifest(ctx, candidate, card, nodeID); err != nil {
-				return result, err
-			}
-		}
-		result.Projected++
 	}
-
+	if s.buildManifests && strings.TrimSpace(card.ManifestID) != "" {
+		result.ManifestEventID, err = s.buildAndStoreManifest(ctx, candidate, card, nodeID)
+		if err != nil {
+			return result, err
+		}
+	}
+	if result.Published && s.publishManifestAvailability && strings.TrimSpace(card.ManifestID) != "" {
+		if err := s.publishManifestAvailabilityOnce(ctx, nodeID, card); err != nil {
+			return result, err
+		}
+	}
 	return result, nil
 }
 
-func (s *Service) buildAndStoreManifest(ctx context.Context, candidate releasecard.LocalRelease, card releasecard.ReleaseCard, nodeID string) error {
+func (s *Service) buildAndStoreManifest(ctx context.Context, candidate releasecard.LocalRelease, card releasecard.ReleaseCard, nodeID string) (string, error) {
 	item, canonicalCore, generatedNZB, err := BuildLocalManifest(candidate)
 	if err != nil {
-		return fmt.Errorf("build local manifest for %s: %w", card.ReleaseID, err)
+		return "", fmt.Errorf("build local manifest for %s: %w", card.ReleaseID, err)
 	}
 	if item.ManifestID != card.ManifestID {
-		return fmt.Errorf("manifest ID mismatch for release %s: card=%s built=%s", card.ReleaseID, card.ManifestID, item.ManifestID)
+		return "", fmt.Errorf("manifest ID mismatch for release %s: card=%s built=%s", card.ReleaseID, card.ManifestID, item.ManifestID)
 	}
 	item.ReleaseID = card.ReleaseID
 	bodyHash, _, err := canonical.BodyHash(item)
 	if err != nil {
-		return fmt.Errorf("hash local manifest for %s: %w", card.ReleaseID, err)
+		return "", fmt.Errorf("hash local manifest for %s: %w", card.ReleaseID, err)
 	}
 	manifestEventID, err := s.store.FindFederationEventByBodyHash(ctx, nodeID, manifest.Type, bodyHash, s.poolID)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if manifestEventID == "" {
 		sequence, previousEventID, err := s.store.NextFederationEventSequence(ctx, nodeID)
 		if err != nil {
-			return err
+			return "", err
 		}
 		event, validation, err := events.Create(ctx, s.identity, events.CreateOptions{
 			EventType:       manifest.Type,
@@ -274,14 +353,14 @@ func (s *Service) buildAndStoreManifest(ctx context.Context, candidate releaseca
 			Body:            item,
 		})
 		if err != nil {
-			return fmt.Errorf("sign local manifest for %s: %w", card.ReleaseID, err)
+			return "", fmt.Errorf("sign local manifest for %s: %w", card.ReleaseID, err)
 		}
 		if err := s.store.AppendVerifiedFederationEvent(ctx, event, validation); err != nil {
-			return err
+			return "", err
 		}
 		manifestEventID = event.EventID
 	}
-	return s.store.StoreResolutionManifest(ctx, pgindex.ResolutionManifestRecord{
+	err = s.store.StoreResolutionManifest(ctx, pgindex.ResolutionManifestRecord{
 		Manifest:              item,
 		SourceNodeID:          nodeID,
 		SourceEventID:         manifestEventID,
@@ -289,6 +368,7 @@ func (s *Service) buildAndStoreManifest(ctx context.Context, candidate releaseca
 		CanonicalManifestJSON: canonicalCore,
 		GeneratedNZB:          generatedNZB,
 	})
+	return manifestEventID, err
 }
 
 func BuildLocalManifest(candidate releasecard.LocalRelease) (manifest.ResolutionManifest, []byte, []byte, error) {
@@ -610,6 +690,7 @@ func (s *Service) publishValidatorCapacity(ctx context.Context, nodeID string, o
 		ChecksumValidation:      opts.ChecksumEnabled,
 		ProviderScope:           validation.ProviderScope{},
 		AcceptedManifestSchemas: []string{manifest.BodySchema},
+		ManifestFeatures:        []string{"manifest_archive_password"},
 	}
 	bodyHash, err := validation.HashBody(capacity)
 	if err != nil {

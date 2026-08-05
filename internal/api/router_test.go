@@ -117,6 +117,28 @@ func TestRegisterRoutesGoNZBNetOnly(t *testing.T) {
 	assertRouteMissing(t, routes, "/api/v1/queue")
 }
 
+func TestRegisterRoutesUploaderOnly(t *testing.T) {
+	e := echo.New()
+	appCtx := &app.Context{
+		Config: &config.Config{
+			API: config.APIConfig{CORSAllowedOrigins: []string{"http://localhost:5173"}},
+			Modules: config.ModulesConfig{
+				API:      config.ModuleToggle{Enabled: true},
+				Uploader: config.ModuleToggle{Enabled: true},
+			},
+			Uploader: config.UploaderConfig{MaxNZBBytes: 1 << 20, MaxMetadataLength: 1024},
+		},
+	}
+
+	RegisterRoutes(e, appCtx)
+	routes := routePaths(e)
+	assertRoutePresent(t, routes, "/api/v1/uploader/submissions")
+	assertRoutePresent(t, routes, "/api/v1/uploader/submissions/:id")
+	assertRoutePresent(t, routes, "/api/v1/uploader/submissions/:id/nzb")
+	assertRoutePresent(t, routes, "/api/v1/uploader/submissions/:id/actions/approve")
+	assertRouteMissing(t, routes, "/api/v1/indexer/overview")
+}
+
 func TestRegisterRoutesGoNZBNetHTTPDisabledKeepsLocalAdmin(t *testing.T) {
 	e := echo.New()
 	appCtx := &app.Context{

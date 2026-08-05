@@ -12,6 +12,7 @@ import (
 	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
 	"github.com/datallboy/gonzb/internal/gonzbnet/manifest"
 	"github.com/datallboy/gonzb/internal/gonzbnet/manifestavailability"
+	"github.com/datallboy/gonzb/internal/gonzbnet/publicationstate"
 	"github.com/datallboy/gonzb/internal/gonzbnet/releasecard"
 	"github.com/datallboy/gonzb/internal/gonzbnet/validation"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
@@ -53,6 +54,22 @@ func TestPublishOnceSignsStoresAndSkipsUnchangedReleaseCards(t *testing.T) {
 	}
 	if len(store.events) != 1 {
 		t.Fatalf("expected unchanged card to reuse stored event, got %d events", len(store.events))
+	}
+}
+
+func TestPublishReleaseStateSignsAuthorScopedLifecycleEvent(t *testing.T) {
+	node, err := identity.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &fakeStore{eventsByBodyHash: map[string]string{}}
+	service := New(node, store, "pool.synthetic")
+	result, err := service.PublishReleaseState(t.Context(), "rel_synthetic", "man_synthetic", "withdrawn", "", "fixture")
+	if err != nil {
+		t.Fatalf("publish state: %v", err)
+	}
+	if result.EventID == "" || len(store.events) != 1 || store.events[0].EventType != "ReleasePublicationState" {
+		t.Fatalf("unexpected publication state event: result=%#v events=%#v", result, store.events)
 	}
 }
 
@@ -321,6 +338,10 @@ func (s *fakeStore) AppendVerifiedFederationEvent(_ context.Context, event *even
 
 func (s *fakeStore) UpsertFederatedReleaseCardProjection(_ context.Context, projection releasecard.Projection) error {
 	s.projections = append(s.projections, projection)
+	return nil
+}
+
+func (s *fakeStore) ProjectReleasePublicationState(context.Context, publicationstate.Projection) error {
 	return nil
 }
 

@@ -631,7 +631,7 @@ func ValidateRuntimeSettingsMutation(base *config.Config, current, next *app.Run
 	}
 	if base != nil && base.Modules.Aggregator.Enabled &&
 		len(next.Indexers) < len(current.Indexers) &&
-		aggregatorConfigured(current) {
+		aggregatorConfigured(base, current) {
 		return fmt.Errorf("removing external Newznab sources while aggregator runtime is configured requires a restart")
 	}
 	if err := validateIndexerMaintenanceTasks(next); err != nil {
@@ -676,9 +676,10 @@ func BuildCapabilities(base *config.Config, runtime *app.RuntimeSettings) *app.C
 	}
 
 	modules := map[string]app.ModuleCapability{
-		"aggregator":     moduleCapability(base.Modules.Aggregator.Enabled, aggregatorConfigured(runtime), aggregatorRequirements(base, runtime)),
+		"aggregator":     moduleCapability(base.Modules.Aggregator.Enabled, aggregatorConfigured(base, runtime), aggregatorRequirements(base, runtime)),
 		"usenet_indexer": moduleCapability(base.Modules.UsenetIndexer.Enabled, indexerConfigured(runtime), indexerRequirements(runtime)),
 		"gonzbnet":       moduleCapability(base.Modules.GoNZBNet.Enabled, gonzbnetConfigured(base), gonzbnetRequirements(base)),
+		"uploader":       moduleCapability(base.Modules.Uploader.Enabled, uploaderConfigured(base), uploaderRequirements(base)),
 		"web_ui":         moduleCapability(base.Modules.WebUI.Enabled, base.Modules.WebUI.Enabled, nil),
 		"api":            moduleCapability(base.Modules.API.Enabled, base.Modules.API.Enabled, nil),
 	}
@@ -715,20 +716,21 @@ func moduleCapability(enabled, configured bool, requirements []string) app.Modul
 	}
 }
 
-func aggregatorConfigured(runtime *app.RuntimeSettings) bool {
+func aggregatorConfigured(base *config.Config, runtime *app.RuntimeSettings) bool {
 	if runtime == nil {
-		return false
+		return base != nil && base.Modules.Uploader.Enabled
 	}
 	hasExternal := len(runtime.Indexers) > 0
 	hasLocal := runtime.Aggregator != nil &&
 		(runtime.Aggregator.Sources.LocalBlob.Enabled || runtime.Aggregator.Sources.UsenetIndexer.Enabled || runtime.Aggregator.Sources.GoNZBNet.Enabled)
-	return hasExternal || hasLocal
+	hasUploader := base != nil && base.Modules.Uploader.Enabled
+	return hasExternal || hasLocal || hasUploader
 }
 
 func aggregatorRequirements(base *config.Config, runtime *app.RuntimeSettings) []string {
 	reqs := make([]string, 0, 2)
-	if !aggregatorConfigured(runtime) {
-		reqs = append(reqs, "enable local blob, local indexer, GoNZBNet, or an external Newznab source")
+	if !aggregatorConfigured(base, runtime) {
+		reqs = append(reqs, "enable uploader, local blob, local indexer, GoNZBNet, or an external Newznab source")
 	}
 	if runtime != nil && runtime.Aggregator != nil && runtime.Aggregator.Sources.UsenetIndexer.Enabled &&
 		(base == nil || !base.Modules.UsenetIndexer.Enabled) {
@@ -737,6 +739,21 @@ func aggregatorRequirements(base *config.Config, runtime *app.RuntimeSettings) [
 	if runtime != nil && runtime.Aggregator != nil && runtime.Aggregator.Sources.GoNZBNet.Enabled &&
 		(base == nil || !base.Modules.GoNZBNet.Enabled) {
 		reqs = append(reqs, "enable gonzbnet module in config.yaml")
+	}
+	return reqs
+}
+
+func uploaderConfigured(base *config.Config) bool {
+	return base != nil && strings.TrimSpace(base.Store.SQLitePath) != "" && strings.TrimSpace(base.Store.BlobDir) != ""
+}
+
+func uploaderRequirements(base *config.Config) []string {
+	reqs := make([]string, 0, 2)
+	if base == nil || strings.TrimSpace(base.Store.SQLitePath) == "" {
+		reqs = append(reqs, "configure store.sqlite_path")
+	}
+	if base == nil || strings.TrimSpace(base.Store.BlobDir) == "" {
+		reqs = append(reqs, "configure store.blob_dir")
 	}
 	return reqs
 }

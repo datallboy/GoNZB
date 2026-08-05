@@ -2,6 +2,7 @@ package manifest
 
 import (
 	"encoding/xml"
+	"strings"
 	"testing"
 )
 
@@ -71,6 +72,27 @@ func TestGenerateNZBProducesParsableXML(t *testing.T) {
 	}
 	if doc.XMLName.Local != "nzb" || len(doc.Files) != 1 || len(doc.Files[0].Segments) != 1 {
 		t.Fatalf("unexpected nzb document: %+v", doc)
+	}
+}
+
+func TestArchivePasswordParticipatesInIDAndGeneratedNZB(t *testing.T) {
+	item := testManifest(t)
+	withoutPassword := item.ManifestID
+	item.ManifestCore.ArchivePassword = " synthetic-secret "
+	manifestID, _, err := ComputeID(item.ManifestCore)
+	if err != nil {
+		t.Fatalf("compute passworded manifest ID: %v", err)
+	}
+	if manifestID == withoutPassword {
+		t.Fatal("archive password must participate in the manifest ID")
+	}
+	item.ManifestID = manifestID
+	payload, err := GenerateNZB(item)
+	if err != nil {
+		t.Fatalf("generate passworded NZB: %v", err)
+	}
+	if !strings.Contains(string(payload), `<meta type="password"> synthetic-secret </meta>`) {
+		t.Fatalf("generated NZB does not contain the archive password: %s", payload)
 	}
 }
 

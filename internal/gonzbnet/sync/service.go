@@ -27,6 +27,7 @@ import (
 	"github.com/datallboy/gonzb/internal/gonzbnet/moderation"
 	"github.com/datallboy/gonzb/internal/gonzbnet/pools"
 	"github.com/datallboy/gonzb/internal/gonzbnet/profile"
+	"github.com/datallboy/gonzb/internal/gonzbnet/publicationstate"
 	"github.com/datallboy/gonzb/internal/gonzbnet/releasecard"
 	"github.com/datallboy/gonzb/internal/gonzbnet/requestauth"
 	"github.com/datallboy/gonzb/internal/gonzbnet/transportpolicy"
@@ -48,6 +49,7 @@ type Store interface {
 	AppendVerifiedFederationEvent(ctx context.Context, event *events.SignedEvent, validation *events.ValidationResult) error
 	AppendRejectedFederationEvent(ctx context.Context, eventID, authorNodeID, eventType string, rawEventJSON []byte, reason string) error
 	UpsertFederatedReleaseCardProjection(ctx context.Context, projection releasecard.Projection) error
+	ProjectReleasePublicationState(ctx context.Context, projection publicationstate.Projection) error
 	ProjectValidatorCapacity(ctx context.Context, projection pgindex.ValidatorCapacityProjection) error
 	ProjectArticleAvailabilityAttestation(ctx context.Context, projection pgindex.ArticleAvailabilityProjection) error
 	ProjectChecksumAttestation(ctx context.Context, projection pgindex.ChecksumAttestationProjection) error
@@ -157,6 +159,14 @@ func (s *Service) replayProjection(ctx context.Context, event *events.SignedEven
 			poolID = event.PoolIDs[0]
 		}
 		return s.store.UpsertFederatedReleaseCardProjection(ctx, releasecard.Projection{Card: card, EventID: event.EventID, SourceNodeID: event.AuthorNodeID, PoolID: poolID})
+	case pools.EventTypeReleasePublicationState:
+		var state publicationstate.State
+		if err := json.Unmarshal(event.Body, &state); err != nil {
+			return err
+		}
+		return s.store.ProjectReleasePublicationState(ctx, publicationstate.Projection{
+			Publication: state, EventID: event.EventID, AuthorNodeID: event.AuthorNodeID, Sequence: event.Sequence,
+		})
 	case pools.EventTypeCoveragePlan, pools.EventTypeCoverageAssignment, pools.EventTypeRangeClaim, pools.EventTypeTimeWindowClaim, pools.EventTypeCoverageCheckpoint, pools.EventTypeRangeComplete, pools.EventTypeRangeFailed:
 		return s.store.ProjectCoverageEvent(ctx, event)
 	default:
@@ -178,7 +188,7 @@ func (s *Service) appendAndProject(ctx context.Context, event *events.SignedEven
 }
 
 func receivedEventHasProjection(eventType string) bool {
-	return pools.EventIsPoolControl(eventType) || eventType == pools.EventTypeReleaseCard || isSyncCoverageEvent(eventType) || isValidationProjectionEvent(eventType)
+	return pools.EventIsPoolControl(eventType) || eventType == pools.EventTypeReleaseCard || eventType == pools.EventTypeReleasePublicationState || isSyncCoverageEvent(eventType) || isValidationProjectionEvent(eventType)
 }
 
 type Result struct {

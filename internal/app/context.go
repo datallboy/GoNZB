@@ -1,9 +1,11 @@
 package app
 
 import (
+	"io"
+
 	"github.com/datallboy/gonzb/internal/infra/config"
 	"github.com/datallboy/gonzb/internal/infra/logger"
-	"io"
+	"github.com/datallboy/gonzb/internal/uploader"
 )
 
 // Context hold the core environment and shared resources for GoNZB.
@@ -16,20 +18,24 @@ type Context struct {
 	DisableReleasePurgeArchivedSources bool
 
 	// High-level interfaces for services to use
-	NNTP                NNTPManager
-	Aggregator          IndexerAggregator
-	Resolver            ReleaseResolver
-	UsenetIndexer       UsenetIndexerService
-	DownloadClient      DownloadClient
-	JobStore            JobStore
-	BlobStore           BlobStore
-	IndexerArchiveStore BlobStore
-	PayloadFetcher      PayloadFetcher
-	PayloadCacheStore   PayloadCacheStore
-	SettingsStore       SettingsStore
-	PGIndexStore        UsenetIndexStore
-	AggregatorModule    AggregatorModule
-	SettingsAdmin       SettingsAdmin
+	NNTP                      NNTPManager
+	Aggregator                IndexerAggregator
+	Resolver                  ReleaseResolver
+	UsenetIndexer             UsenetIndexerService
+	DownloadClient            DownloadClient
+	JobStore                  JobStore
+	BlobStore                 BlobStore
+	IndexerArchiveStore       BlobStore
+	PayloadFetcher            PayloadFetcher
+	PayloadCacheStore         PayloadCacheStore
+	SettingsStore             SettingsStore
+	PGIndexStore              UsenetIndexStore
+	AggregatorModule          AggregatorModule
+	SettingsAdmin             SettingsAdmin
+	UploaderStore             uploader.Store
+	Uploader                  *uploader.Service
+	UploaderFederationBackend uploader.FederationBackend
+	UploaderFederation        *uploader.FederationService
 
 	closers            []io.Closer
 	runtimeModules     map[string]RuntimeModule

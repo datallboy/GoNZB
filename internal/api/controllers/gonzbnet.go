@@ -31,6 +31,7 @@ import (
 	"github.com/datallboy/gonzb/internal/gonzbnet/moderation"
 	"github.com/datallboy/gonzb/internal/gonzbnet/pools"
 	"github.com/datallboy/gonzb/internal/gonzbnet/profile"
+	"github.com/datallboy/gonzb/internal/gonzbnet/publicationstate"
 	"github.com/datallboy/gonzb/internal/gonzbnet/releasecard"
 	"github.com/datallboy/gonzb/internal/gonzbnet/requestauth"
 	"github.com/datallboy/gonzb/internal/gonzbnet/trust"
@@ -86,6 +87,7 @@ type gonzbnetStore interface {
 	GetPoolCheckpointEvent(ctx context.Context, poolID string) (*events.SignedEvent, error)
 	ListPoolMembers(ctx context.Context, poolID string) ([]pgindex.PoolMemberRecord, error)
 	UpsertFederatedReleaseCardProjection(ctx context.Context, projection releasecard.Projection) error
+	ProjectReleasePublicationState(ctx context.Context, projection publicationstate.Projection) error
 	ValidateFederationPoolControlEvent(ctx context.Context, event *events.SignedEvent) error
 	ProjectFederationPoolEvent(ctx context.Context, event *events.SignedEvent) error
 	CanAcceptFederationEventForPools(ctx context.Context, authorNodeID string, poolIDs []string, eventType string) (pgindex.PoolAuthorizationResult, error)
@@ -2145,6 +2147,17 @@ func (ctrl *GoNZBNetController) acceptInboxEvent(ctx context.Context, store gonz
 			PoolID:       poolID,
 		}
 	}
+	var publicationStateProjection *publicationstate.Projection
+	if event.EventType == pools.EventTypeReleasePublicationState {
+		var state publicationstate.State
+		if err := json.Unmarshal(event.Body, &state); err != nil {
+			_ = store.AppendRejectedFederationEvent(ctx, event.EventID, event.AuthorNodeID, event.EventType, raw, "invalid release publication state body")
+			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "invalid_schema", Message: "invalid release publication state body"}
+		}
+		publicationStateProjection = &publicationstate.Projection{
+			Publication: state, EventID: event.EventID, AuthorNodeID: event.AuthorNodeID, Sequence: event.Sequence,
+		}
+	}
 	var healthProjection *pgindex.HealthAttestationProjection
 	if event.EventType == pools.EventTypeHealthAttestation {
 		var attestation health.Attestation
@@ -2273,6 +2286,11 @@ func (ctrl *GoNZBNetController) acceptInboxEvent(ctx context.Context, store gonz
 		}
 		if releaseProjection != nil {
 			if err := store.UpsertFederatedReleaseCardProjection(projectCtx, *releaseProjection); err != nil {
+				return err
+			}
+		}
+		if publicationStateProjection != nil {
+			if err := store.ProjectReleasePublicationState(projectCtx, *publicationStateProjection); err != nil {
 				return err
 			}
 		}
@@ -2415,6 +2433,7 @@ func (ctrl *GoNZBNetController) profileConfig(c *echo.Context) profile.Config {
 		Consumer:                      cfg.ConsumerEnabled,
 		Scanner:                       cfg.ScannerEnabled,
 		Indexer:                       ctrl.appCtx.Config.Modules.UsenetIndexer.Enabled,
+		ReleasePublisher:              ctrl.appCtx.Config.Modules.Uploader.Enabled,
 		IndexProjection:               cfg.IndexProjectionEnabled,
 		PublishReleaseCards:           cfg.PublishReleaseCardsEnabled,
 		PublishHealthAttestations:     cfg.HealthAttestationsEnabled,
