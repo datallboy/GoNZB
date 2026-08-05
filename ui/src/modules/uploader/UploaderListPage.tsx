@@ -35,13 +35,14 @@ export function UploaderListPage() {
   async function upload(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!file) return
+    const form = event.currentTarget
     setMessage(null)
     try {
       const response = await createUploaderSubmission(file, { title: title.trim() || undefined })
       setMessage(response.created === false ? 'This NZB was already submitted.' : 'NZB added to the review queue.')
       setFile(null)
       setTitle('')
-      const input = event.currentTarget.elements.namedItem('nzb')
+      const input = form.elements.namedItem('nzb')
       if (input instanceof HTMLInputElement) input.value = ''
       await refresh()
     } catch (err) {
