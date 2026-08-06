@@ -51,6 +51,13 @@ func TestUploaderCatalogProjectionAppearsInPublicAndAdminReleases(t *testing.T) 
 	if total != 1 || len(public) != 1 || public[0].ReleaseID != submission.ReleaseID || public[0].SourceKind != uploaderCatalogSourceKind {
 		t.Fatalf("unexpected public projection: total=%d items=%+v", total, public)
 	}
+	federationCandidates, err := store.ListGoNZBNetLocalReleaseCandidates(t.Context(), 10, DefaultReleaseReadyPolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(federationCandidates) != 0 {
+		t.Fatalf("uploader approval leaked into automatic GoNZBNet publication candidates: %+v", federationCandidates)
+	}
 	publicDetail, err := store.GetPublicIndexerReleaseDetail(t.Context(), submission.ReleaseID)
 	if err != nil {
 		t.Fatal(err)

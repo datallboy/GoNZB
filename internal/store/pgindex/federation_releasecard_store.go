@@ -12,6 +12,8 @@ import (
 	"github.com/datallboy/gonzb/internal/gonzbnet/releasecard"
 )
 
+const goNZBNetIndexerSourceKind = "usenet_index"
+
 type FederatedReleaseCardSearchParams struct {
 	Query  string
 	IMDBID string
@@ -53,6 +55,7 @@ func (s *Store) ListGoNZBNetLocalReleaseCandidates(ctx context.Context, limit in
 		limit = 50
 	}
 	summaries, _, err := s.ListPublicIndexerReleases(ctx, PublicIndexerReleaseListParams{
+		SourceKind:  goNZBNetIndexerSourceKind,
 		Limit:       limit,
 		Sort:        "posted_at_desc",
 		ReadyPolicy: policy,
