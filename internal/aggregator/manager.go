@@ -291,11 +291,36 @@ func (m *Manager) GetResultByID(ctx context.Context, id string) (*domain.Release
 	enabled := m.searchPersistenceEnabled
 	m.mu.RUnlock()
 
+	m.mu.RLock()
+	directSources := make([]resultByIDSource, 0, len(m.sources))
+	for _, src := range m.sources {
+		if direct, ok := src.(resultByIDSource); ok {
+			directSources = append(directSources, direct)
+		}
+	}
+	m.mu.RUnlock()
+	for _, src := range directSources {
+		rel, err := src.GetByID(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if rel != nil {
+			return cloneRelease(rel), nil
+		}
+	}
+
 	if !enabled {
 		return nil, nil
 	}
 
-	return m.store.GetAggregatorReleaseCacheByID(ctx, id)
+	rel, err := m.store.GetAggregatorReleaseCacheByID(ctx, id)
+	if err != nil || rel == nil {
+		return rel, err
+	}
+	if isAuthoritativeOnlyRelease(rel) {
+		return nil, nil
+	}
+	return rel, nil
 }
 
 func cloneRelease(in *domain.Release) *domain.Release {

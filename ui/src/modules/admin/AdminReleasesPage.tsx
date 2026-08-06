@@ -487,6 +487,7 @@ export function AdminReleasesPage() {
                     </Link>
                     <div className="muted-row">
                       <span>{item.group_name}</span>
+                      <span>{item.source_kind === 'uploader' ? 'uploader' : 'indexer'}</span>
                       <span>{item.identity_status}</span>
                     </div>
                   </td>

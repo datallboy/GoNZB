@@ -2,6 +2,7 @@ package uploader
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -45,28 +46,29 @@ func (s *Source) Search(ctx context.Context, req aggregator.SearchRequest) ([]*d
 		if !matchesRequest(*item, req) {
 			continue
 		}
-		passwordState := ""
-		if item.HasPassword {
-			passwordState = "present"
-		}
-		out = append(out, &domain.Release{
-			ID:              item.ReleaseID,
-			GUID:            item.ID,
-			Title:           item.Title,
-			Password:        passwordState,
-			Source:          uploaderdomain.SourceName,
-			DownloadURL:     "/nzb/" + item.ReleaseID,
-			Size:            item.SizeBytes,
-			PublishDate:     item.PostedAt,
-			Category:        strconv.Itoa(item.CategoryID),
-			RedirectAllowed: false,
-			Poster:          item.Poster,
-		})
+		out = append(out, releaseFromSubmission(*item))
 		if len(out) >= limit {
 			break
 		}
 	}
 	return out, nil
+}
+
+func (s *Source) GetByID(ctx context.Context, id string) (*domain.Release, error) {
+	if s == nil || s.store == nil {
+		return nil, fmt.Errorf("uploader store is unavailable")
+	}
+	item, err := s.store.GetSubmissionByReleaseID(ctx, strings.TrimSpace(id))
+	if errors.Is(err, uploaderdomain.ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if item == nil || item.State != uploaderdomain.StateApproved {
+		return nil, nil
+	}
+	return releaseFromSubmission(*item), nil
 }
 
 func (s *Source) AuthorizeGet(ctx context.Context, rel *domain.Release) error {
@@ -114,4 +116,24 @@ func matchesRequest(item uploaderdomain.Submission, req aggregator.SearchRequest
 		return false
 	}
 	return true
+}
+
+func releaseFromSubmission(item uploaderdomain.Submission) *domain.Release {
+	passwordState := ""
+	if item.HasPassword {
+		passwordState = "present"
+	}
+	return &domain.Release{
+		ID:              item.ReleaseID,
+		GUID:            item.ID,
+		Title:           item.Title,
+		Password:        passwordState,
+		Source:          uploaderdomain.SourceName,
+		DownloadURL:     "/nzb/" + item.ReleaseID,
+		Size:            item.SizeBytes,
+		PublishDate:     item.PostedAt,
+		Category:        strconv.Itoa(item.CategoryID),
+		RedirectAllowed: false,
+		Poster:          item.Poster,
+	}
 }

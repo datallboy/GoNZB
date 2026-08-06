@@ -153,6 +153,7 @@ export function IndexerReleaseListPage() {
             <thead>
               <tr>
                 <th>Title</th>
+                <th>Origin</th>
                 <th>Age</th>
                 <th>Category</th>
                 <th>Files</th>
@@ -167,6 +168,7 @@ export function IndexerReleaseListPage() {
                       {item.title}
                     </Link>
                   </td>
+                  <td>{item.source_kind === 'uploader' ? 'Uploader' : 'Indexer'}</td>
                   <td>{formatRelativeAge(item.posted_at)}</td>
                   <td>{releaseCategoryLabel(item)}</td>
                   <td>{item.file_count}</td>
@@ -175,7 +177,7 @@ export function IndexerReleaseListPage() {
               ))}
               {!loading && data.items.length === 0 ? (
                 <tr>
-                  <td colSpan={5}>
+                  <td colSpan={6}>
                     <div className="empty-state">No releases matched this browse view.</div>
                   </td>
                 </tr>

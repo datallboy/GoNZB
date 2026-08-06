@@ -19,6 +19,7 @@ export type SetupStatusResponse = {
 export type PublicReleaseSummary = {
   release_id: string
   guid: string
+  source_kind: string
   title: string
   posted_at?: string
   added_at?: string
@@ -564,6 +565,7 @@ export type AdminRunListParams = {
 export type AdminReleaseSummary = {
   release_id: string
   guid: string
+  source_kind: string
   provider_id: number
   title: string
   group_name: string
@@ -801,6 +803,7 @@ export type AdminPredbMatch = {
 export type AdminReleaseRecord = {
   release_id: string
   guid: string
+  source_kind: string
   provider_id: number
   release_key: string
   group_name: string

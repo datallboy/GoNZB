@@ -37,6 +37,12 @@ type catalogSource interface {
 	GetNZB(ctx context.Context, rel *domain.Release) (io.ReadCloser, error)
 }
 
+// resultByIDSource supports authoritative direct retrieval for sources whose
+// results are intentionally excluded from generic persisted-cache lookup.
+type resultByIDSource interface {
+	GetByID(ctx context.Context, id string) (*domain.Release, error)
+}
+
 // getAuthorizer is implemented by sources whose result access depends on
 // request-local policy beyond the source's global permission.
 type getAuthorizer interface {

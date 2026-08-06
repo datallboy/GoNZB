@@ -83,7 +83,7 @@ func (m *uploaderRuntimeModule) Enabled() bool {
 	return m.appCtx != nil && m.appCtx.Config != nil && m.appCtx.Config.Modules.Uploader.Enabled
 }
 
-func (m *uploaderRuntimeModule) Build(context.Context) error {
+func (m *uploaderRuntimeModule) Build(ctx context.Context) error {
 	if !m.Enabled() {
 		m.appCtx.Uploader = nil
 		m.appCtx.UploaderFederation = nil
@@ -101,6 +101,14 @@ func (m *uploaderRuntimeModule) Build(context.Context) error {
 		MaxXMLDepth:       cfg.MaxXMLDepth,
 		MaxMetadataLength: cfg.MaxMetadataLength,
 	}, uploader.IntakeLimits{MaxArtifactBytes: cfg.MaxArtifactBytes, MaxSubmissionBytes: cfg.MaxSubmissionBytes})
+	if m.appCtx.Config.Modules.UsenetIndexer.Enabled && m.appCtx.PGIndexStore != nil {
+		if projector, ok := m.appCtx.PGIndexStore.(uploader.CatalogProjector); ok {
+			m.appCtx.Uploader.SetCatalogProjector(projector)
+			if err := m.appCtx.Uploader.ReconcileCatalog(ctx); err != nil {
+				return err
+			}
+		}
+	}
 	if m.appCtx.UploaderFederationBackend != nil {
 		m.appCtx.UploaderFederation = uploader.NewFederationService(m.appCtx.Uploader, m.appCtx.UploaderFederationBackend)
 	} else {

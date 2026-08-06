@@ -1,9 +1,10 @@
 # Completed-NZB uploader
 
 The uploader accepts completed NZB files from any upstream posting pipeline,
-holds them for review, and exposes approved entries through GoNZB's existing
-aggregator and Newznab API. It does not accept torrents, magnet links, source
-payload paths, BitTorrent client credentials, or NNTP posting credentials.
+holds them for review, and exposes approved entries through GoNZB's public
+Browse catalog, Admin Releases, aggregator, and Newznab API. It does not accept
+torrents, magnet links, source payload paths, BitTorrent client credentials, or
+NNTP posting credentials.
 
 ```text
 upstream acquisition and posting (outside GoNZB)
@@ -111,11 +112,20 @@ for atomic producer output.
 Every new item starts at `pending_review`. A reviewer can correct title,
 category, date, password, external IDs, and media labels before approval.
 Derived segment IDs, sizes, poster, and groups always come from the validated
-NZB. Pending and rejected items never appear in aggregator/Newznab search.
+NZB. Pending and rejected items never appear in local catalog or
+aggregator/Newznab search.
 
-Returning an approved item to pending hides it immediately and queues signed
-withdrawals for its active GoNZBNet publications. Reapproval restores only the
-local catalog. Federated restoration is another explicit administrator action.
+When the Usenet indexer module is enabled, approval also creates an
+uploader-owned terminal catalog projection. The release appears in **Browse**
+and **Admin > Releases** with origin **Uploader**. This projection contains
+release, file-summary, and newsgroup facts from the completed NZB; it does not
+pretend that GoNZB scraped or assembled the articles. Restart reconciliation
+repairs projections for submissions approved before startup.
+
+Returning an approved item to pending removes it from Browse, Admin Releases,
+and local search before changing its review state, and queues signed withdrawals
+for active GoNZBNet publications. Reapproval restores only the local catalog.
+Federated restoration is another explicit administrator action.
 
 ## GoNZBNet publication
 
@@ -190,8 +200,9 @@ namespace. The test need not download or post any payload:
 
 1. Submit through WebUI and verify `pending_review`.
 2. Submit the same bytes through the helper and verify deduplication.
-3. Approve and search through the Newznab endpoint.
-4. Return to pending and verify search/get authorization disappears.
+3. Approve and verify the release in Browse, Admin Releases, and Newznab search.
+4. Return to pending and verify all three local views plus get authorization
+   disappear.
 5. If a disposable private pool is available, publish, resolve, withdraw, and
    restore; verify a test-only password survives in the resolved NZB.
 

@@ -140,6 +140,23 @@ func TestGetNZBReturnsAuthorizedGoNZBNetBlobCache(t *testing.T) {
 	}
 }
 
+func TestGetResultByIDUsesAuthoritativeDirectSourceWithoutPriorSearch(t *testing.T) {
+	manager := NewManager(&fakeManagerStore{}, fakeLogger{}, false, false)
+	source := &fakeCatalogSource{
+		name:   uploaderSourceName,
+		direct: &domain.Release{ID: "uploader-release", Source: uploaderSourceName, Title: "Uploaded"},
+	}
+	manager.AddSource(source)
+
+	release, err := manager.GetResultByID(t.Context(), "uploader-release")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if release == nil || release.Source != uploaderSourceName || source.directGets != 1 {
+		t.Fatalf("unexpected direct result: release=%+v gets=%d", release, source.directGets)
+	}
+}
+
 type fakeManagerStore struct {
 	searchResults []*domain.Release
 	exists        bool
@@ -180,9 +197,20 @@ func (fakeLogger) Error(string, ...interface{}) {}
 
 type fakeCatalogSource struct {
 	name           string
+	direct         *domain.Release
+	directGets     int
 	gets           int
 	authorizeCalls int
 	authorizeErr   error
+}
+
+func (s *fakeCatalogSource) GetByID(_ context.Context, id string) (*domain.Release, error) {
+	s.directGets++
+	if s.direct != nil && s.direct.ID == id {
+		copy := *s.direct
+		return &copy, nil
+	}
+	return nil, nil
 }
 
 func (s *fakeCatalogSource) Name() string {

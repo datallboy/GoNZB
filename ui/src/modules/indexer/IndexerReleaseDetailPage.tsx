@@ -110,6 +110,10 @@ export function IndexerReleaseDetailPage() {
               <dd>{releaseCategoryLabel(release)}</dd>
             </div>
             <div>
+              <dt>Origin</dt>
+              <dd>{release.source_kind === 'uploader' ? 'Approved uploader submission' : 'Usenet indexer'}</dd>
+            </div>
+            <div>
               <dt>Size</dt>
               <dd>{formatBytes(release.size_bytes)}</dd>
             </div>

@@ -146,7 +146,21 @@ func releaseReadyVisibilityClause(alias string, policy ReleaseReadyPolicy) strin
 		clauses = append(clauses, hasSFVClause(alias))
 	}
 
-	return strings.Join(clauses, "\n\t\tAND ")
+	indexerClause := strings.Join(clauses, "\n\t\tAND ")
+	uploaderClause := fmt.Sprintf(`
+		COALESCE(%[1]s.source_kind, '') = 'uploader'
+		AND COALESCE(%[1]s.search_title, '') <> ''
+		AND COALESCE(%[1]s.size_bytes, 0) > 0
+		AND EXISTS (
+			SELECT 1
+			FROM release_catalog_files cf
+			WHERE cf.release_id = %[1]s.release_id
+		)
+		AND LOWER(BTRIM(COALESCE(NULLIF(ro.display_title, ''), %[1]s.title, ''))) NOT IN ('', 'unknown-release')
+		AND %[2]s IN ('not_passworded', 'password_known')
+		AND COALESCE(ro.hidden, FALSE) = FALSE`, alias, releasePasswordStateSQL(alias))
+
+	return fmt.Sprintf("((%s) OR (%s))", uploaderClause, indexerClause)
 }
 
 func clearTextReleaseTitleClause(alias string) string {

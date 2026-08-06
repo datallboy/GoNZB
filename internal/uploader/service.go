@@ -20,6 +20,7 @@ import (
 
 type Service struct {
 	store              Store
+	catalog            CatalogProjector
 	limits             nzb.Limits
 	maxArtifactBytes   int64
 	maxSubmissionBytes int64
@@ -43,6 +44,43 @@ func NewService(store Store, limits nzb.Limits, intake ...IntakeLimits) *Service
 		}
 	}
 	return &Service{store: store, limits: limits, maxArtifactBytes: artifactBytes, maxSubmissionBytes: submissionBytes, now: time.Now}
+}
+
+// SetCatalogProjector enables the optional indexer-catalog projection. It is
+// wired only when both uploader and PostgreSQL indexer storage are available.
+func (s *Service) SetCatalogProjector(projector CatalogProjector) {
+	if s == nil {
+		return
+	}
+	s.catalog = projector
+}
+
+// ReconcileCatalog repairs the terminal catalog projection from the uploader
+// store's authoritative approved state. It is safe to run repeatedly.
+func (s *Service) ReconcileCatalog(ctx context.Context) error {
+	if s == nil || s.store == nil || s.catalog == nil {
+		return nil
+	}
+	const pageSize = 500
+	approved := make([]Submission, 0, pageSize)
+	for offset := 0; ; offset += pageSize {
+		items, err := s.store.ListSubmissions(ctx, ListFilter{
+			ApprovedOnly: true,
+			Limit:        pageSize,
+			Offset:       offset,
+		})
+		if err != nil {
+			return fmt.Errorf("list approved uploader submissions for catalog reconciliation: %w", err)
+		}
+		approved = append(approved, items...)
+		if len(items) < pageSize {
+			break
+		}
+	}
+	if err := s.catalog.ReconcileUploaderSubmissions(ctx, approved); err != nil {
+		return fmt.Errorf("reconcile uploader catalog: %w", err)
+	}
+	return nil
 }
 
 func (s *Service) Submit(ctx context.Context, in SubmitInput) (CreateResult, error) {
@@ -225,9 +263,39 @@ func (s *Service) Transition(ctx context.Context, id string, next State, actor, 
 	default:
 		return nil, fmt.Errorf("unsupported uploader state %q", next)
 	}
-	item, err := s.store.TransitionSubmission(ctx, strings.TrimSpace(id), next, strings.TrimSpace(actor), strings.TrimSpace(note))
+	id = strings.TrimSpace(id)
+	actor = strings.TrimSpace(actor)
+	note = strings.TrimSpace(note)
+	current, err := s.store.GetSubmission(ctx, id)
 	if err != nil {
 		return nil, err
+	}
+
+	// Withdraw first so a failed transition away from approval cannot leave
+	// the release visible in the indexer catalog. Pending and rejected items
+	// have no projection and remain independent of catalog availability.
+	if current.State == StateApproved && next != StateApproved && s.catalog != nil {
+		if err := s.catalog.WithdrawUploaderSubmission(ctx, current.ReleaseID); err != nil {
+			return nil, fmt.Errorf("withdraw uploader release from catalog: %w", err)
+		}
+	}
+
+	item, err := s.store.TransitionSubmission(ctx, id, next, actor, note)
+	if err != nil {
+		if current.State == StateApproved && s.catalog != nil {
+			_ = s.catalog.PublishUploaderSubmission(ctx, *current)
+		}
+		return nil, err
+	}
+	if next == StateApproved && s.catalog != nil {
+		if err := s.catalog.PublishUploaderSubmission(ctx, *item); err != nil {
+			// Approval is not complete unless every local catalog surface can see
+			// it. Best-effort rollback keeps the authoritative review state safe.
+			if current.State != StateApproved {
+				_, _ = s.store.TransitionSubmission(ctx, id, StatePendingReview, actor, "catalog publication failed")
+			}
+			return nil, fmt.Errorf("publish uploader release to catalog: %w", err)
+		}
 	}
 	if !revealPassword {
 		item.Password = ""

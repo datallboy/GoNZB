@@ -3,11 +3,11 @@
 Status: Active design plan
 Branch: `feature/uploader-integration`
 Created: 2026-08-04
-Updated: 2026-08-05
+Updated: 2026-08-06
 Primary audience: GoNZB maintainers and operators connecting completed NZB
 producers to GoNZB
 
-## Implementation Status (2026-08-05)
+## Implementation Status (2026-08-06)
 
 Implemented on `feature/uploader-integration`:
 
@@ -18,6 +18,9 @@ Implemented on `feature/uploader-integration`:
 - pending/approved/rejected review workflow, least-privilege permissions, and
   password redaction;
 - approved-only aggregator/Newznab source with authoritative get checks;
+- approved-state projection into the shared terminal release catalog so
+  uploader releases appear in public Browse and Admin Releases, with startup
+  reconciliation and reversible withdrawal;
 - explicit GoNZBNet pool publication from a caller-supplied release candidate,
   password-bearing canonical manifests, feature advertisement, durable retry,
   and signed author-scoped withdrawal/restoration;
@@ -45,8 +48,8 @@ references, not GoNZB dependencies or claims of completed live conformance:
 Add an optional GoNZB uploader module that accepts the completed output of an
 external posting pipeline. GoNZB will ingest an NZB and its associated
 metadata, hold it for review, publish approved submissions into the local
-aggregator/Newznab catalog, and optionally publish explicitly selected releases
-to GoNZBNet pools.
+aggregator/Newznab catalog and public/admin terminal release catalog, and
+optionally publish explicitly selected releases to GoNZBNet pools.
 
 GoNZB will not discover torrents, download or seed torrent content, package
 media, create PAR2 data, post articles to NNTP, or supervise an uploader's work
@@ -63,6 +66,7 @@ torrent indexer / autobrr
   -> GoNZB uploader intake
   -> review
   -> local aggregator/Newznab catalog
+  -> public/admin terminal release catalog when the indexer is enabled
   -> optional explicit GoNZBNet pool publication
 ```
 
@@ -86,15 +90,18 @@ The following decisions are settled for this implementation:
    automatically.
 7. Local moderation is reversible: a reviewer may approve, reject, or return a
    submission to pending.
-8. Approval publishes to the local aggregator/Newznab catalog only.
+8. Approval publishes to the direct aggregator/Newznab source and, when the
+   indexer is enabled, to its public/admin terminal release catalog views.
 9. GoNZBNet publication is a separate, explicitly permissioned action that
    selects target pools.
 10. Password-bearing GoNZBNet manifests extend the existing
     `ResolutionManifest/1.0` shape rather than introducing a `1.1` label.
 11. Federated withdrawal and restoration use a new signed author-scoped
     publication-state event. Pool-governance tombstones remain authoritative.
-12. Uploader data does not enter indexer scrape, assemble, recovery, release,
-    or inspection tables.
+12. Uploader data does not enter scrape, assemble, recovery, inspection, or
+    release-formation work/lineage tables. An approved submission owns a
+    `source_kind = uploader` projection in the terminal `releases`,
+    `release_catalog_files`, and `release_newsgroups` catalog tables.
 
 ## Revised System Boundary
 
@@ -114,11 +121,13 @@ message ID using an existing read-only NNTP validation service. That verifies
 the Usenet result, not the torrent or local source content, and is deferred
 from version one.
 
-The phrase "indexer catalog" in this plan means an uploader-owned durable
-catalog exposed as an aggregator/Newznab source. It does not mean inserting a
-formed release into raw indexer scrape, binary assembly, recovery, or release
-formation tables. An NZB is already downstream of those stages, so fabricating
-their intermediate records would violate stage ownership and lose provenance.
+The phrase "indexer catalog" includes both the aggregator/Newznab source and
+the public Browse/Admin Releases catalog surfaces. Approval therefore creates
+an uploader-owned terminal projection tagged `source_kind = uploader`. It does
+not create raw indexer headers, binaries, inspection evidence, release-ready
+candidates, or release-formation lineage. An NZB is already downstream of
+those stages, so fabricating intermediate records would violate stage
+ownership and lose provenance.
 
 NZB-only intake has deliberate limits. It cannot prove that the posted bytes
 match an upstream release, inspect media quality, recover a password that was
@@ -230,6 +239,7 @@ dependencies and licenses outside GoNZB's module boundary.
 - NZB parsing, validation, metadata derivation, hashing, and deduplication.
 - Reversible local moderation with an immutable audit trail.
 - Approved-only aggregator source and Newznab retrieval.
+- Approved-only public/admin indexer catalog projection.
 - Explicit per-pool GoNZBNet publication.
 - Password-aware resolution manifests.
 - Signed federated withdrawal and restoration.
@@ -245,7 +255,8 @@ dependencies and licenses outside GoNZB's module boundary.
 - GoNZB-managed Postie or pesto subprocesses.
 - Tool-specific API clients, queue polling, configuration models, directory
   parsers, or compatibility promises.
-- Direct writes into indexer-owned PostgreSQL tables.
+- Writes into indexer scrape, binary, inspection, formation-work, or lineage
+  tables. The narrow uploader-owned terminal catalog projection is required.
 - Automatic GoNZBNet publication on local approval.
 - Automatic source-file deletion or retention cleanup in v1.
 
@@ -296,8 +307,17 @@ values when the module is enabled.
 ## Storage Model
 
 Use a dedicated uploader SQLite store with its own module migration version in
-the configured SQLite database. Do not expand `aggregator_release_cache` into a
-release catalog and do not put submissions in the indexer database.
+the configured SQLite database. It remains authoritative for submissions,
+review state, audit events, and NZB bytes. Do not expand
+`aggregator_release_cache` into a release catalog.
+
+When the indexer is enabled, mirror only approved catalog facts into existing
+terminal PostgreSQL catalog tables. These rows use `source_kind = uploader`, a
+synthetic local-uploader provider identity, durable release IDs from the
+uploader store, catalog-only file summaries, and referenced newsgroups. They
+must not acquire binary IDs or enter formation/inspection queues. Startup
+reconciliation republishes approved rows and removes stale uploader
+projections.
 
 ### `uploader_submissions`
 
@@ -545,9 +565,12 @@ The shared aggregator cache requires two safeguards:
 These rules prevent an unapproved release from remaining searchable or
 downloadable through stale metadata or NZB cache entries.
 
-Local approval must not create indexer releases, binaries, files, inspection
-records, or release-formation work. This preserves the stage ownership defined
-under `docs/wiki/indexer/`.
+Local approval creates an uploader-owned terminal catalog release and
+catalog-file/newsgroup projections when the indexer is enabled. It must not
+create binary-backed `release_files`, binaries, inspection records,
+release-ready candidates, lineage, or release-formation work. Returning to
+pending withdraws the terminal projection before changing authoritative review
+state; startup reconciliation repairs missed publication or withdrawal work.
 
 ## GoNZBNet Publication
 
@@ -829,7 +852,8 @@ Keep each increment independently reviewable:
      submit helpers, and contract tests. Do not add tool adapters.
 4. **Local catalog and UI**
    - Register the approved-only aggregator source, add cache authorization
-     guardrails, and build the uploader list/detail/review UI.
+     guardrails, project approved submissions into public/admin release views,
+     and build the uploader list/detail/review UI.
 5. **GoNZBNet publication**
    - Generalize candidate publication, add per-pool durable work, passworded
      manifest support, feature advertisement, and explicit pool UI/API.
@@ -912,6 +936,9 @@ sample its message IDs; real provider credentials must never enter normal CI.
 - Returning to pending or rejecting hides immediately.
 - Stale aggregator metadata and NZB blobs cannot bypass `AuthorizeGet`.
 - Original NZB bytes and password metadata survive local retrieval.
+- Approval appears in public Browse and Admin Releases with
+  `source_kind = uploader`; unapproval and startup reconciliation remove stale
+  terminal projections without creating binary/formation rows.
 
 ### GoNZBNet tests
 
@@ -957,13 +984,16 @@ The work is complete when:
 4. Unapproval immediately prevents local search and cached retrieval.
 5. Existing Newznab clients can search and download approved uploader releases
    without a new client-side integration.
-6. Explicit pool publication produces signed release cards and resolution
-   manifests without writing uploader facts into indexer-owned tables.
-7. Passworded pool members using the new capability receive an NZB containing
+6. Approved releases appear in public Browse and Admin Releases through the
+   uploader-owned terminal projection, without fabricated scrape, binary,
+   inspection, or formation history.
+7. Explicit pool publication produces signed release cards and resolution
+   manifests independently of the local catalog projection.
+8. Passworded pool members using the new capability receive an NZB containing
    the archive password; legacy peers reject rather than silently discard it.
-8. Signed withdrawal hides a federated release and signed restoration makes the
+9. Signed withdrawal hides a federated release and signed restoration makes the
    unchanged release visible again unless governance has tombstoned it.
-9. Existing deployments and module combinations behave identically when
+10. Existing deployments and module combinations behave identically when
    `modules.uploader.enabled` is false.
 
 ## Explicit Non-Goals

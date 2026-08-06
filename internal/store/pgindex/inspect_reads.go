@@ -98,6 +98,7 @@ type IndexerStageThroughput struct {
 type IndexerReleaseSummary struct {
 	ReleaseID                string     `json:"release_id"`
 	GUID                     string     `json:"guid"`
+	SourceKind               string     `json:"source_kind"`
 	ProviderID               int64      `json:"provider_id"`
 	ReleaseKey               string     `json:"release_key"`
 	GroupName                string     `json:"group_name"`
@@ -2619,6 +2620,7 @@ func (s *Store) ListIndexerReleases(ctx context.Context, params AdminIndexerRele
 		SELECT
 			r.release_id,
 			r.guid,
+			r.source_kind,
 			r.provider_id,
 			r.release_key,
 			r.group_name,
@@ -2675,6 +2677,7 @@ func (s *Store) ListIndexerReleases(ctx context.Context, params AdminIndexerRele
 			r.media_tags_json,
 			r.metadata_updated_at,
 			CASE
+				WHEN r.source_kind = 'uploader' THEN 'ready'
 				WHEN COALESCE(ras.object_key, '') <> ''
 				  AND ras.archive_status IN ('archived', 'purge_pending', 'purged')
 				THEN ras.archive_status
@@ -2729,6 +2732,7 @@ func (s *Store) GetIndexerReleaseDetail(ctx context.Context, releaseID string) (
 		SELECT
 			r.release_id,
 			r.guid,
+			r.source_kind,
 			r.provider_id,
 			r.release_key,
 			r.group_name,
@@ -2785,6 +2789,7 @@ func (s *Store) GetIndexerReleaseDetail(ctx context.Context, releaseID string) (
 			r.media_tags_json,
 			r.metadata_updated_at,
 			CASE
+				WHEN r.source_kind = 'uploader' THEN 'ready'
 				WHEN COALESCE(ras.object_key, '') <> ''
 				  AND ras.archive_status IN ('archived', 'purge_pending', 'purged')
 				THEN ras.archive_status
@@ -3745,6 +3750,7 @@ func scanIndexerReleaseSummary(scanner releaseScanner) (IndexerReleaseSummary, e
 	if err := scanner.Scan(
 		&item.ReleaseID,
 		&item.GUID,
+		&item.SourceKind,
 		&item.ProviderID,
 		&item.ReleaseKey,
 		&item.GroupName,

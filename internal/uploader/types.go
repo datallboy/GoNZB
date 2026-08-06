@@ -250,6 +250,15 @@ type Store interface {
 	Close() error
 }
 
+// CatalogProjector mirrors approved submissions into a deployment's terminal
+// release catalog. The uploader store remains authoritative for review state;
+// implementations must not fabricate scrape, binary, or formation records.
+type CatalogProjector interface {
+	PublishUploaderSubmission(ctx context.Context, submission Submission) error
+	WithdrawUploaderSubmission(ctx context.Context, releaseID string) error
+	ReconcileUploaderSubmissions(ctx context.Context, submissions []Submission) error
+}
+
 type SubmitInput struct {
 	NZBBytes         []byte
 	OriginalFilename string
