@@ -2,6 +2,8 @@ package pgindex
 
 import (
 	"context"
+	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -38,6 +40,17 @@ type FederationEventDiagnostic struct {
 	RejectionReason  string          `json:"rejection_reason,omitempty"`
 	Projected        bool            `json:"projected"`
 	ProjectedAt      *time.Time      `json:"projected_at,omitempty"`
+	Tombstoned       bool            `json:"tombstoned"`
+}
+
+type FederationEventDiagnosticParams struct {
+	PoolID           string
+	NodeID           string
+	EventType        string
+	ValidationStatus string
+	Projected        *bool
+	Tombstoned       *bool
+	Limit            int
 }
 
 type FederationRejectedEventDiagnostic struct {
@@ -119,6 +132,54 @@ type FederatedManifestSourceDiagnostic struct {
 	AvgLatencyMS  int        `json:"avg_latency_ms"`
 	TrustScore    float64    `json:"trust_score"`
 	UpdatedAt     time.Time  `json:"updated_at"`
+}
+
+type FederationReleaseLedgerParams struct {
+	PoolID    string
+	NodeID    string
+	ReleaseID string
+	State     string
+	Cursor    string
+	Limit     int
+}
+
+type FederationReleaseLedgerItem struct {
+	ReleaseID               string     `json:"release_id"`
+	ManifestID              string     `json:"manifest_id"`
+	ProjectedTitle          string     `json:"projected_title"`
+	SignedTitle             string     `json:"signed_title"`
+	ProjectionMatchesSigned bool       `json:"projection_matches_signed_event"`
+	SourceNodeID            string     `json:"source_node_id"`
+	SourceEventID           string     `json:"source_event_id"`
+	SourceBodyHash          string     `json:"source_body_hash"`
+	PoolID                  string     `json:"pool_id"`
+	NodeStatus              string     `json:"node_status"`
+	MembershipStatus        string     `json:"membership_status"`
+	PublicationState        string     `json:"publication_state"`
+	PublicationEventID      string     `json:"publication_event_id,omitempty"`
+	PublicationReason       string     `json:"publication_reason,omitempty"`
+	PublicationChangedAt    *time.Time `json:"publication_changed_at,omitempty"`
+	TombstoneTargetType     string     `json:"tombstone_target_type,omitempty"`
+	TombstoneTargetID       string     `json:"tombstone_target_id,omitempty"`
+	TombstoneSeverity       string     `json:"tombstone_severity,omitempty"`
+	TombstoneSourceEventID  string     `json:"tombstone_source_event_id,omitempty"`
+	EffectiveState          string     `json:"effective_state"`
+	PostedAt                *time.Time `json:"posted_at,omitempty"`
+	FirstSeenAt             time.Time  `json:"first_seen_at"`
+	LastSeenAt              time.Time  `json:"last_seen_at"`
+}
+
+type FederationReleaseLedgerPage struct {
+	Items      []FederationReleaseLedgerItem `json:"items"`
+	Count      int                           `json:"count"`
+	NextCursor string                        `json:"next_cursor,omitempty"`
+}
+
+type federationReleaseLedgerCursor struct {
+	LastSeenAt   time.Time `json:"last_seen_at"`
+	ReleaseID    string    `json:"release_id"`
+	SourceNodeID string    `json:"source_node_id"`
+	PoolID       string    `json:"pool_id"`
 }
 
 type HealthAttestationDiagnostic struct {
@@ -207,18 +268,67 @@ func (s *Store) ListFederationPeerDiagnostics(ctx context.Context, limit int) ([
 	return out, rows.Err()
 }
 
-func (s *Store) ListFederationEventDiagnostics(ctx context.Context, limit int) ([]FederationEventDiagnostic, error) {
+func (s *Store) ListFederationEventDiagnostics(ctx context.Context, params FederationEventDiagnosticParams) ([]FederationEventDiagnostic, error) {
 	if s == nil || s.db == nil {
 		return nil, fmt.Errorf("pgindex store is not initialized")
 	}
-	limit = clampDiagnosticsLimit(limit, 100)
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT event_id, event_type, author_node_id, sequence, body_hash,
-		       pool_ids, visibility, created_at, received_at, validation_status,
-		       COALESCE(rejection_reason, ''), projected, projected_at
-		FROM federation_events
+	limit := clampDiagnosticsLimit(params.Limit, 100)
+	clauses := []string{"1=1"}
+	args := []any{}
+	arg := 1
+	addEqual := func(column, value string) {
+		if value = strings.TrimSpace(value); value != "" {
+			clauses = append(clauses, fmt.Sprintf("%s = $%d", column, arg))
+			args = append(args, value)
+			arg++
+		}
+	}
+	addEqual("e.author_node_id", params.NodeID)
+	addEqual("e.event_type", params.EventType)
+	addEqual("e.validation_status", params.ValidationStatus)
+	if poolID := strings.TrimSpace(params.PoolID); poolID != "" {
+		clauses = append(clauses, fmt.Sprintf("e.pool_ids @> jsonb_build_array($%d::text)", arg))
+		args = append(args, poolID)
+		arg++
+	}
+	if params.Projected != nil {
+		clauses = append(clauses, fmt.Sprintf("e.projected = $%d", arg))
+		args = append(args, *params.Projected)
+		arg++
+	}
+	if params.Tombstoned != nil {
+		clauses = append(clauses, fmt.Sprintf(`EXISTS (
+		  SELECT 1 FROM tombstones filter_tombstone
+		  WHERE filter_tombstone.active = TRUE
+		    AND filter_tombstone.target_type = 'event'
+		    AND filter_tombstone.target_id = e.event_id
+		    AND filter_tombstone.severity IN ('hide','reject','local_only')
+		    AND filter_tombstone.effective_at <= NOW()
+		    AND (filter_tombstone.expires_at IS NULL OR filter_tombstone.expires_at > NOW())
+		    AND (filter_tombstone.pool_id IS NULL OR e.pool_ids @> jsonb_build_array(filter_tombstone.pool_id))
+		) = $%d`, arg))
+		args = append(args, *params.Tombstoned)
+		arg++
+	}
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`
+		SELECT e.event_id, e.event_type, e.author_node_id, e.sequence, e.body_hash,
+		       e.pool_ids, e.visibility, e.created_at, e.received_at, e.validation_status,
+		       COALESCE(e.rejection_reason, ''), e.projected, e.projected_at,
+		       EXISTS (
+		         SELECT 1 FROM tombstones t
+		         WHERE t.active = TRUE
+		           AND t.target_type = 'event'
+		           AND t.target_id = e.event_id
+		           AND t.severity IN ('hide','reject','local_only')
+		           AND t.effective_at <= NOW()
+		           AND (t.expires_at IS NULL OR t.expires_at > NOW())
+		           AND (t.pool_id IS NULL OR e.pool_ids @> jsonb_build_array(t.pool_id))
+		       )
+		FROM federation_events e
+		WHERE %s
 		ORDER BY received_at DESC, event_id DESC
-		LIMIT $1`, limit)
+		LIMIT $%d`, strings.Join(clauses, " AND "), arg), args...)
 	if err != nil {
 		return nil, fmt.Errorf("list federation event diagnostics: %w", err)
 	}
@@ -228,7 +338,7 @@ func (s *Store) ListFederationEventDiagnostics(ctx context.Context, limit int) (
 		var item FederationEventDiagnostic
 		var poolIDs []byte
 		var projectedAt nullableTime
-		if err := rows.Scan(&item.EventID, &item.EventType, &item.AuthorNodeID, &item.Sequence, &item.BodyHash, &poolIDs, &item.Visibility, &item.CreatedAt, &item.ReceivedAt, &item.ValidationStatus, &item.RejectionReason, &item.Projected, &projectedAt); err != nil {
+		if err := rows.Scan(&item.EventID, &item.EventType, &item.AuthorNodeID, &item.Sequence, &item.BodyHash, &poolIDs, &item.Visibility, &item.CreatedAt, &item.ReceivedAt, &item.ValidationStatus, &item.RejectionReason, &item.Projected, &projectedAt, &item.Tombstoned); err != nil {
 			return nil, err
 		}
 		item.PoolIDs = defaultRawJSON(poolIDs, `[]`)
@@ -399,6 +509,219 @@ func (s *Store) ListFederatedReleaseSourceDiagnostics(ctx context.Context, poolI
 		out = append(out, item)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) ListFederationReleaseLedger(ctx context.Context, params FederationReleaseLedgerParams) (FederationReleaseLedgerPage, error) {
+	var page FederationReleaseLedgerPage
+	if s == nil || s.db == nil {
+		return page, fmt.Errorf("pgindex store is not initialized")
+	}
+	limit := params.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	clauses := []string{"1=1"}
+	args := []any{}
+	arg := 1
+	addEqual := func(column, value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		clauses = append(clauses, fmt.Sprintf("%s = $%d", column, arg))
+		args = append(args, value)
+		arg++
+	}
+	addEqual("source.pool_id", params.PoolID)
+	addEqual("source.source_node_id", params.NodeID)
+	addEqual("source.release_id", params.ReleaseID)
+
+	if strings.TrimSpace(params.Cursor) != "" {
+		cursor, err := decodeFederationReleaseLedgerCursor(params.Cursor)
+		if err != nil {
+			return page, err
+		}
+		clauses = append(clauses, fmt.Sprintf(`
+			(source.last_seen_at, source.release_id, source.source_node_id, source.pool_id)
+			< ($%d, $%d, $%d, $%d)`, arg, arg+1, arg+2, arg+3))
+		args = append(args, cursor.LastSeenAt, cursor.ReleaseID, cursor.SourceNodeID, cursor.PoolID)
+		arg += 4
+	}
+	stateClause := ""
+	if state := strings.TrimSpace(params.State); state != "" {
+		stateClause = fmt.Sprintf("WHERE effective_state = $%d", arg)
+		args = append(args, state)
+		arg++
+	}
+	args = append(args, limit+1)
+
+	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`
+		WITH ledger_base AS (
+		  SELECT
+		    source.release_id AS release_id,
+		    COALESCE(source.manifest_id, '') AS manifest_id,
+		    card.title AS projected_title,
+		    COALESCE(event.body_json->>'title', '') AS signed_title,
+		    event.event_id IS NOT NULL
+		      AND event.validation_status = 'accepted'
+		      AND event.event_type = 'ReleaseCard'
+		      AND card.body_json = event.body_json
+		      AND COALESCE(event.body_json->>'release_id', '') = source.release_id
+		      AND COALESCE(event.body_json->>'manifest_id', '') = COALESCE(source.manifest_id, '')
+		      AND card.title = COALESCE(event.body_json->>'title', '')
+		      AND card.normalized_title = COALESCE(event.body_json->>'normalized_title', '')
+		      AND card.category_json = COALESCE(event.body_json->'category', '[]'::jsonb)
+		      AND card.newznab_categories = COALESCE(event.body_json->'newznab_categories', '[]'::jsonb)
+		      AND card.size_bytes IS NOT DISTINCT FROM NULLIF(event.body_json->>'size_bytes', '')::bigint
+		      AND card.posted_at IS NOT DISTINCT FROM NULLIF(event.body_json->>'posted_at', '')::timestamptz
+		      AND card.groups_json = COALESCE(event.body_json->'groups', '[]'::jsonb)
+		      AND card.file_count IS NOT DISTINCT FROM NULLIF(event.body_json->>'file_count', '')::integer
+		      AND card.segment_count IS NOT DISTINCT FROM NULLIF(event.body_json->>'segment_count', '')::integer
+		      AND COALESCE(card.poster_hash, '') = COALESCE(event.body_json->>'poster_hash', '')
+		      AND card.subject_fingerprint = COALESCE(event.body_json->>'subject_fingerprint', '')
+		      AND card.file_fingerprint = COALESCE(event.body_json->>'file_fingerprint', '')
+		      AND card.media_json = COALESCE(event.body_json->'media', '{}'::jsonb)
+		      AND card.quality_json = COALESCE(event.body_json->'quality', '{}'::jsonb)
+		      AND card.flags_json = COALESCE(event.body_json->'flags', '{}'::jsonb)
+		      AND card.resolution_json = COALESCE(event.body_json->'resolution', '{}'::jsonb)
+		      AND card.expires_at IS NOT DISTINCT FROM NULLIF(event.body_json->>'expires_at', '')::timestamptz AS projection_matches,
+		    source.source_node_id AS source_node_id,
+		    source.source_event_id AS source_event_id,
+		    COALESCE(event.body_hash, '') AS body_hash,
+		    source.pool_id AS pool_id,
+		    COALESCE(node.status, 'unknown') AS node_status,
+		    COALESCE(member.membership_status, 'missing') AS membership_status,
+		    COALESCE(publication.state, 'active') AS publication_state,
+		    COALESCE(publication.source_event_id, '') AS publication_event_id,
+		    COALESCE(publication.reason, '') AS publication_reason,
+		    publication.effective_at AS publication_changed_at,
+		    COALESCE(tomb.target_type, '') AS tombstone_target_type,
+		    COALESCE(tomb.target_id, '') AS tombstone_target_id,
+		    COALESCE(tomb.severity, '') AS tombstone_severity,
+		    COALESCE(tomb.source_event_id, '') AS tombstone_source_event_id,
+		    card.posted_at AS posted_at,
+		    source.first_seen_at AS first_seen_at,
+		    source.last_seen_at AS last_seen_at
+		  FROM federated_release_sources source
+		  JOIN federated_release_cards card ON card.release_id = source.release_id
+		  LEFT JOIN federation_events event ON event.event_id = source.source_event_id
+		  LEFT JOIN federation_nodes node ON node.node_id = source.source_node_id
+		  LEFT JOIN federated_release_publication_states publication
+		    ON publication.release_id = source.release_id
+		   AND publication.source_node_id = source.source_node_id
+		   AND publication.pool_id = source.pool_id
+		  LEFT JOIN LATERAL (
+		    SELECT CASE WHEN BOOL_OR(pm.status = 'active') THEN 'active' ELSE MAX(pm.status) END AS membership_status
+		    FROM pool_members pm
+		    WHERE pm.pool_id = source.pool_id AND pm.node_id = source.source_node_id
+		  ) member ON TRUE
+		  LEFT JOIN LATERAL (
+		    SELECT t.target_type, t.target_id, t.severity, t.source_event_id
+		    FROM tombstones t
+		    WHERE t.active = TRUE
+		      AND t.severity IN ('hide','reject','local_only')
+		      AND t.effective_at <= NOW()
+		      AND (t.expires_at IS NULL OR t.expires_at > NOW())
+		      AND (t.pool_id IS NULL OR t.pool_id = source.pool_id)
+		      AND (
+		        (t.target_type = 'release' AND t.target_id = source.release_id)
+		        OR (t.target_type = 'manifest' AND t.target_id = COALESCE(source.manifest_id, ''))
+		        OR (t.target_type = 'event' AND t.target_id = source.source_event_id)
+		        OR (t.target_type = 'node' AND t.target_id = source.source_node_id)
+		        OR (t.target_type = 'pool_member' AND t.target_id = source.source_node_id)
+		      )
+		    ORDER BY CASE t.severity WHEN 'reject' THEN 1 WHEN 'local_only' THEN 2 ELSE 3 END,
+		             t.updated_at DESC
+		    LIMIT 1
+		  ) tomb ON TRUE
+		  WHERE %s
+		),
+		ledger AS (
+		  SELECT ledger_base.*,
+		    CASE
+		      WHEN NOT projection_matches THEN 'projection_mismatch'
+		      WHEN tombstone_target_type <> '' THEN 'tombstoned'
+		      WHEN node_status IN ('blocked', 'forked') THEN 'blocked'
+		      WHEN membership_status <> 'active' THEN 'revoked'
+		      WHEN publication_state = 'withdrawn' THEN 'withdrawn'
+		      ELSE 'active'
+		    END AS effective_state
+		  FROM ledger_base
+		)
+		SELECT release_id, manifest_id, projected_title, signed_title,
+		       projection_matches, source_node_id, source_event_id, body_hash,
+		       pool_id, node_status, membership_status, publication_state,
+		       publication_event_id, publication_reason, publication_changed_at,
+		       tombstone_target_type, tombstone_target_id, tombstone_severity,
+		       tombstone_source_event_id, effective_state, posted_at,
+		       first_seen_at, last_seen_at
+		FROM ledger
+		%s
+		ORDER BY last_seen_at DESC, release_id DESC, source_node_id DESC, pool_id DESC
+		LIMIT $%d`, strings.Join(clauses, " AND "), stateClause, arg), args...)
+	if err != nil {
+		return page, fmt.Errorf("list federation release ledger: %w", err)
+	}
+	defer rows.Close()
+	items := make([]FederationReleaseLedgerItem, 0, limit+1)
+	for rows.Next() {
+		var item FederationReleaseLedgerItem
+		var publicationChangedAt, postedAt sql.NullTime
+		if err := rows.Scan(
+			&item.ReleaseID, &item.ManifestID, &item.ProjectedTitle, &item.SignedTitle,
+			&item.ProjectionMatchesSigned, &item.SourceNodeID, &item.SourceEventID,
+			&item.SourceBodyHash, &item.PoolID, &item.NodeStatus, &item.MembershipStatus,
+			&item.PublicationState, &item.PublicationEventID, &item.PublicationReason,
+			&publicationChangedAt, &item.TombstoneTargetType, &item.TombstoneTargetID,
+			&item.TombstoneSeverity, &item.TombstoneSourceEventID, &item.EffectiveState,
+			&postedAt, &item.FirstSeenAt, &item.LastSeenAt,
+		); err != nil {
+			return page, err
+		}
+		if publicationChangedAt.Valid {
+			value := publicationChangedAt.Time.UTC()
+			item.PublicationChangedAt = &value
+		}
+		if postedAt.Valid {
+			value := postedAt.Time.UTC()
+			item.PostedAt = &value
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return page, err
+	}
+	if len(items) > limit {
+		last := items[limit-1]
+		page.NextCursor = encodeFederationReleaseLedgerCursor(federationReleaseLedgerCursor{
+			LastSeenAt: last.LastSeenAt, ReleaseID: last.ReleaseID,
+			SourceNodeID: last.SourceNodeID, PoolID: last.PoolID,
+		})
+		items = items[:limit]
+	}
+	page.Items = items
+	page.Count = len(items)
+	return page, nil
+}
+
+func decodeFederationReleaseLedgerCursor(raw string) (federationReleaseLedgerCursor, error) {
+	var cursor federationReleaseLedgerCursor
+	payload, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(raw))
+	if err != nil {
+		return cursor, fmt.Errorf("invalid release ledger cursor")
+	}
+	if err := json.Unmarshal(payload, &cursor); err != nil || cursor.LastSeenAt.IsZero() || cursor.ReleaseID == "" || cursor.SourceNodeID == "" || cursor.PoolID == "" {
+		return cursor, fmt.Errorf("invalid release ledger cursor")
+	}
+	return cursor, nil
+}
+
+func encodeFederationReleaseLedgerCursor(cursor federationReleaseLedgerCursor) string {
+	payload, _ := json.Marshal(cursor)
+	return base64.RawURLEncoding.EncodeToString(payload)
 }
 
 func (s *Store) ListFederatedManifestSourceDiagnostics(ctx context.Context, poolID string, limit int) ([]FederatedManifestSourceDiagnostic, error) {

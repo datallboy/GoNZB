@@ -74,12 +74,13 @@ type gonzbnetAdminStore interface {
 	ListValidationGaps(ctx context.Context, poolID string, limit int) ([]pgindex.ValidationGap, error)
 	MaterializeCoverageStaleClaimPenalties(ctx context.Context, poolID string) (int64, error)
 	ListFederationPeerDiagnostics(ctx context.Context, limit int) ([]pgindex.FederationPeerDiagnostic, error)
-	ListFederationEventDiagnostics(ctx context.Context, limit int) ([]pgindex.FederationEventDiagnostic, error)
+	ListFederationEventDiagnostics(ctx context.Context, params pgindex.FederationEventDiagnosticParams) ([]pgindex.FederationEventDiagnostic, error)
 	ListFederationRejectedEventDiagnostics(ctx context.Context, limit int) ([]pgindex.FederationRejectedEventDiagnostic, error)
 	ListFederationRejectedEventSummary(ctx context.Context, limit int) ([]pgindex.FederationRejectedEventSummary, error)
 	ListFederationPeerDeliveryDiagnostics(ctx context.Context, limit int) ([]pgindex.FederationPeerDeliveryDiagnostic, error)
 	ListValidationTaskDiagnostics(ctx context.Context, limit int) ([]pgindex.ValidationTaskDiagnostic, error)
 	ListFederatedReleaseSourceDiagnostics(ctx context.Context, poolID string, limit int) ([]pgindex.FederatedReleaseSourceDiagnostic, error)
+	ListFederationReleaseLedger(ctx context.Context, params pgindex.FederationReleaseLedgerParams) (pgindex.FederationReleaseLedgerPage, error)
 	ListFederatedManifestSourceDiagnostics(ctx context.Context, poolID string, limit int) ([]pgindex.FederatedManifestSourceDiagnostic, error)
 	ListHealthAttestationDiagnostics(ctx context.Context, poolID string, limit int) ([]pgindex.HealthAttestationDiagnostic, error)
 	ListReputationDiagnostics(ctx context.Context, limit int) ([]pgindex.ReputationDiagnostic, error)
@@ -1936,7 +1937,31 @@ func (ctrl *GoNZBNetAdminController) EventDiagnostics(c *echo.Context) error {
 	if !ok {
 		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
 	}
-	items, err := store.ListFederationEventDiagnostics(c.Request().Context(), parseIntDefault(queryParamTrimmed(c, "limit"), 100))
+	var projected *bool
+	if raw := queryParamTrimmed(c, "projected"); raw != "" {
+		value, parseErr := strconv.ParseBool(raw)
+		if parseErr != nil {
+			return jsonError(c, http.StatusBadRequest, "projected must be true or false")
+		}
+		projected = &value
+	}
+	var tombstoned *bool
+	if raw := queryParamTrimmed(c, "tombstoned"); raw != "" {
+		value, parseErr := strconv.ParseBool(raw)
+		if parseErr != nil {
+			return jsonError(c, http.StatusBadRequest, "tombstoned must be true or false")
+		}
+		tombstoned = &value
+	}
+	items, err := store.ListFederationEventDiagnostics(c.Request().Context(), pgindex.FederationEventDiagnosticParams{
+		PoolID:           queryParamTrimmed(c, "pool_id"),
+		NodeID:           queryParamTrimmed(c, "node_id"),
+		EventType:        queryParamTrimmed(c, "event_type"),
+		ValidationStatus: queryParamTrimmed(c, "validation_status"),
+		Projected:        projected,
+		Tombstoned:       tombstoned,
+		Limit:            parseIntDefault(queryParamTrimmed(c, "limit"), 100),
+	})
 	if err != nil {
 		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}
@@ -2009,6 +2034,28 @@ func (ctrl *GoNZBNetAdminController) ReleaseSourceDiagnostics(c *echo.Context) e
 		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}
 	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
+func (ctrl *GoNZBNetAdminController) ReleaseLedger(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	page, err := store.ListFederationReleaseLedger(c.Request().Context(), pgindex.FederationReleaseLedgerParams{
+		PoolID:    queryParamTrimmed(c, "pool_id"),
+		NodeID:    queryParamTrimmed(c, "node_id"),
+		ReleaseID: queryParamTrimmed(c, "release_id"),
+		State:     queryParamTrimmed(c, "state"),
+		Cursor:    queryParamTrimmed(c, "cursor"),
+		Limit:     parseIntDefault(queryParamTrimmed(c, "limit"), 100),
+	})
+	if err != nil {
+		if strings.Contains(err.Error(), "invalid release ledger cursor") {
+			return jsonError(c, http.StatusBadRequest, err.Error())
+		}
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, page)
 }
 
 func (ctrl *GoNZBNetAdminController) ManifestSourceDiagnostics(c *echo.Context) error {

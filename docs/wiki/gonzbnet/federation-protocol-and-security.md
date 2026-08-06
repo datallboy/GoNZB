@@ -65,6 +65,13 @@ tolerance, maximum event age, nonce lifetime, body limits, and request rate.
 Nonces prevent a valid signed request from being replayed within its acceptance
 window.
 
+These signatures authenticate the requesting node and protect request
+integrity; they are not PGP-style encryption. HTTPS supplies confidentiality
+and server transport authentication. A `ManifestRequest` is signed by the
+requesting node, binds its declared `requesting_node_id` to that signature, and
+names the exact manifest, release, and pool. The response echoes the random
+request ID so a valid response cannot be substituted between concurrent grabs.
+
 Discovery metadata remains public, but event streams, pool membership, pool
 checkpoints, manifests, coverage mutation, and optional peer exchange require
 the appropriate authenticated node and pool relationship.
@@ -160,10 +167,40 @@ content during typed validation. Cards and manifests reject local-only fields,
 invalid source/pool relationships, malformed message IDs, negative sizes, and
 unsupported policy values.
 
-Manifest resolution authorizes the local role before cache access. Remote fetch
-authenticates only the home node, verifies the signed manifest response, and
-applies configured response-size and timeout limits. `ManifestAvailability`
-statements update only their matching source, pool, release, and manifest.
+Manifest resolution authorizes the local role before cache access. The home
+aggregator selects an eligible advertised source, sends the signed
+`ManifestRequest`, verifies the returned `ResolutionManifest` event, and then
+generates the NZB locally. A peer does not return an unsigned pre-generated NZB.
+Resolution requires all of these bindings to agree:
+
+- response request ID;
+- requested, advertised, and signed release and manifest IDs;
+- selected pool and the signed event's single pool;
+- selected serving node, signed author, current membership/capabilities, node
+  block/fork state, publication state, trust threshold, and tombstones.
+
+The complete typed event-body validator runs before the manifest is cached.
+The cache record is also required to match its stored signed source event.
+PostgreSQL NZB bytes are hashed on every read; a mismatch is regenerated
+deterministically from the verified signed manifest or failed closed when that
+provenance is unavailable. The optional filesystem NZB cache is checked against
+the PostgreSQL checksum before use. These checks are local and add no federation
+messages or background polling.
+
+`ManifestAvailability` statements update only their matching source, pool,
+release, and manifest. Search, get, and cache queries apply current source
+eligibility at read time, so blocking a node, revoking its membership,
+withdrawing its source, disabling a pool, or activating a relevant tombstone
+suppresses it without rewriting signed history. Search/get also compare the
+projected ReleaseCard metadata with its accepted signed source event; a locally
+modified title or detail is excluded and reported as a projection mismatch.
+
+Signatures establish who published exact bytes; they do not establish that a
+title is truthful, Message-IDs reference desirable content, or articles are
+malware-free. A malicious authorized publisher can sign internally consistent
+poison. Pool capability grants, independent validation, trust scores,
+moderation, author-scoped withdrawal, member revocation, and local blocking are
+the policy controls for that threat.
 
 Local Newznab API keys and sessions are not included in federation events,
 requests, or logs. The E2E suite explicitly checks that a generated local API

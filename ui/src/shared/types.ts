@@ -1776,6 +1776,17 @@ export type GoNZBNetEventDiagnostic = {
   rejection_reason?: string
   projected: boolean
   projected_at?: string
+	tombstoned: boolean
+}
+
+export type GoNZBNetEventDiagnosticParams = {
+	pool_id?: string
+	node_id?: string
+	event_type?: string
+	validation_status?: string
+	projected?: boolean
+	tombstoned?: boolean
+	limit?: number
 }
 
 export type GoNZBNetRejectedEventDiagnostic = {
@@ -2077,6 +2088,47 @@ export type GoNZBNetReleaseSourceDiagnostic = {
   posted_at?: string
   first_seen_at: string
   last_seen_at: string
+}
+
+export type GoNZBNetReleaseLedgerItem = {
+  release_id: string
+  manifest_id: string
+  projected_title: string
+  signed_title: string
+  projection_matches_signed_event: boolean
+  source_node_id: string
+  source_event_id: string
+  source_body_hash: string
+  pool_id: string
+  node_status: string
+  membership_status: string
+  publication_state: string
+  publication_event_id?: string
+  publication_reason?: string
+  publication_changed_at?: string
+  tombstone_target_type?: string
+  tombstone_target_id?: string
+  tombstone_severity?: string
+  tombstone_source_event_id?: string
+  effective_state: 'active' | 'withdrawn' | 'blocked' | 'revoked' | 'tombstoned' | 'projection_mismatch'
+  posted_at?: string
+  first_seen_at: string
+  last_seen_at: string
+}
+
+export type GoNZBNetReleaseLedgerResponse = {
+  items: GoNZBNetReleaseLedgerItem[]
+  count: number
+  next_cursor?: string
+}
+
+export type GoNZBNetReleaseLedgerParams = {
+  pool_id?: string
+  node_id?: string
+  release_id?: string
+  state?: string
+  cursor?: string
+  limit?: number
 }
 
 export type GoNZBNetManifestSourceDiagnostic = {

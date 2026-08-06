@@ -284,6 +284,7 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		v1AdminGoNZBNet.GET("/diagnostics/validation-tasks", gonzbnetAdminCtrl.ValidationTaskDiagnostics)
 		v1AdminGoNZBNet.GET("/diagnostics/binary-evidence", gonzbnetAdminCtrl.BinaryEvidenceDiagnostics)
 		v1AdminGoNZBNet.GET("/diagnostics/release-sources", gonzbnetAdminCtrl.ReleaseSourceDiagnostics)
+		v1AdminGoNZBNet.GET("/diagnostics/releases", gonzbnetAdminCtrl.ReleaseLedger)
 		v1AdminGoNZBNet.GET("/diagnostics/manifest-sources", gonzbnetAdminCtrl.ManifestSourceDiagnostics)
 		v1AdminGoNZBNet.GET("/diagnostics/article-availability", gonzbnetAdminCtrl.ArticleAvailabilityDiagnostics)
 		v1AdminGoNZBNet.GET("/diagnostics/health", gonzbnetAdminCtrl.HealthDiagnostics)

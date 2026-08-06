@@ -37,6 +37,7 @@ import {
   getGoNZBNetPeerDeliveryDiagnostics,
   getGoNZBNetPeerDiagnostics,
   getGoNZBNetRejectedEventDiagnostics,
+  getGoNZBNetReleaseLedger,
   getGoNZBNetReleaseSourceDiagnostics,
   getGoNZBNetReputationDiagnostics,
   getGoNZBNetRolePoolAccess,
@@ -94,6 +95,7 @@ import type {
   GoNZBNetPoolMember,
   GoNZBNetRejectedEventDiagnostic,
   GoNZBNetRejectedEventSummary,
+  GoNZBNetReleaseLedgerItem,
   GoNZBNetReleaseSourceDiagnostic,
   GoNZBNetReputationDiagnostic,
   GoNZBNetRolePoolAccess,
@@ -564,11 +566,21 @@ export function AdminGoNZBNetPage() {
   const [plan, setPlan] = useState<GoNZBNetCoveragePlan | null>(null)
   const [peerDiagnostics, setPeerDiagnostics] = useState<GoNZBNetPeerDiagnostic[]>([])
   const [eventDiagnostics, setEventDiagnostics] = useState<GoNZBNetEventDiagnostic[]>([])
+  const [eventNodeID, setEventNodeID] = useState('')
+  const [eventType, setEventType] = useState('')
+  const [eventValidationStatus, setEventValidationStatus] = useState('')
+  const [eventProjected, setEventProjected] = useState('')
+  const [eventTombstoned, setEventTombstoned] = useState('')
   const [rejectedDiagnostics, setRejectedDiagnostics] = useState<GoNZBNetRejectedEventDiagnostic[]>([])
   const [rejectedSummary, setRejectedSummary] = useState<GoNZBNetRejectedEventSummary[]>([])
   const [deliveryDiagnostics, setDeliveryDiagnostics] = useState<GoNZBNetPeerDeliveryDiagnostic[]>([])
   const [validationTaskDiagnostics, setValidationTaskDiagnostics] = useState<GoNZBNetValidationTaskDiagnostic[]>([])
   const [releaseSourceDiagnostics, setReleaseSourceDiagnostics] = useState<GoNZBNetReleaseSourceDiagnostic[]>([])
+  const [releaseLedger, setReleaseLedger] = useState<GoNZBNetReleaseLedgerItem[]>([])
+  const [releaseLedgerNextCursor, setReleaseLedgerNextCursor] = useState('')
+  const [releaseLedgerNodeID, setReleaseLedgerNodeID] = useState('')
+  const [releaseLedgerReleaseID, setReleaseLedgerReleaseID] = useState('')
+  const [releaseLedgerState, setReleaseLedgerState] = useState('')
   const [manifestSourceDiagnostics, setManifestSourceDiagnostics] = useState<GoNZBNetManifestSourceDiagnostic[]>([])
   const [healthDiagnostics, setHealthDiagnostics] = useState<GoNZBNetHealthAttestationDiagnostic[]>([])
   const [reputationDiagnostics, setReputationDiagnostics] = useState<GoNZBNetReputationDiagnostic[]>([])
@@ -646,6 +658,42 @@ export function AdminGoNZBNetPage() {
     }, { replace: true })
   }
 
+  async function loadReleaseLedger(append = false) {
+    try {
+      const page = await getGoNZBNetReleaseLedger({
+        pool_id: effectivePoolID,
+        node_id: releaseLedgerNodeID.trim() || undefined,
+        release_id: releaseLedgerReleaseID.trim() || undefined,
+        state: releaseLedgerState || undefined,
+        cursor: append ? releaseLedgerNextCursor || undefined : undefined,
+        limit: 100,
+      })
+      setReleaseLedger((current) => append ? [...current, ...(page.items ?? [])] : (page.items ?? []))
+      setReleaseLedgerNextCursor(page.next_cursor ?? '')
+      setError(null)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load release ledger')
+    }
+  }
+
+  async function loadEventDiagnostics() {
+    try {
+      const response = await getGoNZBNetEventDiagnostics({
+        pool_id: effectivePoolID,
+        node_id: eventNodeID.trim() || undefined,
+        event_type: eventType.trim() || undefined,
+        validation_status: eventValidationStatus || undefined,
+        projected: eventProjected === '' ? undefined : eventProjected === 'true',
+        tombstoned: eventTombstoned === '' ? undefined : eventTombstoned === 'true',
+        limit: 100,
+      })
+      setEventDiagnostics(response.items ?? [])
+      setError(null)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load event diagnostics')
+    }
+  }
+
   const refresh = useCallback(async () => {
     setLoading(true)
     try {
@@ -671,6 +719,7 @@ export function AdminGoNZBNetPage() {
         nextRolePoolAccess,
         nextTombstones,
         nextReleaseSources,
+        nextReleaseLedger,
         nextManifestSources,
         nextHealth,
         nextReputation,
@@ -692,7 +741,7 @@ export function AdminGoNZBNetPage() {
           getGoNZBNetCoverageSuggestions({ pool_id: effectivePoolID, limit: 25 }),
           getGoNZBNetCoveragePlan({ pool_id: effectivePoolID, limit: 25 }),
           getGoNZBNetPeerDiagnostics(100),
-          getGoNZBNetEventDiagnostics(100),
+          getGoNZBNetEventDiagnostics({ pool_id: effectivePoolID, limit: 100 }),
           getGoNZBNetRejectedEventDiagnostics(100),
           getGoNZBNetPeerDeliveryDiagnostics(100),
           getGoNZBNetValidationTaskDiagnostics(100),
@@ -703,6 +752,7 @@ export function AdminGoNZBNetPage() {
           getGoNZBNetRolePoolAccess(effectivePoolID),
           getGoNZBNetTombstones(false).catch(() => ({ items: [], count: 0 })),
           getGoNZBNetReleaseSourceDiagnostics(effectivePoolID, 100),
+          getGoNZBNetReleaseLedger({ pool_id: effectivePoolID, limit: 100 }),
           getGoNZBNetManifestSourceDiagnostics(effectivePoolID, 100),
           getGoNZBNetHealthDiagnostics(effectivePoolID, 100),
           getGoNZBNetReputationDiagnostics(100),
@@ -735,6 +785,8 @@ export function AdminGoNZBNetPage() {
       setRolePoolAccess(nextRolePoolAccess.items ?? [])
       setTombstones(nextTombstones.items ?? [])
       setReleaseSourceDiagnostics(nextReleaseSources.items ?? [])
+      setReleaseLedger(nextReleaseLedger.items ?? [])
+      setReleaseLedgerNextCursor(nextReleaseLedger.next_cursor ?? '')
       setManifestSourceDiagnostics(nextManifestSources.items ?? [])
       setHealthDiagnostics(nextHealth.items ?? [])
       setReputationDiagnostics(nextReputation.items ?? [])
@@ -1424,6 +1476,7 @@ export function AdminGoNZBNetPage() {
         <StatCard label="Events accepted" value={formatNumber(protocolMetrics?.counters.gonzbnet_events_accepted_total ?? 0)} detail={`${formatNumber(protocolMetrics?.counters.gonzbnet_release_cards_projected_total ?? 0)} release cards`} />
         <StatCard label="Peer failures" value={formatNumber(protocolMetrics?.counters.gonzbnet_peer_failures_total ?? 0)} detail={`${peerSyncAverage.toFixed(3)}s average sync`} />
         <StatCard label="Manifest requests" value={formatNumber(protocolMetrics?.counters.gonzbnet_manifest_requests_total ?? 0)} detail={`${formatNumber(protocolMetrics?.counters.gonzbnet_manifest_request_failures_total ?? 0)} failures`} />
+        <StatCard label="Cache integrity" value={formatNumber(protocolMetrics?.counters.gonzbnet_manifest_cache_integrity_failures_total ?? 0)} detail="checksum failures" />
         <StatCard label="Health attestations" value={formatNumber(protocolMetrics?.counters.gonzbnet_health_attestations_total ?? 0)} detail="projected" />
         <StatCard label="Active tombstones" value={formatNumber(protocolMetrics?.gauges.gonzbnet_tombstones_active_total ?? 0)} detail="current database state" />
         <StatCard label="Evidence peer hits" value={formatNumber(protocolMetrics?.counters.gonzbnet_binary_evidence_yenc_hits_total ?? 0)} detail={`${formatNumber(protocolMetrics?.counters.gonzbnet_binary_evidence_peer_requests_total ?? 0)} requests`} />
@@ -2136,8 +2189,118 @@ export function AdminGoNZBNetPage() {
         </table>
       </SectionTable>
 
+      <SectionTable title={`Release integrity ledger: ${effectivePoolID}`} count={releaseLedger.length}>
+        <div className="stack">
+          <p className="muted-copy">This is the local node's observed pool history. Signed metadata remains immutable; publication state, membership, blocks, and tombstones determine the effective state.</p>
+          <div className="toolbar-grid">
+            <label className="field">
+              <span>Source node</span>
+              <input className="table-input" placeholder="node_id" value={releaseLedgerNodeID} onChange={(event) => setReleaseLedgerNodeID(event.target.value)} />
+            </label>
+            <label className="field">
+              <span>Release</span>
+              <input className="table-input" placeholder="release_id" value={releaseLedgerReleaseID} onChange={(event) => setReleaseLedgerReleaseID(event.target.value)} />
+            </label>
+            <label className="field">
+              <span>Effective state</span>
+              <select className="table-input" value={releaseLedgerState} onChange={(event) => setReleaseLedgerState(event.target.value)}>
+                <option value="">All states</option>
+                <option value="active">Active</option>
+                <option value="withdrawn">Withdrawn</option>
+                <option value="blocked">Blocked</option>
+                <option value="revoked">Revoked</option>
+                <option value="tombstoned">Tombstoned</option>
+                <option value="projection_mismatch">Projection mismatch</option>
+              </select>
+            </label>
+            <button className="secondary-button align-end" type="button" onClick={() => void loadReleaseLedger(false)}>Apply filters</button>
+          </div>
+          <table className="data-table data-table--compact">
+            <thead>
+              <tr>
+                <th>Release</th>
+                <th>Source / pool</th>
+                <th>Publication</th>
+                <th>Moderation</th>
+                <th>Integrity</th>
+                <th>Effective</th>
+                <th>Last seen</th>
+              </tr>
+            </thead>
+            <tbody>
+              {releaseLedger.map((item) => (
+                <tr key={`${item.release_id}-${item.source_node_id}-${item.pool_id}`}>
+                  <td className="breakable-value" title={item.release_id}>
+                    {label(item.signed_title || item.projected_title, shortID(item.release_id))}
+                    <div className="muted-copy mono-cell">{shortID(item.release_id)}</div>
+                    <div className="muted-copy mono-cell" title={item.manifest_id}>{shortID(item.manifest_id)}</div>
+                  </td>
+                  <td className="mono-cell breakable-value" title={item.source_node_id}>
+                    {shortID(item.source_node_id)}
+                    <div className="muted-copy">{item.pool_id}</div>
+                    <div className="muted-copy">{item.node_status} / {item.membership_status}</div>
+                  </td>
+                  <td>
+                    <span className="status-pill status-pill--table">{item.publication_state}</span>
+                    {item.publication_reason ? <div className="muted-copy breakable-value">{item.publication_reason}</div> : null}
+                    {item.publication_changed_at ? <div className="muted-copy">{formatDateTime(item.publication_changed_at)}</div> : null}
+                  </td>
+                  <td>
+                    {item.tombstone_severity ? <span className="status-pill status-pill--table">{item.tombstone_severity}</span> : 'none'}
+                    {item.tombstone_target_type ? <div className="muted-copy">{item.tombstone_target_type}: {shortID(item.tombstone_target_id)}</div> : null}
+                  </td>
+                  <td>
+                    <span className="status-pill status-pill--table">{item.projection_matches_signed_event ? 'verified' : 'mismatch'}</span>
+                    <div className="muted-copy mono-cell" title={item.source_event_id}>{shortID(item.source_event_id)}</div>
+                  </td>
+                  <td><span className="status-pill status-pill--table">{item.effective_state}</span></td>
+                  <td>{formatDateTime(item.last_seen_at)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {releaseLedgerNextCursor ? <button className="secondary-button align-end" type="button" onClick={() => void loadReleaseLedger(true)}>Load more</button> : null}
+        </div>
+      </SectionTable>
+
       <SectionTable title="Event diagnostics" count={eventDiagnostics.length}>
-        <table className="data-table data-table--compact">
+        <div className="stack">
+          <div className="toolbar-grid">
+            <label className="field">
+              <span>Author node</span>
+              <input className="table-input" placeholder="node_id" value={eventNodeID} onChange={(event) => setEventNodeID(event.target.value)} />
+            </label>
+            <label className="field">
+              <span>Event type</span>
+              <input className="table-input" placeholder="ReleaseCard" value={eventType} onChange={(event) => setEventType(event.target.value)} />
+            </label>
+            <label className="field">
+              <span>Validation</span>
+              <select className="table-input" value={eventValidationStatus} onChange={(event) => setEventValidationStatus(event.target.value)}>
+                <option value="">All</option>
+                <option value="accepted">Accepted</option>
+                <option value="rejected">Rejected</option>
+              </select>
+            </label>
+            <label className="field">
+              <span>Projected</span>
+              <select className="table-input" value={eventProjected} onChange={(event) => setEventProjected(event.target.value)}>
+                <option value="">All</option>
+                <option value="true">Yes</option>
+                <option value="false">No</option>
+              </select>
+            </label>
+            <label className="field">
+              <span>Tombstoned</span>
+              <select className="table-input" value={eventTombstoned} onChange={(event) => setEventTombstoned(event.target.value)}>
+                <option value="">All</option>
+                <option value="true">Yes</option>
+                <option value="false">No</option>
+              </select>
+            </label>
+            <button className="secondary-button align-end" type="button" onClick={() => void loadEventDiagnostics()}>Apply filters</button>
+          </div>
+          <table className="data-table data-table--compact">
           <thead>
             <tr>
               <th>Event</th>
@@ -2158,6 +2321,7 @@ export function AdminGoNZBNetPage() {
                 <td className="breakable-value">{(item.pool_ids ?? []).join(', ') || 'local'}</td>
                 <td>
                   <span className="status-pill status-pill--table">{item.validation_status}</span>
+                  {item.tombstoned ? <div className="muted-copy">tombstoned</div> : null}
                   {item.rejection_reason ? <div className="muted-copy breakable-value">{item.rejection_reason}</div> : null}
                 </td>
                 <td>{item.projected ? formatDateTime(item.projected_at) : 'no'}</td>
@@ -2165,7 +2329,8 @@ export function AdminGoNZBNetPage() {
               </tr>
             ))}
           </tbody>
-        </table>
+          </table>
+        </div>
       </SectionTable>
 
       <SectionTable title="Rejected event rates" count={rejectedSummary.length}>

@@ -45,6 +45,7 @@ import type {
   GoNZBNetCoverageSuggestionParams,
   GoNZBNetConfigValidation,
   GoNZBNetEventDiagnostic,
+  GoNZBNetEventDiagnosticParams,
   GoNZBNetGroupCatalogItem,
   GoNZBNetHealthAttestationDiagnostic,
   GoNZBNetKeyExportRequest,
@@ -75,6 +76,8 @@ import type {
   GoNZBNetPoolMemberRequest,
   GoNZBNetPoolHealthReport,
   GoNZBNetRejectedEventDiagnosticsResponse,
+  GoNZBNetReleaseLedgerParams,
+  GoNZBNetReleaseLedgerResponse,
   GoNZBNetReleaseSourceDiagnostic,
   GoNZBNetReputationDiagnostic,
   GoNZBNetRolePoolAccess,
@@ -460,7 +463,7 @@ export function reenrichAdminRelease(id: string) {
   })
 }
 
-function goNZBNetQuery(params: Record<string, string | number | undefined> = {}) {
+function goNZBNetQuery(params: Record<string, string | number | boolean | undefined> = {}) {
   const query = new URLSearchParams()
   for (const [key, value] of Object.entries(params)) {
     if (value === undefined || value === "") {
@@ -599,9 +602,9 @@ export function getGoNZBNetPeerDiagnostics(limit = 100) {
   )
 }
 
-export function getGoNZBNetEventDiagnostics(limit = 100) {
+export function getGoNZBNetEventDiagnostics(params: GoNZBNetEventDiagnosticParams = {}) {
   return apiRequest<GoNZBNetListResponse<GoNZBNetEventDiagnostic>>(
-    `/api/v1/admin/gonzbnet/diagnostics/events${goNZBNetQuery({ limit })}`,
+    `/api/v1/admin/gonzbnet/diagnostics/events${goNZBNetQuery(params)}`,
   )
 }
 
@@ -632,6 +635,12 @@ export function getGoNZBNetBinaryEvidenceDiagnostics(poolID?: string, limit = 10
 export function getGoNZBNetReleaseSourceDiagnostics(poolID?: string, limit = 100) {
   return apiRequest<GoNZBNetListResponse<GoNZBNetReleaseSourceDiagnostic>>(
     `/api/v1/admin/gonzbnet/diagnostics/release-sources${goNZBNetQuery({ pool_id: poolID, limit })}`,
+  )
+}
+
+export function getGoNZBNetReleaseLedger(params: GoNZBNetReleaseLedgerParams = {}) {
+  return apiRequest<GoNZBNetReleaseLedgerResponse>(
+    `/api/v1/admin/gonzbnet/diagnostics/releases${goNZBNetQuery(params)}`,
   )
 }
 
