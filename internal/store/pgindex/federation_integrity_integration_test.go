@@ -34,7 +34,7 @@ func TestFederationIntegrityLedgerAndCacheRepairIntegration(t *testing.T) {
 	if err := store.UpsertTrustPool(ctx, TrustPoolRecord{
 		PoolID: poolID, DisplayName: "Integrity", PolicyJSON: json.RawMessage(`{}`),
 		MembershipThreshold: 1, ModerationThreshold: 1, CheckpointWitnessThreshold: 1,
-		AcceptMode: "pool_member", AcceptedEventTypes: []string{pools.EventTypeReleaseCard, manifest.Type, moderation.Type}, Enabled: true,
+		AcceptMode: "pool_member", AcceptedEventTypes: []string{pools.EventTypeReleaseCard, moderation.Type}, Enabled: true,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -151,6 +151,17 @@ func TestFederationIntegrityLedgerAndCacheRepairIntegration(t *testing.T) {
 	if err != nil || !canGet {
 		t.Fatalf("expected restored signed projection for get, allowed=%v err=%v", canGet, err)
 	}
+	manifestSource, err = store.FindFederatedManifestSource(ctx, card.ReleaseID)
+	if err != nil || manifestSource == nil {
+		t.Fatalf("expected restored manifest source, source=%+v err=%v", manifestSource, err)
+	}
+	relayAuthorization, err := store.CanAcceptFederationEventForPools(ctx, nodeID, []string{poolID}, manifest.Type)
+	if err != nil || relayAuthorization.Allowed || relayAuthorization.Reason != "event_type_not_allowed" {
+		t.Fatalf("expected manifest to remain outside general relay policy, authorization=%+v err=%v", relayAuthorization, err)
+	}
+	if err := store.AuthorizeFederatedManifestSource(ctx, *manifestSource, ""); err != nil {
+		t.Fatalf("dedicated manifest fetch should authorize independently of relay event types: %v", err)
+	}
 
 	core, err := releasecard.ManifestCoreForLocalRelease(local)
 	if err != nil {
@@ -188,6 +199,49 @@ func TestFederationIntegrityLedgerAndCacheRepairIntegration(t *testing.T) {
 		SourceEventID: manifestEvent.EventID, PoolID: poolID, GeneratedNZB: nzb,
 	}); err != nil {
 		t.Fatal(err)
+	}
+	secondPoolID := "pool.integrity.second"
+	if err := store.UpsertTrustPool(ctx, TrustPoolRecord{
+		PoolID: secondPoolID, DisplayName: "Integrity Second", PolicyJSON: json.RawMessage(`{}`),
+		MembershipThreshold: 1, ModerationThreshold: 1, CheckpointWitnessThreshold: 1,
+		AcceptMode: "pool_member", AcceptedEventTypes: []string{pools.EventTypeReleaseCard}, Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertPoolMember(ctx, PoolMemberRecord{
+		PoolID: secondPoolID, NodeID: nodeID, Role: pools.RoleAdmin, Status: pools.StatusActive,
+		AllowedCapabilities: []string{capability.ReleasePublisher, capability.ManifestBuilder, capability.Admin},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	secondManifestEvent, secondManifestValidation, err := events.Create(ctx, node, events.CreateOptions{
+		EventType: manifest.Type, Sequence: 3, PreviousEventID: &manifestEvent.EventID,
+		CreatedAt: time.Now().UTC(), PoolIDs: []string{secondPoolID}, Visibility: "pool",
+		BodySchema: manifest.BodySchema, Body: manifestBody,
+	})
+	if err != nil || secondManifestValidation == nil || !secondManifestValidation.OK {
+		t.Fatalf("create second-pool manifest event: validation=%+v err=%v", secondManifestValidation, err)
+	}
+	if err := store.AppendVerifiedFederationEvent(ctx, secondManifestEvent, secondManifestValidation); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StoreResolutionManifest(ctx, ResolutionManifestRecord{
+		Manifest: manifestBody, SourceNodeID: nodeID, FetchedFromNodeID: nodeID,
+		SourceEventID: secondManifestEvent.EventID, PoolID: secondPoolID, GeneratedNZB: nzb,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []struct {
+		poolID  string
+		eventID string
+	}{
+		{poolID: poolID, eventID: manifestEvent.EventID},
+		{poolID: secondPoolID, eventID: secondManifestEvent.EventID},
+	} {
+		got, err := store.GetResolutionManifestEvent(ctx, card.ManifestID, expected.poolID)
+		if err != nil || got == nil || got.EventID != expected.eventID {
+			t.Fatalf("manifest event for pool %s = %+v, want %s, err=%v", expected.poolID, got, expected.eventID, err)
+		}
 	}
 	allowed, err := store.CanFetchResolutionManifestForSource(ctx, card.ManifestID, card.ReleaseID, poolID, nodeID)
 	if err != nil || !allowed {
@@ -244,7 +298,7 @@ func TestFederationIntegrityLedgerAndCacheRepairIntegration(t *testing.T) {
 		EffectiveAt: time.Now().UTC().Format(time.RFC3339),
 	}
 	tombstoneEvent, tombstoneValidation, err := events.Create(ctx, node, events.CreateOptions{
-		EventType: moderation.Type, Sequence: 3, PreviousEventID: &manifestEvent.EventID,
+		EventType: moderation.Type, Sequence: 4, PreviousEventID: &secondManifestEvent.EventID,
 		CreatedAt: time.Now().UTC(), PoolIDs: []string{poolID}, Visibility: "pool",
 		BodySchema: moderation.BodySchema, Body: tombstoneBody,
 	})
@@ -257,6 +311,18 @@ func TestFederationIntegrityLedgerAndCacheRepairIntegration(t *testing.T) {
 		})
 	}); err != nil {
 		t.Fatal(err)
+	}
+	var cardStatus, manifestStatus string
+	var cachedNZBPresent bool
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT card.status, cached.validation_status, cached.generated_nzb IS NOT NULL
+		FROM federated_release_cards card
+		JOIN resolution_manifests cached ON cached.manifest_id = card.manifest_id
+		WHERE card.release_id = $1`, card.ReleaseID).Scan(&cardStatus, &manifestStatus, &cachedNZBPresent); err != nil {
+		t.Fatal(err)
+	}
+	if cardStatus != "accepted" || manifestStatus != "accepted" || !cachedNZBPresent {
+		t.Fatalf("tombstone destructively changed signed projections: card=%s manifest=%s cached=%v", cardStatus, manifestStatus, cachedNZBPresent)
 	}
 	tombstoned := true
 	eventItems, err := store.ListFederationEventDiagnostics(ctx, FederationEventDiagnosticParams{

@@ -98,7 +98,7 @@ type gonzbnetStore interface {
 	SuggestCoverageWork(ctx context.Context, params pgindex.CoverageWorkSuggestionParams) ([]pgindex.CoverageWorkSuggestion, error)
 	BuildCoverageSchedulerPlan(ctx context.Context, params pgindex.CoverageWorkSuggestionParams) (pgindex.CoverageSchedulerPlan, error)
 	GetResolutionManifest(ctx context.Context, manifestID string) (*manifest.ResolutionManifest, error)
-	GetResolutionManifestEvent(ctx context.Context, manifestID string) (*events.SignedEvent, error)
+	GetResolutionManifestEvent(ctx context.Context, manifestID, poolID string) (*events.SignedEvent, error)
 	CanFetchResolutionManifest(ctx context.Context, manifestID, nodeID string) (bool, error)
 	CanFetchResolutionManifestForSource(ctx context.Context, manifestID, releaseID, poolID, nodeID string) (bool, error)
 	ProjectHealthAttestation(ctx context.Context, projection pgindex.HealthAttestationProjection) error
@@ -1612,7 +1612,7 @@ func (ctrl *GoNZBNetController) RequestManifest(c *echo.Context) error {
 			Message:       "Requesting node is not authorized for this manifest",
 		})
 	}
-	event, err := store.GetResolutionManifestEvent(c.Request().Context(), manifestID)
+	event, err := store.GetResolutionManifestEvent(c.Request().Context(), manifestID, req.PoolID)
 	if err != nil {
 		return federationJSONError(c, http.StatusInternalServerError, "internal_error", err.Error())
 	}

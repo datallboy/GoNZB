@@ -96,11 +96,6 @@ func (s *Store) ProjectTombstone(ctx context.Context, projection TombstoneProjec
 	if err := upsertTombstoneProjection(ctx, tx, item, eventID, active, approvalCount, approvalsRequired, effectiveAt.UTC(), expiresAt); err != nil {
 		return err
 	}
-	if active {
-		if err := applyActiveTombstone(ctx, tx, item); err != nil {
-			return err
-		}
-	}
 	return commit()
 }
 
@@ -255,58 +250,6 @@ func upsertTombstoneProjection(ctx context.Context, tx tombstoneTx, item moderat
 		expiresAt,
 	); err != nil {
 		return fmt.Errorf("insert tombstone projection: %w", err)
-	}
-	return nil
-}
-
-func applyActiveTombstone(ctx context.Context, tx tombstoneTx, item moderation.Tombstone) error {
-	severity := strings.TrimSpace(item.Severity)
-	if severity == moderation.SeverityWarn {
-		return nil
-	}
-	switch strings.TrimSpace(item.TargetType) {
-	case moderation.TargetRelease:
-		status := "hidden"
-		if severity == moderation.SeverityReject || severity == moderation.SeverityLocalOnly {
-			status = "rejected"
-		}
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE federated_release_cards
-			SET status = $2,
-			    updated_at = NOW()
-			WHERE release_id = $1`,
-			item.TargetID,
-			status,
-		); err != nil {
-			return fmt.Errorf("apply release tombstone: %w", err)
-		}
-		if severity == moderation.SeverityReject || severity == moderation.SeverityLocalOnly {
-			if _, err := tx.ExecContext(ctx, `
-				UPDATE resolution_manifests
-				SET validation_status = 'invalidated',
-				    rejection_reason = 'tombstoned_release',
-				    generated_nzb = NULL,
-				    updated_at = NOW()
-				WHERE release_id = $1`,
-				item.TargetID,
-			); err != nil {
-				return fmt.Errorf("invalidate release manifests: %w", err)
-			}
-		}
-	case moderation.TargetManifest:
-		if severity == moderation.SeverityReject || severity == moderation.SeverityLocalOnly {
-			if _, err := tx.ExecContext(ctx, `
-				UPDATE resolution_manifests
-				SET validation_status = 'invalidated',
-				    rejection_reason = 'tombstoned_manifest',
-				    generated_nzb = NULL,
-				    updated_at = NOW()
-				WHERE manifest_id = $1`,
-				item.TargetID,
-			); err != nil {
-				return fmt.Errorf("invalidate manifest tombstone: %w", err)
-			}
-		}
 	}
 	return nil
 }

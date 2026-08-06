@@ -89,6 +89,12 @@ On a local get request, the resolver:
 6. caches the accepted manifest under the byte and TTL policy;
 7. renders the NZB locally.
 
+Manifest content is deduplicated by manifest ID, while the signed source event
+is recorded separately for each pool and author. This preserves the exact
+pool-bound envelope when identical manifest content is published to multiple
+pools. Cached NZB bytes are rehashed before use and repaired deterministically
+from the verified signed manifest if local storage has changed.
+
 The shared aggregator cache is not an authorization shortcut. Pool access is
 checked before cached GoNZBNet content is served.
 

@@ -54,59 +54,66 @@ func (s *Store) GetCachedFederatedNZBByReleaseID(ctx context.Context, releaseID 
 	}
 	err := s.db.QueryRowContext(ctx, `
 		SELECT rm.manifest_id, rm.generated_nzb, COALESCE(rm.nzb_sha256, ''),
-		       COALESCE(rm.source_event_id, '')
+		       manifest_source.source_event_id
 		FROM resolution_manifests rm
 		JOIN federated_release_cards c ON c.manifest_id = rm.manifest_id
+		JOIN federated_release_sources source ON source.release_id = c.release_id
+		  AND COALESCE(source.manifest_id, '') = rm.manifest_id
+		  AND source.resolvable = TRUE
+		JOIN federated_manifest_sources advertised ON advertised.manifest_id = rm.manifest_id
+		  AND advertised.release_id = source.release_id
+		  AND advertised.source_node_id = source.source_node_id
+		  AND advertised.pool_id = source.pool_id
+		  AND advertised.advertised = TRUE
+		JOIN resolution_manifest_events manifest_source ON manifest_source.manifest_id = rm.manifest_id
+		  AND manifest_source.pool_id = source.pool_id
+		JOIN federation_events manifest_event ON manifest_event.event_id = manifest_source.source_event_id
+		  AND manifest_event.event_type = 'ResolutionManifest'
+		  AND manifest_event.validation_status = 'accepted'
+		  AND manifest_event.body_json->>'manifest_id' = rm.manifest_id
+		  AND manifest_event.body_json->>'release_id' = c.release_id
+		  AND manifest_event.pool_ids = jsonb_build_array(source.pool_id)
+		JOIN federation_nodes node ON node.node_id = source.source_node_id
+		JOIN trust_pools pool ON pool.pool_id = source.pool_id AND pool.enabled = TRUE
+		JOIN pool_members member ON member.pool_id = source.pool_id
+		  AND member.node_id = source.source_node_id AND member.status = 'active'
+		JOIN federation_nodes manifest_author ON manifest_author.node_id = manifest_source.author_node_id
+		  AND manifest_author.node_id = manifest_event.author_node_id
+		JOIN pool_members manifest_member ON manifest_member.pool_id = source.pool_id
+		  AND manifest_member.node_id = manifest_source.author_node_id AND manifest_member.status = 'active'
 		WHERE c.release_id = $1
 		  AND rm.validation_status = 'accepted'
 		  AND rm.cache_integrity_status <> 'failed'
 		  AND rm.generated_nzb IS NOT NULL
-		  AND rm.source_event_id IS NOT NULL
-		  AND EXISTS (
-		    SELECT 1
-		    FROM federated_release_sources source
-		    JOIN federation_nodes node ON node.node_id = source.source_node_id
-		    JOIN trust_pools pool ON pool.pool_id = source.pool_id
-		      AND pool.enabled = TRUE
-		    JOIN pool_members member ON member.pool_id = source.pool_id
-		      AND member.node_id = source.source_node_id
-		      AND member.status = 'active'
-		    JOIN federation_nodes manifest_author ON manifest_author.node_id = rm.source_node_id
-		    JOIN pool_members manifest_member ON manifest_member.pool_id = source.pool_id
-		      AND manifest_member.node_id = rm.source_node_id
-		      AND manifest_member.status = 'active'
-		    WHERE source.release_id = c.release_id
-		      AND COALESCE(source.manifest_id, '') = rm.manifest_id
-		      AND node.status NOT IN ('blocked', 'forked')
-		      AND manifest_author.status NOT IN ('blocked', 'forked')
-		      AND (pool.min_node_trust_score <= 0 OR node.local_trust_score >= pool.min_node_trust_score)
-		      AND (pool.min_node_trust_score <= 0 OR manifest_author.local_trust_score >= pool.min_node_trust_score)
-		      AND (member.role = 'admin' OR member.allowed_capabilities ?| ARRAY['scanner','indexer','release_publisher'])
-		      AND (manifest_member.role = 'admin' OR manifest_member.allowed_capabilities ?| ARRAY['manifest_builder','manifest_cache','release_publisher'])
-		      AND NOT EXISTS (
-		        SELECT 1 FROM federated_release_publication_states ps
-		        WHERE ps.release_id = source.release_id
-		          AND ps.source_node_id = source.source_node_id
-		          AND ps.pool_id = source.pool_id
-		          AND ps.state = 'withdrawn'
-		      )
-		      AND NOT EXISTS (
-		        SELECT 1
-		        FROM tombstones t
-		        WHERE t.active = TRUE
-		          AND t.severity IN ('hide', 'reject', 'local_only')
-		          AND (t.expires_at IS NULL OR t.expires_at > NOW())
-		          AND t.effective_at <= NOW()
-		          AND (t.pool_id IS NULL OR t.pool_id = source.pool_id)
-		          AND (
-		            (t.target_type = 'release' AND t.target_id = c.release_id)
-		            OR (t.target_type = 'manifest' AND t.target_id = rm.manifest_id)
-		            OR (t.target_type = 'event' AND t.target_id IN (source.source_event_id, rm.source_event_id))
-		            OR (t.target_type = 'node' AND t.target_id IN (source.source_node_id, rm.source_node_id))
-		            OR (t.target_type = 'pool_member' AND t.target_id IN (source.source_node_id, rm.source_node_id))
-		          )
+		  AND node.status NOT IN ('blocked', 'forked')
+		  AND manifest_author.status NOT IN ('blocked', 'forked')
+		  AND (pool.min_node_trust_score <= 0 OR node.local_trust_score >= pool.min_node_trust_score)
+		  AND (pool.min_node_trust_score <= 0 OR manifest_author.local_trust_score >= pool.min_node_trust_score)
+		  AND (member.role = 'admin' OR COALESCE(member.allowed_capabilities, '[]'::jsonb) ?| ARRAY['scanner','indexer','release_publisher'])
+		  AND (manifest_member.role = 'admin' OR COALESCE(manifest_member.allowed_capabilities, '[]'::jsonb) ?| ARRAY['manifest_builder','manifest_cache','release_publisher'])
+		  AND NOT EXISTS (
+		    SELECT 1 FROM federated_release_publication_states ps
+		    WHERE ps.release_id = source.release_id
+		      AND ps.source_node_id = source.source_node_id
+		      AND ps.pool_id = source.pool_id
+		      AND ps.state = 'withdrawn'
+		  )
+		  AND NOT EXISTS (
+		    SELECT 1 FROM tombstones t
+		    WHERE t.active = TRUE
+		      AND t.severity IN ('hide', 'reject', 'local_only')
+		      AND (t.expires_at IS NULL OR t.expires_at > NOW())
+		      AND t.effective_at <= NOW()
+		      AND (t.pool_id IS NULL OR t.pool_id = source.pool_id)
+		      AND (
+		        (t.target_type = 'release' AND t.target_id = c.release_id)
+		        OR (t.target_type = 'manifest' AND t.target_id = rm.manifest_id)
+		        OR (t.target_type = 'event' AND t.target_id IN (source.source_event_id, manifest_source.source_event_id))
+		        OR (t.target_type = 'node' AND t.target_id IN (source.source_node_id, manifest_source.author_node_id))
+		        OR (t.target_type = 'pool_member' AND t.target_id IN (source.source_node_id, manifest_source.author_node_id))
 		      )
 		  )`+ttlClause+`
+		  ORDER BY source.trust_score DESC, manifest_source.updated_at DESC
 		  LIMIT 1`, args...).Scan(&manifestID, &payload, &nzbSHA, &sourceEventID)
 	if err == nil {
 		if matchesNZBSHA256(payload, nzbSHA) {
@@ -137,56 +144,64 @@ func (s *Store) GetFederatedNZBSHA256ByReleaseID(ctx context.Context, releaseID 
 		SELECT COALESCE(rm.nzb_sha256, '')
 		FROM resolution_manifests rm
 		JOIN federated_release_cards card ON card.manifest_id = rm.manifest_id
+		JOIN federated_release_sources source ON source.release_id = card.release_id
+		  AND COALESCE(source.manifest_id, '') = rm.manifest_id
+		  AND source.resolvable = TRUE
+		JOIN federated_manifest_sources advertised ON advertised.manifest_id = rm.manifest_id
+		  AND advertised.release_id = source.release_id
+		  AND advertised.source_node_id = source.source_node_id
+		  AND advertised.pool_id = source.pool_id
+		  AND advertised.advertised = TRUE
+		JOIN resolution_manifest_events manifest_source ON manifest_source.manifest_id = rm.manifest_id
+		  AND manifest_source.pool_id = source.pool_id
+		JOIN federation_events manifest_event ON manifest_event.event_id = manifest_source.source_event_id
+		  AND manifest_event.event_type = 'ResolutionManifest'
+		  AND manifest_event.validation_status = 'accepted'
+		  AND manifest_event.body_json->>'manifest_id' = rm.manifest_id
+		  AND manifest_event.body_json->>'release_id' = card.release_id
+		  AND manifest_event.pool_ids = jsonb_build_array(source.pool_id)
+		JOIN federation_nodes node ON node.node_id = source.source_node_id
+		JOIN trust_pools pool ON pool.pool_id = source.pool_id AND pool.enabled = TRUE
+		JOIN pool_members member ON member.pool_id = source.pool_id
+		  AND member.node_id = source.source_node_id AND member.status = 'active'
+		JOIN federation_nodes manifest_author ON manifest_author.node_id = manifest_source.author_node_id
+		  AND manifest_author.node_id = manifest_event.author_node_id
+		JOIN pool_members manifest_member ON manifest_member.pool_id = source.pool_id
+		  AND manifest_member.node_id = manifest_source.author_node_id AND manifest_member.status = 'active'
 		WHERE card.release_id = $1
 		  AND rm.validation_status = 'accepted'
 		  AND rm.cache_integrity_status <> 'failed'
 		  AND rm.generated_nzb IS NOT NULL
 		  AND rm.nzb_sha256 IS NOT NULL
-		  AND rm.source_event_id IS NOT NULL
-		  AND EXISTS (
-		    SELECT 1
-		    FROM federated_release_sources source
-		    JOIN federation_nodes node ON node.node_id = source.source_node_id
-		    JOIN trust_pools pool ON pool.pool_id = source.pool_id
-		      AND pool.enabled = TRUE
-		    JOIN pool_members member ON member.pool_id = source.pool_id
-		      AND member.node_id = source.source_node_id
-		      AND member.status = 'active'
-		    JOIN federation_nodes manifest_author ON manifest_author.node_id = rm.source_node_id
-		    JOIN pool_members manifest_member ON manifest_member.pool_id = source.pool_id
-		      AND manifest_member.node_id = rm.source_node_id
-		      AND manifest_member.status = 'active'
-		    WHERE source.release_id = card.release_id
-		      AND COALESCE(source.manifest_id, '') = rm.manifest_id
-		      AND node.status NOT IN ('blocked', 'forked')
-		      AND manifest_author.status NOT IN ('blocked', 'forked')
-		      AND (pool.min_node_trust_score <= 0 OR node.local_trust_score >= pool.min_node_trust_score)
-		      AND (pool.min_node_trust_score <= 0 OR manifest_author.local_trust_score >= pool.min_node_trust_score)
-		      AND (member.role = 'admin' OR member.allowed_capabilities ?| ARRAY['scanner','indexer','release_publisher'])
-		      AND (manifest_member.role = 'admin' OR manifest_member.allowed_capabilities ?| ARRAY['manifest_builder','manifest_cache','release_publisher'])
-		      AND NOT EXISTS (
-		        SELECT 1 FROM federated_release_publication_states ps
-		        WHERE ps.release_id = source.release_id
-		          AND ps.source_node_id = source.source_node_id
-		          AND ps.pool_id = source.pool_id
-		          AND ps.state = 'withdrawn'
-		      )
-		      AND NOT EXISTS (
-		        SELECT 1 FROM tombstones t
-		        WHERE t.active = TRUE
-		          AND t.severity IN ('hide','reject','local_only')
-		          AND t.effective_at <= NOW()
-		          AND (t.expires_at IS NULL OR t.expires_at > NOW())
-		          AND (t.pool_id IS NULL OR t.pool_id = source.pool_id)
-		          AND (
-		            (t.target_type = 'release' AND t.target_id = card.release_id)
-		            OR (t.target_type = 'manifest' AND t.target_id = rm.manifest_id)
-		            OR (t.target_type = 'event' AND t.target_id IN (source.source_event_id, rm.source_event_id))
-		            OR (t.target_type = 'node' AND t.target_id IN (source.source_node_id, rm.source_node_id))
-		            OR (t.target_type = 'pool_member' AND t.target_id IN (source.source_node_id, rm.source_node_id))
-		          )
+		  AND node.status NOT IN ('blocked', 'forked')
+		  AND manifest_author.status NOT IN ('blocked', 'forked')
+		  AND (pool.min_node_trust_score <= 0 OR node.local_trust_score >= pool.min_node_trust_score)
+		  AND (pool.min_node_trust_score <= 0 OR manifest_author.local_trust_score >= pool.min_node_trust_score)
+		  AND (member.role = 'admin' OR COALESCE(member.allowed_capabilities, '[]'::jsonb) ?| ARRAY['scanner','indexer','release_publisher'])
+		  AND (manifest_member.role = 'admin' OR COALESCE(manifest_member.allowed_capabilities, '[]'::jsonb) ?| ARRAY['manifest_builder','manifest_cache','release_publisher'])
+		  AND NOT EXISTS (
+		    SELECT 1 FROM federated_release_publication_states ps
+		    WHERE ps.release_id = source.release_id
+		      AND ps.source_node_id = source.source_node_id
+		      AND ps.pool_id = source.pool_id
+		      AND ps.state = 'withdrawn'
+		  )
+		  AND NOT EXISTS (
+		    SELECT 1 FROM tombstones t
+		    WHERE t.active = TRUE
+		      AND t.severity IN ('hide','reject','local_only')
+		      AND t.effective_at <= NOW()
+		      AND (t.expires_at IS NULL OR t.expires_at > NOW())
+		      AND (t.pool_id IS NULL OR t.pool_id = source.pool_id)
+		      AND (
+		        (t.target_type = 'release' AND t.target_id = card.release_id)
+		        OR (t.target_type = 'manifest' AND t.target_id = rm.manifest_id)
+		        OR (t.target_type = 'event' AND t.target_id IN (source.source_event_id, manifest_source.source_event_id))
+		        OR (t.target_type = 'node' AND t.target_id IN (source.source_node_id, manifest_source.author_node_id))
+		        OR (t.target_type = 'pool_member' AND t.target_id IN (source.source_node_id, manifest_source.author_node_id))
 		      )
 		  )`+ttlClause+`
+		ORDER BY source.trust_score DESC, manifest_source.updated_at DESC
 		LIMIT 1`, args...).Scan(&hash)
 	if isNoRows(err) {
 		return "", false, nil
@@ -422,12 +437,8 @@ func (s *Store) AuthorizeFederatedManifestSource(ctx context.Context, source Fed
 	if !exists {
 		return fmt.Errorf("manifest source is no longer advertised or has been suppressed")
 	}
-	servingAuth, err := s.CanAcceptFederationEventForPools(ctx, servingNodeID, []string{source.PoolID}, manifest.Type)
-	if err != nil {
-		return err
-	}
-	if !servingAuth.Allowed {
-		return fmt.Errorf("manifest serving node is not authorized: %s", servingAuth.Reason)
+	if err := s.authorizeFederatedManifestParticipant(ctx, source.PoolID, servingNodeID); err != nil {
+		return fmt.Errorf("manifest serving node is not authorized: %w", err)
 	}
 	if authorNodeID != servingNodeID {
 		cacheAllowed, err := s.PoolMemberHasCapability(ctx, source.PoolID, servingNodeID, []string{capability.ManifestCache})
@@ -438,12 +449,83 @@ func (s *Store) AuthorizeFederatedManifestSource(ctx context.Context, source Fed
 			return fmt.Errorf("manifest serving node is not an authorized cache")
 		}
 	}
-	authorAuth, err := s.CanAcceptFederationEventForPools(ctx, authorNodeID, []string{source.PoolID}, manifest.Type)
-	if err != nil {
-		return err
+	if err := s.authorizeFederatedManifestParticipant(ctx, source.PoolID, authorNodeID); err != nil {
+		return fmt.Errorf("manifest author is not authorized: %w", err)
 	}
-	if !authorAuth.Allowed {
-		return fmt.Errorf("manifest author is not authorized: %s", authorAuth.Reason)
+	return nil
+}
+
+// authorizeFederatedManifestParticipant applies the pool state and capability
+// checks needed by the dedicated manifest-fetch protocol. ResolutionManifest
+// events are fetched directly and are intentionally not required to be enabled
+// in the pool's general relay accepted_event_types policy.
+func (s *Store) authorizeFederatedManifestParticipant(ctx context.Context, poolID, nodeID string) error {
+	var (
+		nodeStatus        string
+		poolEnabled       bool
+		activeMember      bool
+		capabilityAllowed bool
+		trustScore        float64
+		minimumTrust      float64
+	)
+	err := s.federationExecutor(ctx).QueryRowContext(ctx, `
+		SELECT node.status,
+		       pool.enabled,
+		       node.local_trust_score,
+		       pool.min_node_trust_score,
+		       EXISTS (
+		         SELECT 1
+		         FROM pool_members member
+		         WHERE member.pool_id = pool.pool_id
+		           AND member.node_id = node.node_id
+		           AND member.status = 'active'
+		       ),
+		       EXISTS (
+		         SELECT 1
+		         FROM pool_members member
+		         WHERE member.pool_id = pool.pool_id
+		           AND member.node_id = node.node_id
+		           AND member.status = 'active'
+		           AND (
+		             member.role = 'admin'
+		             OR COALESCE(member.allowed_capabilities, '[]'::jsonb)
+		                ?| ARRAY['manifest_builder','manifest_cache','release_publisher']
+		           )
+		       )
+		FROM federation_nodes node
+		CROSS JOIN trust_pools pool
+		WHERE node.node_id = $1
+		  AND pool.pool_id = $2`, strings.TrimSpace(nodeID), strings.TrimSpace(poolID)).Scan(
+		&nodeStatus,
+		&poolEnabled,
+		&trustScore,
+		&minimumTrust,
+		&activeMember,
+		&capabilityAllowed,
+	)
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("node or pool is unknown")
+	}
+	if err != nil {
+		return fmt.Errorf("check manifest participant authorization: %w", err)
+	}
+	if nodeStatus == "blocked" {
+		return fmt.Errorf("node_blocked")
+	}
+	if nodeStatus == "forked" {
+		return fmt.Errorf("node_forked")
+	}
+	if !poolEnabled {
+		return fmt.Errorf("pool_disabled")
+	}
+	if !activeMember {
+		return fmt.Errorf("not_pool_member")
+	}
+	if minimumTrust > 0 && trustScore < minimumTrust {
+		return fmt.Errorf("node_trust_below_pool_minimum")
+	}
+	if !capabilityAllowed {
+		return fmt.Errorf("node_capability_not_allowed")
 	}
 	return nil
 }
@@ -532,6 +614,25 @@ func (s *Store) StoreResolutionManifest(ctx context.Context, record ResolutionMa
 		return fmt.Errorf("store resolution manifest: %w", err)
 	}
 	poolID := firstNonBlank(record.PoolID, "pool.local")
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO resolution_manifest_events (
+			manifest_id, pool_id, author_node_id, source_event_id,
+			fetched_from_node_id, verified_at, updated_at
+		)
+		VALUES ($1, $2, $3, $4, NULLIF($5, ''), NOW(), NOW())
+		ON CONFLICT (manifest_id, pool_id, author_node_id) DO UPDATE SET
+			source_event_id = EXCLUDED.source_event_id,
+			fetched_from_node_id = COALESCE(EXCLUDED.fetched_from_node_id, resolution_manifest_events.fetched_from_node_id),
+			verified_at = NOW(),
+			updated_at = NOW()`,
+		record.Manifest.ManifestID,
+		poolID,
+		record.SourceNodeID,
+		record.SourceEventID,
+		record.FetchedFromNodeID,
+	); err != nil {
+		return fmt.Errorf("store resolution manifest pool provenance: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO federation_validation_tasks (
 			manifest_id, release_id, source_node_id, source_event_id, pool_id,
@@ -699,7 +800,15 @@ func (s *Store) CanFetchResolutionManifestForSource(ctx context.Context, manifes
 		  JOIN resolution_manifests rm ON rm.manifest_id = fs.manifest_id
 		    AND rm.release_id = fs.release_id
 		    AND rm.validation_status = 'accepted'
-		  JOIN federation_events manifest_event ON manifest_event.event_id = rm.source_event_id
+		  JOIN resolution_manifest_events manifest_source ON manifest_source.manifest_id = rm.manifest_id
+		    AND manifest_source.pool_id = fs.pool_id
+		  JOIN federation_events manifest_event ON manifest_event.event_id = manifest_source.source_event_id
+		    AND manifest_event.author_node_id = manifest_source.author_node_id
+		    AND manifest_event.event_type = 'ResolutionManifest'
+		    AND manifest_event.validation_status = 'accepted'
+		    AND manifest_event.body_json->>'manifest_id' = rm.manifest_id
+		    AND manifest_event.body_json->>'release_id' = rm.release_id
+		    AND manifest_event.pool_ids = jsonb_build_array(fs.pool_id)
 		  JOIN trust_pools pool ON pool.pool_id = fs.pool_id AND pool.enabled = TRUE
 		  JOIN federation_nodes source_node ON source_node.node_id = fs.source_node_id
 		  JOIN pool_members source_member ON source_member.pool_id = fs.pool_id
@@ -752,34 +861,51 @@ func (s *Store) CanFetchResolutionManifestForSource(ctx context.Context, manifes
 	return ok, nil
 }
 
-func (s *Store) GetResolutionManifestEvent(ctx context.Context, manifestID string) (*events.SignedEvent, error) {
+func (s *Store) GetResolutionManifestEvent(ctx context.Context, manifestID, poolID string) (*events.SignedEvent, error) {
 	if s == nil || s.db == nil {
 		return nil, fmt.Errorf("pgindex store is not initialized")
 	}
 	var eventID string
 	_, ttlDays := s.manifestCachePolicy()
 	ttlClause := ""
-	args := []any{strings.TrimSpace(manifestID)}
+	args := []any{strings.TrimSpace(manifestID), strings.TrimSpace(poolID)}
 	if ttlDays > 0 {
-		ttlClause = " AND updated_at >= NOW() - ($2 * INTERVAL '1 day')"
+		ttlClause = " AND manifest.updated_at >= NOW() - ($3 * INTERVAL '1 day')"
 		args = append(args, ttlDays)
 	}
 	err := s.db.QueryRowContext(ctx, `
-		SELECT source_event_id
-		FROM resolution_manifests
-		WHERE manifest_id = $1
-		  AND validation_status = 'accepted'
-		  AND source_event_id IS NOT NULL
+		SELECT manifest_source.source_event_id
+		FROM resolution_manifests manifest
+		JOIN resolution_manifest_events manifest_source
+		  ON manifest_source.manifest_id = manifest.manifest_id
+		 AND manifest_source.pool_id = $2
+		JOIN federation_events event ON event.event_id = manifest_source.source_event_id
+		  AND event.author_node_id = manifest_source.author_node_id
+		  AND event.event_type = 'ResolutionManifest'
+		  AND event.validation_status = 'accepted'
+		  AND event.body_json->>'manifest_id' = manifest.manifest_id
+		  AND event.body_json->>'release_id' = manifest.release_id
+		  AND event.pool_ids = jsonb_build_array(manifest_source.pool_id)
+		WHERE manifest.manifest_id = $1
+		  AND manifest.validation_status = 'accepted'
 		  AND NOT EXISTS (
 		    SELECT 1
 		    FROM tombstones t
 		    WHERE t.active = TRUE
-		      AND t.severity IN ('reject', 'local_only')
+		      AND t.severity IN ('hide', 'reject', 'local_only')
 		      AND (t.expires_at IS NULL OR t.expires_at > NOW())
 		      AND t.effective_at <= NOW()
-		      AND t.target_type = 'manifest'
-		      AND t.target_id = resolution_manifests.manifest_id
-		  )`+ttlClause, args...).Scan(&eventID)
+		      AND (t.pool_id IS NULL OR t.pool_id = manifest_source.pool_id)
+		      AND (
+		        (t.target_type = 'release' AND t.target_id = manifest.release_id)
+		        OR (t.target_type = 'manifest' AND t.target_id = manifest.manifest_id)
+		        OR (t.target_type = 'event' AND t.target_id = manifest_source.source_event_id)
+		        OR (t.target_type = 'node' AND t.target_id = manifest_source.author_node_id)
+		        OR (t.target_type = 'pool_member' AND t.target_id = manifest_source.author_node_id)
+		      )
+		  )`+ttlClause+`
+		ORDER BY manifest_source.updated_at DESC
+		LIMIT 1`, args...).Scan(&eventID)
 	if isNoRows(err) {
 		return nil, nil
 	}

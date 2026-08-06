@@ -124,6 +124,12 @@ local node block when transport and acceptance should stop immediately. Signed
 events remain available for audit even when their effective projections are
 suppressed.
 
+Tombstones are evaluated as reversible suppression policy. They do not rewrite
+an accepted ReleaseCard or manifest and do not delete a verified cached NZB.
+An expiring tombstone therefore restores eligibility automatically after its
+expiry, assuming the source still passes membership, trust, publication, and
+integrity checks.
+
 Under **Activity > Advanced tools**, the release integrity ledger shows the
 signed and projected titles, source event/body hash, source node and pool,
 membership and node state, publication state, active tombstone, and final
