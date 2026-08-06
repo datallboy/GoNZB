@@ -49,6 +49,12 @@ type getAuthorizer interface {
 	AuthorizeGet(ctx context.Context, rel *domain.Release) error
 }
 
+// cachedPayloadValidator lets policy-aware sources bind a shared filesystem
+// cache entry to their authoritative content checksum before any bytes leave.
+type cachedPayloadValidator interface {
+	ValidateCachedNZB(ctx context.Context, rel *domain.Release, payload []byte) error
+}
+
 type store interface {
 	GetNZBReader(id string) (io.ReadCloser, error)
 	SaveNZBAtomically(id string, data []byte) error

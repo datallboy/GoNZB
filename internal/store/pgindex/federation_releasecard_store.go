@@ -419,13 +419,62 @@ func (s *Store) CanGetFederatedReleaseForPrincipal(ctx context.Context, releaseI
 		SELECT EXISTS (
 		  SELECT 1
 		  FROM federated_release_sources source
+		  JOIN federated_release_cards card ON card.release_id = source.release_id
+		  JOIN federation_events source_event ON source_event.event_id = source.source_event_id
+		  JOIN federation_nodes node ON node.node_id = source.source_node_id
+		  JOIN trust_pools pool ON pool.pool_id = source.pool_id AND pool.enabled = TRUE
+		  JOIN pool_members member ON member.pool_id = source.pool_id
+		    AND member.node_id = source.source_node_id
+		    AND member.status = 'active'
 		  WHERE source.release_id = $1
+		    AND node.status NOT IN ('blocked', 'forked')
+		    AND (pool.min_node_trust_score <= 0 OR node.local_trust_score >= pool.min_node_trust_score)
+		    AND (member.role = 'admin' OR member.allowed_capabilities ?| ARRAY['scanner','indexer','release_publisher'])
+		    AND source_event.validation_status = 'accepted'
+		    AND source_event.event_type = 'ReleaseCard'
+		    AND source_event.author_node_id = source.source_node_id
+		    AND source_event.pool_ids @> jsonb_build_array(source.pool_id)
+		    AND card.body_json = source_event.body_json
+		    AND COALESCE(source_event.body_json->>'release_id', '') = source.release_id
+		    AND COALESCE(source_event.body_json->>'manifest_id', '') = COALESCE(source.manifest_id, '')
+		    AND card.title = COALESCE(source_event.body_json->>'title', '')
+		    AND card.normalized_title = COALESCE(source_event.body_json->>'normalized_title', '')
+		    AND card.category_json = COALESCE(source_event.body_json->'category', '[]'::jsonb)
+		    AND card.newznab_categories = COALESCE(source_event.body_json->'newznab_categories', '[]'::jsonb)
+		    AND card.size_bytes IS NOT DISTINCT FROM NULLIF(source_event.body_json->>'size_bytes', '')::bigint
+		    AND card.posted_at IS NOT DISTINCT FROM NULLIF(source_event.body_json->>'posted_at', '')::timestamptz
+		    AND card.groups_json = COALESCE(source_event.body_json->'groups', '[]'::jsonb)
+		    AND card.file_count IS NOT DISTINCT FROM NULLIF(source_event.body_json->>'file_count', '')::integer
+		    AND card.segment_count IS NOT DISTINCT FROM NULLIF(source_event.body_json->>'segment_count', '')::integer
+		    AND COALESCE(card.poster_hash, '') = COALESCE(source_event.body_json->>'poster_hash', '')
+		    AND card.subject_fingerprint = COALESCE(source_event.body_json->>'subject_fingerprint', '')
+		    AND card.file_fingerprint = COALESCE(source_event.body_json->>'file_fingerprint', '')
+		    AND card.media_json = COALESCE(source_event.body_json->'media', '{}'::jsonb)
+		    AND card.quality_json = COALESCE(source_event.body_json->'quality', '{}'::jsonb)
+		    AND card.flags_json = COALESCE(source_event.body_json->'flags', '{}'::jsonb)
+		    AND card.resolution_json = COALESCE(source_event.body_json->'resolution', '{}'::jsonb)
+		    AND card.expires_at IS NOT DISTINCT FROM NULLIF(source_event.body_json->>'expires_at', '')::timestamptz
 		    AND NOT EXISTS (
 		      SELECT 1 FROM federated_release_publication_states ps
 		      WHERE ps.release_id = source.release_id
 		        AND ps.source_node_id = source.source_node_id
 		        AND ps.pool_id = source.pool_id
 		        AND ps.state = 'withdrawn'
+		    )
+		    AND NOT EXISTS (
+		      SELECT 1 FROM tombstones t
+		      WHERE t.active = TRUE
+		        AND t.severity IN ('hide','reject','local_only')
+		        AND t.effective_at <= NOW()
+		        AND (t.expires_at IS NULL OR t.expires_at > NOW())
+		        AND (t.pool_id IS NULL OR t.pool_id = source.pool_id)
+		        AND (
+		          (t.target_type = 'release' AND t.target_id = source.release_id)
+		          OR (t.target_type = 'manifest' AND t.target_id = COALESCE(source.manifest_id, ''))
+		          OR (t.target_type = 'event' AND t.target_id = source.source_event_id)
+		          OR (t.target_type = 'node' AND t.target_id = source.source_node_id)
+		          OR (t.target_type = 'pool_member' AND t.target_id = source.source_node_id)
+		        )
 		    )
 		    AND source.pool_id IN (
 		      SELECT pool_id
@@ -550,6 +599,34 @@ func (s *Store) SearchFederatedReleaseCards(ctx context.Context, params Federate
 		"c.status = 'accepted'",
 		"(c.expires_at IS NULL OR c.expires_at > NOW())",
 		"s.trust_score > 0",
+		"source_node.status NOT IN ('blocked', 'forked')",
+		"source_pool.enabled = TRUE",
+		"(source_pool.min_node_trust_score <= 0 OR source_node.local_trust_score >= source_pool.min_node_trust_score)",
+		"(source_member.role = 'admin' OR source_member.allowed_capabilities ?| ARRAY['scanner','indexer','release_publisher'])",
+		"source_event.validation_status = 'accepted'",
+		"source_event.event_type = 'ReleaseCard'",
+		"source_event.author_node_id = s.source_node_id",
+		"source_event.pool_ids @> jsonb_build_array(s.pool_id)",
+		"c.body_json = source_event.body_json",
+		"COALESCE(source_event.body_json->>'release_id', '') = s.release_id",
+		"COALESCE(source_event.body_json->>'manifest_id', '') = COALESCE(s.manifest_id, '')",
+		"c.title = COALESCE(source_event.body_json->>'title', '')",
+		"c.normalized_title = COALESCE(source_event.body_json->>'normalized_title', '')",
+		"c.category_json = COALESCE(source_event.body_json->'category', '[]'::jsonb)",
+		"c.newznab_categories = COALESCE(source_event.body_json->'newznab_categories', '[]'::jsonb)",
+		"c.size_bytes IS NOT DISTINCT FROM NULLIF(source_event.body_json->>'size_bytes', '')::bigint",
+		"c.posted_at IS NOT DISTINCT FROM NULLIF(source_event.body_json->>'posted_at', '')::timestamptz",
+		"c.groups_json = COALESCE(source_event.body_json->'groups', '[]'::jsonb)",
+		"c.file_count IS NOT DISTINCT FROM NULLIF(source_event.body_json->>'file_count', '')::integer",
+		"c.segment_count IS NOT DISTINCT FROM NULLIF(source_event.body_json->>'segment_count', '')::integer",
+		"COALESCE(c.poster_hash, '') = COALESCE(source_event.body_json->>'poster_hash', '')",
+		"c.subject_fingerprint = COALESCE(source_event.body_json->>'subject_fingerprint', '')",
+		"c.file_fingerprint = COALESCE(source_event.body_json->>'file_fingerprint', '')",
+		"c.media_json = COALESCE(source_event.body_json->'media', '{}'::jsonb)",
+		"c.quality_json = COALESCE(source_event.body_json->'quality', '{}'::jsonb)",
+		"c.flags_json = COALESCE(source_event.body_json->'flags', '{}'::jsonb)",
+		"c.resolution_json = COALESCE(source_event.body_json->'resolution', '{}'::jsonb)",
+		"c.expires_at IS NOT DISTINCT FROM NULLIF(source_event.body_json->>'expires_at', '')::timestamptz",
 		`NOT EXISTS (
 			SELECT 1
 			FROM federated_release_publication_states ps
@@ -568,6 +645,9 @@ func (s *Store) SearchFederatedReleaseCards(ctx context.Context, params Federate
 			  AND (
 			    (t.target_type = 'release' AND t.target_id = c.release_id)
 			    OR (t.target_type = 'manifest' AND t.target_id = COALESCE(c.manifest_id, ''))
+			    OR (t.target_type = 'event' AND t.target_id = s.source_event_id)
+			    OR (t.target_type = 'node' AND t.target_id = s.source_node_id)
+			    OR (t.target_type = 'pool_member' AND t.target_id = s.source_node_id)
 			  )
 			  AND (t.pool_id IS NULL OR t.pool_id = s.pool_id)
 		)`,
@@ -598,14 +678,44 @@ func (s *Store) SearchFederatedReleaseCards(ctx context.Context, params Federate
 
 	query := fmt.Sprintf(`
 		WITH source_counts AS (
-			SELECT release_id, LEAST(1.0, COUNT(*)::double precision / 3.0) AS quorum_score
-			FROM federated_release_sources
+			SELECT counted.release_id, LEAST(1.0, COUNT(DISTINCT (counted.source_node_id, counted.pool_id))::double precision / 3.0) AS quorum_score
+			FROM federated_release_sources counted
+			JOIN federation_nodes counted_node ON counted_node.node_id = counted.source_node_id
+			JOIN trust_pools counted_pool ON counted_pool.pool_id = counted.pool_id AND counted_pool.enabled = TRUE
+			JOIN pool_members counted_member ON counted_member.pool_id = counted.pool_id
+			 AND counted_member.node_id = counted.source_node_id
+			 AND counted_member.status = 'active'
 			WHERE EXISTS (
 				SELECT 1
 				FROM jsonb_array_elements_text($1::jsonb) pools(pool_id)
-				WHERE pools.pool_id = federated_release_sources.pool_id
+				WHERE pools.pool_id = counted.pool_id
 			)
-			GROUP BY release_id
+			  AND counted_node.status NOT IN ('blocked', 'forked')
+			  AND (counted_pool.min_node_trust_score <= 0 OR counted_node.local_trust_score >= counted_pool.min_node_trust_score)
+			  AND (counted_member.role = 'admin' OR counted_member.allowed_capabilities ?| ARRAY['scanner','indexer','release_publisher'])
+			  AND NOT EXISTS (
+			    SELECT 1 FROM federated_release_publication_states ps
+			    WHERE ps.release_id = counted.release_id
+			      AND ps.source_node_id = counted.source_node_id
+			      AND ps.pool_id = counted.pool_id
+			      AND ps.state = 'withdrawn'
+			  )
+			  AND NOT EXISTS (
+			    SELECT 1 FROM tombstones t
+			    WHERE t.active = TRUE
+			      AND t.severity IN ('hide','reject','local_only')
+			      AND t.effective_at <= NOW()
+			      AND (t.expires_at IS NULL OR t.expires_at > NOW())
+			      AND (t.pool_id IS NULL OR t.pool_id = counted.pool_id)
+			      AND (
+			        (t.target_type = 'release' AND t.target_id = counted.release_id)
+			        OR (t.target_type = 'manifest' AND t.target_id = COALESCE(counted.manifest_id, ''))
+			        OR (t.target_type = 'event' AND t.target_id = counted.source_event_id)
+			        OR (t.target_type = 'node' AND t.target_id = counted.source_node_id)
+			        OR (t.target_type = 'pool_member' AND t.target_id = counted.source_node_id)
+			      )
+			  )
+			GROUP BY counted.release_id
 		),
 		ranked AS (
 			SELECT
@@ -654,6 +764,12 @@ func (s *Store) SearchFederatedReleaseCards(ctx context.Context, params Federate
 				) AS source_rank
 			FROM federated_release_cards c
 			JOIN federated_release_sources s ON s.release_id = c.release_id
+			JOIN federation_events source_event ON source_event.event_id = s.source_event_id
+			JOIN federation_nodes source_node ON source_node.node_id = s.source_node_id
+			JOIN trust_pools source_pool ON source_pool.pool_id = s.pool_id
+			JOIN pool_members source_member ON source_member.pool_id = s.pool_id
+			 AND source_member.node_id = s.source_node_id
+			 AND source_member.status = 'active'
 			JOIN source_counts sc ON sc.release_id = c.release_id
 			WHERE %s
 		)

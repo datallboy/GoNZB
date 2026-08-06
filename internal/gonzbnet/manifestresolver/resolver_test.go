@@ -39,10 +39,12 @@ func TestResolveNZBFetchesSignedManifestWithoutUserContext(t *testing.T) {
 			http.Error(w, err.Error(), http.StatusUnauthorized)
 			return
 		}
+		var request manifest.Request
+		_ = json.Unmarshal(body, &request)
 		_ = json.NewEncoder(w).Encode(manifest.Response{
 			SchemaVersion: "1.0",
 			Type:          "ManifestResponse",
-			RequestID:     "req_test",
+			RequestID:     request.RequestID,
 			Status:        "ok",
 			ManifestEvent: manifestEvent,
 		})
@@ -122,10 +124,12 @@ func TestResolveNZBRejectsExpiredManifestEvent(t *testing.T) {
 			http.Error(w, err.Error(), http.StatusUnauthorized)
 			return
 		}
+		var request manifest.Request
+		_ = json.Unmarshal(body, &request)
 		_ = json.NewEncoder(w).Encode(manifest.Response{
 			SchemaVersion: "1.0",
 			Type:          "ManifestResponse",
-			RequestID:     "req_test",
+			RequestID:     request.RequestID,
 			Status:        "ok",
 			ManifestEvent: manifestEvent,
 		})
@@ -205,11 +209,89 @@ func TestResolveNZBRejectsOversizedManifestResponse(t *testing.T) {
 	}
 }
 
+func TestResolveNZBRejectsTamperedResponseBindings(t *testing.T) {
+	tests := []struct {
+		name              string
+		eventReleaseID    string
+		eventPoolID       string
+		mismatchedRequest bool
+		wantError         string
+	}{
+		{name: "response request", eventReleaseID: "rel_1", eventPoolID: "pool.local", mismatchedRequest: true, wantError: "request_id mismatch"},
+		{name: "release", eventReleaseID: "rel_other", eventPoolID: "pool.local", wantError: "release_id mismatch"},
+		{name: "pool", eventReleaseID: "rel_1", eventPoolID: "pool.other", wantError: "pool mismatch"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			localIdentity, err := identity.LoadOrCreate(t.TempDir())
+			if err != nil {
+				t.Fatalf("local identity: %v", err)
+			}
+			localNodeID, _ := localIdentity.NodeID(ctx)
+			localPublicKey, _ := localIdentity.PublicKey(ctx)
+			_, manifestEvent := testManifestEventFor(t, tt.eventReleaseID, tt.eventPoolID)
+			requestStore := &fakeRequestStore{
+				keys:   map[string]ed25519.PublicKey{localNodeID: localPublicKey},
+				nonces: map[string]bool{},
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requestBody, _ := io.ReadAll(r.Body)
+				if _, err := requestauth.Verify(ctx, requestStore, r.Header.Get("Authorization"), r.Method, r.URL.Path, r.URL.RawQuery, requestBody, time.Now(), 2*time.Minute, 10*time.Minute); err != nil {
+					http.Error(w, err.Error(), http.StatusUnauthorized)
+					return
+				}
+				var request manifest.Request
+				_ = json.Unmarshal(requestBody, &request)
+				responseRequestID := request.RequestID
+				if tt.mismatchedRequest {
+					responseRequestID = "req_wrong"
+				}
+				_ = json.NewEncoder(w).Encode(manifest.Response{
+					SchemaVersion: "1.0",
+					Type:          "ManifestResponse",
+					RequestID:     responseRequestID,
+					Status:        "ok",
+					ManifestEvent: manifestEvent,
+				})
+			}))
+			defer server.Close()
+
+			var body manifest.ResolutionManifest
+			if err := json.Unmarshal(manifestEvent.Body, &body); err != nil {
+				t.Fatalf("manifest body: %v", err)
+			}
+			store := &fakeResolverStore{source: &pgindex.FederatedManifestSource{
+				ManifestID: body.ManifestID, ReleaseID: "rel_1", SourceNodeID: manifestEvent.AuthorNodeID,
+				PoolID: "pool.local", BaseURL: server.URL, TrustScore: 1,
+			}}
+			_, err = NewWithOptions(localIdentity, store, Options{AllowInsecurePeerHTTP: true}).ResolveNZB(ctx, "rel_1")
+			if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+				t.Fatalf("expected %q rejection, got %v", tt.wantError, err)
+			}
+			if store.stored != nil {
+				t.Fatal("tampered manifest response should not be cached")
+			}
+			if store.failures != 1 {
+				t.Fatalf("expected source failure to be recorded, got %d", store.failures)
+			}
+		})
+	}
+}
+
 func testManifestEvent(t *testing.T) (*identity.Identity, *events.SignedEvent) {
-	return testManifestEventWithTimes(t, time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC), nil)
+	return testManifestEventFor(t, "rel_1", "pool.local")
+}
+
+func testManifestEventFor(t *testing.T, releaseID, poolID string) (*identity.Identity, *events.SignedEvent) {
+	return testManifestEventWithOptions(t, releaseID, poolID, time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC), nil)
 }
 
 func testManifestEventWithTimes(t *testing.T, createdAt time.Time, expiresAt *time.Time) (*identity.Identity, *events.SignedEvent) {
+	return testManifestEventWithOptions(t, "rel_1", "pool.local", createdAt, expiresAt)
+}
+
+func testManifestEventWithOptions(t *testing.T, releaseID, poolID string, createdAt time.Time, expiresAt *time.Time) (*identity.Identity, *events.SignedEvent) {
 	t.Helper()
 	node, err := identity.LoadOrCreate(t.TempDir())
 	if err != nil {
@@ -236,7 +318,7 @@ func testManifestEventWithTimes(t *testing.T, createdAt time.Time, expiresAt *ti
 		SchemaVersion: "1.0",
 		Type:          manifest.Type,
 		ManifestID:    manifestID,
-		ReleaseID:     "rel_1",
+		ReleaseID:     releaseID,
 		ManifestCore:  core,
 	}
 	event, validation, err := events.Create(context.Background(), node, events.CreateOptions{
@@ -244,7 +326,7 @@ func testManifestEventWithTimes(t *testing.T, createdAt time.Time, expiresAt *ti
 		Sequence:   1,
 		CreatedAt:  createdAt,
 		ExpiresAt:  expiresAt,
-		PoolIDs:    []string{"pool.local"},
+		PoolIDs:    []string{poolID},
 		Visibility: "pool",
 		BodySchema: manifest.BodySchema,
 		Body:       body,
@@ -270,6 +352,10 @@ func (s *fakeResolverStore) GetCachedFederatedNZBByReleaseID(context.Context, st
 
 func (s *fakeResolverStore) FindFederatedManifestSource(context.Context, string) (*pgindex.FederatedManifestSource, error) {
 	return s.source, nil
+}
+
+func (s *fakeResolverStore) AuthorizeFederatedManifestSource(context.Context, pgindex.FederatedManifestSource, string) error {
+	return nil
 }
 
 func (s *fakeResolverStore) AppendVerifiedFederationEvent(context.Context, *events.SignedEvent, *events.ValidationResult) error {

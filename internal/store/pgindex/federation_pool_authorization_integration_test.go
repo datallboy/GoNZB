@@ -78,6 +78,19 @@ func TestFederationPoolAuthorizationIntegration(t *testing.T) {
 	if multiple.Allowed || multiple.Reason != "multiple_pools_not_supported" {
 		t.Fatalf("expected v1 multiple-pool rejection, result=%+v", multiple)
 	}
+	if _, err := store.DB().ExecContext(ctx, `UPDATE federation_nodes SET status = 'blocked' WHERE node_id = $1`, nodeID); err != nil {
+		t.Fatalf("block node: %v", err)
+	}
+	blocked, err := store.CanAcceptFederationEventForPools(ctx, nodeID, []string{poolID}, "ReleaseCard")
+	if err != nil {
+		t.Fatalf("authorize blocked node: %v", err)
+	}
+	if blocked.Allowed || blocked.Reason != "node_blocked" {
+		t.Fatalf("expected blocked node rejection, result=%+v", blocked)
+	}
+	if _, err := store.DB().ExecContext(ctx, `UPDATE federation_nodes SET status = 'known' WHERE node_id = $1`, nodeID); err != nil {
+		t.Fatalf("restore node: %v", err)
+	}
 	if _, err := store.DB().ExecContext(ctx, `UPDATE pool_members SET status = 'revoked' WHERE pool_id = $1 AND node_id = $2`, poolID, nodeID); err != nil {
 		t.Fatalf("revoke member: %v", err)
 	}

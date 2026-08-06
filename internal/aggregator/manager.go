@@ -219,7 +219,33 @@ func (m *Manager) GetNZB(ctx context.Context, rel *domain.Release) (io.ReadClose
 			}
 		}
 
-		return m.store.GetNZBReader(rel.ID)
+		reader, readErr := m.store.GetNZBReader(rel.ID)
+		if validator, ok := src.(cachedPayloadValidator); ok {
+			if readErr == nil {
+				payload, payloadErr := io.ReadAll(io.LimitReader(reader, maxCachedNZBBytes+1))
+				_ = reader.Close()
+				if payloadErr == nil && int64(len(payload)) <= maxCachedNZBBytes {
+					if validationErr := validator.ValidateCachedNZB(ctx, rel, payload); validationErr == nil {
+						return io.NopCloser(bytes.NewReader(payload)), nil
+					} else {
+						m.logger.Warn("Rejected cached NZB for %s: %v", rel.ID, validationErr)
+					}
+				} else if payloadErr != nil {
+					m.logger.Warn("Failed reading cached NZB for %s: %v", rel.ID, payloadErr)
+				} else {
+					m.logger.Warn("Rejected oversized cached NZB for %s", rel.ID)
+				}
+			} else {
+				m.logger.Warn("Failed opening cached NZB for %s: %v", rel.ID, readErr)
+			}
+			// Fail closed for the cached bytes and continue through the source;
+			// a successful fetch below atomically replaces the bad entry.
+		} else {
+			if readErr != nil {
+				return nil, readErr
+			}
+			return reader, nil
+		}
 	}
 	// This calls either the raw DownloadNZB or the local store indexer.
 	body, err := src.GetNZB(ctx, rel)

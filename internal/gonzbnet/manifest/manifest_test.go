@@ -4,7 +4,39 @@ import (
 	"encoding/xml"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestValidateRequestRejectsMissingAndStaleBindings(t *testing.T) {
+	now := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
+	valid := Request{
+		SchemaVersion: "1.0", Type: "ManifestRequest", RequestID: "req_1",
+		ManifestID: "man_1", ReleaseID: "rel_1", PoolID: "pool_1",
+		RequestingNodeID: "node_1", Reason: "user_get", CreatedAt: now.Format(time.RFC3339),
+	}
+	if err := ValidateRequest(valid, now, 2*time.Minute); err != nil {
+		t.Fatalf("validate request: %v", err)
+	}
+	tests := []struct {
+		name   string
+		mutate func(*Request)
+	}{
+		{name: "missing release", mutate: func(in *Request) { in.ReleaseID = "" }},
+		{name: "missing pool", mutate: func(in *Request) { in.PoolID = "" }},
+		{name: "wrong type", mutate: func(in *Request) { in.Type = "OtherRequest" }},
+		{name: "stale timestamp", mutate: func(in *Request) { in.CreatedAt = now.Add(-3 * time.Minute).Format(time.RFC3339) }},
+		{name: "future timestamp", mutate: func(in *Request) { in.CreatedAt = now.Add(3 * time.Minute).Format(time.RFC3339) }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			item := valid
+			tt.mutate(&item)
+			if err := ValidateRequest(item, now, 2*time.Minute); err == nil {
+				t.Fatal("expected request validation failure")
+			}
+		})
+	}
+}
 
 func TestValidateManifestIDAndRejectTamper(t *testing.T) {
 	item := testManifest(t)

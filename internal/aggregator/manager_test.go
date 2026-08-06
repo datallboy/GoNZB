@@ -140,6 +140,27 @@ func TestGetNZBReturnsAuthorizedGoNZBNetBlobCache(t *testing.T) {
 	}
 }
 
+func TestGetNZBRejectsInvalidGoNZBNetBlobCacheAndRefetches(t *testing.T) {
+	store := &fakeManagerStore{exists: true, cachePayload: []byte("tampered")}
+	manager := NewManager(store, fakeLogger{}, true, false)
+	source := &fakeCatalogSource{name: gonzbnetSourceName, validateCachedErr: io.ErrUnexpectedEOF}
+	manager.AddSource(source)
+	ctx := auth.ContextWithPrincipal(context.Background(), &auth.Principal{
+		Permissions: map[string]struct{}{auth.PermissionGoNZBNetGet: {}},
+	})
+
+	reader, err := manager.GetNZB(ctx, &domain.Release{
+		ID: "cached-federated-result", Source: gonzbnetSourceName, GUID: "rel_fed",
+	})
+	if err != nil {
+		t.Fatalf("refetch invalid cached NZB: %v", err)
+	}
+	_ = reader.Close()
+	if source.validateCachedCalls != 1 || source.gets != 1 || store.cacheWrites != 1 {
+		t.Fatalf("expected invalid cache to be replaced: validations=%d gets=%d writes=%d", source.validateCachedCalls, source.gets, store.cacheWrites)
+	}
+}
+
 func TestGetResultByIDUsesAuthoritativeDirectSourceWithoutPriorSearch(t *testing.T) {
 	manager := NewManager(&fakeManagerStore{}, fakeLogger{}, false, false)
 	source := &fakeCatalogSource{
@@ -161,14 +182,18 @@ type fakeManagerStore struct {
 	searchResults []*domain.Release
 	exists        bool
 	cacheReads    int
+	cacheWrites   int
+	cachePayload  []byte
 }
 
 func (s *fakeManagerStore) GetNZBReader(string) (io.ReadCloser, error) {
 	s.cacheReads++
-	return io.NopCloser(bytes.NewReader(nil)), nil
+	return io.NopCloser(bytes.NewReader(s.cachePayload)), nil
 }
 
-func (s *fakeManagerStore) SaveNZBAtomically(string, []byte) error {
+func (s *fakeManagerStore) SaveNZBAtomically(_ string, payload []byte) error {
+	s.cacheWrites++
+	s.cachePayload = append([]byte(nil), payload...)
 	return nil
 }
 
@@ -196,12 +221,14 @@ func (fakeLogger) Warn(string, ...interface{})  {}
 func (fakeLogger) Error(string, ...interface{}) {}
 
 type fakeCatalogSource struct {
-	name           string
-	direct         *domain.Release
-	directGets     int
-	gets           int
-	authorizeCalls int
-	authorizeErr   error
+	name                string
+	direct              *domain.Release
+	directGets          int
+	gets                int
+	authorizeCalls      int
+	authorizeErr        error
+	validateCachedCalls int
+	validateCachedErr   error
 }
 
 func (s *fakeCatalogSource) GetByID(_ context.Context, id string) (*domain.Release, error) {
@@ -229,4 +256,9 @@ func (s *fakeCatalogSource) GetNZB(context.Context, *domain.Release) (io.ReadClo
 func (s *fakeCatalogSource) AuthorizeGet(context.Context, *domain.Release) error {
 	s.authorizeCalls++
 	return s.authorizeErr
+}
+
+func (s *fakeCatalogSource) ValidateCachedNZB(context.Context, *domain.Release, []byte) error {
+	s.validateCachedCalls++
+	return s.validateCachedErr
 }

@@ -2,6 +2,8 @@ package gonzbnet
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"strconv"
@@ -12,6 +14,7 @@ import (
 	"github.com/datallboy/gonzb/internal/auth"
 	"github.com/datallboy/gonzb/internal/categories/newsnab"
 	"github.com/datallboy/gonzb/internal/domain"
+	gonzbnetmetrics "github.com/datallboy/gonzb/internal/gonzbnet/metrics"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
 )
 
@@ -21,6 +24,7 @@ type Store interface {
 	ListFederationSearchPoolsForPrincipal(ctx context.Context, userID string, roleIDs []string) ([]string, error)
 	CanGetFederatedReleaseForPrincipal(ctx context.Context, releaseID, userID string, roleIDs []string) (bool, error)
 	SearchFederatedReleaseCards(ctx context.Context, params pgindex.FederatedReleaseCardSearchParams) ([]pgindex.FederatedReleaseCardSummary, error)
+	GetFederatedNZBSHA256ByReleaseID(ctx context.Context, releaseID string) (string, bool, error)
 }
 
 type Source struct {
@@ -116,6 +120,27 @@ func (s *Source) AuthorizeGet(ctx context.Context, rel *domain.Release) error {
 	}
 	if !allowed {
 		return fmt.Errorf("gonzbnet pool get and resolve access is required")
+	}
+	return nil
+}
+
+func (s *Source) ValidateCachedNZB(ctx context.Context, rel *domain.Release, payload []byte) error {
+	if s == nil || s.store == nil || rel == nil || strings.TrimSpace(rel.GUID) == "" {
+		return fmt.Errorf("gonzbnet cached release is required")
+	}
+	expected, ok, err := s.store.GetFederatedNZBSHA256ByReleaseID(ctx, strings.TrimSpace(rel.GUID))
+	if err != nil {
+		return err
+	}
+	if !ok {
+		gonzbnetmetrics.Default.Add(gonzbnetmetrics.ManifestCacheIntegrityFailuresTotal, 1)
+		return fmt.Errorf("verified gonzbnet cache checksum is unavailable")
+	}
+	sum := sha256.Sum256(payload)
+	actual := "sha256:" + hex.EncodeToString(sum[:])
+	if !strings.EqualFold(strings.TrimSpace(expected), actual) {
+		gonzbnetmetrics.Default.Add(gonzbnetmetrics.ManifestCacheIntegrityFailuresTotal, 1)
+		return fmt.Errorf("gonzbnet filesystem cache checksum mismatch")
 	}
 	return nil
 }

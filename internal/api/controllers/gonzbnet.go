@@ -100,6 +100,7 @@ type gonzbnetStore interface {
 	GetResolutionManifest(ctx context.Context, manifestID string) (*manifest.ResolutionManifest, error)
 	GetResolutionManifestEvent(ctx context.Context, manifestID string) (*events.SignedEvent, error)
 	CanFetchResolutionManifest(ctx context.Context, manifestID, nodeID string) (bool, error)
+	CanFetchResolutionManifestForSource(ctx context.Context, manifestID, releaseID, poolID, nodeID string) (bool, error)
 	ProjectHealthAttestation(ctx context.Context, projection pgindex.HealthAttestationProjection) error
 	ProjectTrustAttestation(ctx context.Context, projection pgindex.TrustAttestationProjection) error
 	ProjectValidatorCapacity(ctx context.Context, projection pgindex.ValidatorCapacityProjection) error
@@ -1573,6 +1574,9 @@ func (ctrl *GoNZBNetController) RequestManifest(c *echo.Context) error {
 	if err := decodeFederationJSON(body, &req); err != nil {
 		return federationJSONError(c, http.StatusBadRequest, "invalid_json", "invalid manifest request json")
 	}
+	if err := manifest.ValidateRequest(req, time.Now().UTC(), time.Duration(cfg.TimeToleranceSeconds)*time.Second); err != nil {
+		return federationJSONError(c, http.StatusBadRequest, "invalid_schema", err.Error())
+	}
 	manifestID := pathParamTrimmed(c, "manifest_id")
 	if req.ManifestID != manifestID {
 		return c.JSON(http.StatusBadRequest, manifest.Response{
@@ -1594,7 +1598,7 @@ func (ctrl *GoNZBNetController) RequestManifest(c *echo.Context) error {
 			Message:       "requesting node does not match request signature",
 		})
 	}
-	allowed, err := store.CanFetchResolutionManifest(c.Request().Context(), manifestID, verified.NodeID)
+	allowed, err := store.CanFetchResolutionManifestForSource(c.Request().Context(), manifestID, req.ReleaseID, req.PoolID, verified.NodeID)
 	if err != nil {
 		return federationJSONError(c, http.StatusInternalServerError, "internal_error", err.Error())
 	}

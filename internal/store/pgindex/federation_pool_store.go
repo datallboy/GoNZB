@@ -265,6 +265,20 @@ func (s *Store) ProjectFederationPoolEvent(ctx context.Context, event *events.Si
 }
 
 func (s *Store) CanAcceptFederationEventForPools(ctx context.Context, authorNodeID string, poolIDs []string, eventType string) (PoolAuthorizationResult, error) {
+	var nodeStatus string
+	if err := s.federationExecutor(ctx).QueryRowContext(ctx, `
+		SELECT status FROM federation_nodes WHERE node_id = $1`, strings.TrimSpace(authorNodeID)).Scan(&nodeStatus); err != nil {
+		if err == sql.ErrNoRows {
+			return PoolAuthorizationResult{Allowed: false, Reason: "unknown_node"}, nil
+		}
+		return PoolAuthorizationResult{}, err
+	}
+	if nodeStatus == "blocked" {
+		return PoolAuthorizationResult{Allowed: false, Reason: "node_blocked"}, nil
+	}
+	if nodeStatus == "forked" {
+		return PoolAuthorizationResult{Allowed: false, Reason: "node_forked"}, nil
+	}
 	normalizedPools := normalizeStrings(poolIDs)
 	if len(normalizedPools) == 0 {
 		return PoolAuthorizationResult{Allowed: false, Reason: "missing_pool"}, nil
