@@ -14,6 +14,7 @@ import (
 
 	"github.com/datallboy/gonzb/internal/gonzbnet/activity"
 	"github.com/datallboy/gonzb/internal/gonzbnet/canonical"
+	"github.com/datallboy/gonzb/internal/gonzbnet/eventbody"
 	"github.com/datallboy/gonzb/internal/gonzbnet/events"
 	"github.com/datallboy/gonzb/internal/gonzbnet/manifest"
 	gonzbnetmetrics "github.com/datallboy/gonzb/internal/gonzbnet/metrics"
@@ -29,6 +30,7 @@ type Identity interface {
 type Store interface {
 	GetCachedFederatedNZBByReleaseID(ctx context.Context, releaseID string) ([]byte, bool, error)
 	FindFederatedManifestSource(ctx context.Context, releaseID string) (*pgindex.FederatedManifestSource, error)
+	AuthorizeFederatedManifestSource(ctx context.Context, source pgindex.FederatedManifestSource, authorNodeID string) error
 	AppendVerifiedFederationEvent(ctx context.Context, event *events.SignedEvent, validation *events.ValidationResult) error
 	StoreResolutionManifest(ctx context.Context, record pgindex.ResolutionManifestRecord) error
 	RecordFederatedManifestSourceSuccess(ctx context.Context, source pgindex.FederatedManifestSource) error
@@ -123,6 +125,9 @@ func (r *Resolver) ResolveNZB(ctx context.Context, releaseID string) (reader io.
 	if source == nil {
 		return nil, fmt.Errorf("federated manifest source not found")
 	}
+	if err := r.store.AuthorizeFederatedManifestSource(ctx, *source, ""); err != nil {
+		return nil, err
+	}
 	failSource := func(err error) (io.ReadCloser, error) {
 		_ = r.store.RecordFederatedManifestSourceFailure(ctx, *source)
 		return nil, err
@@ -141,6 +146,15 @@ func (r *Resolver) ResolveNZB(ctx context.Context, releaseID string) (reader io.
 	if event.EventType != manifest.Type {
 		return failSource(fmt.Errorf("unexpected manifest event type %q", event.EventType))
 	}
+	if err := eventbody.Validate(event, time.Now().UTC(), r.eventTimeTolerance); err != nil {
+		return failSource(fmt.Errorf("invalid manifest event body: %w", err))
+	}
+	if event.BodySchema != manifest.BodySchema {
+		return failSource(fmt.Errorf("unexpected manifest body schema %q", event.BodySchema))
+	}
+	if len(event.PoolIDs) != 1 || strings.TrimSpace(event.PoolIDs[0]) != strings.TrimSpace(source.PoolID) {
+		return failSource(fmt.Errorf("manifest event pool mismatch"))
+	}
 	var body manifest.ResolutionManifest
 	if err := json.Unmarshal(event.Body, &body); err != nil {
 		return failSource(err)
@@ -152,6 +166,12 @@ func (r *Resolver) ResolveNZB(ctx context.Context, releaseID string) (reader io.
 	if body.ManifestID != source.ManifestID {
 		return failSource(fmt.Errorf("manifest_id mismatch"))
 	}
+	if body.ReleaseID != releaseID || body.ReleaseID != source.ReleaseID {
+		return failSource(fmt.Errorf("release_id mismatch"))
+	}
+	if err := r.store.AuthorizeFederatedManifestSource(ctx, *source, event.AuthorNodeID); err != nil {
+		return failSource(err)
+	}
 	nzbPayload, err := manifest.GenerateNZB(body)
 	if err != nil {
 		return failSource(err)
@@ -162,6 +182,7 @@ func (r *Resolver) ResolveNZB(ctx context.Context, releaseID string) (reader io.
 	if err := r.store.StoreResolutionManifest(ctx, pgindex.ResolutionManifestRecord{
 		Manifest:              body,
 		SourceNodeID:          event.AuthorNodeID,
+		FetchedFromNodeID:     source.SourceNodeID,
 		SourceEventID:         event.EventID,
 		PoolID:                source.PoolID,
 		CanonicalManifestJSON: canonicalCore,
@@ -234,6 +255,12 @@ func (r *Resolver) fetchManifest(ctx context.Context, source pgindex.FederatedMa
 	}
 	if err := json.Unmarshal(payload, &out); err != nil {
 		return nil, err
+	}
+	if out.SchemaVersion != "1.0" || out.Type != "ManifestResponse" {
+		return nil, fmt.Errorf("invalid manifest response schema or type")
+	}
+	if strings.TrimSpace(out.RequestID) != requestID {
+		return nil, fmt.Errorf("manifest response request_id mismatch")
 	}
 	if out.Status != "ok" || out.ManifestEvent == nil {
 		return nil, fmt.Errorf("manifest response error: %s", firstNonBlank(out.Message, out.Code, "missing manifest_event"))

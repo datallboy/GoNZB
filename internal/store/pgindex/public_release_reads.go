@@ -13,6 +13,7 @@ import (
 
 type PublicIndexerReleaseListParams struct {
 	Query             string
+	SourceKind        string
 	Limit             int
 	Offset            int
 	Sort              string
@@ -231,6 +232,9 @@ func buildPublicIndexerFilterSQL(params PublicIndexerReleaseListParams) (string,
 		arg += len(values)
 	}
 
+	if sourceKind := strings.TrimSpace(params.SourceKind); sourceKind != "" {
+		add(fmt.Sprintf("r.source_kind = $%d", arg), sourceKind)
+	}
 	if query := strings.TrimSpace(params.Query); query != "" {
 		add(fmt.Sprintf("r.search_title ILIKE '%%' || $%d || '%%'", arg), query)
 	}

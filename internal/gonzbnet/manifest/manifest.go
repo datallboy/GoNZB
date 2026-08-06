@@ -53,6 +53,35 @@ type Response struct {
 	ManifestEvent *events.SignedEvent `json:"manifest_event,omitempty"`
 }
 
+func ValidateRequest(in Request, now time.Time, futureTolerance time.Duration) error {
+	if strings.TrimSpace(in.SchemaVersion) != "1.0" || strings.TrimSpace(in.Type) != "ManifestRequest" {
+		return fmt.Errorf("unsupported manifest request schema or type")
+	}
+	if strings.TrimSpace(in.RequestID) == "" || len(in.RequestID) > 256 {
+		return fmt.Errorf("request_id is required and must not exceed 256 bytes")
+	}
+	if strings.TrimSpace(in.ManifestID) == "" || strings.TrimSpace(in.ReleaseID) == "" || strings.TrimSpace(in.PoolID) == "" || strings.TrimSpace(in.RequestingNodeID) == "" {
+		return fmt.Errorf("manifest_id, release_id, pool_id, and requesting_node_id are required")
+	}
+	if len(in.Reason) > 256 {
+		return fmt.Errorf("reason exceeds field limit")
+	}
+	createdAt, err := time.Parse(time.RFC3339, strings.TrimSpace(in.CreatedAt))
+	if err != nil {
+		return fmt.Errorf("created_at must be RFC3339")
+	}
+	if futureTolerance <= 0 {
+		futureTolerance = 2 * time.Minute
+	}
+	if !now.IsZero() {
+		delta := now.UTC().Sub(createdAt.UTC())
+		if delta > futureTolerance || delta < -futureTolerance {
+			return fmt.Errorf("created_at is outside request tolerance")
+		}
+	}
+	return nil
+}
+
 type ManifestCore struct {
 	Groups          []string       `json:"groups"`
 	Poster          string         `json:"poster,omitempty"`

@@ -16,7 +16,9 @@
   release lineage tables.
 - Uploader approval owns only `source_kind = uploader` rows in the terminal
   `releases`, `release_catalog_files`, and `release_newsgroups` catalog. These
-  rows are catalog projections, not release-formation output.
+  rows are catalog projections, not release-formation output. They are excluded
+  from automatic GoNZBNet indexer publication; federation publication remains
+  an explicit uploader action.
 - Inspect stages own inspection history, artifacts, archive entries, text/media
   evidence, PAR2 sets, PAR2 targets, and their ready queue.
 - Release persistence publishes inspection-ready events. A durable

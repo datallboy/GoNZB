@@ -16,6 +16,7 @@ const (
 	PeerFailuresTotal                   = "gonzbnet_peer_failures_total"
 	ManifestRequestsTotal               = "gonzbnet_manifest_requests_total"
 	ManifestRequestFailuresTotal        = "gonzbnet_manifest_request_failures_total"
+	ManifestCacheIntegrityFailuresTotal = "gonzbnet_manifest_cache_integrity_failures_total"
 	BinaryEvidencePeerRequestsTotal     = "gonzbnet_binary_evidence_peer_requests_total"
 	BinaryEvidencePeerFailuresTotal     = "gonzbnet_binary_evidence_peer_failures_total"
 	BinaryEvidenceYEncHitsTotal         = "gonzbnet_binary_evidence_yenc_hits_total"
@@ -40,6 +41,7 @@ var counterNames = []string{
 	PeerFailuresTotal,
 	ManifestRequestsTotal,
 	ManifestRequestFailuresTotal,
+	ManifestCacheIntegrityFailuresTotal,
 	ReleaseCardsProjectedTotal,
 	HealthAttestationsTotal,
 	BinaryEvidencePeerRequestsTotal,

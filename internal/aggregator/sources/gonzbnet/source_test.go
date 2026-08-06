@@ -182,6 +182,10 @@ func (s *fakeStore) SearchFederatedReleaseCards(_ context.Context, params pginde
 	return append([]pgindex.FederatedReleaseCardSummary(nil), s.cards...), nil
 }
 
+func (s *fakeStore) GetFederatedNZBSHA256ByReleaseID(context.Context, string) (string, bool, error) {
+	return "", false, nil
+}
+
 type fakeResolver struct {
 	calls int
 }
