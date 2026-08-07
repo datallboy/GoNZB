@@ -27,7 +27,7 @@ func TestReadArticleCapturesHeadersAndYEncMetadata(t *testing.T) {
 	if article.YEncName != "Synthetic.txt" || article.YEncPart != 1 || article.YEncTotal != 2 {
 		t.Fatalf("unexpected yEnc metadata: %+v", article)
 	}
-	if len(article.ArticleSHA) != 64 || len(article.BodySHA) != 64 || article.BodyBytes == 0 {
+	if len(article.ArticleSHA) != 64 || len(article.BodySHA) != 64 || article.ArticleBytes == 0 || article.BodyBytes == 0 {
 		t.Fatalf("expected bounded body hashes: %+v", article)
 	}
 }

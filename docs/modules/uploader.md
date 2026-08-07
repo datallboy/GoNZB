@@ -158,6 +158,14 @@ Use Loon's offline output and set `OFFLINE_OUTPUT_DIR` to a directory mounted
 read-only as the GoNZB inbox. GoNZB recursively finds the completed `.nzb` and
 ignores Loon's other output. Do not configure GoNZB as Loon's online companion.
 
+This is a filesystem handoff, not an HTTP callback. When Loon and GoNZB run on
+different servers, the current implementation therefore requires a shared
+read-only mount. A durable outbound-only transfer without a cross-server mount
+belongs to the deferred
+[gonzb-nzb-forwarder project](../wiki/integrations/completed-nzb-forwarder-sidecar.md).
+Do not present the local/shared-volume conformance test as proof of that future
+remote-server topology.
+
 ### Postie
 
 Configure Postie's `post_upload_script` to call the generic helper with its NZB
@@ -195,6 +203,10 @@ Pesto does not invoke post hooks during dry-run. If durable callback retries are
 required, prefer the read-only inbox or place an operator-owned spool in front
 of the helper.
 
+Unlike Loon's offline-output recipe, pesto's real post-upload hook can send a
+completed NZB directly to a separate GoNZB server over HTTP. The proposed
+forwarder is not required for the normal pesto integration.
+
 These external executables are not part of the normal GoNZB test suite. Run
 their optional conformance checks only with synthetic payloads and a controlled
 mock-NNTP service. The automated GoNZB suite never starts BitTorrent
@@ -217,6 +229,23 @@ deduplication, review approval, Node A Newznab search/get, explicit signed
 publication to `pool.e2e`, and Node D search/grab plus verified cache reuse.
 It resets all disposable state on completion. Set
 `UPLOADER_POSTIE_KEEP_STATE=1` only when retaining a failed run for inspection.
+
+### Live pesto conformance
+
+The optional harness is pinned to pesto commit
+`ce57ddcde5e57c92392440dd46ac3b74f1c801ed` and Rust toolchain 1.96.0. Provide a
+clean checkout and run:
+
+```sh
+PESTO_SOURCE=/path/to/pesto ./scripts/uploader_pesto_conformance.sh
+```
+
+The harness posts only locally authored CC0 text to a loopback NNTP fixture. It
+verifies POST/STAT, captured article sizes, groups and message IDs against the
+generated NZB, two injected HTTP `503` retries, least-privilege intake,
+deduplication, approval, exact-byte Newznab search/get, and withdrawal. It
+disables pesto's courtesy version check during the run, so it does not contact
+GitHub or any Usenet provider.
 
 ## Safe conformance test
 

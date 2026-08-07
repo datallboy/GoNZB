@@ -15,6 +15,11 @@ that NZB to GoNZB immediately, but at the tested upstream revision its durable
 script retry worker is not started by the service lifecycle. A longer GoNZB or
 network outage can therefore outlast the hook's bounded inline retries.
 
+Loon's offline mode is the stronger motivating case: it produces a completed
+output directory but does not currently provide the generic HTTP post-upload
+hook used by Postie and pesto. Without this proposed sidecar, separate Loon and
+GoNZB servers need a shared filesystem mount for GoNZB's read-only inbox.
+
 A shared NFS/SMB mount would let GoNZB use its existing read-only inbox, but it
 adds infrastructure and exposes the posting host's output across machines. A
 small outbound-only delivery sidecar could provide durable handoff without an
@@ -133,6 +138,10 @@ Until this project exists, the supported separate-server integration remains
 Postie's `post_upload_script` calling GoNZB's one-shot submission helper. It
 provides short bounded retries but is not presented as durable across a long
 outage.
+
+Pesto has the same viable HTTP-hook boundary. Loon does not: its current
+offline-output integration remains local/shared-filesystem only until a
+forwarder or equivalent operator-owned transport exists.
 
 If the sidecar is implemented later, operators could choose one delivery path:
 

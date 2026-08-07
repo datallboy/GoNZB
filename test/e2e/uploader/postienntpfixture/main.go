@@ -23,16 +23,17 @@ import (
 const maxArticleBytes = 8 << 20
 
 type capturedArticle struct {
-	MessageID  string   `json:"message_id"`
-	Subject    string   `json:"subject"`
-	From       string   `json:"from"`
-	Newsgroups []string `json:"newsgroups"`
-	ArticleSHA string   `json:"article_sha256"`
-	BodySHA    string   `json:"body_sha256"`
-	BodyBytes  int      `json:"body_bytes"`
-	YEncName   string   `json:"yenc_name,omitempty"`
-	YEncPart   int      `json:"yenc_part,omitempty"`
-	YEncTotal  int      `json:"yenc_total,omitempty"`
+	MessageID    string   `json:"message_id"`
+	Subject      string   `json:"subject"`
+	From         string   `json:"from"`
+	Newsgroups   []string `json:"newsgroups"`
+	ArticleSHA   string   `json:"article_sha256"`
+	ArticleBytes int      `json:"article_bytes"`
+	BodySHA      string   `json:"body_sha256"`
+	BodyBytes    int      `json:"body_bytes"`
+	YEncName     string   `json:"yenc_name,omitempty"`
+	YEncPart     int      `json:"yenc_part,omitempty"`
+	YEncTotal    int      `json:"yenc_total,omitempty"`
 }
 
 type fixture struct {
@@ -180,7 +181,7 @@ func readArticle(reader *bufio.Reader) (capturedArticle, error) {
 
 	return capturedArticle{
 		MessageID: messageID, Subject: headers["subject"], From: headers["from"], Newsgroups: groups,
-		ArticleSHA: hex.EncodeToString(articleHash[:]), BodySHA: hex.EncodeToString(bodyHash[:]),
+		ArticleSHA: hex.EncodeToString(articleHash[:]), ArticleBytes: len(raw), BodySHA: hex.EncodeToString(bodyHash[:]),
 		BodyBytes: len(body), YEncName: yencName, YEncPart: yencPart, YEncTotal: yencTotal,
 	}, nil
 }

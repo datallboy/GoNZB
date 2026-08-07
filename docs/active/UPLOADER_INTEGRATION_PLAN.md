@@ -28,10 +28,10 @@ Implemented on `feature/uploader-integration`:
 
 Automated validation uses only synthetic NZBs and performs no torrent,
 magnet-link, external download, or real-provider NNTP activity. The generic
-handoff is covered locally. Postie has also passed the opt-in loopback NNTP and
-four-node GoNZBNet conformance harness described below. Loon and pesto live
-recipes remain follow-up work because those applications are outside GoNZB's
-test boundary. Any test that introduces torrent or tracker networking remains
+handoff is covered locally. Postie and pesto have also passed their opt-in
+loopback NNTP conformance harnesses described below. Loon's live filesystem
+recipe remains follow-up work because that application is outside GoNZB's test
+boundary. Any test that introduces torrent or tracker networking remains
 prohibited until an operator-provided VPN-controlled environment exists.
 
 Research was performed against these pinned source snapshots; they are recipe
@@ -41,7 +41,7 @@ references, not GoNZB dependencies or claims of completed live conformance:
 | --- | --- | --- |
 | Loon Agent | `2c8982d` | generic recursive-inbox contract covered; live recipe pending |
 | Postie | `e4da026` | loopback post, hook retry, intake, approval, and cross-node pool search/grab passed |
-| pesto | `ce57ddc` | generic post-hook contract covered; live recipe pending |
+| pesto | `ce57ddc` | loopback post, hook retry, intake, approval, Newznab search/get, and withdrawal passed |
 
 ## Purpose
 
@@ -169,6 +169,12 @@ Loon has two materially different integration modes:
   writes a release folder under `OFFLINE_OUTPUT_DIR`. That folder can contain
   the NZB, `password.txt`, and generated samples. If an operator already uses
   Loon, that output is enough for the generic GoNZB inbox recipe.
+
+The Loon recipe is a filesystem boundary rather than an HTTP hook. Separate
+Loon and GoNZB servers currently require a shared read-only mount; an
+outbound-only remote handoff is deferred to the proposed
+`gonzb-nzb-forwarder` project. Local/shared-volume conformance must not be
+reported as proof of that future topology.
 
 The deployment documentation must recommend a full-tunnel VPN configuration
 for torrent traffic. Loon's split-tunnel SOCKS mode covers tracker and HTTP
@@ -920,7 +926,7 @@ segment counts, pending-review row, and duplicate retry result:
 | Manual UI | Upload the same fixture through the browser | validation and deduplication match the API |
 | Loon recipe | Feed a small local file/directory to Loon offline mode and expose only its completed output tree | recursive inbox discovers the generated NZB; no Loon fields are required |
 | Postie recipe | Post locally authored CC0 text to the repository loopback NNTP server and run `post_upload_script` | passed at `e4da026`: two injected `503` responses were retried, then Node A intake/approval and Node D pool search/grab/cache succeeded |
-| pesto recipe | Post a small local path to a mock NNTP server and run its post hook | `PESTO_NZB` reaches generic intake and creates a pending submission |
+| pesto recipe | Post a small local path to a mock NNTP server and run its post hook | passed at `ce57ddc`: `PESTO_NZB` survived two injected `503` responses, created one pending submission, and passed approval, Newznab get, and withdrawal checks |
 
 The generic HTTP, inbox, UI, parser, and fixture tests run in normal GoNZB CI.
 Producer binaries are external projects, so their end-to-end matrix is an
@@ -940,6 +946,19 @@ NZB, uses a token with only `uploader.submissions.create`, checks exact-byte
 local get integrity, publishes explicitly to the disposable pool, and checks a
 second node's signed-manifest resolution and cache reuse. It makes no torrent,
 tracker, external download, or real Usenet connection.
+
+Run the completed pesto slice with a clean checkout of the pinned commit and
+Rust toolchain 1.96.0:
+
+```sh
+PESTO_SOURCE=/path/to/pesto ./scripts/uploader_pesto_conformance.sh
+```
+
+The command posts locally authored CC0 text to the same bounded loopback NNTP
+fixture, verifies POST/STAT and generated-NZB metadata, injects two HTTP `503`
+responses before successful least-privilege intake, then checks deduplication,
+approval, exact-byte Newznab get, and withdrawal. It suppresses pesto's
+courtesy version check so the run makes no external request.
 
 For each recipe, also force the following failures: malformed NZB, GoNZB
 unreachable, `401`, `413`, interrupted inbox write, and duplicate delivery.
