@@ -25,7 +25,6 @@ if [ -n "$metadata_path" ]; then
   exec curl --fail-with-body --silent --show-error \
     --retry 3 --retry-all-errors --connect-timeout 10 --max-time 120 \
     -H "Authorization: Bearer ${GONZB_TOKEN}" \
-    -H "Idempotency-Key: $(basename "$nzb_path")" \
     -F "nzb=@${nzb_path};type=application/x-nzb" \
     -F "metadata=<${metadata_path};type=application/json" \
     "$endpoint"
@@ -34,6 +33,5 @@ fi
 exec curl --fail-with-body --silent --show-error \
   --retry 3 --retry-all-errors --connect-timeout 10 --max-time 120 \
   -H "Authorization: Bearer ${GONZB_TOKEN}" \
-  -H "Idempotency-Key: $(basename "$nzb_path")" \
   -F "nzb=@${nzb_path};type=application/x-nzb" \
   "$endpoint"

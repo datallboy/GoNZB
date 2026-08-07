@@ -787,10 +787,24 @@ policy remain entirely in the Loon deployment.
 
 ```text
 external acquisition/download -> completed local path -> Postie queue/posting
-  -> generated .nzb -> Postie post_upload_script -> generic GoNZB HTTP intake
+  -> generated .nzb -> local durable forwarder -> generic GoNZB HTTP intake
 ```
 
-Install the generic submit helper above and configure Postie:
+For the normal separate-server topology, install the generic submit helper and
+`gonzb-submit-nzb-watch.sh` on the Postie host. Run the watcher against Postie's
+completed output and a persistent local state directory:
+
+```sh
+GONZB_URL=https://gonzb.example.test \
+GONZB_TOKEN="$POSTIE_SUBMIT_TOKEN" \
+  /usr/local/bin/gonzb-submit-nzb-watch.sh \
+  /var/lib/postie/output /var/lib/gonzb-postie-forwarder
+```
+
+This requires only outbound HTTPS from the Postie/VPN network. It persists
+content-hash receipts and bounded exponential retry state, so no Postie output
+mount or inbound access to Postie is required. Optionally also configure
+Postie's low-latency hook:
 
 ```yaml
 post_upload_script:
@@ -807,10 +821,11 @@ post_upload_script:
 Provide `GONZB_URL` and `GONZB_TOKEN` to the Postie service environment. The
 helper retries short transient HTTP failures. At pinned commit `e4da026`, a
 non-zero hook result is recorded as `pending_retry`, but the retry worker is not
-wired into the executable lifecycle. Use the read-only inbox or an
-operator-owned spool when delivery must survive a longer GoNZB outage. GoNZB
-does not call Postie's upload API, submit filesystem paths to it, inspect its
-queue, or know what caused the upload.
+wired into the executable lifecycle. The external watcher is the supported
+durable fallback for separate servers. If the hook succeeds first, the watcher
+may send one exact-content duplicate before recording its receipt; GoNZB
+deduplicates it by NZB SHA-256. GoNZB does not call Postie's upload API, submit
+filesystem paths to it, inspect its queue, or know what caused the upload.
 
 ### Illustrative pesto upstream recipe
 
@@ -919,7 +934,7 @@ segment counts, pending-review row, and duplicate retry result:
 | Generic inbox | Atomically place the NZB at several nesting depths | exactly one pending submission |
 | Manual UI | Upload the same fixture through the browser | validation and deduplication match the API |
 | Loon recipe | Feed a small local file/directory to Loon offline mode and expose only its completed output tree | recursive inbox discovers the generated NZB; no Loon fields are required |
-| Postie recipe | Post locally authored CC0 text to the repository loopback NNTP server and run `post_upload_script` | passed at `e4da026`: two injected `503` responses were retried, then Node A intake/approval and Node D pool search/grab/cache succeeded |
+| Postie recipe | Post locally authored CC0 text to the repository loopback NNTP server, run `post_upload_script`, then scan Postie's output with the durable forwarder | passed at `e4da026`: two injected `503` responses were retried, the forwarder persisted exact-content delivery, then Node A intake/approval and Node D pool search/grab/cache succeeded |
 | pesto recipe | Post a small local path to a mock NNTP server and run its post hook | `PESTO_NZB` reaches generic intake and creates a pending submission |
 
 The generic HTTP, inbox, UI, parser, and fixture tests run in normal GoNZB CI.

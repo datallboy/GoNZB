@@ -373,6 +373,16 @@ dedupe_json=$(GONZB_URL=http://127.0.0.1:18081 GONZB_TOKEN="$POSTIE_TOKEN" \
 printf '%s' "$dedupe_json" | jq -e \
   --arg id "$submission_id" '.created == false and .submission.id == $id' >/dev/null
 
+echo "Verifying durable Postie-output forwarding and receipt persistence"
+env GONZB_URL=http://127.0.0.1:18081 GONZB_TOKEN="$POSTIE_TOKEN" \
+  GONZB_WATCH_ONCE=1 GONZB_WATCH_SETTLE_SECONDS=0 \
+  "$ROOT/scripts/gonzb-submit-nzb-watch.sh" "$STATE/output" "$STATE/forwarder"
+nzb_sha=$(sha256sum "$nzb_path" | awk '{print $1}')
+test -s "$STATE/forwarder/delivered/$nzb_sha"
+env GONZB_URL=http://127.0.0.1:18081 GONZB_TOKEN="$POSTIE_TOKEN" \
+  GONZB_WATCH_ONCE=1 GONZB_WATCH_SETTLE_SECONDS=0 \
+  "$ROOT/scripts/gonzb-submit-nzb-watch.sh" "$STATE/output" "$STATE/forwarder"
+
 echo "Approving the Postie submission and checking Node A search/get"
 approved_json=$(admin_request node-a 18081 "/api/v1/uploader/submissions/$submission_id/actions/approve" '{}')
 printf '%s' "$approved_json" | jq -e '.submission.state == "approved"' >/dev/null
@@ -466,4 +476,4 @@ echo "  synthetic articles: $captured_count"
 echo "  uploader submission: $submission_id"
 echo "  federated release: $release_id"
 echo "  manifest: $manifest_id"
-echo "  verified: transient hook retry, dedupe, approval, Node A search/get, pool publication, Node D search/grab/cache"
+echo "  verified: transient hook retry, durable output forwarding, dedupe, approval, Node A search/get, pool publication, Node D search/grab/cache"

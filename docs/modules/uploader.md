@@ -160,9 +160,69 @@ ignores Loon's other output. Do not configure GoNZB as Loon's online companion.
 
 ### Postie
 
-Configure Postie's `post_upload_script` to call the generic helper with its NZB
-path. The helper performs short bounded HTTP retries, so transient connection
-errors and `5xx` responses do not immediately lose the callback.
+Postie and GoNZB do not need to share a server or filesystem. The recommended
+deployment runs the durable forwarder beside Postie and permits only outbound
+HTTPS from the Postie/VPN network to GoNZB:
+
+```text
+Postie private/VPN host -> completed NZB output -> durable local forwarder
+  -> authenticated outbound HTTPS -> GoNZB uploader -> pending review
+```
+
+Install both repository helpers on the Postie host, then run the watcher as a
+service. It recursively finds stable `.nzb` files, records successful content
+hashes in its state directory, and persists per-content exponential retry state
+across restarts:
+
+```sh
+export GONZB_URL=https://gonzb.example.test
+export GONZB_TOKEN='least-privilege-token'
+/usr/local/bin/gonzb-submit-nzb-watch.sh \
+  /var/lib/postie/output \
+  /var/lib/gonzb-postie-forwarder
+```
+
+Useful optional settings are:
+
+```sh
+GONZB_WATCH_INTERVAL_SECONDS=30
+GONZB_WATCH_SETTLE_SECONDS=60
+GONZB_WATCH_RETRY_BASE_SECONDS=60
+GONZB_WATCH_RETRY_MAX_SECONDS=3600
+GONZB_WATCH_MAX_NZB_BYTES=67108864
+```
+
+Keep the output directory read-only to the forwarder and its state directory
+persistent and writable. The token needs only `uploader.submissions.create`.
+Store it in the service manager's credential or environment-file facility with
+restricted permissions. A minimal systemd service is:
+
+```ini
+[Unit]
+Description=Forward completed Postie NZBs to GoNZB
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=postie
+EnvironmentFile=/etc/gonzb/postie-forwarder.env
+StateDirectory=gonzb-postie-forwarder
+ExecStart=/usr/local/bin/gonzb-submit-nzb-watch.sh /var/lib/postie/output /var/lib/gonzb-postie-forwarder
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
+```
+
+This topology does not expose Postie's web application or filesystem to GoNZB.
+The Postie host only needs a route to the GoNZB HTTPS endpoint, directly or
+through the VPN/overlay network.
+
+For lower latency, Postie's `post_upload_script` can additionally call the
+one-shot helper after verification:
 
 ```yaml
 post_upload_script:
@@ -173,11 +233,15 @@ post_upload_script:
   retry_delay: 30s
 ```
 
+Running both paths is safe: the first watcher scan may repeat a successful hook
+submission once, GoNZB deduplicates it by exact NZB SHA-256, and the watcher
+then records its durable receipt. The watcher alone avoids that extra request
+and normally delivers within the settle plus scan interval.
+
 At the pinned Postie snapshot used by the conformance harness, failed script
 state is persisted but the background `ScriptRetryWorker` is not started by
-the CLI or backend. Do not rely on Postie's `max_retries` fields for durable
-delivery at that version. For an outage that outlasts the helper's inline
-retries, use GoNZB's read-only inbox or an operator-owned spool/retry service.
+the CLI or backend. The external watcher closes that gap without requiring an
+inbound connection, shared mount, or Postie code change.
 
 ### pesto
 
@@ -210,10 +274,11 @@ POSTIE_SOURCE=/path/to/postie ./scripts/uploader_postie_conformance.sh
 
 The harness creates only locally authored CC0 text. It starts a loopback NNTP
 posting/STAT fixture, injects two HTTP `503` responses, and verifies Postie
-watch/queue processing, helper retry, least-privilege intake, exact-content
-deduplication, review approval, Node A Newznab search/get, explicit signed
-publication to `pool.e2e`, and Node D search/grab plus verified cache reuse.
-It resets all disposable state on completion. Set
+watch/queue processing, helper retry, durable output forwarding and receipt
+persistence, least-privilege intake, exact-content deduplication, review
+approval, Node A Newznab search/get, explicit signed publication to `pool.e2e`,
+and Node D search/grab plus verified cache reuse. It resets all disposable
+state on completion. Set
 `UPLOADER_POSTIE_KEEP_STATE=1` only when retaining a failed run for inspection.
 
 ## Safe conformance test
