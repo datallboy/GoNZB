@@ -178,6 +178,45 @@ func TestGetResultByIDUsesAuthoritativeDirectSourceWithoutPriorSearch(t *testing
 	}
 }
 
+func TestGetResultByIDRehydratesPersistedGoNZBNetResult(t *testing.T) {
+	releaseID := "rel_signed"
+	id := domain.GenerateCompositeID(gonzbnetSourceName, releaseID)
+	store := &fakeManagerStore{cachedResult: &domain.Release{
+		ID: id, Source: gonzbnetSourceName, GUID: releaseID, Title: "Tampered cache title",
+	}}
+	manager := NewManager(store, fakeLogger{}, false, true)
+	source := &fakeCatalogSource{
+		name:       gonzbnetSourceName,
+		rehydrated: &domain.Release{ID: id, Source: gonzbnetSourceName, GUID: releaseID, Title: "Signed title"},
+	}
+	manager.AddSource(source)
+
+	release, err := manager.GetResultByID(t.Context(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if release == nil || release.Title != "Signed title" || source.rehydrateCalls != 1 {
+		t.Fatalf("expected signed result rehydration, release=%+v calls=%d", release, source.rehydrateCalls)
+	}
+}
+
+func TestGetResultByIDRejectsRehydratedIdentityMismatch(t *testing.T) {
+	releaseID := "rel_signed"
+	id := domain.GenerateCompositeID(gonzbnetSourceName, releaseID)
+	store := &fakeManagerStore{cachedResult: &domain.Release{
+		ID: id, Source: gonzbnetSourceName, GUID: releaseID,
+	}}
+	manager := NewManager(store, fakeLogger{}, false, true)
+	manager.AddSource(&fakeCatalogSource{
+		name:       gonzbnetSourceName,
+		rehydrated: &domain.Release{ID: "different", Source: gonzbnetSourceName, GUID: releaseID},
+	})
+
+	if release, err := manager.GetResultByID(t.Context(), id); err == nil || release != nil {
+		t.Fatalf("expected mismatched signed identity to fail closed, release=%+v err=%v", release, err)
+	}
+}
+
 func TestSearchKeepsPriorResultAvailableForLaterDownload(t *testing.T) {
 	store := &fakeManagerStore{}
 	manager := NewManager(store, fakeLogger{}, false, false)
@@ -205,6 +244,7 @@ func TestSearchKeepsPriorResultAvailableForLaterDownload(t *testing.T) {
 
 type fakeManagerStore struct {
 	searchResults []*domain.Release
+	cachedResult  *domain.Release
 	exists        bool
 	cacheReads    int
 	cacheWrites   int
@@ -235,7 +275,7 @@ func (s *fakeManagerStore) SearchAggregatorReleaseCache(context.Context, string,
 }
 
 func (s *fakeManagerStore) GetAggregatorReleaseCacheByID(context.Context, string) (*domain.Release, error) {
-	return nil, nil
+	return cloneRelease(s.cachedResult), nil
 }
 
 type fakeLogger struct{}
@@ -249,6 +289,8 @@ type fakeCatalogSource struct {
 	name                string
 	direct              *domain.Release
 	directGets          int
+	rehydrated          *domain.Release
+	rehydrateCalls      int
 	gets                int
 	authorizeCalls      int
 	authorizeErr        error
@@ -282,6 +324,11 @@ func (s *fakeCatalogSource) GetByID(_ context.Context, id string) (*domain.Relea
 		return &copy, nil
 	}
 	return nil, nil
+}
+
+func (s *fakeCatalogSource) RehydratePersistedResult(_ context.Context, _ *domain.Release) (*domain.Release, error) {
+	s.rehydrateCalls++
+	return cloneRelease(s.rehydrated), nil
 }
 
 func (s *fakeCatalogSource) Name() string {

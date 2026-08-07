@@ -352,7 +352,21 @@ func (m *Manager) GetResultByID(ctx context.Context, id string) (*domain.Release
 		return rel, err
 	}
 	if isAuthoritativeOnlyRelease(rel) {
-		return nil, nil
+		m.mu.RLock()
+		src := m.sources[strings.TrimSpace(rel.Source)]
+		m.mu.RUnlock()
+		rehydrator, ok := src.(persistedResultRehydrator)
+		if !ok {
+			return nil, nil
+		}
+		canonical, err := rehydrator.RehydratePersistedResult(ctx, cloneRelease(rel))
+		if err != nil || canonical == nil {
+			return canonical, err
+		}
+		if canonical.ID != id || strings.TrimSpace(canonical.Source) != strings.TrimSpace(rel.Source) {
+			return nil, fmt.Errorf("authoritative result identity mismatch")
+		}
+		return cloneRelease(canonical), nil
 	}
 	return rel, nil
 }

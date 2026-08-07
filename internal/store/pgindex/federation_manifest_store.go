@@ -314,6 +314,7 @@ func (s *Store) FindFederatedManifestSource(ctx context.Context, releaseID strin
 		  AND release_event.event_type = 'ReleaseCard'
 		  AND release_event.author_node_id = rs.source_node_id
 		  AND release_event.pool_ids @> jsonb_build_array(rs.pool_id)
+		  AND release_event.body_json = release_event.canonical_event_json::jsonb->'body'
 		  AND c.body_json = release_event.body_json
 		  AND COALESCE(release_event.body_json->>'release_id', '') = rs.release_id
 		  AND COALESCE(release_event.body_json->>'manifest_id', '') = COALESCE(rs.manifest_id, '')
