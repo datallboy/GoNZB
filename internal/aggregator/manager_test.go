@@ -178,6 +178,31 @@ func TestGetResultByIDUsesAuthoritativeDirectSourceWithoutPriorSearch(t *testing
 	}
 }
 
+func TestSearchKeepsPriorResultAvailableForLaterDownload(t *testing.T) {
+	store := &fakeManagerStore{}
+	manager := NewManager(store, fakeLogger{}, false, false)
+	source := &queryCatalogSource{results: map[string]*domain.Release{
+		"movie": {ID: "movie-result", Source: "fixture", GUID: "movie-guid"},
+		"show":  {ID: "show-result", Source: "fixture", GUID: "show-guid"},
+	}}
+	manager.AddSource(source)
+
+	if _, err := manager.SearchAll(t.Context(), "movie"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.SearchAll(t.Context(), "show"); err != nil {
+		t.Fatal(err)
+	}
+
+	release, err := manager.GetResultByID(t.Context(), "movie-result")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if release == nil || release.GUID != "movie-guid" {
+		t.Fatalf("earlier search result was invalidated: %+v", release)
+	}
+}
+
 type fakeManagerStore struct {
 	searchResults []*domain.Release
 	exists        bool
@@ -229,6 +254,25 @@ type fakeCatalogSource struct {
 	authorizeErr        error
 	validateCachedCalls int
 	validateCachedErr   error
+}
+
+type queryCatalogSource struct {
+	results map[string]*domain.Release
+}
+
+func (*queryCatalogSource) Name() string { return "fixture" }
+
+func (s *queryCatalogSource) Search(_ context.Context, req SearchRequest) ([]*domain.Release, error) {
+	release := s.results[req.Query]
+	if release == nil {
+		return []*domain.Release{}, nil
+	}
+	copy := *release
+	return []*domain.Release{&copy}, nil
+}
+
+func (*queryCatalogSource) GetNZB(context.Context, *domain.Release) (io.ReadCloser, error) {
+	return io.NopCloser(bytes.NewReader([]byte("<nzb/>"))), nil
 }
 
 func (s *fakeCatalogSource) GetByID(_ context.Context, id string) (*domain.Release, error) {

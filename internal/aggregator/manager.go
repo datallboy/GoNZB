@@ -19,6 +19,7 @@ const gonzbnetSourceName = "gonzbnet"
 const uploaderSourceName = "uploader"
 
 const maxCachedNZBBytes int64 = 64 << 20
+const maxRecentResults = 1000
 
 type Manager struct {
 	mu                       sync.RWMutex
@@ -161,7 +162,14 @@ func (m *Manager) SearchAllWithRequest(ctx context.Context, req app.SearchReques
 	})
 
 	m.mu.Lock()
-	m.recentResults = make(map[string]*domain.Release, len(allResults))
+	// Newznab clients commonly perform several searches before following an
+	// earlier result's download URL. Keep a bounded lookup window instead of
+	// invalidating every prior URL whenever another search completes. Policy-
+	// aware sources are still reauthorized by GetNZB before cached or remote
+	// bytes are returned.
+	if len(m.recentResults)+len(allResults) > maxRecentResults {
+		m.recentResults = make(map[string]*domain.Release, len(allResults))
+	}
 	for _, rel := range allResults {
 		if rel == nil || rel.ID == "" {
 			continue

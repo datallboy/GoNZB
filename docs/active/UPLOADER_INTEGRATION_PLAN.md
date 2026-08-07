@@ -42,6 +42,7 @@ references, not GoNZB dependencies or claims of completed live conformance:
 | Loon Agent | `2c8982d` | service watcher, loopback post, nested recursive-inbox intake, approval, Newznab search/get, and withdrawal passed |
 | Postie | `e4da026` | loopback post, hook retry, intake, approval, and cross-node pool search/grab passed |
 | pesto | `ce57ddc` | loopback post, hook retry, intake, approval, Newznab search/get, and withdrawal passed |
+| Prowlarr / Radarr / Sonarr | `2.3.5.5327` / `6.3.0.10514` / `4.0.19.2979` | least-privilege Node D federation search, Prowlarr exact grabs, Radarr movie RSS parsing, and Sonarr TV RSS parsing passed |
 
 ## Purpose
 
@@ -975,6 +976,19 @@ Newznab get, and withdrawal. External HTTP is forced through a closed loopback
 proxy and the input is a plain file, so no torrent or tracker path starts. This
 proves only the local/shared-volume topology; separate servers still need a
 shared read-only mount or the deferred forwarder.
+
+Run the completed downstream consumer slice with Docker:
+
+```sh
+./scripts/newznab_arr_conformance.sh
+```
+
+The command creates two synthetic NZBs, approves and explicitly publishes them
+to a disposable four-node pool, and gives Prowlarr, Radarr, and Sonarr a
+least-privilege Node D token. It checks Prowlarr caps/search/exact grabs and the
+movie/TV RSS requests and parse counts from Radarr and Sonarr. The real client
+images are pinned by digest; no downloader, provider, torrent, tracker, media
+payload, or library is configured.
 
 For each recipe, also force the following failures: malformed NZB, GoNZB
 unreachable, `401`, `413`, interrupted inbox write, and duplicate delivery.
