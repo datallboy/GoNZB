@@ -160,20 +160,9 @@ ignores Loon's other output. Do not configure GoNZB as Loon's online companion.
 
 ### Postie
 
-Postie and GoNZB do not need to share a server or filesystem. For production,
-run the producer-neutral
-[completed-NZB forwarder sidecar](../wiki/integrations/completed-nzb-forwarder-sidecar.md)
-beside Postie. It mounts Postie's completed-NZB output read-only, persists
-delivery state separately, and makes only outbound authenticated HTTPS requests
-to GoNZB:
-
-```text
-Postie private/VPN host -> completed NZB output -> durable local forwarder
-  -> authenticated outbound HTTPS -> GoNZB uploader -> pending review
-```
-
-For lower latency, Postie's `post_upload_script` can additionally call the
-one-shot helper after verification:
+Configure Postie's `post_upload_script` to call the generic helper with its NZB
+path. The helper performs short bounded HTTP retries, so transient connection
+errors and `5xx` responses do not immediately lose the callback.
 
 ```yaml
 post_upload_script:
@@ -184,15 +173,13 @@ post_upload_script:
   retry_delay: 30s
 ```
 
-Running both paths is safe: the first watcher scan may repeat a successful hook
-submission once, GoNZB deduplicates it by exact NZB SHA-256, and the watcher
-then records its durable receipt. The watcher alone avoids that extra request
-and normally delivers within the settle plus scan interval.
-
 At the pinned Postie snapshot used by the conformance harness, failed script
 state is persisted but the background `ScriptRetryWorker` is not started by
-the CLI or backend. The external watcher closes that gap without requiring an
-inbound connection, shared mount, or Postie code change.
+the CLI or backend. Do not rely on Postie's `max_retries` fields for durable
+delivery at that version. For an outage that outlasts the helper's inline
+retries, delivery is intentionally left to the proposed
+[gonzb-nzb-forwarder project](../wiki/integrations/completed-nzb-forwarder-sidecar.md),
+which is not currently implemented or shipped by GoNZB.
 
 ### pesto
 
@@ -225,11 +212,10 @@ POSTIE_SOURCE=/path/to/postie ./scripts/uploader_postie_conformance.sh
 
 The harness creates only locally authored CC0 text. It starts a loopback NNTP
 posting/STAT fixture, injects two HTTP `503` responses, and verifies Postie
-watch/queue processing, helper retry, durable output forwarding and receipt
-persistence, least-privilege intake, exact-content deduplication, review
-approval, Node A Newznab search/get, explicit signed publication to `pool.e2e`,
-and Node D search/grab plus verified cache reuse. It resets all disposable
-state on completion. Set
+watch/queue processing, helper retry, least-privilege intake, exact-content
+deduplication, review approval, Node A Newznab search/get, explicit signed
+publication to `pool.e2e`, and Node D search/grab plus verified cache reuse.
+It resets all disposable state on completion. Set
 `UPLOADER_POSTIE_KEEP_STATE=1` only when retaining a failed run for inspection.
 
 ## Safe conformance test

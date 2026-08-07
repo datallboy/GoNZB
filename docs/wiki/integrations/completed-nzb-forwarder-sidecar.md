@@ -1,14 +1,28 @@
-# Completed-NZB forwarder sidecar
+# Project proposal: `gonzb-nzb-forwarder`
 
-The completed-NZB forwarder is a producer-neutral delivery agent for posting
-tools that run on a different server from GoNZB. It watches a local completed
-output directory and sends stable NZBs to GoNZB's authenticated uploader API.
-It does not acquire content, post articles, access NNTP, or publish directly to
-a GoNZBNet pool.
+> Status: proposed and intentionally deferred. No forwarder binary, watcher
+> script, container image, or supported deployment currently ships with GoNZB.
 
-## Recommended ownership boundary
+`gonzb-nzb-forwarder` is a proposed producer-neutral sidecar for delivering
+completed NZBs from a posting host to a separate GoNZB server. This document is
+a project note, not an implementation plan or operator runbook.
 
-Treat the forwarder as a companion service, not as part of either the Postie or
+## Problem statement
+
+Postie and similar tools can produce a completed NZB on a host that should
+remain isolated behind a VPN. Postie's current `post_upload_script` can submit
+that NZB to GoNZB immediately, but at the tested upstream revision its durable
+script retry worker is not started by the service lifecycle. A longer GoNZB or
+network outage can therefore outlast the hook's bounded inline retries.
+
+A shared NFS/SMB mount would let GoNZB use its existing read-only inbox, but it
+adds infrastructure and exposes the posting host's output across machines. A
+small outbound-only delivery sidecar could provide durable handoff without an
+inbound route to the posting server.
+
+## Proposed boundary
+
+The forwarder would be a separate companion service, not part of Postie or the
 GoNZB server process:
 
 ```text
@@ -20,144 +34,126 @@ Postie container ──writes──> completed-NZB volume <──read-only──
                                                        GoNZB uploader API
 ```
 
-This is especially useful when Postie is isolated behind a provider VPN.
-GoNZB never needs an inbound route to Postie. The forwarder only needs read
-access to Postie's completed-NZB volume, persistent local state, and an outbound
-route to GoNZB.
+The project should be generic. Postie, pesto, Loon, or any other producer could
+use it by exposing a directory containing finalized NZBs. It should not know
+how the source material was acquired or posted.
 
-Do not automatically place the forwarder in Postie's NNTP VPN network
-namespace. It does not contact Usenet. Give it the narrow route that can reach
-GoNZB over HTTPS; this may be an internal container network, LAN route, or
-private overlay network while Postie's NNTP traffic remains VPN-isolated.
+## Repository recommendation
 
-## Current implementation status
+If implemented, this should live in a separate repository and publish its own
+versioned container image. The deployment lifecycle, security surface, and
+release cadence are independent from GoNZB. Keeping it separate also prevents
+the GoNZB server image from acquiring filesystem-watcher or sidecar runtime
+concerns.
 
-The current reference implementation consists of:
+Suggested ownership split:
 
-- `scripts/gonzb-submit-nzb-watch.sh`, the long-running directory scanner and
-  durable retry loop;
-- `scripts/gonzb-submit-nzb.sh`, the bounded HTTP submission helper;
-- GoNZB's producer-neutral `POST /api/v1/uploader/submissions` endpoint.
+- **GoNZB repository:** uploader API contract, bounded validation,
+  authentication, exact-content deduplication, and cross-project conformance
+  fixtures.
+- **`gonzb-nzb-forwarder` repository:** forwarder binary, container image,
+  durable delivery state, health checks, metrics, release automation, SBOMs,
+  and image signing.
+- **Producer projects:** only generate completed NZBs and expose their output
+  volume; they do not gain GoNZB-specific core dependencies.
 
-There is not yet a published standalone forwarder container image. Until one is
-released, these scripts can be installed into an operator-owned sidecar image.
-The image needs Bash, curl, CA certificates, `find`, `stat`, `awk`, and either
-`sha256sum` or `shasum`.
+The preferred implementation would be a small static Go binary rather than a
+shell-script image. That avoids Bash/curl/coreutils runtime dependencies and
+provides a cleaner path for cancellation, health checks, structured logs,
+secret-file support, and deterministic multi-architecture images.
 
-## Container runtime contract
+## Proposed runtime contract
 
-The sidecar should receive only the following resources:
+The sidecar would receive only:
 
 | Resource | Access | Purpose |
 | --- | --- | --- |
-| Completed-NZB volume | read-only | Recursively discover stable `.nzb` files |
-| Forwarder state volume | read-write | Delivery receipts and retry deadlines |
-| GoNZB URL | configuration | HTTPS uploader endpoint |
-| GoNZB token | secret | Authentication with only `uploader.submissions.create` |
+| Completed-NZB volume | read-only | Discover finalized `.nzb` files recursively |
+| Forwarder state volume | read-write | Durable delivery receipts and retry deadlines |
+| GoNZB URL | configuration | Locate the HTTPS uploader endpoint |
+| GoNZB token | secret | Authenticate with only `uploader.submissions.create` |
 | CA trust | read-only | Verify the GoNZB TLS certificate |
 
-The container command is:
+The state volume must survive container recreation. The input volume must never
+be modified, renamed, or cleaned by the forwarder.
 
-```sh
-/usr/local/bin/gonzb-submit-nzb-watch.sh /input /state
-```
+## Proposed behavior
 
-Its relevant environment is:
+The first implementation should:
 
-```ini
-GONZB_URL=https://gonzb.internal.example
-GONZB_TOKEN=least-privilege-token
-GONZB_WATCH_INTERVAL_SECONDS=30
-GONZB_WATCH_SETTLE_SECONDS=60
-GONZB_WATCH_RETRY_BASE_SECONDS=60
-GONZB_WATCH_RETRY_MAX_SECONDS=3600
-GONZB_WATCH_MAX_NZB_BYTES=67108864
-```
+1. recursively inspect only regular `.nzb` files without following symlinks;
+2. require a configurable settle period and verify the file remains unchanged;
+3. enforce a finite input-size limit before submission;
+4. deliver through `POST /api/v1/uploader/submissions` using a dedicated token;
+5. persist success by exact NZB SHA-256 so restarts do not resend old files;
+6. persist bounded exponential retry state for network and server failures;
+7. distinguish retryable failures from permanent validation/authentication
+   failures and expose both operationally;
+8. use bounded concurrency and avoid repeated scans generating network chatter;
+9. provide a container health check and concise structured status metrics;
+10. avoid logging tokens, NZB bodies, passwords, or response metadata that may
+    contain sensitive release information.
 
-In production, supply the token through the container platform's secret
-facility rather than Compose source or an image layer. Run as a non-root user,
-use a read-only root filesystem, drop Linux capabilities, set
-`no-new-privileges`, and persist `/state` independently of the container.
+GoNZB would retain all authority. Every newly delivered NZB would still enter
+`pending_review`; the forwarder could not approve, publish, or administer a
+GoNZBNet pool.
 
-An illustrative Compose service contract is:
+## Network and VPN model
 
-```yaml
-services:
-  postie:
-    volumes:
-      - postie_nzb_output:/var/lib/postie/output
+The forwarder would not need NNTP or general Internet access. It should not
+automatically share Postie's provider-VPN network namespace. Instead, it should
+mount the completed output volume and receive the narrow route needed to reach
+GoNZB over HTTPS through an internal container network, LAN, or private overlay
+network.
 
-  nzb-forwarder:
-    image: your-registry/gonzb-nzb-forwarder:your-pinned-version
-    restart: unless-stopped
-    environment:
-      GONZB_URL: https://gonzb.internal.example
-      GONZB_TOKEN: ${GONZB_FORWARDER_TOKEN:?set in deployment secrets}
-      GONZB_WATCH_INTERVAL_SECONDS: "30"
-      GONZB_WATCH_SETTLE_SECONDS: "60"
-      GONZB_WATCH_RETRY_BASE_SECONDS: "60"
-      GONZB_WATCH_RETRY_MAX_SECONDS: "3600"
-    volumes:
-      - postie_nzb_output:/input:ro
-      - gonzb_forwarder_state:/state
-    read_only: true
-    cap_drop: [ALL]
-    security_opt:
-      - no-new-privileges:true
-    command: ["/input", "/state"]
+This preserves the intended isolation:
 
-volumes:
-  postie_nzb_output:
-  gonzb_forwarder_state:
-```
+- Postie's NNTP traffic remains constrained by its VPN policy;
+- GoNZB receives an outbound authenticated request and never connects to
+  Postie;
+- the forwarder cannot access Postie's source input or NNTP credentials;
+- GoNZB's API token grants submission only, not review or publication.
 
-The image name is deliberately illustrative until a versioned image exists.
-Use an immutable digest in a real deployment. A Docker secret-to-environment
-entrypoint may also be needed until the forwarder supports a token-file option.
+## Proposed container properties
 
-## Delivery behavior
+A future production image should:
 
-The forwarder:
+- run as a fixed non-root user;
+- use a read-only root filesystem;
+- drop all Linux capabilities and enable `no-new-privileges`;
+- support Docker/Kubernetes secret files instead of requiring the token in
+  Compose environment text;
+- provide signed multi-architecture images pinned by immutable digest;
+- include an SBOM and automated vulnerability scanning;
+- expose health without opening an externally reachable management service.
 
-1. recursively scans only regular `.nzb` files and does not follow symlinks;
-2. waits for the configured settle age;
-3. bounds the accepted file size;
-4. hashes the file and verifies that it did not change during submission;
-5. sends it through the normal authenticated uploader endpoint;
-6. stores a receipt keyed by exact NZB SHA-256 after success;
-7. stores exponential retry state after failure and resumes it after restart.
+## Relationship to Postie's hook
 
-The sidecar never deletes, renames, or modifies Postie's output. GoNZB performs
-its normal bounded NZB parsing and exact-content deduplication. A successfully
-delivered item still starts in `pending_review`; the sidecar cannot approve or
-publish it.
+Until this project exists, the supported separate-server integration remains
+Postie's `post_upload_script` calling GoNZB's one-shot submission helper. It
+provides short bounded retries but is not presented as durable across a long
+outage.
 
-Postie's `post_upload_script` may remain enabled for low-latency delivery, but
-it is optional. If both paths submit the same NZB, GoNZB returns the existing
-submission and the forwarder records its receipt. Running only the sidecar
-avoids that one duplicate request.
+If the sidecar is implemented later, operators could choose one delivery path:
 
-## Separate repository recommendation
+- the Postie hook for immediate best-effort delivery; or
+- the sidecar for durable directory-backed delivery.
 
-A separate project is the cleaner long-term home if the forwarder will be a
-published production image. It has an independent deployment lifecycle and is
-useful for Postie, pesto, Loon, and any other producer that emits completed
-NZBs. It should therefore not be named or coupled specifically to Postie.
+Using both should not be the recommended default because it creates an
+avoidable duplicate request, even though GoNZB safely deduplicates identical
+NZB bytes.
 
-The proposed split is:
+## Acceptance criteria before implementation is considered complete
 
-- **GoNZB repository:** owns the uploader API contract, validation,
-  authentication, server-side deduplication, and cross-project conformance
-  tests.
-- **Forwarder repository:** owns a small static binary, container image,
-  filesystem scanning, durable queue state, health checks, metrics, image
-  signing/SBOMs, and release documentation.
-- **Producer projects:** own only the completed-NZB output volume; no GoNZB
-  credentials or API logic is added to their core processing.
+- A clean repository and independently versioned container image exist.
+- Unit tests cover settle detection, mutation races, symlink rejection,
+  content receipts, retry classification, restart recovery, and secret
+  redaction.
+- The existing synthetic Postie conformance proves posting, sidecar delivery,
+  pending review, approval, pool publication, remote search, and remote grab.
+- A multi-hour outage/restart soak proves no lost or duplicate-visible
+  submissions and bounded request volume.
+- Documentation covers Compose and Kubernetes deployment without requiring an
+  inbound connection or cross-server filesystem mount.
 
-The current scripts should remain as the tested reference implementation until
-the standalone image passes the same conformance harness. Extraction is worth
-doing when the project is ready to publish and maintain versioned multi-arch
-images. Merely moving the two scripts to another repository before that point
-would add release overhead without improving runtime behavior.
-
+No implementation work is currently scheduled by this document.

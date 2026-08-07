@@ -4,10 +4,10 @@ For posting pipelines that already produce completed NZBs, use the
 [completed-NZB uploader](../../modules/uploader.md). That boundary does not
 connect GoNZB to torrents, source downloads, or NNTP posting tools.
 
-When the posting pipeline and GoNZB run on separate servers, use the
-[completed-NZB forwarder sidecar](completed-nzb-forwarder-sidecar.md) for a
-durable, outbound-only handoff without a shared filesystem or inbound access to
-the posting server.
+For a possible future durable, outbound-only handoff between separate servers,
+see the deferred
+[`gonzb-nzb-forwarder` project proposal](completed-nzb-forwarder-sidecar.md).
+No forwarder binary or container image is currently implemented or shipped.
 
 GoNZB is the indexer in an automation stack. Radarr, Sonarr, Prowlarr,
 NZBHydra, and similar software search GoNZB through Newznab. SABnzbd or another
