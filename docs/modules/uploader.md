@@ -160,66 +160,17 @@ ignores Loon's other output. Do not configure GoNZB as Loon's online companion.
 
 ### Postie
 
-Postie and GoNZB do not need to share a server or filesystem. The recommended
-deployment runs the durable forwarder beside Postie and permits only outbound
-HTTPS from the Postie/VPN network to GoNZB:
+Postie and GoNZB do not need to share a server or filesystem. For production,
+run the producer-neutral
+[completed-NZB forwarder sidecar](../wiki/integrations/completed-nzb-forwarder-sidecar.md)
+beside Postie. It mounts Postie's completed-NZB output read-only, persists
+delivery state separately, and makes only outbound authenticated HTTPS requests
+to GoNZB:
 
 ```text
 Postie private/VPN host -> completed NZB output -> durable local forwarder
   -> authenticated outbound HTTPS -> GoNZB uploader -> pending review
 ```
-
-Install both repository helpers on the Postie host, then run the watcher as a
-service. It recursively finds stable `.nzb` files, records successful content
-hashes in its state directory, and persists per-content exponential retry state
-across restarts:
-
-```sh
-export GONZB_URL=https://gonzb.example.test
-export GONZB_TOKEN='least-privilege-token'
-/usr/local/bin/gonzb-submit-nzb-watch.sh \
-  /var/lib/postie/output \
-  /var/lib/gonzb-postie-forwarder
-```
-
-Useful optional settings are:
-
-```sh
-GONZB_WATCH_INTERVAL_SECONDS=30
-GONZB_WATCH_SETTLE_SECONDS=60
-GONZB_WATCH_RETRY_BASE_SECONDS=60
-GONZB_WATCH_RETRY_MAX_SECONDS=3600
-GONZB_WATCH_MAX_NZB_BYTES=67108864
-```
-
-Keep the output directory read-only to the forwarder and its state directory
-persistent and writable. The token needs only `uploader.submissions.create`.
-Store it in the service manager's credential or environment-file facility with
-restricted permissions. A minimal systemd service is:
-
-```ini
-[Unit]
-Description=Forward completed Postie NZBs to GoNZB
-Wants=network-online.target
-After=network-online.target
-
-[Service]
-Type=simple
-User=postie
-EnvironmentFile=/etc/gonzb/postie-forwarder.env
-StateDirectory=gonzb-postie-forwarder
-ExecStart=/usr/local/bin/gonzb-submit-nzb-watch.sh /var/lib/postie/output /var/lib/gonzb-postie-forwarder
-Restart=on-failure
-RestartSec=5s
-NoNewPrivileges=true
-
-[Install]
-WantedBy=multi-user.target
-```
-
-This topology does not expose Postie's web application or filesystem to GoNZB.
-The Postie host only needs a route to the GoNZB HTTPS endpoint, directly or
-through the VPN/overlay network.
 
 For lower latency, Postie's `post_upload_script` can additionally call the
 one-shot helper after verification:
