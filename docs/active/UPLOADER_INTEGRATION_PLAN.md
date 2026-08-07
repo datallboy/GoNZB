@@ -28,8 +28,10 @@ Implemented on `feature/uploader-integration`:
 
 Automated validation uses only synthetic NZBs and performs no torrent,
 magnet-link, external download, or real-provider NNTP activity. The generic
-handoff is covered locally. Loon, Postie, and pesto have also passed their
-opt-in loopback NNTP conformance harnesses described below. The Loon result
+handoff is covered locally, including negative intake, restart recovery,
+cache/projection tampering, and signed withdrawal. Loon, Postie, and pesto have
+also passed their opt-in loopback NNTP conformance harnesses described below.
+The Loon result
 covers only a local/shared-filesystem handoff, not delivery between separate
 servers. Any test that introduces torrent or tracker networking remains
 prohibited until an operator-provided VPN-controlled environment exists.
@@ -925,6 +927,7 @@ segment counts, pending-review row, and duplicate retry result:
 | Generic HTTP | Submit a minimal valid NZB with the maintained helper | `201`, then same ID on retry |
 | Generic inbox | Atomically place the NZB at several nesting depths | exactly one pending submission |
 | Manual UI | Upload the same fixture through the browser | validation and deduplication match the API |
+| Negative/restart soak | Exercise bounded failures, duplicate delivery, inbox retry, node outage/restart, cache corruption, projection tampering, and withdrawal | passed: failures leave no hidden submissions, issued grab URLs survive restart, cached bytes repair by hash, tampered metadata fails closed, and withdrawal removes search/get |
 | Loon recipe | Feed locally authored CC0 text to Loon offline mode and expose only its completed output tree | passed at `2c8982d`: recursive inbox discovered the nested generated NZB; source/output immutability, posting metadata, dedupe, approval, Newznab get, and withdrawal passed |
 | Postie recipe | Post locally authored CC0 text to the repository loopback NNTP server and run `post_upload_script` | passed at `e4da026`: two injected `503` responses were retried, then Node A intake/approval and Node D pool search/grab/cache succeeded |
 | pesto recipe | Post a small local path to a mock NNTP server and run its post hook | passed at `ce57ddc`: `PESTO_NZB` survived two injected `503` responses, created one pending submission, and passed approval, Newznab get, and withdrawal checks |
@@ -935,6 +938,16 @@ opt-in compatibility job or release-time check pinned to known versions. It
 must run on an isolated network against a repository-owned mock NNTP service.
 Pesto's repository includes a mock NNTP example that can inform the harness,
 but GoNZB should own the test service so every producer sees the same server.
+
+Run the synthetic negative/restart soak against a disposable four-node pool:
+
+```sh
+./scripts/uploader_negative_soak.sh
+```
+
+The command needs no external producer checkout and does not contact a Usenet
+provider. `UPLOADER_SOAK_ITERATIONS` and `UPLOADER_SOAK_RESTARTS` may increase
+the duplicate/restart cycles for longer release-time soaks.
 
 Run the completed Postie slice with a clean checkout of the pinned commit:
 
