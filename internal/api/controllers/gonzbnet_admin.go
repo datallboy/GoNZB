@@ -628,25 +628,11 @@ func (ctrl *GoNZBNetAdminController) UpsertPool(c *echo.Context) error {
 	}
 	acceptedTypes := req.AcceptedEventTypes
 	if len(acceptedTypes) == 0 {
-		acceptedTypes = []string{
-			pools.EventTypeReleaseCard,
-			pools.EventTypeHealthAttestation,
-			pools.EventTypeTombstone,
-			pools.EventTypeValidatorCapacity,
-			pools.EventTypeArticleAvailabilityAttestation,
-			pools.EventTypeChecksumAttestation,
-			pools.EventTypeManifestAvailability,
-			pools.EventTypeScannerCapacity,
-			pools.EventTypeScannerHeartbeat,
-			pools.EventTypeGroupObservation,
-			pools.EventTypeCoveragePlan,
-			pools.EventTypeCoverageAssignment,
-			pools.EventTypeRangeClaim,
-			pools.EventTypeTimeWindowClaim,
-			pools.EventTypeCoverageCheckpoint,
-			pools.EventTypeRangeComplete,
-			pools.EventTypeRangeFailed,
-		}
+		// Keep API-created pools aligned with the canonical pool-policy default.
+		// A hand-maintained subset previously omitted ResolutionManifest and
+		// ReleasePublicationState, which made explicit uploader publication
+		// ineligible on otherwise default pools.
+		acceptedTypes = pools.NormalizePolicy(pools.Policy{}, 1).AcceptedEventTypes
 	}
 	policy := pools.Policy{
 		MembershipThreshold:         req.MembershipThreshold,

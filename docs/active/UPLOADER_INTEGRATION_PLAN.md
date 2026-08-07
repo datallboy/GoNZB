@@ -3,7 +3,7 @@
 Status: Active design plan
 Branch: `feature/uploader-integration`
 Created: 2026-08-04
-Updated: 2026-08-06
+Updated: 2026-08-07
 Primary audience: GoNZB maintainers and operators connecting completed NZB
 producers to GoNZB
 
@@ -27,12 +27,12 @@ Implemented on `feature/uploader-integration`:
 - uploader list/detail/review/artifact/publication UI and operator guidance.
 
 Automated validation uses only synthetic NZBs and performs no torrent,
-magnet-link, external download, or NNTP posting activity. The generic handoff
-is covered locally. Running the external Loon, Postie, and pesto executables
-against a controlled mock-NNTP harness remains an opt-in conformance follow-up
-because those applications are outside GoNZB's test boundary. Any test that
-introduces torrent or tracker networking remains prohibited until an
-operator-provided VPN-controlled environment exists.
+magnet-link, external download, or real-provider NNTP activity. The generic
+handoff is covered locally. Postie has also passed the opt-in loopback NNTP and
+four-node GoNZBNet conformance harness described below. Loon and pesto live
+recipes remain follow-up work because those applications are outside GoNZB's
+test boundary. Any test that introduces torrent or tracker networking remains
+prohibited until an operator-provided VPN-controlled environment exists.
 
 Research was performed against these pinned source snapshots; they are recipe
 references, not GoNZB dependencies or claims of completed live conformance:
@@ -40,7 +40,7 @@ references, not GoNZB dependencies or claims of completed live conformance:
 | Producer | Researched commit | Validation state |
 | --- | --- | --- |
 | Loon Agent | `2c8982d` | generic recursive-inbox contract covered; live recipe pending |
-| Postie | `e4da026` | generic post-upload helper contract covered; live recipe pending |
+| Postie | `e4da026` | loopback post, hook retry, intake, approval, and cross-node pool search/grab passed |
 | pesto | `ce57ddc` | generic post-hook contract covered; live recipe pending |
 
 ## Purpose
@@ -186,11 +186,15 @@ schedules, an API, and a WebUI.
 Postie does not acquire torrents. It accepts completed local filesystem paths,
 so an external downloader must own torrent lifecycle and path placement.
 
-Postie's post-upload script runs after NZB generation and supports the
-`{nzb_path}` placeholder. Script failures are tracked and retried. The GoNZB
-integration recipe can use that hook to submit the generated NZB to the
-authenticated uploader API. Postie's broader HTTP surface should remain on a
-trusted private network; GoNZB only receives the hook request.
+Postie's post-upload script runs after durable article verification in its
+watch/queue path and supports the `{nzb_path}` placeholder. The GoNZB
+integration recipe uses that hook to submit the generated NZB to the
+authenticated uploader API. At the pinned snapshot, Postie persists failed
+script state but does not start its `ScriptRetryWorker` from the CLI or backend;
+only the helper's short inline HTTP retries were live-validated. Long-outage
+delivery therefore requires GoNZB's read-only inbox or an operator-owned
+spool/retry service. Postie's broader HTTP surface should remain on a trusted
+private network; GoNZB only receives the hook request.
 
 ### pesto
 
@@ -801,7 +805,10 @@ post_upload_script:
 ```
 
 Provide `GONZB_URL` and `GONZB_TOKEN` to the Postie service environment. The
-helper's non-zero response activates Postie's durable exponential retry. GoNZB
+helper retries short transient HTTP failures. At pinned commit `e4da026`, a
+non-zero hook result is recorded as `pending_retry`, but the retry worker is not
+wired into the executable lifecycle. Use the read-only inbox or an
+operator-owned spool when delivery must survive a longer GoNZB outage. GoNZB
 does not call Postie's upload API, submit filesystem paths to it, inspect its
 queue, or know what caused the upload.
 
@@ -912,7 +919,7 @@ segment counts, pending-review row, and duplicate retry result:
 | Generic inbox | Atomically place the NZB at several nesting depths | exactly one pending submission |
 | Manual UI | Upload the same fixture through the browser | validation and deduplication match the API |
 | Loon recipe | Feed a small local file/directory to Loon offline mode and expose only its completed output tree | recursive inbox discovers the generated NZB; no Loon fields are required |
-| Postie recipe | Post a small local path to a mock NNTP server and run `post_upload_script` | hook submits the generated NZB and retries a forced non-2xx response |
+| Postie recipe | Post locally authored CC0 text to the repository loopback NNTP server and run `post_upload_script` | passed at `e4da026`: two injected `503` responses were retried, then Node A intake/approval and Node D pool search/grab/cache succeeded |
 | pesto recipe | Post a small local path to a mock NNTP server and run its post hook | `PESTO_NZB` reaches generic intake and creates a pending submission |
 
 The generic HTTP, inbox, UI, parser, and fixture tests run in normal GoNZB CI.
@@ -921,6 +928,18 @@ opt-in compatibility job or release-time check pinned to known versions. It
 must run on an isolated network against a repository-owned mock NNTP service.
 Pesto's repository includes a mock NNTP example that can inform the harness,
 but GoNZB should own the test service so every producer sees the same server.
+
+Run the completed Postie slice with a clean checkout of the pinned commit:
+
+```sh
+POSTIE_SOURCE=/path/to/postie ./scripts/uploader_postie_conformance.sh
+```
+
+The command verifies captured yEnc article/message-ID facts against Postie's
+NZB, uses a token with only `uploader.submissions.create`, checks exact-byte
+local get integrity, publishes explicitly to the disposable pool, and checks a
+second node's signed-manifest resolution and cache reuse. It makes no torrent,
+tracker, external download, or real Usenet connection.
 
 For each recipe, also force the following failures: malformed NZB, GoNZB
 unreachable, `401`, `413`, interrupted inbox write, and duplicate delivery.

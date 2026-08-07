@@ -161,8 +161,8 @@ ignores Loon's other output. Do not configure GoNZB as Loon's online companion.
 ### Postie
 
 Configure Postie's `post_upload_script` to call the generic helper with its NZB
-path. Keep Postie's retries enabled so a temporary GoNZB outage causes a later
-delivery rather than a lost callback.
+path. The helper performs short bounded HTTP retries, so transient connection
+errors and `5xx` responses do not immediately lose the callback.
 
 ```yaml
 post_upload_script:
@@ -172,6 +172,12 @@ post_upload_script:
   max_retries: 3
   retry_delay: 30s
 ```
+
+At the pinned Postie snapshot used by the conformance harness, failed script
+state is persisted but the background `ScriptRetryWorker` is not started by
+the CLI or backend. Do not rely on Postie's `max_retries` fields for durable
+delivery at that version. For an outage that outlasts the helper's inline
+retries, use GoNZB's read-only inbox or an operator-owned spool/retry service.
 
 ### pesto
 
@@ -193,6 +199,23 @@ mock-NNTP service. The automated GoNZB suite never starts BitTorrent
 networking; any separate torrent-backed smoke requires an operator-provided
 VPN-controlled environment.
 
+### Live Postie conformance
+
+The optional harness is pinned to Postie commit
+`e4da026405f3e6853b60d5907d42a2e8daaf6557`. Provide a clean checkout and run:
+
+```sh
+POSTIE_SOURCE=/path/to/postie ./scripts/uploader_postie_conformance.sh
+```
+
+The harness creates only locally authored CC0 text. It starts a loopback NNTP
+posting/STAT fixture, injects two HTTP `503` responses, and verifies Postie
+watch/queue processing, helper retry, least-privilege intake, exact-content
+deduplication, review approval, Node A Newznab search/get, explicit signed
+publication to `pool.e2e`, and Node D search/grab plus verified cache reuse.
+It resets all disposable state on completion. Set
+`UPLOADER_POSTIE_KEEP_STATE=1` only when retaining a failed run for inspection.
+
 ## Safe conformance test
 
 Use a synthetic NZB containing message IDs in an operator-controlled test
@@ -206,5 +229,5 @@ namespace. The test need not download or post any payload:
 5. If a disposable private pool is available, publish, resolve, withdraw, and
    restore; verify a test-only password survives in the resolved NZB.
 
-Do not use a torrent client for this conformance test. A future live posting
+Do not use a torrent client for this conformance test. A real-provider posting
 smoke must use an operator-controlled NNTP test group and separate credentials.
