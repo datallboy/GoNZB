@@ -166,6 +166,24 @@ belongs to the deferred
 Do not present the local/shared-volume conformance test as proof of that future
 remote-server topology.
 
+### Live Loon conformance
+
+The optional harness is pinned to Loon Agent commit
+`2c8982dc6371d0e3cf817bb78c07396db77a4b03`. Provide a clean checkout and run:
+
+```sh
+LOON_SOURCE=/path/to/loon-agent ./scripts/uploader_loon_conformance.sh
+```
+
+The harness runs Loon as a service, configures its real offline watcher, posts
+only locally authored CC0 text to a loopback NNTP fixture, and exposes the
+nested completed output to a disposable GoNZB recursive inbox. It verifies
+captured yEnc payload sizes/groups/message IDs, source and output immutability,
+deduplication, approval, exact-byte Newznab search/get, and withdrawal. It
+forces external HTTP through a closed loopback proxy and never supplies a
+torrent, magnet, tracker, or provider endpoint. This is a local/shared-volume
+test, not a separate-server delivery test.
+
 ### Postie
 
 Configure Postie's `post_upload_script` to call the generic helper with its NZB

@@ -11,6 +11,10 @@ NNTP_BIN="$STATE/nntpfixture"
 TLS_PROXY_BIN="$STATE/tlsproxy"
 TLS_DIR="$STATE/tls"
 TLS_CA="$TLS_DIR/ca.pem"
+NODE_A_CONFIG=${GONZBNET_NODE_A_CONFIG:-$ROOT/test/e2e/gonzbnet/node-a.yaml}
+NODE_B_CONFIG=${GONZBNET_NODE_B_CONFIG:-$ROOT/test/e2e/gonzbnet/node-b.yaml}
+NODE_C_CONFIG=${GONZBNET_NODE_C_CONFIG:-$ROOT/test/e2e/gonzbnet/node-c.yaml}
+NODE_D_CONFIG=${GONZBNET_NODE_D_CONFIG:-$ROOT/test/e2e/gonzbnet/node-d.yaml}
 
 usage() {
   echo "usage: $0 {test|start|bootstrap|configure-pool|admission-smoke|quorum-smoke|smoke|federation-smoke|release-smoke|indexer-federation-smoke|nntp-smoke|observability-smoke|stop|status|logs|reset}"
@@ -360,10 +364,10 @@ admission_smoke() {
   done
   cursor_count_before=$(db_scalar gonzbnet_d "SELECT count(*) FROM federation_peer_cursors")
   stop_nodes
-  start_node node-a "$ROOT/test/e2e/gonzbnet/node-a.yaml"
-  start_node node-b "$ROOT/test/e2e/gonzbnet/node-b.yaml"
-  start_node node-c "$ROOT/test/e2e/gonzbnet/node-c.yaml"
-  start_node node-d "$ROOT/test/e2e/gonzbnet/node-d.yaml"
+  start_node node-a "$NODE_A_CONFIG"
+  start_node node-b "$NODE_B_CONFIG"
+  start_node node-c "$NODE_C_CONFIG"
+  start_node node-d "$NODE_D_CONFIG"
   for port in 18081 18082 18083 18084; do
     wait_http "$port"
   done
@@ -858,10 +862,10 @@ case "${1:-}" in
     start_nntp_fixture
     start_tls_proxies
     cd "$ROOT"
-    start_node node-a "$ROOT/test/e2e/gonzbnet/node-a.yaml"
-    start_node node-b "$ROOT/test/e2e/gonzbnet/node-b.yaml"
-    start_node node-c "$ROOT/test/e2e/gonzbnet/node-c.yaml"
-    start_node node-d "$ROOT/test/e2e/gonzbnet/node-d.yaml"
+    start_node node-a "$NODE_A_CONFIG"
+    start_node node-b "$NODE_B_CONFIG"
+    start_node node-c "$NODE_C_CONFIG"
+    start_node node-d "$NODE_D_CONFIG"
     wait_http 18081
     wait_http 18082
     wait_http 18083

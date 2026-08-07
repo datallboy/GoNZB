@@ -28,10 +28,10 @@ Implemented on `feature/uploader-integration`:
 
 Automated validation uses only synthetic NZBs and performs no torrent,
 magnet-link, external download, or real-provider NNTP activity. The generic
-handoff is covered locally. Postie and pesto have also passed their opt-in
-loopback NNTP conformance harnesses described below. Loon's live filesystem
-recipe remains follow-up work because that application is outside GoNZB's test
-boundary. Any test that introduces torrent or tracker networking remains
+handoff is covered locally. Loon, Postie, and pesto have also passed their
+opt-in loopback NNTP conformance harnesses described below. The Loon result
+covers only a local/shared-filesystem handoff, not delivery between separate
+servers. Any test that introduces torrent or tracker networking remains
 prohibited until an operator-provided VPN-controlled environment exists.
 
 Research was performed against these pinned source snapshots; they are recipe
@@ -39,7 +39,7 @@ references, not GoNZB dependencies or claims of completed live conformance:
 
 | Producer | Researched commit | Validation state |
 | --- | --- | --- |
-| Loon Agent | `2c8982d` | generic recursive-inbox contract covered; live recipe pending |
+| Loon Agent | `2c8982d` | service watcher, loopback post, nested recursive-inbox intake, approval, Newznab search/get, and withdrawal passed |
 | Postie | `e4da026` | loopback post, hook retry, intake, approval, and cross-node pool search/grab passed |
 | pesto | `ce57ddc` | loopback post, hook retry, intake, approval, Newznab search/get, and withdrawal passed |
 
@@ -924,7 +924,7 @@ segment counts, pending-review row, and duplicate retry result:
 | Generic HTTP | Submit a minimal valid NZB with the maintained helper | `201`, then same ID on retry |
 | Generic inbox | Atomically place the NZB at several nesting depths | exactly one pending submission |
 | Manual UI | Upload the same fixture through the browser | validation and deduplication match the API |
-| Loon recipe | Feed a small local file/directory to Loon offline mode and expose only its completed output tree | recursive inbox discovers the generated NZB; no Loon fields are required |
+| Loon recipe | Feed locally authored CC0 text to Loon offline mode and expose only its completed output tree | passed at `2c8982d`: recursive inbox discovered the nested generated NZB; source/output immutability, posting metadata, dedupe, approval, Newznab get, and withdrawal passed |
 | Postie recipe | Post locally authored CC0 text to the repository loopback NNTP server and run `post_upload_script` | passed at `e4da026`: two injected `503` responses were retried, then Node A intake/approval and Node D pool search/grab/cache succeeded |
 | pesto recipe | Post a small local path to a mock NNTP server and run its post hook | passed at `ce57ddc`: `PESTO_NZB` survived two injected `503` responses, created one pending submission, and passed approval, Newznab get, and withdrawal checks |
 
@@ -959,6 +959,22 @@ fixture, verifies POST/STAT and generated-NZB metadata, injects two HTTP `503`
 responses before successful least-privilege intake, then checks deduplication,
 approval, exact-byte Newznab get, and withdrawal. It suppresses pesto's
 courtesy version check so the run makes no external request.
+
+Run the completed Loon filesystem slice with a clean checkout of the pinned
+commit:
+
+```sh
+LOON_SOURCE=/path/to/loon-agent ./scripts/uploader_loon_conformance.sh
+```
+
+The command starts Loon as a service, configures its real offline watcher, and
+posts locally authored CC0 text to the loopback NNTP fixture. It exposes Loon's
+nested `OFFLINE_OUTPUT_DIR` directly to a disposable GoNZB recursive inbox and
+checks metadata, source/output immutability, deduplication, approval, exact-byte
+Newznab get, and withdrawal. External HTTP is forced through a closed loopback
+proxy and the input is a plain file, so no torrent or tracker path starts. This
+proves only the local/shared-volume topology; separate servers still need a
+shared read-only mount or the deferred forwarder.
 
 For each recipe, also force the following failures: malformed NZB, GoNZB
 unreachable, `401`, `413`, interrupted inbox write, and duplicate delivery.

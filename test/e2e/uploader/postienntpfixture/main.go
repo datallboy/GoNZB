@@ -23,17 +23,18 @@ import (
 const maxArticleBytes = 8 << 20
 
 type capturedArticle struct {
-	MessageID    string   `json:"message_id"`
-	Subject      string   `json:"subject"`
-	From         string   `json:"from"`
-	Newsgroups   []string `json:"newsgroups"`
-	ArticleSHA   string   `json:"article_sha256"`
-	ArticleBytes int      `json:"article_bytes"`
-	BodySHA      string   `json:"body_sha256"`
-	BodyBytes    int      `json:"body_bytes"`
-	YEncName     string   `json:"yenc_name,omitempty"`
-	YEncPart     int      `json:"yenc_part,omitempty"`
-	YEncTotal    int      `json:"yenc_total,omitempty"`
+	MessageID     string   `json:"message_id"`
+	Subject       string   `json:"subject"`
+	From          string   `json:"from"`
+	Newsgroups    []string `json:"newsgroups"`
+	ArticleSHA    string   `json:"article_sha256"`
+	ArticleBytes  int      `json:"article_bytes"`
+	BodySHA       string   `json:"body_sha256"`
+	BodyBytes     int      `json:"body_bytes"`
+	YEncName      string   `json:"yenc_name,omitempty"`
+	YEncPart      int      `json:"yenc_part,omitempty"`
+	YEncTotal     int      `json:"yenc_total,omitempty"`
+	YEncPartBytes int      `json:"yenc_part_bytes,omitempty"`
 }
 
 type fixture struct {
@@ -173,7 +174,7 @@ func readArticle(reader *bufio.Reader) (capturedArticle, error) {
 
 	articleHash := sha256.Sum256(raw)
 	bodyHash := sha256.Sum256(body)
-	yencName, yencPart, yencTotal := parseYEnc(body)
+	yencName, yencPart, yencTotal, yencPartBytes := parseYEnc(body)
 	groups := splitCSV(headers["newsgroups"])
 	if len(groups) == 0 {
 		return capturedArticle{}, errors.New("article has no Newsgroups header")
@@ -182,7 +183,7 @@ func readArticle(reader *bufio.Reader) (capturedArticle, error) {
 	return capturedArticle{
 		MessageID: messageID, Subject: headers["subject"], From: headers["from"], Newsgroups: groups,
 		ArticleSHA: hex.EncodeToString(articleHash[:]), ArticleBytes: len(raw), BodySHA: hex.EncodeToString(bodyHash[:]),
-		BodyBytes: len(body), YEncName: yencName, YEncPart: yencPart, YEncTotal: yencTotal,
+		BodyBytes: len(body), YEncName: yencName, YEncPart: yencPart, YEncTotal: yencTotal, YEncPartBytes: yencPartBytes,
 	}, nil
 }
 
@@ -215,17 +216,19 @@ func parseHeaders(data []byte) (map[string]string, error) {
 	return headers, scanner.Err()
 }
 
-func parseYEnc(body []byte) (string, int, int) {
+func parseYEnc(body []byte) (string, int, int, int) {
+	name := ""
+	part := 0
+	total := 0
+	partBegin := 0
+	partEnd := 0
 	scanner := bufio.NewScanner(strings.NewReader(string(body)))
 	for scanner.Scan() {
 		line := strings.TrimSuffix(scanner.Text(), "\r")
-		if !strings.HasPrefix(line, "=ybegin ") {
+		if !strings.HasPrefix(line, "=ybegin ") && !strings.HasPrefix(line, "=ypart ") {
 			continue
 		}
 		fields := strings.Fields(line)
-		name := ""
-		part := 0
-		total := 0
 		for _, field := range fields[1:] {
 			key, value, ok := strings.Cut(field, "=")
 			if !ok {
@@ -238,11 +241,18 @@ func parseYEnc(body []byte) (string, int, int) {
 				part, _ = strconv.Atoi(value)
 			case "total":
 				total, _ = strconv.Atoi(value)
+			case "begin":
+				partBegin, _ = strconv.Atoi(value)
+			case "end":
+				partEnd, _ = strconv.Atoi(value)
 			}
 		}
-		return name, part, total
 	}
-	return "", 0, 0
+	partBytes := 0
+	if partBegin > 0 && partEnd >= partBegin {
+		partBytes = partEnd - partBegin + 1
+	}
+	return name, part, total, partBytes
 }
 
 func (f *fixture) record(article capturedArticle) error {

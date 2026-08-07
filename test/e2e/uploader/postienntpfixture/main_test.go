@@ -14,8 +14,9 @@ func TestReadArticleCapturesHeadersAndYEncMetadata(t *testing.T) {
 		"From: test@example.invalid\r\n" +
 		"Newsgroups: alt.binaries.gonzb.synthetic\r\n\r\n" +
 		"=ybegin part=1 total=2 line=128 size=10 name=Synthetic.txt\r\n" +
+		"=ypart begin=1 end=5\r\n" +
 		"synthetic-body\r\n" +
-		"=yend size=10 part=1\r\n.\r\n"
+		"=yend size=5 part=1\r\n.\r\n"
 
 	article, err := readArticle(bufio.NewReader(strings.NewReader(raw)))
 	if err != nil {
@@ -26,6 +27,9 @@ func TestReadArticleCapturesHeadersAndYEncMetadata(t *testing.T) {
 	}
 	if article.YEncName != "Synthetic.txt" || article.YEncPart != 1 || article.YEncTotal != 2 {
 		t.Fatalf("unexpected yEnc metadata: %+v", article)
+	}
+	if article.YEncPartBytes != 5 {
+		t.Fatalf("unexpected yEnc part size: %+v", article)
 	}
 	if len(article.ArticleSHA) != 64 || len(article.BodySHA) != 64 || article.ArticleBytes == 0 || article.BodyBytes == 0 {
 		t.Fatalf("expected bounded body hashes: %+v", article)
