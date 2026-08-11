@@ -97,6 +97,10 @@ func TestFederationIntegrityLedgerAndCacheRepairIntegration(t *testing.T) {
 	if err != nil || !canGet {
 		t.Fatalf("expected eligible release get, allowed=%v err=%v", canGet, err)
 	}
+	signedCard, found, err := store.GetFederatedReleaseCardForPrincipal(ctx, card.ReleaseID, "", []string{roleID})
+	if err != nil || !found || signedCard == nil || signedCard.Title != card.Title {
+		t.Fatalf("expected authorized signed release card, card=%+v found=%v err=%v", signedCard, found, err)
+	}
 	if _, err := store.DB().ExecContext(ctx, `UPDATE federated_release_cards SET title = 'Tampered title' WHERE release_id = $1`, card.ReleaseID); err != nil {
 		t.Fatal(err)
 	}
@@ -114,6 +118,9 @@ func TestFederationIntegrityLedgerAndCacheRepairIntegration(t *testing.T) {
 	canGet, err = store.CanGetFederatedReleaseForPrincipal(ctx, card.ReleaseID, "", []string{roleID})
 	if err != nil || canGet {
 		t.Fatalf("expected tampered title to be excluded from get, allowed=%v err=%v", canGet, err)
+	}
+	if signedCard, found, err = store.GetFederatedReleaseCardForPrincipal(ctx, card.ReleaseID, "", []string{roleID}); err != nil || found || signedCard != nil {
+		t.Fatalf("expected tampered title to suppress signed card, card=%+v found=%v err=%v", signedCard, found, err)
 	}
 	manifestSource, err := store.FindFederatedManifestSource(ctx, card.ReleaseID)
 	if err != nil || manifestSource != nil {
@@ -150,6 +157,47 @@ func TestFederationIntegrityLedgerAndCacheRepairIntegration(t *testing.T) {
 	canGet, err = store.CanGetFederatedReleaseForPrincipal(ctx, card.ReleaseID, "", []string{roleID})
 	if err != nil || !canGet {
 		t.Fatalf("expected restored signed projection for get, allowed=%v err=%v", canGet, err)
+	}
+	const tamperedSignedCopyTitle = "Tampered signed-body copy"
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE federation_events
+		SET body_json = jsonb_set(body_json, '{title}', to_jsonb($2::text), false)
+		WHERE event_id = $1`, cardEvent.EventID, tamperedSignedCopyTitle); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE federated_release_cards
+		SET title = $2,
+		    body_json = jsonb_set(body_json, '{title}', to_jsonb($2::text), false)
+		WHERE release_id = $1`, card.ReleaseID, tamperedSignedCopyTitle); err != nil {
+		t.Fatal(err)
+	}
+	searchItems, err = store.SearchFederatedReleaseCards(ctx, FederatedReleaseCardSearchParams{Pools: []string{poolID}, Limit: 10})
+	if err != nil || len(searchItems) != 0 {
+		t.Fatalf("expected event-copy tampering to be excluded from search, items=%+v err=%v", searchItems, err)
+	}
+	canGet, err = store.CanGetFederatedReleaseForPrincipal(ctx, card.ReleaseID, "", []string{roleID})
+	if err != nil || canGet {
+		t.Fatalf("expected event-copy tampering to be excluded from get, allowed=%v err=%v", canGet, err)
+	}
+	manifestSource, err = store.FindFederatedManifestSource(ctx, card.ReleaseID)
+	if err != nil || manifestSource != nil {
+		t.Fatalf("expected event-copy tampering to suppress manifest source, source=%+v err=%v", manifestSource, err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE federation_events
+		SET body_json = canonical_event_json::jsonb->'body'
+		WHERE event_id = $1`, cardEvent.EventID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `
+		UPDATE federated_release_cards card
+		SET title = $2,
+		    body_json = event.body_json
+		FROM federation_events event
+		WHERE card.release_id = $1
+		  AND event.event_id = $3`, card.ReleaseID, card.Title, cardEvent.EventID); err != nil {
+		t.Fatal(err)
 	}
 	manifestSource, err = store.FindFederatedManifestSource(ctx, card.ReleaseID)
 	if err != nil || manifestSource == nil {

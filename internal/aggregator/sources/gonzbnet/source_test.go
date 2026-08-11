@@ -10,6 +10,7 @@ import (
 	"github.com/datallboy/gonzb/internal/aggregator"
 	"github.com/datallboy/gonzb/internal/auth"
 	"github.com/datallboy/gonzb/internal/domain"
+	"github.com/datallboy/gonzb/internal/gonzbnet/releasecard"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
 )
 
@@ -148,17 +149,67 @@ func TestGetNZBResolvesForAuthorizedPoolPrincipal(t *testing.T) {
 	}
 }
 
+func TestRehydratePersistedResultUsesAuthorizedSignedCard(t *testing.T) {
+	releaseID := "rel_signed"
+	id := domain.GenerateCompositeID(sourceName, releaseID)
+	store := &fakeStore{
+		authorizedCard:      &releasecard.ReleaseCard{ReleaseID: releaseID, Title: "Signed title", NewznabCategories: []int{2040}},
+		authorizedCardFound: true,
+	}
+	ctx := auth.ContextWithPrincipal(context.Background(), &auth.Principal{
+		UserID:  "user-1",
+		RoleIDs: []string{"federated-viewer"},
+		Permissions: map[string]struct{}{
+			auth.PermissionGoNZBNetGet:             {},
+			auth.PermissionGoNZBNetResolveManifest: {},
+		},
+	})
+
+	release, err := New(store).RehydratePersistedResult(ctx, &domain.Release{
+		ID: id, Source: sourceName, GUID: releaseID, Title: "Tampered cache title",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if release == nil || release.Title != "Signed title" || release.ID != id {
+		t.Fatalf("unexpected rehydrated release: %+v", release)
+	}
+	if store.cardLookups != 1 || store.lastReleaseID != releaseID {
+		t.Fatalf("signed card was not resolved: lookups=%d release=%q", store.cardLookups, store.lastReleaseID)
+	}
+}
+
+func TestRehydratePersistedResultFailsClosedForTamperedIdentity(t *testing.T) {
+	store := &fakeStore{authorizedCardFound: true}
+	ctx := auth.ContextWithPrincipal(context.Background(), &auth.Principal{
+		Permissions: map[string]struct{}{
+			auth.PermissionGoNZBNetGet:             {},
+			auth.PermissionGoNZBNetResolveManifest: {},
+		},
+	})
+
+	release, err := New(store).RehydratePersistedResult(ctx, &domain.Release{
+		ID: "tampered", Source: sourceName, GUID: "rel_signed",
+	})
+	if err != nil || release != nil || store.cardLookups != 0 {
+		t.Fatalf("expected tampered identity to fail closed, release=%+v err=%v lookups=%d", release, err, store.cardLookups)
+	}
+}
+
 type fakeStore struct {
-	pools         []string
-	cards         []pgindex.FederatedReleaseCardSummary
-	poolLookups   int
-	searches      int
-	lastUserID    string
-	lastRoleIDs   []string
-	lastParams    pgindex.FederatedReleaseCardSearchParams
-	getAllowed    bool
-	getChecks     int
-	lastReleaseID string
+	pools               []string
+	cards               []pgindex.FederatedReleaseCardSummary
+	poolLookups         int
+	searches            int
+	lastUserID          string
+	lastRoleIDs         []string
+	lastParams          pgindex.FederatedReleaseCardSearchParams
+	getAllowed          bool
+	getChecks           int
+	lastReleaseID       string
+	authorizedCard      *releasecard.ReleaseCard
+	authorizedCardFound bool
+	cardLookups         int
 }
 
 func (s *fakeStore) ListFederationSearchPoolsForPrincipal(_ context.Context, userID string, roleIDs []string) ([]string, error) {
@@ -174,6 +225,18 @@ func (s *fakeStore) CanGetFederatedReleaseForPrincipal(_ context.Context, releas
 	s.lastUserID = userID
 	s.lastRoleIDs = append([]string(nil), roleIDs...)
 	return s.getAllowed, nil
+}
+
+func (s *fakeStore) GetFederatedReleaseCardForPrincipal(_ context.Context, releaseID, userID string, roleIDs []string) (*releasecard.ReleaseCard, bool, error) {
+	s.cardLookups++
+	s.lastReleaseID = releaseID
+	s.lastUserID = userID
+	s.lastRoleIDs = append([]string(nil), roleIDs...)
+	if s.authorizedCard == nil {
+		return nil, s.authorizedCardFound, nil
+	}
+	card := *s.authorizedCard
+	return &card, s.authorizedCardFound, nil
 }
 
 func (s *fakeStore) SearchFederatedReleaseCards(_ context.Context, params pgindex.FederatedReleaseCardSearchParams) ([]pgindex.FederatedReleaseCardSummary, error) {

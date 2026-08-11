@@ -267,6 +267,20 @@ GitHub or any Usenet provider.
 
 ## Safe conformance test
 
+Run the maintained synthetic negative/restart soak with Docker available:
+
+```sh
+./scripts/uploader_negative_soak.sh
+```
+
+The harness exercises least-privilege HTTP and browser/CSRF intake; malformed,
+oversized, interrupted, duplicate, and idempotency-conflict deliveries; inbox
+failure backoff and changed-file retry; GoNZB restarts and outages; explicit
+four-node federation; stable Newznab grab URLs across restart; cached-NZB hash
+repair; projection-tamper rejection; and signed withdrawal. It generates its
+own tiny NZBs in an `.invalid` namespace and resets all disposable state unless
+`UPLOADER_SOAK_KEEP_STATE=1` is set.
+
 Use a synthetic NZB containing message IDs in an operator-controlled test
 namespace. The test need not download or post any payload:
 

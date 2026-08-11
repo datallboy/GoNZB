@@ -43,6 +43,13 @@ type resultByIDSource interface {
 	GetByID(ctx context.Context, id string) (*domain.Release, error)
 }
 
+// persistedResultRehydrator reconstructs an authoritative result from its
+// signed/current source data. The persisted release is only an identity hint;
+// its display metadata must not be trusted.
+type persistedResultRehydrator interface {
+	RehydratePersistedResult(ctx context.Context, persisted *domain.Release) (*domain.Release, error)
+}
+
 // getAuthorizer is implemented by sources whose result access depends on
 // request-local policy beyond the source's global permission.
 type getAuthorizer interface {

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/datallboy/gonzb/internal/gonzbnet/eventbody"
+	"github.com/datallboy/gonzb/internal/gonzbnet/events"
 	"github.com/datallboy/gonzb/internal/gonzbnet/health"
 	"github.com/datallboy/gonzb/internal/gonzbnet/releasecard"
 )
@@ -406,21 +408,29 @@ func (s *Store) ListFederationSearchPoolsForPrincipal(ctx context.Context, userI
 }
 
 func (s *Store) CanGetFederatedReleaseForPrincipal(ctx context.Context, releaseID, userID string, roleIDs []string) (bool, error) {
+	_, found, err := s.GetFederatedReleaseCardForPrincipal(ctx, releaseID, userID, roleIDs)
+	return found, err
+}
+
+// GetFederatedReleaseCardForPrincipal returns the signed ReleaseCard behind a
+// currently authorized projection. It deliberately rebuilds the card from the
+// verified event instead of trusting mutable projection or aggregator-cache
+// metadata.
+func (s *Store) GetFederatedReleaseCardForPrincipal(ctx context.Context, releaseID, userID string, roleIDs []string) (*releasecard.ReleaseCard, bool, error) {
 	if s == nil || s.db == nil {
-		return false, fmt.Errorf("pgindex store is not initialized")
+		return nil, false, fmt.Errorf("pgindex store is not initialized")
 	}
 	releaseID = strings.TrimSpace(releaseID)
 	if releaseID == "" {
-		return false, nil
+		return nil, false, nil
 	}
 	roleIDsJSON, err := json.Marshal(normalizeStrings(roleIDs))
 	if err != nil {
-		return false, err
+		return nil, false, err
 	}
-	var allowed bool
+	var sourceEventID string
 	err = s.federationExecutor(ctx).QueryRowContext(ctx, `
-		SELECT EXISTS (
-		  SELECT 1
+			SELECT source_event.event_id
 		  FROM federated_release_sources source
 		  JOIN federated_release_cards card ON card.release_id = source.release_id
 		  JOIN federation_events source_event ON source_event.event_id = source.source_event_id
@@ -437,6 +447,7 @@ func (s *Store) CanGetFederatedReleaseForPrincipal(ctx context.Context, releaseI
 		    AND source_event.event_type = 'ReleaseCard'
 		    AND source_event.author_node_id = source.source_node_id
 		    AND source_event.pool_ids @> jsonb_build_array(source.pool_id)
+		    AND source_event.body_json = source_event.canonical_event_json::jsonb->'body'
 		    AND card.body_json = source_event.body_json
 		    AND COALESCE(source_event.body_json->>'release_id', '') = source.release_id
 		    AND COALESCE(source_event.body_json->>'manifest_id', '') = COALESCE(source.manifest_id, '')
@@ -502,11 +513,37 @@ func (s *Store) CanGetFederatedReleaseForPrincipal(ctx context.Context, releaseI
 		            AND override.pool_id = access.pool_id
 		        )
 		    )
-		)`, releaseID, strings.TrimSpace(userID), string(roleIDsJSON)).Scan(&allowed)
-	if err != nil {
-		return false, fmt.Errorf("check federation release pool access: %w", err)
+		  ORDER BY source.trust_score DESC, source.last_seen_at DESC, source.source_event_id ASC
+		  LIMIT 1`, releaseID, strings.TrimSpace(userID), string(roleIDsJSON)).Scan(&sourceEventID)
+	if err == sql.ErrNoRows {
+		return nil, false, nil
 	}
-	return allowed, nil
+	if err != nil {
+		return nil, false, fmt.Errorf("find authorized federation release card: %w", err)
+	}
+
+	event, err := s.GetFederationEvent(ctx, sourceEventID)
+	if err != nil {
+		return nil, false, fmt.Errorf("read authorized federation release event: %w", err)
+	}
+	validation, err := events.Verify(event)
+	if err != nil {
+		return nil, false, fmt.Errorf("verify authorized federation release event: %w", err)
+	}
+	if validation == nil || !validation.OK {
+		return nil, false, fmt.Errorf("authorized federation release event failed signature verification")
+	}
+	if err := eventbody.Validate(event, time.Now().UTC(), 2*time.Minute); err != nil {
+		return nil, false, fmt.Errorf("validate authorized federation release event body: %w", err)
+	}
+	var card releasecard.ReleaseCard
+	if err := json.Unmarshal(event.Body, &card); err != nil {
+		return nil, false, fmt.Errorf("decode authorized federation release card: %w", err)
+	}
+	if card.ReleaseID != releaseID {
+		return nil, false, fmt.Errorf("authorized federation release identity mismatch")
+	}
+	return &card, true, nil
 }
 
 func (s *Store) ListFederationRolePoolAccess(ctx context.Context, poolID string) ([]FederationRolePoolAccessRecord, error) {
@@ -610,6 +647,7 @@ func (s *Store) SearchFederatedReleaseCards(ctx context.Context, params Federate
 		"source_event.event_type = 'ReleaseCard'",
 		"source_event.author_node_id = s.source_node_id",
 		"source_event.pool_ids @> jsonb_build_array(s.pool_id)",
+		"source_event.body_json = source_event.canonical_event_json::jsonb->'body'",
 		"c.body_json = source_event.body_json",
 		"COALESCE(source_event.body_json->>'release_id', '') = s.release_id",
 		"COALESCE(source_event.body_json->>'manifest_id', '') = COALESCE(s.manifest_id, '')",
