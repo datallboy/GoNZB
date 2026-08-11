@@ -37,6 +37,15 @@ protocol detail:
   bounded five-minute/hourly history. Raw protocol diagnostics, manual actions,
   governance, and key operations remain available under **Advanced tools**.
 
+Open `/admin/gonzbnet/releases` or select **ReleaseCards** in the Federation
+navigation for the local node's observed federated catalog. This is deliberately
+separate from **Indexer > Releases**. It identifies each signed card's uploader,
+indexer, or scanner origin; source node and pool; publication and membership
+state; projection integrity; active tombstone; and final effective state. Search
+and filters cover titles, release/manifest IDs, pools, source nodes, origins, and
+effective states. Administrators with moderation permission can sign a release
+tombstone directly from the table.
+
 These views are read-only descriptions of effective behavior. Use **Settings >
 GoNZBNet** to enable jobs or change their cadence and limits.
 
@@ -130,7 +139,7 @@ An expiring tombstone therefore restores eligibility automatically after its
 expiry, assuming the source still passes membership, trust, publication, and
 integrity checks.
 
-Under **Activity > Advanced tools**, the release integrity ledger shows the
+The dedicated **ReleaseCards** page shows the
 signed and projected titles, source event/body hash, source node and pool,
 membership and node state, publication state, active tombstone, and final
 effective state. It can be filtered by pool, node, release, or state and uses a
@@ -150,6 +159,17 @@ GET /api/v1/admin/gonzbnet/moderation/tombstones?active=true
 The ledger is the observing node's local view. Compare nodes when diagnosing
 sync convergence; changing one aggregator's database does not mutate another
 node or create a new federation event.
+
+For a locally authored uploader card, **Correct & republish** opens the uploader
+review queue filtered to the source title. Return the submission to pending,
+correct and approve it, then explicitly publish the corrected version. For a
+locally authored indexer card, the action opens the indexer release table so its
+authoritative metadata can be corrected before the publisher's next run. A
+content-derived release ID changes when identity-bearing metadata changes; the
+replacement therefore starts a fresh signed publication lifecycle while the old
+card remains withdrawn or tombstoned. A node cannot republish a remote author's
+corrected card: the remote author must sign the replacement, or a pool
+administrator must tombstone the bad card.
 
 ## Metrics
 

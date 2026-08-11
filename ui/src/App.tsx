@@ -18,6 +18,7 @@ const AdminDashboardPage = lazy(() => import('./modules/admin/AdminDashboardPage
 const AdminBinaryDetailPage = lazy(() => import('./modules/admin/AdminBinaryDetailPage').then((module) => ({ default: module.AdminBinaryDetailPage })))
 const AdminBinariesPage = lazy(() => import('./modules/admin/AdminBinariesPage').then((module) => ({ default: module.AdminBinariesPage })))
 const AdminGoNZBNetPage = lazy(() => import('./modules/admin/AdminGoNZBNetPage').then((module) => ({ default: module.AdminGoNZBNetPage })))
+const AdminGoNZBNetReleaseCardsPage = lazy(() => import('./modules/admin/AdminGoNZBNetReleaseCardsPage').then((module) => ({ default: module.AdminGoNZBNetReleaseCardsPage })))
 const AdminIndexerWorkPage = lazy(() => import('./modules/admin/AdminIndexerWorkPage').then((module) => ({ default: module.AdminIndexerWorkPage })))
 const AdminMaintenancePage = lazy(() => import('./modules/admin/AdminMaintenancePage').then((module) => ({ default: module.AdminMaintenancePage })))
 const AdminReleaseDetailPage = lazy(() => import('./modules/admin/AdminReleaseDetailPage').then((module) => ({ default: module.AdminReleaseDetailPage })))
@@ -185,6 +186,14 @@ export default function App() {
             element={
               <RequireAuth permission="gonzbnet.admin.read">
                 <AdminGoNZBNetPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="gonzbnet/releases"
+            element={
+              <RequireAuth permission="gonzbnet.admin.read">
+                <AdminGoNZBNetReleaseCardsPage />
               </RequireAuth>
             }
           />

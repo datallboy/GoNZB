@@ -422,6 +422,9 @@ while [ "$attempts" -lt 30 ]; do
   sleep 1
 done
 test -n "$remote_guid"
+ledger=$(admin_get node-d 18084 "/api/v1/admin/gonzbnet/diagnostics/releases?pool_id=pool.e2e&q=Synthetic.Uploader.Soak.A.CC0&source_kind=local_uploader&state=active")
+printf '%s' "$ledger" | jq -e --arg release_id "$federated_release_id" '
+  .items | any(.release_id == $release_id and .source_kind == "local_uploader" and .effective_state == "active")' >/dev/null
 [ "$(newznab_get_code 18084 "$D_TOKEN" "$remote_guid" "$STATE/responses/node-d-first.nzb")" = "200" ]
 remote_sha=$(sha256sum "$STATE/responses/node-d-first.nzb" | awk '{print $1}')
 cache_path="$GONZBNET_STATE/node-d/blobs/$remote_guid.nzb"
@@ -522,6 +525,55 @@ fi
 status_code=$(newznab_get_code 18084 "$D_TOKEN" "$remote_guid" "$STATE/responses/node-d-after-withdrawal-get.xml")
 [ "$status_code" != "200" ]
 
+echo "Publishing a corrected ReleaseCard with a fresh lifecycle"
+corrected_title="Synthetic.Uploader.Soak.A.Corrected.CC0"
+admin_patch node-a 18081 "/api/v1/uploader/submissions/$submission_a" \
+  "{\"title\":\"$corrected_title\",\"note\":\"corrected ReleaseCard soak\"}" | \
+  jq -e --arg title "$corrected_title" '.submission.title == $title' >/dev/null
+admin_request node-a 18081 "/api/v1/uploader/submissions/$submission_a/actions/approve" '{}' | \
+  jq -e '.submission.state == "approved"' >/dev/null
+corrected_publication=$(admin_request node-a 18081 "/api/v1/uploader/submissions/$submission_a/federation-publications" \
+  '{"pool_ids":["pool.e2e"]}')
+printf '%s' "$corrected_publication" | jq -e '.items[0].state == "published"' >/dev/null
+corrected_release_id=$(printf '%s' "$corrected_publication" | jq -r '.items[0].release_id')
+test -n "$corrected_release_id" && test "$corrected_release_id" != "$federated_release_id"
+
+attempts=0
+corrected_guid=""
+while [ "$attempts" -lt 30 ]; do
+  admin_request node-a 18081 /api/v1/admin/gonzbnet/sync/push '{}' >/dev/null
+  admin_request node-d 18084 /api/v1/admin/gonzbnet/sync/pull '{}' >/dev/null
+  newznab_search 18084 "$D_TOKEN" "$corrected_title" "$STATE/responses/node-d-corrected-search.xml"
+  corrected_guid=$(extract_guid "$STATE/responses/node-d-corrected-search.xml")
+  [ -n "$corrected_guid" ] && break
+  attempts=$((attempts + 1))
+  sleep 1
+done
+test -n "$corrected_guid"
+[ "$(newznab_get_code 18084 "$D_TOKEN" "$corrected_guid" "$STATE/responses/node-d-corrected-grab.nzb")" = "200" ]
+ledger=$(admin_get node-d 18084 "/api/v1/admin/gonzbnet/diagnostics/releases?pool_id=pool.e2e&q=$corrected_title&source_kind=local_uploader&state=active")
+printf '%s' "$ledger" | jq -e --arg release_id "$corrected_release_id" '
+  .items | any(.release_id == $release_id and .source_kind == "local_uploader" and .publication_state == "active" and .effective_state == "active")' >/dev/null
+ledger=$(admin_get node-d 18084 "/api/v1/admin/gonzbnet/diagnostics/releases?pool_id=pool.e2e&release_id=$federated_release_id&state=withdrawn")
+printf '%s' "$ledger" | jq -e --arg release_id "$federated_release_id" '
+  .items | any(.release_id == $release_id and .effective_state == "withdrawn")' >/dev/null
+
+echo "Tombstoning the corrected ReleaseCard and checking pool convergence"
+tombstone_payload=$(jq -n --arg target_id "$corrected_release_id" \
+  '{target_type:"release",target_id:$target_id,pool_id:"pool.e2e",reason:"corrected ReleaseCard governance soak",severity:"hide"}')
+admin_request node-a 18081 /api/v1/admin/gonzbnet/moderation/tombstones "$tombstone_payload" | \
+  jq -e '.status == "ok" and (.event_id | length > 0)' >/dev/null
+admin_request node-a 18081 /api/v1/admin/gonzbnet/sync/push '{}' >/dev/null
+admin_request node-d 18084 /api/v1/admin/gonzbnet/sync/pull '{}' >/dev/null
+ledger=$(admin_get node-d 18084 "/api/v1/admin/gonzbnet/diagnostics/releases?pool_id=pool.e2e&release_id=$corrected_release_id&state=tombstoned")
+printf '%s' "$ledger" | jq -e --arg release_id "$corrected_release_id" '
+  .items | any(.release_id == $release_id and .tombstone_severity == "hide" and .effective_state == "tombstoned")' >/dev/null
+newznab_search 18084 "$D_TOKEN" "$corrected_title" "$STATE/responses/node-d-after-tombstone.xml"
+if grep -Fq "$corrected_title" "$STATE/responses/node-d-after-tombstone.xml"; then
+  echo "tombstoned corrected release remained searchable on Node D" >&2
+  exit 1
+fi
+
 echo "Checking source immutability and secret redaction"
 fixture_hashes_after=$(sha256sum "$STATE"/fixtures/[abcd].nzb)
 [ "$fixture_hashes_after" = "$fixture_hashes_before" ]
@@ -542,4 +594,5 @@ echo "Uploader negative/restart soak passed"
 echo "  duplicate deliveries: $SOAK_ITERATIONS plus $RESTART_CYCLES post-restart retries"
 echo "  verified: 401, 403, 400, 409, 413, CSRF, outage recovery, interrupted/invalid/oversized inbox input, symlink rejection"
 echo "  integrity: restart-stable download URL, cached-NZB hash repair, projection/event-copy tamper rejection, signed withdrawal"
+echo "  governance: uploader provenance, corrected republish, fresh lifecycle, pool tombstone convergence"
 echo "  synthetic-only: no provider, downloader, torrent, tracker, media payload, or copyrighted fixture"

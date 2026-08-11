@@ -802,7 +802,7 @@ func TestGoNZBNetAdminEventDiagnosticsFilters(t *testing.T) {
 func TestGoNZBNetAdminReleaseLedgerFilters(t *testing.T) {
 	store := &fakeGoNZBNetAdminStore{}
 	e := echo.New()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/gonzbnet/diagnostics/releases?pool_id=pool.remote&node_id=node.remote&release_id=rel_1&state=tombstoned&cursor=cursor_1&limit=20", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/gonzbnet/diagnostics/releases?pool_id=pool.remote&node_id=node.remote&release_id=rel_1&q=fixture&source_kind=local_uploader&state=tombstoned&cursor=cursor_1&limit=20", nil)
 	rec := httptest.NewRecorder()
 	c := e.NewContext(req, rec)
 	ctrl := &GoNZBNetAdminController{appCtx: &app.Context{Config: testGoNZBNetAdminConfig(t)}, storeOverride: store}
@@ -811,7 +811,7 @@ func TestGoNZBNetAdminReleaseLedgerFilters(t *testing.T) {
 		t.Fatalf("ReleaseLedger returned error: %v", err)
 	}
 	params := store.releaseLedgerParams
-	if rec.Code != http.StatusOK || params.PoolID != "pool.remote" || params.NodeID != "node.remote" || params.ReleaseID != "rel_1" || params.State != "tombstoned" || params.Cursor != "cursor_1" || params.Limit != 20 {
+	if rec.Code != http.StatusOK || params.PoolID != "pool.remote" || params.NodeID != "node.remote" || params.ReleaseID != "rel_1" || params.Query != "fixture" || params.SourceKind != "local_uploader" || params.State != "tombstoned" || params.Cursor != "cursor_1" || params.Limit != 20 {
 		t.Fatalf("unexpected release ledger params: %+v status=%d", params, rec.Code)
 	}
 }

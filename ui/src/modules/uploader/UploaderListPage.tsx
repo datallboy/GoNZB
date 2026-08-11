@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { createUploaderSubmission, listUploaderSubmissions } from '../../shared/api/uploader'
 import { useAuth } from '../../shared/auth/useAuth'
 import { formatBytes, formatDateTime } from '../../shared/lib/format'
@@ -8,9 +8,10 @@ import type { UploaderListResponse } from '../../shared/types'
 
 export function UploaderListPage() {
   const { hasPermission } = useAuth()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [data, setData] = useState<UploaderListResponse | null>(null)
-  const [query, setQuery] = useState('')
-  const [state, setState] = useState('')
+  const [query, setQuery] = useState(() => searchParams.get('q') ?? '')
+  const [state, setState] = useState(() => searchParams.get('state') ?? '')
   const [file, setFile] = useState<File | null>(null)
   const [title, setTitle] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -52,6 +53,10 @@ export function UploaderListPage() {
 
   function search(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    const next = new URLSearchParams()
+    if (query.trim()) next.set('q', query.trim())
+    if (state) next.set('state', state)
+    setSearchParams(next, { replace: true })
     void refresh()
   }
 

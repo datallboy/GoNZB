@@ -2099,6 +2099,7 @@ export type GoNZBNetReleaseLedgerItem = {
   source_node_id: string
   source_event_id: string
   source_body_hash: string
+  source_kind: string
   pool_id: string
   node_status: string
   membership_status: string
@@ -2126,6 +2127,8 @@ export type GoNZBNetReleaseLedgerParams = {
   pool_id?: string
   node_id?: string
   release_id?: string
+  q?: string
+  source_kind?: string
   state?: string
   cursor?: string
   limit?: number

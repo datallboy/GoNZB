@@ -277,8 +277,10 @@ The harness exercises least-privilege HTTP and browser/CSRF intake; malformed,
 oversized, interrupted, duplicate, and idempotency-conflict deliveries; inbox
 failure backoff and changed-file retry; GoNZB restarts and outages; explicit
 four-node federation; stable Newznab grab URLs across restart; cached-NZB hash
-repair; projection-tamper rejection; and signed withdrawal. It generates its
-own tiny NZBs in an `.invalid` namespace and resets all disposable state unless
+repair; projection-tamper rejection; signed withdrawal; ReleaseCard uploader
+provenance; corrected republishing under a fresh release ID; and signed pool
+tombstone convergence. It generates its own tiny NZBs in an `.invalid`
+namespace and resets all disposable state unless
 `UPLOADER_SOAK_KEEP_STATE=1` is set.
 
 Use a synthetic NZB containing message IDs in an operator-controlled test
@@ -289,8 +291,9 @@ namespace. The test need not download or post any payload:
 3. Approve and verify the release in Browse, Admin Releases, and Newznab search.
 4. Return to pending and verify all three local views plus get authorization
    disappear.
-5. If a disposable private pool is available, publish, resolve, withdraw, and
-   restore; verify a test-only password survives in the resolved NZB.
+5. If a disposable private pool is available, publish, resolve, withdraw,
+   correct, republish, and tombstone; verify a test-only password survives in
+   the resolved NZB and the other nodes enforce each lifecycle change.
 
 Do not use a torrent client for this conformance test. A real-provider posting
 smoke must use an operator-controlled NNTP test group and separate credentials.

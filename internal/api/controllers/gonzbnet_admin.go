@@ -2045,12 +2045,14 @@ func (ctrl *GoNZBNetAdminController) ReleaseLedger(c *echo.Context) error {
 		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
 	}
 	page, err := store.ListFederationReleaseLedger(c.Request().Context(), pgindex.FederationReleaseLedgerParams{
-		PoolID:    queryParamTrimmed(c, "pool_id"),
-		NodeID:    queryParamTrimmed(c, "node_id"),
-		ReleaseID: queryParamTrimmed(c, "release_id"),
-		State:     queryParamTrimmed(c, "state"),
-		Cursor:    queryParamTrimmed(c, "cursor"),
-		Limit:     parseIntDefault(queryParamTrimmed(c, "limit"), 100),
+		PoolID:     queryParamTrimmed(c, "pool_id"),
+		NodeID:     queryParamTrimmed(c, "node_id"),
+		ReleaseID:  queryParamTrimmed(c, "release_id"),
+		Query:      queryParamTrimmed(c, "q"),
+		SourceKind: queryParamTrimmed(c, "source_kind"),
+		State:      queryParamTrimmed(c, "state"),
+		Cursor:     queryParamTrimmed(c, "cursor"),
+		Limit:      parseIntDefault(queryParamTrimmed(c, "limit"), 100),
 	})
 	if err != nil {
 		if strings.Contains(err.Error(), "invalid release ledger cursor") {

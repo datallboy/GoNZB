@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { getAdminReleases } from '../../shared/api/admin'
 import { formatBytes, formatDateTime } from '../../shared/lib/format'
 import type { AdminReleaseListParams, AdminReleaseListResponse, AdminReleaseSummary } from '../../shared/types'
@@ -189,8 +189,9 @@ function sortColumnFor(sort: string | undefined) {
 }
 
 export function AdminReleasesPage() {
-  const [filters, setFilters] = useState<AdminReleaseListParams>(defaultFilters)
-  const [submittedFilters, setSubmittedFilters] = useState<AdminReleaseListParams>(defaultFilters)
+  const [searchParams] = useSearchParams()
+  const [filters, setFilters] = useState<AdminReleaseListParams>(() => ({ ...defaultFilters, q: searchParams.get('q') ?? '' }))
+  const [submittedFilters, setSubmittedFilters] = useState<AdminReleaseListParams>(() => ({ ...defaultFilters, q: searchParams.get('q') ?? '' }))
   const [data, setData] = useState<AdminReleaseListResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [openFilter, setOpenFilter] = useState<string | null>(null)

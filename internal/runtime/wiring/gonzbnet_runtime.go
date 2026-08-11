@@ -574,7 +574,7 @@ func poolPolicyAcceptsAll(policy pools.PoolPolicy, required ...string) bool {
 	return true
 }
 
-func (b *uploaderFederationBackend) Publish(ctx context.Context, poolID string, candidate releasecard.LocalRelease, supersedesEventID string) (uploader.PublicationOutcome, error) {
+func (b *uploaderFederationBackend) Publish(ctx context.Context, poolID string, candidate releasecard.LocalRelease, prior uploader.FederationPublication) (uploader.PublicationOutcome, error) {
 	if err := b.requireEligible(ctx, poolID); err != nil {
 		return uploader.PublicationOutcome{}, err
 	}
@@ -585,8 +585,9 @@ func (b *uploaderFederationBackend) Publish(ctx context.Context, poolID string, 
 		return uploader.PublicationOutcome{}, err
 	}
 	stateEventID := ""
-	if strings.TrimSpace(supersedesEventID) != "" {
-		state, err := service.PublishReleaseState(ctx, result.Card.ReleaseID, result.Card.ManifestID, publicationstate.StateActive, supersedesEventID, "explicit uploader restoration")
+	if strings.TrimSpace(prior.PublicationStateEventID) != "" {
+		supersedesEventID, reason := uploaderActivePublicationLink(prior.ReleaseID, result.Card.ReleaseID, prior.PublicationStateEventID)
+		state, err := service.PublishReleaseState(ctx, result.Card.ReleaseID, result.Card.ManifestID, publicationstate.StateActive, supersedesEventID, reason)
 		if err != nil {
 			return uploader.PublicationOutcome{}, err
 		}
@@ -597,6 +598,13 @@ func (b *uploaderFederationBackend) Publish(ctx context.Context, poolID string, 
 		CardEventID: result.ReleaseCardEventID, ManifestEventID: result.ManifestEventID,
 		PublicationStateEventID: stateEventID,
 	}, nil
+}
+
+func uploaderActivePublicationLink(priorReleaseID, nextReleaseID, priorStateEventID string) (string, string) {
+	if strings.TrimSpace(priorReleaseID) != "" && strings.TrimSpace(priorReleaseID) != strings.TrimSpace(nextReleaseID) {
+		return "", "corrected uploader publication"
+	}
+	return strings.TrimSpace(priorStateEventID), "explicit uploader restoration"
 }
 
 func (b *uploaderFederationBackend) PublishState(ctx context.Context, poolID string, publication uploader.FederationPublication, state, reason string) (uploader.PublicationOutcome, error) {

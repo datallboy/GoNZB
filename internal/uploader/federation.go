@@ -16,7 +16,7 @@ import (
 
 type FederationBackend interface {
 	EligiblePools(context.Context) ([]string, error)
-	Publish(context.Context, string, releasecard.LocalRelease, string) (PublicationOutcome, error)
+	Publish(context.Context, string, releasecard.LocalRelease, FederationPublication) (PublicationOutcome, error)
 	PublishState(context.Context, string, FederationPublication, string, string) (PublicationOutcome, error)
 }
 
@@ -138,7 +138,7 @@ func (s *FederationService) process(ctx context.Context, publication FederationP
 		if candidateErr != nil {
 			err = candidateErr
 		} else {
-			outcome, err = s.backend.Publish(ctx, publication.PoolID, candidate, publication.PublicationStateEventID)
+			outcome, err = s.backend.Publish(ctx, publication.PoolID, candidate, publication)
 			if err == nil {
 				return s.uploader.store.CompleteFederationPublication(ctx, publication.SubmissionID, publication.PoolID, PublicationPublished, outcome)
 			}

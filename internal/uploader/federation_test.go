@@ -12,17 +12,17 @@ import (
 )
 
 type fakeFederationBackend struct {
-	candidate  releasecard.LocalRelease
-	supersedes string
+	candidate releasecard.LocalRelease
+	prior     uploader.FederationPublication
 }
 
 func (b *fakeFederationBackend) EligiblePools(context.Context) ([]string, error) {
 	return []string{"pool.synthetic"}, nil
 }
 
-func (b *fakeFederationBackend) Publish(_ context.Context, _ string, candidate releasecard.LocalRelease, supersedes string) (uploader.PublicationOutcome, error) {
+func (b *fakeFederationBackend) Publish(_ context.Context, _ string, candidate releasecard.LocalRelease, prior uploader.FederationPublication) (uploader.PublicationOutcome, error) {
 	b.candidate = candidate
-	b.supersedes = supersedes
+	b.prior = prior
 	return uploader.PublicationOutcome{
 		ReleaseID: "rel_synthetic", ManifestID: "man_synthetic", CardEventID: "evt_card",
 		ManifestEventID: "evt_manifest", PublicationStateEventID: "evt_active",

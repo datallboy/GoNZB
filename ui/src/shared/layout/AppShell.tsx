@@ -150,7 +150,8 @@ export function AdminAppShell() {
           {moduleVisible('gonzbnet') && hasPermission('gonzbnet.admin.read') ? (
             <div className="shell-nav__section">
               <span className="shell-nav__heading">Federation</span>
-              <NavLink to="/admin/gonzbnet">GoNZBNet</NavLink>
+              <NavLink end to="/admin/gonzbnet">GoNZBNet</NavLink>
+              <NavLink to="/admin/gonzbnet/releases">ReleaseCards</NavLink>
             </div>
           ) : null}
           {moduleVisible('usenet_indexer') && hasPermission('indexer.runtime.read') ? (

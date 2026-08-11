@@ -83,6 +83,27 @@ func TestFederationIntegrityLedgerAndCacheRepairIntegration(t *testing.T) {
 	if len(page.Items) != 1 || page.Items[0].EffectiveState != "active" || !page.Items[0].ProjectionMatchesSigned {
 		t.Fatalf("unexpected active ledger: %+v", page)
 	}
+	if page.Items[0].SourceKind != "local_indexer_cache" {
+		t.Fatalf("expected ledger source kind, got %+v", page.Items[0])
+	}
+	filteredPage, err := store.ListFederationReleaseLedger(ctx, FederationReleaseLedgerParams{
+		PoolID: poolID, Query: "integrity release", SourceKind: "local_indexer_cache", Limit: 10,
+	})
+	if err != nil || len(filteredPage.Items) != 1 || filteredPage.Items[0].ReleaseID != card.ReleaseID {
+		t.Fatalf("expected title and source-kind ledger filter match, page=%+v err=%v", filteredPage, err)
+	}
+	filteredPage, err = store.ListFederationReleaseLedger(ctx, FederationReleaseLedgerParams{
+		PoolID: poolID, Query: "does-not-exist", Limit: 10,
+	})
+	if err != nil || len(filteredPage.Items) != 0 {
+		t.Fatalf("expected unmatched ledger query to return no rows, page=%+v err=%v", filteredPage, err)
+	}
+	filteredPage, err = store.ListFederationReleaseLedger(ctx, FederationReleaseLedgerParams{
+		PoolID: poolID, Query: "%", Limit: 10,
+	})
+	if err != nil || len(filteredPage.Items) != 0 {
+		t.Fatalf("expected ledger query wildcards to be literal, page=%+v err=%v", filteredPage, err)
+	}
 	searchItems, err := store.SearchFederatedReleaseCards(ctx, FederatedReleaseCardSearchParams{Pools: []string{poolID}, Limit: 10})
 	if err != nil || len(searchItems) != 1 || searchItems[0].ReleaseID != card.ReleaseID {
 		t.Fatalf("unexpected eligible search result: items=%+v err=%v", searchItems, err)
@@ -183,6 +204,10 @@ func TestFederationIntegrityLedgerAndCacheRepairIntegration(t *testing.T) {
 	manifestSource, err = store.FindFederatedManifestSource(ctx, card.ReleaseID)
 	if err != nil || manifestSource != nil {
 		t.Fatalf("expected event-copy tampering to suppress manifest source, source=%+v err=%v", manifestSource, err)
+	}
+	page, err = store.ListFederationReleaseLedger(ctx, FederationReleaseLedgerParams{PoolID: poolID, State: "projection_mismatch", Limit: 10})
+	if err != nil || len(page.Items) != 1 || page.Items[0].ProjectionMatchesSigned || page.Items[0].SignedTitle != card.Title || page.Items[0].SourceKind != "local_indexer_cache" {
+		t.Fatalf("expected ledger to retain canonical signed provenance during event-copy tampering, page=%+v err=%v", page, err)
 	}
 	if _, err := store.DB().ExecContext(ctx, `
 		UPDATE federation_events

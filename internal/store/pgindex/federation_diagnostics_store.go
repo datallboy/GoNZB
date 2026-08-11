@@ -135,12 +135,14 @@ type FederatedManifestSourceDiagnostic struct {
 }
 
 type FederationReleaseLedgerParams struct {
-	PoolID    string
-	NodeID    string
-	ReleaseID string
-	State     string
-	Cursor    string
-	Limit     int
+	PoolID     string
+	NodeID     string
+	ReleaseID  string
+	Query      string
+	SourceKind string
+	State      string
+	Cursor     string
+	Limit      int
 }
 
 type FederationReleaseLedgerItem struct {
@@ -152,6 +154,7 @@ type FederationReleaseLedgerItem struct {
 	SourceNodeID            string     `json:"source_node_id"`
 	SourceEventID           string     `json:"source_event_id"`
 	SourceBodyHash          string     `json:"source_body_hash"`
+	SourceKind              string     `json:"source_kind"`
 	PoolID                  string     `json:"pool_id"`
 	NodeStatus              string     `json:"node_status"`
 	MembershipStatus        string     `json:"membership_status"`
@@ -538,6 +541,20 @@ func (s *Store) ListFederationReleaseLedger(ctx context.Context, params Federati
 	addEqual("source.pool_id", params.PoolID)
 	addEqual("source.source_node_id", params.NodeID)
 	addEqual("source.release_id", params.ReleaseID)
+	if query := strings.TrimSpace(params.Query); query != "" {
+		clauses = append(clauses, fmt.Sprintf(`(
+			COALESCE(event.canonical_event_json::jsonb->'body'->>'title', card.title) ILIKE $%d ESCAPE E'\\'
+			OR source.release_id ILIKE $%d ESCAPE E'\\'
+			OR COALESCE(source.manifest_id, '') ILIKE $%d ESCAPE E'\\'
+		)`, arg, arg, arg))
+		args = append(args, "%"+escapeFederationLedgerLike(query)+"%")
+		arg++
+	}
+	if sourceKind := strings.TrimSpace(params.SourceKind); sourceKind != "" {
+		clauses = append(clauses, fmt.Sprintf("COALESCE(event.canonical_event_json::jsonb->'body'->'source'->>'kind', card.body_json->'source'->>'kind', 'unknown') = $%d", arg))
+		args = append(args, sourceKind)
+		arg++
+	}
 
 	if strings.TrimSpace(params.Cursor) != "" {
 		cursor, err := decodeFederationReleaseLedgerCursor(params.Cursor)
@@ -564,33 +581,35 @@ func (s *Store) ListFederationReleaseLedger(ctx context.Context, params Federati
 		    source.release_id AS release_id,
 		    COALESCE(source.manifest_id, '') AS manifest_id,
 		    card.title AS projected_title,
-		    COALESCE(event.body_json->>'title', '') AS signed_title,
+		    COALESCE(event.canonical_event_json::jsonb->'body'->>'title', '') AS signed_title,
 		    event.event_id IS NOT NULL
 		      AND event.validation_status = 'accepted'
 		      AND event.event_type = 'ReleaseCard'
-		      AND card.body_json = event.body_json
-		      AND COALESCE(event.body_json->>'release_id', '') = source.release_id
-		      AND COALESCE(event.body_json->>'manifest_id', '') = COALESCE(source.manifest_id, '')
-		      AND card.title = COALESCE(event.body_json->>'title', '')
-		      AND card.normalized_title = COALESCE(event.body_json->>'normalized_title', '')
-		      AND card.category_json = COALESCE(event.body_json->'category', '[]'::jsonb)
-		      AND card.newznab_categories = COALESCE(event.body_json->'newznab_categories', '[]'::jsonb)
-		      AND card.size_bytes IS NOT DISTINCT FROM NULLIF(event.body_json->>'size_bytes', '')::bigint
-		      AND card.posted_at IS NOT DISTINCT FROM NULLIF(event.body_json->>'posted_at', '')::timestamptz
-		      AND card.groups_json = COALESCE(event.body_json->'groups', '[]'::jsonb)
-		      AND card.file_count IS NOT DISTINCT FROM NULLIF(event.body_json->>'file_count', '')::integer
-		      AND card.segment_count IS NOT DISTINCT FROM NULLIF(event.body_json->>'segment_count', '')::integer
-		      AND COALESCE(card.poster_hash, '') = COALESCE(event.body_json->>'poster_hash', '')
-		      AND card.subject_fingerprint = COALESCE(event.body_json->>'subject_fingerprint', '')
-		      AND card.file_fingerprint = COALESCE(event.body_json->>'file_fingerprint', '')
-		      AND card.media_json = COALESCE(event.body_json->'media', '{}'::jsonb)
-		      AND card.quality_json = COALESCE(event.body_json->'quality', '{}'::jsonb)
-		      AND card.flags_json = COALESCE(event.body_json->'flags', '{}'::jsonb)
-		      AND card.resolution_json = COALESCE(event.body_json->'resolution', '{}'::jsonb)
-		      AND card.expires_at IS NOT DISTINCT FROM NULLIF(event.body_json->>'expires_at', '')::timestamptz AS projection_matches,
+		      AND event.body_json = event.canonical_event_json::jsonb->'body'
+		      AND card.body_json = event.canonical_event_json::jsonb->'body'
+		      AND COALESCE(event.canonical_event_json::jsonb->'body'->>'release_id', '') = source.release_id
+		      AND COALESCE(event.canonical_event_json::jsonb->'body'->>'manifest_id', '') = COALESCE(source.manifest_id, '')
+		      AND card.title = COALESCE(event.canonical_event_json::jsonb->'body'->>'title', '')
+		      AND card.normalized_title = COALESCE(event.canonical_event_json::jsonb->'body'->>'normalized_title', '')
+		      AND card.category_json = COALESCE(event.canonical_event_json::jsonb->'body'->'category', '[]'::jsonb)
+		      AND card.newznab_categories = COALESCE(event.canonical_event_json::jsonb->'body'->'newznab_categories', '[]'::jsonb)
+		      AND card.size_bytes IS NOT DISTINCT FROM NULLIF(event.canonical_event_json::jsonb->'body'->>'size_bytes', '')::bigint
+		      AND card.posted_at IS NOT DISTINCT FROM NULLIF(event.canonical_event_json::jsonb->'body'->>'posted_at', '')::timestamptz
+		      AND card.groups_json = COALESCE(event.canonical_event_json::jsonb->'body'->'groups', '[]'::jsonb)
+		      AND card.file_count IS NOT DISTINCT FROM NULLIF(event.canonical_event_json::jsonb->'body'->>'file_count', '')::integer
+		      AND card.segment_count IS NOT DISTINCT FROM NULLIF(event.canonical_event_json::jsonb->'body'->>'segment_count', '')::integer
+		      AND COALESCE(card.poster_hash, '') = COALESCE(event.canonical_event_json::jsonb->'body'->>'poster_hash', '')
+		      AND card.subject_fingerprint = COALESCE(event.canonical_event_json::jsonb->'body'->>'subject_fingerprint', '')
+		      AND card.file_fingerprint = COALESCE(event.canonical_event_json::jsonb->'body'->>'file_fingerprint', '')
+		      AND card.media_json = COALESCE(event.canonical_event_json::jsonb->'body'->'media', '{}'::jsonb)
+		      AND card.quality_json = COALESCE(event.canonical_event_json::jsonb->'body'->'quality', '{}'::jsonb)
+		      AND card.flags_json = COALESCE(event.canonical_event_json::jsonb->'body'->'flags', '{}'::jsonb)
+		      AND card.resolution_json = COALESCE(event.canonical_event_json::jsonb->'body'->'resolution', '{}'::jsonb)
+		      AND card.expires_at IS NOT DISTINCT FROM NULLIF(event.canonical_event_json::jsonb->'body'->>'expires_at', '')::timestamptz AS projection_matches,
 		    source.source_node_id AS source_node_id,
 		    source.source_event_id AS source_event_id,
 		    COALESCE(event.body_hash, '') AS body_hash,
+		    COALESCE(event.canonical_event_json::jsonb->'body'->'source'->>'kind', card.body_json->'source'->>'kind', 'unknown') AS source_kind,
 		    source.pool_id AS pool_id,
 		    COALESCE(node.status, 'unknown') AS node_status,
 		    COALESCE(member.membership_status, 'missing') AS membership_status,
@@ -652,7 +671,7 @@ func (s *Store) ListFederationReleaseLedger(ctx context.Context, params Federati
 		  FROM ledger_base
 		)
 		SELECT release_id, manifest_id, projected_title, signed_title,
-		       projection_matches, source_node_id, source_event_id, body_hash,
+		       projection_matches, source_node_id, source_event_id, body_hash, source_kind,
 		       pool_id, node_status, membership_status, publication_state,
 		       publication_event_id, publication_reason, publication_changed_at,
 		       tombstone_target_type, tombstone_target_id, tombstone_severity,
@@ -673,7 +692,7 @@ func (s *Store) ListFederationReleaseLedger(ctx context.Context, params Federati
 		if err := rows.Scan(
 			&item.ReleaseID, &item.ManifestID, &item.ProjectedTitle, &item.SignedTitle,
 			&item.ProjectionMatchesSigned, &item.SourceNodeID, &item.SourceEventID,
-			&item.SourceBodyHash, &item.PoolID, &item.NodeStatus, &item.MembershipStatus,
+			&item.SourceBodyHash, &item.SourceKind, &item.PoolID, &item.NodeStatus, &item.MembershipStatus,
 			&item.PublicationState, &item.PublicationEventID, &item.PublicationReason,
 			&publicationChangedAt, &item.TombstoneTargetType, &item.TombstoneTargetID,
 			&item.TombstoneSeverity, &item.TombstoneSourceEventID, &item.EffectiveState,
@@ -883,6 +902,10 @@ func clampDiagnosticsLimit(limit, fallback int) int {
 		return fallback
 	}
 	return min(limit, 500)
+}
+
+func escapeFederationLedgerLike(value string) string {
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(value)
 }
 
 func defaultRawJSON(raw []byte, fallback string) json.RawMessage {
