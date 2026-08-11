@@ -23,20 +23,40 @@ import (
 )
 
 type Client struct {
-	identity      events.Identity
-	httpClient    *http.Client
-	allowInsecure bool
+	identity         events.Identity
+	httpClient       *http.Client
+	allowInsecure    bool
+	traversalEnabled bool
 }
 
 func NewClient(nodeIdentity events.Identity, allowInsecure bool) *Client {
+	return NewClientWithOptions(nodeIdentity, ClientOptions{AllowInsecure: allowInsecure})
+}
+
+type ClientOptions struct {
+	AllowInsecure    bool
+	TraversalEnabled bool
+	HTTPClient       *http.Client
+}
+
+func NewClientWithOptions(nodeIdentity events.Identity, opts ClientOptions) *Client {
+	httpClient := opts.HTTPClient
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 15 * time.Second}
+	}
 	return &Client{
-		identity:      nodeIdentity,
-		httpClient:    &http.Client{Timeout: 15 * time.Second},
-		allowInsecure: allowInsecure,
+		identity:         nodeIdentity,
+		httpClient:       httpClient,
+		allowInsecure:    opts.AllowInsecure,
+		traversalEnabled: opts.TraversalEnabled,
 	}
 }
 
 func NormalizeLocator(raw string, allowInsecure bool) (string, error) {
+	return NormalizeLocatorWithTraversal(raw, allowInsecure, false)
+}
+
+func NormalizeLocatorWithTraversal(raw string, allowInsecure, traversalEnabled bool) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return "", fmt.Errorf("node address is required")
@@ -46,7 +66,10 @@ func NormalizeLocator(raw string, allowInsecure bool) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		raw = invite.RelayURL
+		raw, err = invite.PreferredLocator(traversalEnabled)
+		if err != nil {
+			return "", err
+		}
 	}
 	if !strings.Contains(raw, "://") {
 		raw = "https://" + raw
@@ -58,7 +81,7 @@ func NormalizeLocator(raw string, allowInsecure bool) (string, error) {
 	parsed.RawQuery = ""
 	parsed.Fragment = ""
 	base := strings.TrimRight(parsed.String(), "/")
-	if err := transportpolicy.ValidateHTTPURL(base, allowInsecure); err != nil {
+	if err := transportpolicy.ValidatePeerURL(base, allowInsecure, traversalEnabled); err != nil {
 		return "", err
 	}
 	return base, nil
@@ -77,7 +100,7 @@ func (c *Client) Discover(ctx context.Context, locator, expectedNodeID string) (
 		}
 		invitation = &parsed
 	}
-	base, err := NormalizeLocator(locator, c.allowInsecure)
+	base, err := NormalizeLocatorWithTraversal(locator, c.allowInsecure, c.traversalEnabled)
 	if err != nil {
 		return remote, err
 	}
@@ -88,10 +111,13 @@ func (c *Client) Discover(ctx context.Context, locator, expectedNodeID string) (
 	if err := c.getJSON(ctx, wellKnownURL, &remote.WellKnown); err != nil {
 		return remote, err
 	}
-	if err := transportpolicy.ValidateHTTPURL(remote.WellKnown.BaseURL, c.allowInsecure); err != nil {
+	if err := transportpolicy.ValidatePeerURL(remote.WellKnown.BaseURL, c.allowInsecure, c.traversalEnabled); err != nil {
 		return remote, fmt.Errorf("invalid advertised base URL: %w", err)
 	}
 	baseURL := strings.TrimRight(remote.WellKnown.BaseURL, "/")
+	if parsed, _ := transportpolicy.ParseLocator(base, c.allowInsecure, c.traversalEnabled); parsed.Kind == transportpolicy.LocatorICE {
+		baseURL = strings.TrimRight(base, "/")
+	}
 	if err := c.getJSON(ctx, baseURL+"/node", &remote.Profile); err != nil {
 		return remote, err
 	}
@@ -118,6 +144,7 @@ func (c *Client) Discover(ctx context.Context, locator, expectedNodeID string) (
 	if err := c.handshake(ctx, baseURL); err != nil {
 		return remote, err
 	}
+	remote.WellKnown.BaseURL = baseURL
 	return remote, nil
 }
 
@@ -220,7 +247,7 @@ func (c *Client) handshake(ctx context.Context, baseURL string) error {
 }
 
 func (c *Client) getSignedJSON(ctx context.Context, endpoint string, out any) error {
-	if err := transportpolicy.ValidateHTTPURL(endpoint, c.allowInsecure); err != nil {
+	if err := transportpolicy.ValidatePeerRequestURL(endpoint, c.allowInsecure, c.traversalEnabled); err != nil {
 		return err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
@@ -236,7 +263,7 @@ func (c *Client) getSignedJSON(ctx context.Context, endpoint string, out any) er
 }
 
 func (c *Client) getJSON(ctx context.Context, endpoint string, out any) error {
-	if err := transportpolicy.ValidateHTTPURL(endpoint, c.allowInsecure); err != nil {
+	if err := transportpolicy.ValidatePeerRequestURL(endpoint, c.allowInsecure, c.traversalEnabled); err != nil {
 		return err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
@@ -251,7 +278,7 @@ func (c *Client) postJSON(ctx context.Context, endpoint string, body, out any, s
 }
 
 func (c *Client) postJSONWithHeaders(ctx context.Context, endpoint string, body, out any, signed bool, headers http.Header) error {
-	if err := transportpolicy.ValidateHTTPURL(endpoint, c.allowInsecure); err != nil {
+	if err := transportpolicy.ValidatePeerRequestURL(endpoint, c.allowInsecure, c.traversalEnabled); err != nil {
 		return err
 	}
 	payload, err := json.Marshal(body)
@@ -300,15 +327,7 @@ func (c *Client) doJSON(req *http.Request, out any) error {
 }
 
 func discoveryURL(raw string) (string, error) {
-	parsed, err := url.Parse(raw)
-	if err != nil {
-		return "", err
-	}
-	parsed.Path = "/.well-known/gonzbnet"
-	parsed.RawPath = ""
-	parsed.RawQuery = ""
-	parsed.Fragment = ""
-	return parsed.String(), nil
+	return transportpolicy.WellKnownURL(raw)
 }
 
 func validateRemoteIdentity(wellKnown profile.WellKnown, node profile.NodeProfile, expectedNodeID string) error {

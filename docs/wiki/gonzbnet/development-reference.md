@@ -10,6 +10,8 @@
 | `internal/gonzbnet/eventbody` | Typed inbound event validation |
 | `internal/gonzbnet/requestauth` | Signed HTTP request authentication |
 | `internal/gonzbnet/transportpolicy` | Peer URL and HTTPS policy |
+| `internal/gonzbnet/peertransport` | HTTPS/traversal round-trip dispatch |
+| `../gonzb-connect/` | Separate repository containing the versioned signaling library, Pion ICE transport, coordinator, and coturn deployment example |
 | `internal/gonzbnet/pools` | Pool governance and event definitions |
 | `internal/gonzbnet/admission` | Discovery, invitations, and admission client flow |
 | `internal/gonzbnet/sync` | Pull, push, gossip, receive, and delivery |
@@ -24,6 +26,11 @@
 | `internal/api/controllers/gonzbnet*` | Federation and local-admin HTTP handlers |
 | `ui/src/modules/admin/AdminGoNZBNetPage.tsx` | Admin WebUI operations and advanced tools |
 | `ui/src/modules/admin/GoNZBNetReporting.tsx` | Overview, roles, pool evidence, and native SVG activity views |
+
+Sibling development uses the parent `go.work`, which replaces the required
+`github.com/datallboy/gonzb-connect v0.1.0` with the local checkout. A standalone
+GoNZB checkout expects that version to have been published and tagged in the
+separate repository.
 
 Configuration is defined in `internal/infra/config/config.go`, runtime settings
 in `internal/app/settings_types.go`, routes in `internal/api/router.go`, and CLI
@@ -43,6 +50,12 @@ The durable model has four layers:
    trust, moderation, scan output, and coverage.
 4. Operations: delivery cursors, pending/repair work, coarse activity rollups,
    metrics inputs, and admin diagnostics.
+
+`federation_node_endpoints` stores multiple typed HTTPS/ICE locators per node,
+selection priority, enabled state, and payload-safe success/failure statistics.
+`federation_nodes.base_url` remains the compatibility HTTPS field. Manifest and
+binary-evidence clients resolve the current authorized endpoint at request
+time.
 
 Runtime activity is recorded in memory on worker hot paths and flushed as one
 batch every five minutes. Migration `024` stores five-minute buckets; the

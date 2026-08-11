@@ -66,6 +66,20 @@ gonzbnet:
   network_id: "default"
   local_pool_id: "pool.local"
   manual_peers: []
+  # Experimental native ICE transport. Keep disabled for the initial private
+  # pool and use Headscale/Tailscale until traversal has been security-reviewed.
+  traversal:
+    enabled: false
+    coordinators: []
+    # - url: "https://connect.example"
+    #   credential_file: "/run/secrets/gonzb-connect-token"
+    #   allowed_ice_server_hosts: ["turn.example"]
+    prefer_direct: true
+    allow_turn: true
+    gather_timeout_seconds: 10
+    connect_timeout_seconds: 25
+    idle_timeout_minutes: 10
+    max_peer_connections: 32
   consumer_enabled: true
   scanner_enabled: false
   index_projection_enabled: true

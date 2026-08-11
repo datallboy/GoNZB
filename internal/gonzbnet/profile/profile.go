@@ -51,12 +51,13 @@ type NodeProfile struct {
 }
 
 type Endpoints struct {
-	Base      string `json:"base"`
-	Inbox     string `json:"inbox"`
-	Outbox    string `json:"outbox"`
-	Events    string `json:"events"`
-	Manifests string `json:"manifests"`
-	WS        string `json:"ws,omitempty"`
+	Base      string   `json:"base"`
+	Inbox     string   `json:"inbox"`
+	Outbox    string   `json:"outbox"`
+	Events    string   `json:"events"`
+	Manifests string   `json:"manifests"`
+	WS        string   `json:"ws,omitempty"`
+	Alternate []string `json:"alternate_transport_locators,omitempty"`
 }
 
 type Capabilities struct {
@@ -81,6 +82,7 @@ type Capabilities struct {
 	AdmissionRelay          bool `json:"admission_relay"`
 	BinaryEvidenceExchange  bool `json:"binary_evidence_exchange"`
 	ManifestArchivePassword bool `json:"manifest_archive_password"`
+	ICEDataChannel          bool `json:"ice_datachannel"`
 }
 
 type ModuleStatus struct {
@@ -180,6 +182,7 @@ type Config struct {
 	MaxManifestBytes              int
 	MaxBatchEvents                int
 	RateLimitEventsPerMin         int
+	TraversalLocators             []string
 }
 
 func WellKnownFor(ctx context.Context, identity Identity, baseURL string) (WellKnown, error) {
@@ -270,6 +273,7 @@ func NodeProfileFor(ctx context.Context, identity Identity, cfg Config, now time
 			Events:    baseURL + "/events/{event_id}",
 			Manifests: baseURL + "/manifests/{manifest_id}",
 			WS:        webSocketEndpoint,
+			Alternate: append([]string(nil), cfg.TraversalLocators...),
 		},
 		Capabilities: Capabilities{
 			ReleaseCards:            (cfg.Scanner && cfg.PublishReleaseCards) || cfg.ReleasePublisher,
@@ -293,6 +297,7 @@ func NodeProfileFor(ctx context.Context, identity Identity, cfg Config, now time
 			AdmissionRelay:          cfg.AdmissionRelay,
 			BinaryEvidenceExchange:  cfg.BinaryEvidenceExchange,
 			ManifestArchivePassword: true,
+			ICEDataChannel:          len(cfg.TraversalLocators) > 0,
 		},
 		ModuleStatus: ModuleStatus{
 			Scanner:         enabledStatus(cfg.Scanner),
@@ -364,11 +369,21 @@ func ProviderBackboneHash(parts []string) string {
 }
 
 func CapsFor(maxEventBytes, maxManifestBytes int) Caps {
+	return CapsForTransports(maxEventBytes, maxManifestBytes, false)
+}
+
+func CapsForTransports(maxEventBytes, maxManifestBytes int, traversal bool) Caps {
 	if maxEventBytes <= 0 {
 		maxEventBytes = 262144
 	}
 	if maxManifestBytes <= 0 {
 		maxManifestBytes = 10485760
+	}
+	transports := []string{"https"}
+	features := []string{"manifest_archive_password"}
+	if traversal {
+		transports = append(transports, "ice-datachannel/1")
+		features = append(features, "ice-datachannel/1")
 	}
 	return Caps{
 		SpecVersions: []string{SpecVersion},
@@ -401,8 +416,8 @@ func CapsFor(maxEventBytes, maxManifestBytes int) Caps {
 		},
 		Encodings:        []string{"jcs-json"},
 		Compressions:     []string{"none"},
-		Transports:       []string{"https"},
-		Features:         []string{"manifest_archive_password"},
+		Transports:       transports,
+		Features:         features,
 		MaxEventBytes:    maxEventBytes,
 		MaxManifestBytes: maxManifestBytes,
 	}

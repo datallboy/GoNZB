@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,6 +18,10 @@ type Store struct {
 	manifestCacheMu       sync.RWMutex
 	manifestCacheMaxBytes int64
 	manifestCacheTTLDays  int
+	endpointPolicyMu      sync.RWMutex
+	endpointPreferDirect  bool
+	endpointTraversal     bool
+	endpointCoordinators  string
 	partitionPolicyMu     sync.RWMutex
 	partitionDDLLockLimit time.Duration
 
@@ -54,6 +59,23 @@ func (s *Store) manifestCachePolicy() (int64, int) {
 	s.manifestCacheMu.RLock()
 	defer s.manifestCacheMu.RUnlock()
 	return s.manifestCacheMaxBytes, s.manifestCacheTTLDays
+}
+
+func (s *Store) SetGoNZBNetEndpointPolicy(preferDirect, traversalEnabled bool, coordinatorHosts []string) {
+	if s == nil {
+		return
+	}
+	s.endpointPolicyMu.Lock()
+	s.endpointPreferDirect = preferDirect
+	s.endpointTraversal = traversalEnabled
+	s.endpointCoordinators = strings.Join(coordinatorHosts, ",")
+	s.endpointPolicyMu.Unlock()
+}
+
+func (s *Store) endpointPolicy() (bool, bool, string) {
+	s.endpointPolicyMu.RLock()
+	defer s.endpointPolicyMu.RUnlock()
+	return s.endpointPreferDirect, s.endpointTraversal, s.endpointCoordinators
 }
 
 // NewStore opens PostgreSQL by DSN and runs application-owned migrations.

@@ -1,6 +1,6 @@
 package commands
 
 type ServerOptions struct {
-	DisableIndexerSupervisor bool
+	DisableIndexerSupervisor           bool
 	DisableReleasePurgeArchivedSources bool
 }

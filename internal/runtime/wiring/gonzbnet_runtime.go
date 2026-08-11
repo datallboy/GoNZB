@@ -131,14 +131,25 @@ func (m *gonzbnetRuntimeModule) Build(ctx context.Context) error {
 			m.appCtx.Config.GoNZBNet.ManifestCacheTTLDays,
 		)
 	}
+	if endpointStore, ok := m.appCtx.PGIndexStore.(interface {
+		SetGoNZBNetEndpointPolicy(bool, bool, []string)
+	}); ok {
+		endpointStore.SetGoNZBNetEndpointPolicy(
+			m.appCtx.Config.GoNZBNet.Traversal.PreferDirect,
+			m.appCtx.Config.GoNZBNet.Traversal.Enabled,
+			configuredCoordinatorHosts(m.appCtx.Config.GoNZBNet.Traversal.Coordinators),
+		)
+	}
 	syncStore, ok := m.appCtx.PGIndexStore.(gonzbnetsync.Store)
 	if !ok {
 		return fmt.Errorf("pgindex store does not support gonzbnet pull sync")
 	}
 	m.pullSync = gonzbnetsync.NewWithOptions(nodeIdentity, syncStore, m.appCtx.Logger, gonzbnetsync.Options{
 		AllowInsecurePeerHTTP: m.appCtx.Config.GoNZBNet.AllowInsecurePeerHTTP,
+		TraversalEnabled:      m.appCtx.Config.GoNZBNet.Traversal.Enabled,
 		EventTimeTolerance:    time.Duration(m.appCtx.Config.GoNZBNet.TimeToleranceSeconds) * time.Second,
 		MaxEventAge:           time.Duration(m.appCtx.Config.GoNZBNet.MaxEventAgeHours) * time.Hour,
+		HTTPClient:            peerHTTPClient(m.appCtx, 15*time.Second),
 	})
 	if err := m.pullSync.UpsertManualPeers(ctx, m.appCtx.Config.GoNZBNet.ManualPeers); err != nil {
 		return err
@@ -184,11 +195,13 @@ func (m *gonzbnetRuntimeModule) Build(ctx context.Context) error {
 		client := evidenceclient.New(nodeIdentity, evidenceStore, evidenceclient.Options{
 			Enabled:                true,
 			AllowInsecurePeerHTTP:  m.appCtx.Config.GoNZBNet.AllowInsecurePeerHTTP,
+			TraversalEnabled:       m.appCtx.Config.GoNZBNet.Traversal.Enabled,
 			PeerTimeout:            time.Duration(m.appCtx.Config.GoNZBNet.BinaryEvidencePeerTimeoutSecs) * time.Second,
 			PeerFanout:             m.appCtx.Config.GoNZBNet.BinaryEvidencePeerFanout,
 			BatchSize:              m.appCtx.Config.GoNZBNet.BinaryEvidenceYEncBatchSize,
 			MaxResponseBytes:       int64(m.appCtx.Config.GoNZBNet.BinaryEvidenceMaxResponseBytes),
 			CircuitBreakerCooldown: time.Duration(m.appCtx.Config.GoNZBNet.BinaryEvidenceCooldownMinutes) * time.Minute,
+			HTTPClient:             peerHTTPClient(m.appCtx, time.Duration(m.appCtx.Config.GoNZBNet.BinaryEvidencePeerTimeoutSecs)*time.Second),
 		})
 		m.evidenceRepair = evidencerepair.New(evidenceStore, client, nodeID, 10)
 	}
@@ -204,6 +217,12 @@ func (m *gonzbnetRuntimeModule) Build(ctx context.Context) error {
 func (m *gonzbnetRuntimeModule) Start(ctx context.Context) error {
 	if !m.Enabled() {
 		return nil
+	}
+	traversalEnabled := m.appCtx.GoNZBNetTraversal != nil
+	if traversalEnabled {
+		if err := m.appCtx.GoNZBNetTraversal.Start(ctx); err != nil {
+			return fmt.Errorf("start gonzbnet traversal: %w", err)
+		}
 	}
 	publishEnabled := m.publisherStore != nil &&
 		m.appCtx.Config.GoNZBNet.PublishReleaseCardsEnabled &&
@@ -221,7 +240,7 @@ func (m *gonzbnetRuntimeModule) Start(ctx context.Context) error {
 		strings.EqualFold(m.appCtx.Config.GoNZBNet.CoverageMode, "automatic")
 	admissionEnabled := m.admissionStore != nil
 	repairEnabled := m.evidenceRepair != nil
-	if !publishEnabled && !healthEnabled && !validationEnabled && !pullEnabled && !pushEnabled && !gossipEnabled && !reassignEnabled && !admissionEnabled && !repairEnabled {
+	if !publishEnabled && !healthEnabled && !validationEnabled && !pullEnabled && !pushEnabled && !gossipEnabled && !reassignEnabled && !admissionEnabled && !repairEnabled && !traversalEnabled {
 		return nil
 	}
 	if m.running {
@@ -437,6 +456,9 @@ func (m *gonzbnetRuntimeModule) Reload(ctx context.Context) error {
 
 func (m *gonzbnetRuntimeModule) Close() error {
 	m.stop()
+	if m.appCtx != nil && m.appCtx.GoNZBNetTraversal != nil {
+		return m.appCtx.GoNZBNetTraversal.Close()
+	}
 	return nil
 }
 
@@ -776,7 +798,11 @@ func (m *gonzbnetRuntimeModule) refreshPendingAdmissions(ctx context.Context) er
 	if err != nil {
 		return err
 	}
-	client := admission.NewClient(m.identity, m.appCtx.Config.GoNZBNet.AllowInsecurePeerHTTP)
+	client := admission.NewClientWithOptions(m.identity, admission.ClientOptions{
+		AllowInsecure:    m.appCtx.Config.GoNZBNet.AllowInsecurePeerHTTP,
+		TraversalEnabled: m.appCtx.Config.GoNZBNet.Traversal.Enabled,
+		HTTPClient:       peerHTTPClient(m.appCtx, 15*time.Second),
+	})
 	for _, item := range items {
 		if item.CandidateNodeID != nodeID || strings.TrimSpace(item.RelayURL) == "" {
 			continue
@@ -840,7 +866,7 @@ func (m *gonzbnetRuntimeModule) refreshPendingAdmissions(ctx context.Context) er
 				if strings.TrimSpace(endpoint.NodeID) == "" || endpoint.NodeID == nodeID || strings.TrimSpace(endpoint.BaseURL) == "" {
 					continue
 				}
-				if err := transportpolicy.ValidateHTTPURL(endpoint.BaseURL, m.appCtx.Config.GoNZBNet.AllowInsecurePeerHTTP); err != nil {
+				if err := transportpolicy.ValidatePeerURL(endpoint.BaseURL, m.appCtx.Config.GoNZBNet.AllowInsecurePeerHTTP, m.appCtx.Config.GoNZBNet.Traversal.Enabled); err != nil {
 					return fmt.Errorf("pool member endpoint failed transport policy: %w", err)
 				}
 				if _, err := m.admissionStore.UpsertFederationPeerURL(ctx, endpoint.BaseURL); err != nil {

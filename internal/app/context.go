@@ -1,12 +1,22 @@
 package app
 
 import (
+	"context"
 	"io"
+	"net/http"
 
 	"github.com/datallboy/gonzb/internal/infra/config"
 	"github.com/datallboy/gonzb/internal/infra/logger"
 	"github.com/datallboy/gonzb/internal/uploader"
 )
+
+type GoNZBNetTraversalTransport interface {
+	http.RoundTripper
+	Start(context.Context) error
+	SetHandler(http.Handler)
+	Close() error
+	CoordinatorStatus() []map[string]any
+}
 
 // Context hold the core environment and shared resources for GoNZB.
 // It acts as the "Single Source of Truth" for the application state.
@@ -36,6 +46,8 @@ type Context struct {
 	Uploader                  *uploader.Service
 	UploaderFederationBackend uploader.FederationBackend
 	UploaderFederation        *uploader.FederationService
+	GoNZBNetPeerTransport     http.RoundTripper
+	GoNZBNetTraversal         GoNZBNetTraversalTransport
 
 	closers            []io.Closer
 	runtimeModules     map[string]RuntimeModule

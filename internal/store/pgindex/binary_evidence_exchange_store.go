@@ -292,7 +292,7 @@ func (s *Store) ListBinaryEvidencePeers(ctx context.Context, localNodeID string,
 		limit = 3
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT DISTINCT local.pool_id, remote.node_id, node.base_url
+		SELECT DISTINCT local.pool_id, remote.node_id
 		FROM pool_members local
 		JOIN trust_pools pool ON pool.pool_id = local.pool_id
 		JOIN pool_members remote
@@ -305,7 +305,6 @@ func (s *Store) ListBinaryEvidencePeers(ctx context.Context, localNodeID string,
 		  AND pool.enabled = TRUE
 		  AND COALESCE((pool.policy_json->>'allow_binary_evidence_exchange')::boolean, FALSE)
 		  AND node.status <> 'blocked'
-		  AND node.base_url <> ''
 		  AND (
 		    local.role = 'admin' OR local.allowed_capabilities ? 'binary_evidence_exchange'
 		  )
@@ -321,9 +320,17 @@ func (s *Store) ListBinaryEvidencePeers(ctx context.Context, localNodeID string,
 	out := make([]BinaryEvidencePeer, 0)
 	for rows.Next() {
 		var item BinaryEvidencePeer
-		if err := rows.Scan(&item.PoolID, &item.NodeID, &item.BaseURL); err != nil {
+		if err := rows.Scan(&item.PoolID, &item.NodeID); err != nil {
 			return nil, err
 		}
+		endpoint, err := s.ResolveFederationNodeEndpoint(ctx, item.NodeID)
+		if err != nil {
+			return nil, err
+		}
+		if endpoint == nil {
+			continue
+		}
+		item.BaseURL = endpoint.Locator
 		out = append(out, item)
 	}
 	return out, rows.Err()

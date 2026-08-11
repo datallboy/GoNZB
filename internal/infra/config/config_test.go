@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -307,6 +308,26 @@ func TestGoNZBNetVisibilityValidation(t *testing.T) {
 
 	if err := cfg.ValidateEffective(); err == nil {
 		t.Fatal("expected visibility validation error")
+	}
+}
+
+func TestGoNZBNetTraversalValidationFailsClosed(t *testing.T) {
+	cfg := GoNZBNetConfig{Traversal: GoNZBNetTraversalConfig{Enabled: true}}
+	if err := validateGoNZBNetConfig(cfg, true); err == nil || !strings.Contains(err.Error(), "at least one coordinator") {
+		t.Fatalf("expected coordinator validation, got %v", err)
+	}
+	cfg.Traversal.Coordinators = []GoNZBNetCoordinatorConfig{{URL: "http://connect.example", CredentialFile: "/secret"}}
+	if err := validateGoNZBNetConfig(cfg, true); err == nil || !strings.Contains(err.Error(), "absolute https") {
+		t.Fatalf("expected HTTPS validation, got %v", err)
+	}
+	cfg.Traversal.Coordinators[0].URL = "https://connect.example"
+	cfg.Traversal.Coordinators[0].CredentialEnv = "CONNECT_TOKEN"
+	if err := validateGoNZBNetConfig(cfg, true); err == nil || !strings.Contains(err.Error(), "exactly one") {
+		t.Fatalf("expected exclusive secret source validation, got %v", err)
+	}
+	cfg.Traversal.Coordinators[0].CredentialFile = ""
+	if err := validateGoNZBNetConfig(cfg, true); err == nil || !strings.Contains(err.Error(), "allowed_ice_server_hosts") {
+		t.Fatalf("expected ICE server allowlist validation, got %v", err)
 	}
 }
 

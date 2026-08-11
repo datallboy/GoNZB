@@ -378,6 +378,16 @@ func (s *Store) FindFederatedManifestSource(ctx context.Context, releaseID strin
 	if err != nil {
 		return nil, fmt.Errorf("find federated manifest source: %w", err)
 	}
+	endpoint, err := s.ResolveFederationNodeEndpoint(ctx, out.SourceNodeID)
+	if err != nil {
+		return nil, err
+	}
+	if endpoint != nil {
+		out.BaseURL = endpoint.Locator
+	}
+	if strings.TrimSpace(out.BaseURL) == "" {
+		return nil, fmt.Errorf("federated manifest source has no authorized enabled endpoint")
+	}
 	return &out, nil
 }
 

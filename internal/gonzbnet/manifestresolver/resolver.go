@@ -42,6 +42,7 @@ type Resolver struct {
 	store                 Store
 	client                *http.Client
 	allowInsecurePeerHTTP bool
+	traversalEnabled      bool
 	eventTimeTolerance    time.Duration
 	maxEventAge           time.Duration
 	maxManifestBytes      int64
@@ -54,6 +55,8 @@ type Options struct {
 	MaxEventAge           time.Duration
 	MaxManifestBytes      int64
 	FetchTimeout          time.Duration
+	TraversalEnabled      bool
+	HTTPClient            *http.Client
 }
 
 func New(identity Identity, store Store) *Resolver {
@@ -73,17 +76,20 @@ func NewWithOptions(identity Identity, store Store, opts Options) *Resolver {
 	if fetchTimeout <= 0 {
 		fetchTimeout = 20 * time.Second
 	}
+	client := opts.HTTPClient
+	if client == nil {
+		client = &http.Client{Timeout: fetchTimeout}
+	}
 	return &Resolver{
 		identity:              identity,
 		store:                 store,
 		allowInsecurePeerHTTP: opts.AllowInsecurePeerHTTP,
+		traversalEnabled:      opts.TraversalEnabled,
 		eventTimeTolerance:    eventTimeTolerance,
 		maxEventAge:           opts.MaxEventAge,
 		maxManifestBytes:      maxManifestBytes,
 		fetchTimeout:          fetchTimeout,
-		client: &http.Client{
-			Timeout: fetchTimeout,
-		},
+		client:                client,
 	}
 }
 
@@ -220,7 +226,7 @@ func (r *Resolver) fetchManifest(ctx context.Context, source pgindex.FederatedMa
 		return nil, err
 	}
 	endpoint := strings.TrimRight(source.BaseURL, "/") + "/manifests/" + url.PathEscape(source.ManifestID) + "/request"
-	if err := transportpolicy.ValidateHTTPURL(endpoint, r.allowInsecurePeerHTTP); err != nil {
+	if err := transportpolicy.ValidatePeerRequestURL(endpoint, r.allowInsecurePeerHTTP, r.traversalEnabled); err != nil {
 		return nil, err
 	}
 	parsed, err := url.Parse(endpoint)

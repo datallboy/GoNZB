@@ -117,10 +117,12 @@ func buildAggregator(appCtx *app.Context, effective *config.Config) app.IndexerA
 			if err == nil {
 				manager.AddSource(gonzbnetsource.NewWithResolver(store, manifestresolver.NewWithOptions(nodeIdentity, store, manifestresolver.Options{
 					AllowInsecurePeerHTTP: effective.GoNZBNet.AllowInsecurePeerHTTP,
+					TraversalEnabled:      effective.GoNZBNet.Traversal.Enabled,
 					EventTimeTolerance:    time.Duration(effective.GoNZBNet.TimeToleranceSeconds) * time.Second,
 					MaxEventAge:           time.Duration(effective.GoNZBNet.MaxEventAgeHours) * time.Hour,
 					MaxManifestBytes:      int64(effective.GoNZBNet.MaxManifestBytes),
 					FetchTimeout:          time.Duration(effective.GoNZBNet.ManifestFetchTimeoutSeconds) * time.Second,
+					HTTPClient:            peerHTTPClient(appCtx, time.Duration(effective.GoNZBNet.ManifestFetchTimeoutSeconds)*time.Second),
 				})))
 			} else if appCtx.Logger != nil {
 				appCtx.Logger.Warn("gonzbnet aggregator source disabled: %v", err)

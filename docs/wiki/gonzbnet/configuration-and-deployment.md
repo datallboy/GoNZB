@@ -40,6 +40,7 @@ protected environment/secret source:
 - `http_enabled` and `http_base_path`;
 - `keys_dir` and `key_password`;
 - `relay_api_key`;
+- the complete `traversal` section and coordinator secret-file/environment references;
 - reserved privacy controls `live_query_enabled` and `send_user_context`.
 
 The GoNZBNet runtime-settings section manages node alias and advertised URL,
@@ -172,12 +173,37 @@ Production peers should use HTTPS. Plain HTTP is rejected except loopback or
 when `allow_insecure_peer_http` is explicitly enabled. The checked-in E2E
 fixture enables it only for loopback processes.
 
-GoNZBNet does not perform NAT traversal or connection hole punching. The
-advertised URL may be private, but it must be reachable by the relevant pool
-members. A WireGuard, Tailscale, or Headscale network is the recommended
-default for a private pool. The relay forwards authorized signed events and
-admission material; it is not a reverse tunnel for manifest or binary-evidence
-requests. See [Networking And Exposure](./networking-and-exposure.md).
+The advertised HTTPS URL may be private, but it must be reachable by the
+relevant pool members. A WireGuard, Tailscale, or Headscale network is the
+recommended default for a private pool. Experimental native traversal can be
+enabled independently:
+
+```yaml
+gonzbnet:
+  traversal:
+    enabled: false
+    coordinators:
+      - url: https://connect.example
+        credential_file: /run/secrets/gonzb-connect-token
+        allowed_ice_server_hosts: [turn.example]
+    prefer_direct: true
+    allow_turn: true
+    gather_timeout_seconds: 10
+    connect_timeout_seconds: 25
+    idle_timeout_minutes: 10
+    max_peer_connections: 32
+```
+
+At most three coordinators may be configured. Each entry must use exactly one
+`credential_file` or `credential_env` and must explicitly allowlist one to four
+STUN/TURN hostnames with `allowed_ice_server_hosts`; token values are read only
+at bootstrap and never enter runtime settings or UI responses. Traversal is disabled by
+default. Authenticated operators can inspect payload-safe coordinator state at
+`GET /api/v1/admin/gonzbnet/traversal/status` and per-node path type, ICE
+state, RTT, reconnect, byte, and failure counters at
+`GET /api/v1/admin/gonzbnet/nodes/{node_id}/endpoints`. Candidate addresses
+are not returned or persisted. See
+[Networking And Exposure](./networking-and-exposure.md).
 
 The GoNZBNet **Overview** includes a production-readiness panel for the
 effective configuration. Resolve failed transport and identity-key checks

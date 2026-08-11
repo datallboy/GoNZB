@@ -51,9 +51,10 @@ identity and database.
   checker.
 - A stable node: optionally relay signed events as the pool grows.
 
-Use Tailscale, Headscale, WireGuard, or another routed private network. GoNZBNet
-does not currently perform NAT traversal, and a relay does not tunnel HTTP to
-an unreachable node.
+Use Tailscale, Headscale, WireGuard, or another routed private network for the
+first pool. GoNZBNet also has an experimental, hard-disabled-by-default ICE
+transport for direct NAT traversal and TURN fallback. The signed-event relay
+still does not tunnel HTTP to an unreachable node.
 
 ## Larger community pool
 
