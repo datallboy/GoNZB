@@ -16,6 +16,7 @@ import (
 	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
 	"github.com/datallboy/gonzb/internal/gonzbnet/pools"
 	"github.com/datallboy/gonzb/internal/gonzbnet/profile"
+	"github.com/datallboy/gonzb/internal/gonzbnet/transportpolicy"
 )
 
 const (
@@ -25,16 +26,17 @@ const (
 )
 
 type Invitation struct {
-	SchemaVersion  string `json:"schema_version"`
-	Type           string `json:"type"`
-	PoolID         string `json:"pool_id"`
-	GenesisEventID string `json:"genesis_event_id"`
-	RelayURL       string `json:"relay_url"`
-	CreatedByNode  string `json:"created_by_node_id"`
-	CreatedByKey   string `json:"created_by_public_key"`
-	CreatedAt      string `json:"created_at"`
-	ExpiresAt      string `json:"expires_at,omitempty"`
-	Signature      string `json:"signature"`
+	SchemaVersion    string `json:"schema_version"`
+	Type             string `json:"type"`
+	PoolID           string `json:"pool_id"`
+	GenesisEventID   string `json:"genesis_event_id"`
+	RelayURL         string `json:"relay_url,omitempty"`
+	TraversalLocator string `json:"traversal_locator,omitempty"`
+	CreatedByNode    string `json:"created_by_node_id"`
+	CreatedByKey     string `json:"created_by_public_key"`
+	CreatedAt        string `json:"created_at"`
+	ExpiresAt        string `json:"expires_at,omitempty"`
+	Signature        string `json:"signature"`
 }
 
 type PoolDescriptor struct {
@@ -106,11 +108,18 @@ type Status struct {
 }
 
 type MemberEndpoint struct {
-	NodeID  string `json:"node_id"`
-	BaseURL string `json:"base_url"`
+	NodeID   string   `json:"node_id"`
+	BaseURL  string   `json:"base_url"`
+	Locators []string `json:"locators,omitempty"`
 }
 
 func NewInvitation(ctx context.Context, signer events.Identity, poolID, genesisEventID, relayURL string, expiresAt *time.Time) (Invitation, error) {
+	return NewInvitationWithLocators(ctx, signer, poolID, genesisEventID, relayURL, "", expiresAt)
+}
+
+// NewInvitationWithLocators emits schema 1.1 when a traversal locator is
+// supplied. Existing HTTPS-only invitations remain byte-compatible schema 1.0.
+func NewInvitationWithLocators(ctx context.Context, signer events.Identity, poolID, genesisEventID, relayURL, traversalLocator string, expiresAt *time.Time) (Invitation, error) {
 	nodeID, err := signer.NodeID(ctx)
 	if err != nil {
 		return Invitation{}, err
@@ -119,15 +128,20 @@ func NewInvitation(ctx context.Context, signer events.Identity, poolID, genesisE
 	if err != nil {
 		return Invitation{}, err
 	}
+	schemaVersion := "1.0"
+	if strings.TrimSpace(traversalLocator) != "" {
+		schemaVersion = "1.1"
+	}
 	item := Invitation{
-		SchemaVersion:  "1.0",
-		Type:           InvitationType,
-		PoolID:         strings.TrimSpace(poolID),
-		GenesisEventID: strings.TrimSpace(genesisEventID),
-		RelayURL:       strings.TrimRight(strings.TrimSpace(relayURL), "/"),
-		CreatedByNode:  nodeID,
-		CreatedByKey:   canonical.Base64URL(publicKey),
-		CreatedAt:      time.Now().UTC().Format(time.RFC3339),
+		SchemaVersion:    schemaVersion,
+		Type:             InvitationType,
+		PoolID:           strings.TrimSpace(poolID),
+		GenesisEventID:   strings.TrimSpace(genesisEventID),
+		RelayURL:         strings.TrimRight(strings.TrimSpace(relayURL), "/"),
+		TraversalLocator: strings.TrimRight(strings.TrimSpace(traversalLocator), "/"),
+		CreatedByNode:    nodeID,
+		CreatedByKey:     canonical.Base64URL(publicKey),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339),
 	}
 	if expiresAt != nil {
 		item.ExpiresAt = expiresAt.UTC().Format(time.RFC3339)
@@ -145,6 +159,19 @@ func NewInvitation(ctx context.Context, signer events.Identity, poolID, genesisE
 	}
 	item.Signature = canonical.Base64URL(signature)
 	return item, nil
+}
+
+func (i Invitation) PreferredLocator(traversalEnabled bool) (string, error) {
+	if traversalEnabled && strings.TrimSpace(i.TraversalLocator) != "" {
+		return strings.TrimSpace(i.TraversalLocator), nil
+	}
+	if strings.TrimSpace(i.RelayURL) != "" {
+		return strings.TrimSpace(i.RelayURL), nil
+	}
+	if strings.TrimSpace(i.TraversalLocator) != "" {
+		return "", fmt.Errorf("invitation requires gonzbnet traversal, but traversal is disabled")
+	}
+	return "", fmt.Errorf("invitation contains no usable locator")
 }
 
 func (i Invitation) Verify(now time.Time) error {
@@ -333,17 +360,33 @@ func (f RejectionFragment) canonicalUnsigned() ([]byte, error) {
 }
 
 func (i Invitation) canonicalUnsigned() ([]byte, error) {
-	return canonical.Marshal(map[string]any{
+	payload := map[string]any{
 		"schema_version": i.SchemaVersion, "type": i.Type, "pool_id": i.PoolID,
 		"genesis_event_id": i.GenesisEventID, "relay_url": i.RelayURL,
 		"created_by_node_id": i.CreatedByNode, "created_by_public_key": i.CreatedByKey, "created_at": i.CreatedAt,
 		"expires_at": i.ExpiresAt,
-	})
+	}
+	if i.SchemaVersion == "1.1" {
+		payload["traversal_locator"] = i.TraversalLocator
+	}
+	return canonical.Marshal(payload)
 }
 
 func (i Invitation) validate(now time.Time) error {
-	if i.Type != InvitationType || strings.TrimSpace(i.PoolID) == "" || strings.TrimSpace(i.GenesisEventID) == "" || strings.TrimSpace(i.RelayURL) == "" || strings.TrimSpace(i.CreatedByNode) == "" || strings.TrimSpace(i.CreatedByKey) == "" {
+	if i.SchemaVersion != "1.0" && i.SchemaVersion != "1.1" {
+		return fmt.Errorf("unsupported pool invitation schema %q", i.SchemaVersion)
+	}
+	if i.SchemaVersion == "1.0" && strings.TrimSpace(i.TraversalLocator) != "" {
+		return fmt.Errorf("schema 1.0 invitation cannot contain a traversal locator")
+	}
+	if i.Type != InvitationType || strings.TrimSpace(i.PoolID) == "" || strings.TrimSpace(i.GenesisEventID) == "" || (strings.TrimSpace(i.RelayURL) == "" && strings.TrimSpace(i.TraversalLocator) == "") || strings.TrimSpace(i.CreatedByNode) == "" || strings.TrimSpace(i.CreatedByKey) == "" {
 		return fmt.Errorf("incomplete pool invitation")
+	}
+	if strings.TrimSpace(i.TraversalLocator) != "" {
+		locator, err := transportpolicy.ParseLocator(i.TraversalLocator, false, true)
+		if err != nil || locator.Kind != transportpolicy.LocatorICE {
+			return fmt.Errorf("invalid invitation traversal locator")
+		}
 	}
 	if _, err := time.Parse(time.RFC3339, i.CreatedAt); err != nil {
 		return fmt.Errorf("invalid invitation created_at")

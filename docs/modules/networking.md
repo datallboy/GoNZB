@@ -1,12 +1,13 @@
 # GoNZBNet networking and exposure
 
-GoNZBNet peers use authenticated HTTP connections, but the protocol does not
-currently provide automatic peer discovery, port mapping, hole punching, or a
-reverse tunnel. A peer address must already be reachable by the nodes that use
-it.
+GoNZBNet peers use authenticated federation requests over HTTPS or the
+experimental `gonzb+ice` transport. The ICE transport performs STUN-assisted
+NAT traversal and can fall back to an operator-provided TURN service; it is
+hard-disabled by default and does not provide a general-purpose tunnel.
 
 Reachable does not mean public. A private routed overlay such as WireGuard,
-Tailscale, or Headscale is the recommended boundary for a private pool.
+Tailscale, or Headscale remains the recommended boundary for the first private
+pool.
 
 ## Who needs inbound reachability?
 
@@ -45,7 +46,8 @@ an unrestricted administration interface.
 
 BitTorrent clients may combine trackers, distributed discovery, automatic port
 mapping, hole punching, and relay mechanisms. GoNZBNet deliberately uses
-explicit trusted peers and does not currently provide those traversal systems.
-Use private routing or an operator-managed HTTPS endpoint instead.
+explicit trusted peers. Its optional ICE module is only a transport between
+authenticated GoNZBNet nodes: it does not add distributed discovery, UPnP,
+NAT-PMP, PCP, TUN, SOCKS, or arbitrary proxying.
 
 Continue with the [Private pool quickstart](private-pool.md).

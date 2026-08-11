@@ -2,6 +2,7 @@ package profile
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -241,6 +242,31 @@ func TestCapsOnlyAdvertiseImplementedWireFeatures(t *testing.T) {
 		if eventType == "NodeProfile" {
 			t.Fatalf("signed NodeProfile events are not accepted and must not be advertised")
 		}
+	}
+}
+
+func TestNodeProfileAdvertisesTraversalOnlyWhenConfigured(t *testing.T) {
+	node, err := identity.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	locator := "gonzb+ice://node_" + strings.Repeat("a", 52) + "@connect.example/gonzbnet/v1"
+	item, err := NodeProfileFor(context.Background(), node, Config{AdvertiseURL: "https://node.example/gonzbnet/v1", TraversalLocators: []string{locator}}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !item.Capabilities.ICEDataChannel || len(item.Endpoints.Alternate) != 1 || item.Endpoints.Alternate[0] != locator {
+		t.Fatalf("traversal profile not advertised: %+v", item)
+	}
+	caps := CapsForTransports(1, 1, true)
+	found := false
+	for _, transport := range caps.Transports {
+		if transport == "ice-datachannel/1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("caps transports = %v", caps.Transports)
 	}
 }
 

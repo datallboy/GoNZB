@@ -17,12 +17,23 @@ NODE_C_CONFIG=${GONZBNET_NODE_C_CONFIG:-$ROOT/test/e2e/gonzbnet/node-c.yaml}
 NODE_D_CONFIG=${GONZBNET_NODE_D_CONFIG:-$ROOT/test/e2e/gonzbnet/node-d.yaml}
 
 usage() {
-  echo "usage: $0 {test|start|bootstrap|configure-pool|admission-smoke|quorum-smoke|smoke|federation-smoke|release-smoke|indexer-federation-smoke|nntp-smoke|observability-smoke|stop|status|logs|reset}"
+  echo "usage: $0 {test|start|bootstrap|configure-pool|seed-traversal-peers|admission-smoke|quorum-smoke|smoke|federation-smoke|release-smoke|indexer-federation-smoke|nntp-smoke|observability-smoke|stop|status|logs|reset}"
+}
+
+direct_peer_url() {
+  internal_port="$1"
+  echo "https://localhost:$((internal_port + 400))"
 }
 
 peer_url() {
   internal_port="$1"
-  echo "https://localhost:$((internal_port + 400))"
+  if [ "${GONZBNET_E2E_TRANSPORT:-https}" = "traversal" ]; then
+    coordinator_host=${GONZBNET_E2E_TRAVERSAL_HOST:?GONZBNET_E2E_TRAVERSAL_HOST is required for traversal}
+    node_id=$(curl -fsS "http://127.0.0.1:$internal_port/gonzbnet/v1/node" | jq -er '.node_id')
+    echo "gonzb+ice://$node_id@$coordinator_host/gonzbnet/v1"
+    return
+  fi
+  direct_peer_url "$internal_port"
 }
 
 wait_http() {
@@ -55,14 +66,18 @@ start_node() {
   name="$1"
   config="$2"
   dir="$STATE/$name"
+  cert_file="$TLS_CA"
+  if [ "${GONZBNET_E2E_TRANSPORT:-https}" = "traversal" ]; then
+    cert_file=${GONZBNET_E2E_SYSTEM_CA_FILE:-/etc/ssl/certs/ca-certificates.crt}
+  fi
   mkdir -p "$dir/keys" "$dir/blobs"
   if [ -f "$dir/pid" ] && kill -0 "$(cat "$dir/pid")" 2>/dev/null; then
     return
   fi
   if command -v setsid >/dev/null 2>&1; then
-    setsid env SSL_CERT_FILE="$TLS_CA" "$BIN" serve --config "$config" </dev/null >"$dir/stdout.log" 2>&1 &
+    setsid env SSL_CERT_FILE="$cert_file" "$BIN" serve --config "$config" </dev/null >"$dir/stdout.log" 2>&1 &
   else
-    nohup env SSL_CERT_FILE="$TLS_CA" "$BIN" serve --config "$config" </dev/null >"$dir/stdout.log" 2>&1 &
+    nohup env SSL_CERT_FILE="$cert_file" "$BIN" serve --config "$config" </dev/null >"$dir/stdout.log" 2>&1 &
   fi
   echo "$!" >"$dir/pid"
 }
@@ -281,6 +296,8 @@ configure_pool() {
   test -n "$invitation" && test "$invitation" != "null"
   join_pool node-c 18083 "$invitation" pool.side node-d 18084 '["consumer"]'
 
+  seed_traversal_peers
+
   role_access='{"role_id":"admin","can_search":true,"can_get":true,"can_resolve_manifest":true}'
   for spec in "node-a:18081" "node-b:18082" "node-c:18083" "node-d:18084"; do
     name=${spec%:*}
@@ -316,17 +333,40 @@ join_pool() {
   [ "$duplicate_proposal" = "$proposal" ] || { echo "duplicate join created a second proposal" >&2; return 1; }
 
   # A non-admin relay distributes the candidate event before the administrator signs it.
-  case "$locator" in
-    *:18482*)
-      admin_post node-b 18082 /api/v1/admin/gonzbnet/sync/push '{}'
-      admin_post "$admin" "$admin_port" /api/v1/admin/gonzbnet/sync/pull '{}'
-      ;;
-  esac
+  if [ "$locator" = "$(peer_url 18082)" ]; then
+    admin_post node-b 18082 /api/v1/admin/gonzbnet/sync/push '{}'
+    admin_post "$admin" "$admin_port" /api/v1/admin/gonzbnet/sync/pull '{}'
+  fi
   approval_event=$(admin_request "$admin" "$admin_port" "/api/v1/admin/gonzbnet/admissions/$proposal/approve" '{}' | jq -r '.approval_event.event_id')
   duplicate_approval=$(admin_request "$admin" "$admin_port" "/api/v1/admin/gonzbnet/admissions/$proposal/approve" '{}' | jq -r '.approval_event.event_id')
   [ "$duplicate_approval" = "$approval_event" ] || { echo "duplicate approval created a second final event" >&2; return 1; }
   admin_post "$candidate" "$candidate_port" "/api/v1/admin/gonzbnet/admissions/$proposal/refresh" '{}'
-  echo "$candidate joined $pool_id through $locator"
+  displayed_locator="$locator"
+  case "$locator" in
+    gonzbnet://*) displayed_locator="signed invitation" ;;
+  esac
+  echo "$candidate joined $pool_id through $displayed_locator"
+}
+
+seed_traversal_peers() {
+  [ "${GONZBNET_E2E_TRANSPORT:-https}" = "traversal" ] || return 0
+  for source in "node-a:18081" "node-b:18082" "node-c:18083" "node-d:18084"; do
+    source_name=${source%:*}
+    source_port=${source#*:}
+    for target_port in 18081 18082 18083 18084; do
+      [ "$source_port" = "$target_port" ] && continue
+      locator=$(peer_url "$target_port")
+      admin_post "$source_name" "$source_port" /api/v1/admin/gonzbnet/peers \
+        "$(jq -cn --arg peer_url "$locator" '{peer_url:$peer_url}')"
+    done
+  done
+  for source in "node-a:18081" "node-b:18082" "node-c:18083" "node-d:18084"; do
+    source_name=${source%:*}
+    source_port=${source#*:}
+    admin_post "$source_name" "$source_port" /api/v1/admin/gonzbnet/sync/pull '{}'
+    admin_post "$source_name" "$source_port" /api/v1/admin/gonzbnet/sync/push '{}'
+  done
+  echo "full-mesh traversal peer locators configured"
 }
 
 admission_smoke() {
@@ -485,7 +525,7 @@ federation_smoke() {
     }
   done
 
-  unsigned_status=$(curl -sS --cacert "$TLS_CA" -o /dev/null -w '%{http_code}' "$(peer_url 18081)/gonzbnet/v1/outbox?limit=1")
+  unsigned_status=$(curl -sS --cacert "$TLS_CA" -o /dev/null -w '%{http_code}' "$(direct_peer_url 18081)/gonzbnet/v1/outbox?limit=1")
   case "$unsigned_status" in 401|403) ;; *) echo "unsigned outbox read returned HTTP $unsigned_status" >&2; return 1;; esac
 
   foreign_session_status=$(curl -sS -o /dev/null -w '%{http_code}' \
@@ -534,14 +574,24 @@ release_smoke() {
   done
 
   scan_id="e2e-release-$(date +%s)"
+  release_canary=${GONZBNET_E2E_RELEASE_CANARY:-}
+  if [ -n "${GONZBNET_E2E_CAPTURE_SECRET_DIR:-}" ] && [ -z "$release_canary" ]; then
+    echo "GONZBNET_E2E_RELEASE_CANARY is required when capture secrets are enabled" >&2
+    return 1
+  fi
+  release_title="GoNZBNet E2E $scan_id"
+  if [ -n "$release_canary" ]; then
+    release_title="$release_title $release_canary"
+  fi
   now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   fixture=$(jq -cn \
     --arg scan_id "$scan_id" \
+    --arg release_title "$release_title" \
     --arg now "$now" \
     '{
       LocalReleaseID:$scan_id,
       GUID:$scan_id,
-      Title:("GoNZBNet E2E " + $scan_id),
+      Title:$release_title,
       Category:"Movies",
       CategoryID:2000,
       Classification:"movie",
@@ -632,13 +682,18 @@ release_smoke() {
   token=$(admin_request node-d 18084 /api/v1/auth/tokens \
     "$(jq -cn --arg name "gonzbnet-e2e-$scan_id" '{name:$name}')" | jq -r '.secret')
   test -n "$token" && test "$token" != "null"
+  if [ -n "${GONZBNET_E2E_CAPTURE_SECRET_DIR:-}" ]; then
+    install -d -m 700 "$GONZBNET_E2E_CAPTURE_SECRET_DIR"
+    printf '%s\n' "$token" | install -m 600 /dev/stdin "$GONZBNET_E2E_CAPTURE_SECRET_DIR/api-canary"
+    printf '%s\n' "$release_canary" | install -m 600 /dev/stdin "$GONZBNET_E2E_CAPTURE_SECRET_DIR/release-canary"
+  fi
   search_xml="$STATE/release-search.xml"
   curl -fsS --get \
     --data-urlencode 't=search' \
     --data-urlencode "q=$scan_id" \
     --data-urlencode "apikey=$token" \
     http://127.0.0.1:18084/api >"$search_xml"
-  grep -Fq "GoNZBNet E2E $scan_id" "$search_xml" || {
+  grep -Fq "$release_title" "$search_xml" || {
     echo "Node D local Newznab search did not return the federated release" >&2
     return 1
   }
@@ -808,7 +863,8 @@ indexer_federation_smoke() {
   done
 
   echo "NNTP headers formed release $release_id with 3 files and 4 segments"
-  echo "Node A published it over HTTPS; Node D found and grabbed the signed manifest through Newznab"
+  publication_transport=${GONZBNET_E2E_TRANSPORT:-https}
+  echo "Node A published it over $publication_transport; Node D found and grabbed the signed manifest through Newznab"
 }
 
 observability_smoke() {
@@ -903,6 +959,10 @@ case "${1:-}" in
     command -v jq >/dev/null 2>&1 || { echo "jq is required" >&2; exit 1; }
     configure_pool
     ;;
+  seed-traversal-peers)
+    command -v jq >/dev/null 2>&1 || { echo "jq is required" >&2; exit 1; }
+    seed_traversal_peers
+    ;;
   admission-smoke)
     admission_smoke
     ;;
@@ -935,10 +995,18 @@ case "${1:-}" in
     for database in gonzbnet_a gonzbnet_b gonzbnet_c gonzbnet_d; do
       insecure=$(db_scalar "$database" "SELECT count(*) FROM federation_peers WHERE enabled AND peer_url LIKE 'http://%'")
       [ "$insecure" = "0" ] || { echo "$database persisted an insecure HTTP peer" >&2; exit 1; }
-      connected=$(db_scalar "$database" "SELECT count(*) FROM federation_peers WHERE enabled AND status = 'connected' AND peer_url LIKE 'https://%'")
-      [ "$connected" -ge 1 ] || { echo "$database has no connected HTTPS peer" >&2; exit 1; }
+      if [ "${GONZBNET_E2E_TRANSPORT:-https}" = "traversal" ]; then
+        connected=$(db_scalar "$database" "
+          SELECT count(*) FROM federation_node_endpoints
+          WHERE enabled AND transport_type = 'ice' AND last_success_at IS NOT NULL
+            AND path_type IN ('direct', 'relay') AND ice_state = 'connected'")
+        [ "$connected" -ge 1 ] || { echo "$database has no successful traversal endpoint" >&2; exit 1; }
+      else
+        connected=$(db_scalar "$database" "SELECT count(*) FROM federation_peers WHERE enabled AND status = 'connected' AND peer_url LIKE 'https://%'")
+        [ "$connected" -ge 1 ] || { echo "$database has no connected HTTPS peer" >&2; exit 1; }
+      fi
     done
-    echo "trusted TLS 1.2+, certificate rejection, HTTPS peer persistence, advertisement, and release version verified"
+    echo "trusted TLS 1.2+, certificate rejection, selected peer transport persistence, advertisement, and release version verified"
     ;;
   federation-smoke)
     command -v jq >/dev/null 2>&1 || { echo "jq is required" >&2; exit 1; }

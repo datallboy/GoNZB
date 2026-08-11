@@ -129,7 +129,7 @@ func (c *Client) querySegmentPeer(ctx context.Context, nodeID string, peer pgind
 		return out, 0, err
 	}
 	endpoint := strings.TrimRight(peer.BaseURL, "/") + "/evidence/segments/query"
-	if err := transportpolicy.ValidateHTTPURL(endpoint, c.opts.AllowInsecurePeerHTTP); err != nil {
+	if err := transportpolicy.ValidatePeerRequestURL(endpoint, c.opts.AllowInsecurePeerHTTP, c.opts.TraversalEnabled); err != nil {
 		return out, 0, err
 	}
 	parsed, err := url.Parse(endpoint)
@@ -229,6 +229,8 @@ type Options struct {
 	BatchSize              int
 	MaxResponseBytes       int64
 	CircuitBreakerCooldown time.Duration
+	TraversalEnabled       bool
+	HTTPClient             *http.Client
 }
 
 type LookupResult struct {
@@ -266,9 +268,13 @@ func New(identity Identity, store Store, opts Options) *Client {
 	if opts.CircuitBreakerCooldown <= 0 {
 		opts.CircuitBreakerCooldown = 5 * time.Minute
 	}
+	httpClient := opts.HTTPClient
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: opts.PeerTimeout}
+	}
 	return &Client{
 		identity: identity, store: store, opts: opts,
-		httpClient: &http.Client{Timeout: opts.PeerTimeout},
+		httpClient: httpClient,
 		cooldown:   make(map[string]time.Time),
 	}
 }
@@ -404,7 +410,7 @@ func (c *Client) queryYEncPeer(ctx context.Context, nodeID string, peer pgindex.
 		return out, 0, err
 	}
 	endpoint := strings.TrimRight(peer.BaseURL, "/") + "/evidence/yenc/query"
-	if err := transportpolicy.ValidateHTTPURL(endpoint, c.opts.AllowInsecurePeerHTTP); err != nil {
+	if err := transportpolicy.ValidatePeerRequestURL(endpoint, c.opts.AllowInsecurePeerHTTP, c.opts.TraversalEnabled); err != nil {
 		return out, 0, err
 	}
 	parsed, err := url.Parse(endpoint)

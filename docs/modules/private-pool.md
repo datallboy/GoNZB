@@ -4,9 +4,10 @@ This guide creates a small invitation-only GoNZBNet pool over a private routed
 network. Complete a normal GoNZB installation first and verify that local
 search and Newznab access work.
 
-GoNZBNet does not perform NAT traversal. A WireGuard, Tailscale, Headscale, or
-similar overlay is the simplest way to give nodes stable private addresses
-without exposing the GoNZB administration interface publicly.
+A WireGuard, Tailscale, Headscale, or similar overlay is the simplest way to
+give nodes stable private addresses without exposing the GoNZB administration
+interface publicly. GoNZBNet's experimental ICE traversal is opt-in and should
+not delay establishing and validating the first pool over an overlay.
 
 ## Prepare each node
 

@@ -120,12 +120,13 @@ GoNZBNet module is enabled.
 ## Current Boundaries
 
 GoNZBNet implements the integrated v1 design targeted by GoNZB v0.9.0. Public
-global discovery, DHT/mDNS discovery, NAT traversal, cross-pool bridging, and a
-standalone relay process are not implemented. First contact uses an explicit
-node address or a signed invitation. A private routed overlay is supported and
-recommended for private pools; a peer URL need not be public, but it must be
-reachable by the nodes using it. The integrated relay forwards authorized
-events and admission material, not arbitrary manifest or evidence requests.
+global discovery, DHT/mDNS discovery, cross-pool bridging, and a general-purpose
+mesh/TUN/SOCKS relay are not implemented. Experimental native ICE traversal is
+available as a hard-disabled bootstrap module; it uses the separately versioned
+`gonzb-connect` coordinator and coturn while keeping federation payloads
+end-to-end encrypted in DTLS DataChannels. A private routed overlay remains the
+recommended first-pool transport. The integrated event relay still forwards
+authorized events and admission material, not arbitrary proxy traffic.
 Protocol metrics are process-local. The
 admin UI keeps bounded local activity history for operational visibility;
 external scraping is still required for alerting or retention beyond 90 days.

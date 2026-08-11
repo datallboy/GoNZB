@@ -124,7 +124,7 @@ source provenance, authorization, and delivery remain pool-scoped.
 
 ## Discovery And Admission
 
-First contact uses an explicit HTTPS address or signed `gonzbnet://` invitation:
+First contact uses an explicit HTTPS/traversal address or signed `gonzbnet://` invitation:
 
 1. The candidate verifies well-known metadata, node profile, capabilities, and
    the pool's signed genesis.
@@ -139,7 +139,15 @@ First contact uses an explicit HTTPS address or signed `gonzbnet://` invitation:
 The relay has no approval authority merely because it transported the request.
 Duplicate join and approval operations are idempotent. Private pool descriptors
 are revealed only by a valid, unexpired invitation whose signer is still an
-active administrator and whose relay URL matches the contacted node.
+active administrator and whose HTTPS or traversal locator matches the contacted
+node. Schema 1.0 HTTPS invitations remain valid; schema 1.1 may add or substitute
+a signed traversal locator.
+
+Traversal signaling envelopes bind protocol version, message type, session,
+source and target identities, timestamps, nonce, exact-SDP SHA-256, source
+public key, and Ed25519 signature. Receivers reverify signatures and replay
+state. Pion then verifies the signed SDP's DTLS fingerprint, so a coordinator
+cannot substitute endpoints or fingerprints without detection.
 
 A revoked member loses ordinary pool access. It may retrieve only the signed
 revocation addressed to itself so it can converge on its state.
@@ -156,9 +164,10 @@ not automatically trusted and cannot receive pools it has not joined. Delivery
 cursors make repeated synchronization incremental and idempotent.
 
 Resolution manifests use their dedicated authenticated fetch endpoint and are
-not part of the general relay event stream. Relaying a release card therefore
-does not make an unreachable manifest source reachable. Binary-evidence queries
-also require direct reachability to the selected authorized peer.
+not part of the general event-relay stream. Their serving endpoint, and the
+endpoint for binary evidence, is resolved from the node's current authorized
+typed endpoint at request time. HTTPS and traversal carry identical signed
+requests and do not alter pool authorization.
 
 ## Release And Manifest Security
 

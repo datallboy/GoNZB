@@ -208,6 +208,11 @@ func (s *Store) ProjectFederationPoolEvent(ctx context.Context, event *events.Si
 		if err := json.Unmarshal(event.Body, &body); err != nil {
 			return err
 		}
+		candidateURL := strings.TrimRight(strings.TrimSpace(body.CandidateURL), "/")
+		legacyCandidateURL := candidateURL
+		if transport, err := endpointTransport(candidateURL); err == nil && transport == "ice" {
+			legacyCandidateURL = ""
+		}
 		if _, err := s.federationExecutor(ctx).ExecContext(ctx, `
 			UPDATE federation_nodes
 			SET base_url = COALESCE(NULLIF($2, ''), base_url),
@@ -216,8 +221,15 @@ func (s *Store) ProjectFederationPoolEvent(ctx context.Context, event *events.Si
 			        ELSE 'admission_pending'
 			    END,
 			    updated_at = NOW()
-			WHERE node_id = $1`, body.CandidateNodeID, strings.TrimSpace(body.CandidateURL)); err != nil {
+			WHERE node_id = $1`, body.CandidateNodeID, legacyCandidateURL); err != nil {
 			return fmt.Errorf("update pool admission candidate: %w", err)
+		}
+		if candidateURL != "" {
+			if err := upsertFederationNodeEndpoint(ctx, s.federationExecutor(ctx), FederationNodeEndpoint{
+				NodeID: body.CandidateNodeID, Locator: candidateURL, Priority: 100, Enabled: true,
+			}); err != nil {
+				return err
+			}
 		}
 		return s.UpsertFederationAdmission(ctx, FederationAdmissionRecord{
 			ProposalEventID: event.EventID, PoolID: body.PoolID,

@@ -187,6 +187,62 @@ embedded migration, and verifies both the data and current protocol-hardening
 schema survive. Operators should still test upgrades against a backup copy and
 must not run an older binary after migrating a production database.
 
+## Experimental Traversal Release Gate
+
+The separately versioned `gonzb-connect` module has unit and fuzz targets for
+signaling signatures, replay rejection, SDP/fingerprint binding, coordinator
+quotas, traversal path isolation, and bounded DataChannel framing:
+
+```sh
+(cd ../gonzb-connect && go test ./...)
+(cd ../gonzb-connect && go test -race ./...)
+```
+
+The four-node script keeps HTTPS as its default transport. An operator can run
+the same admission, synchronization, publication, manifest, restart, and
+revocation scenarios through native traversal by supplying traversal-enabled
+node config variants and setting:
+
+```sh
+export GONZBNET_E2E_TRANSPORT=traversal
+export GONZBNET_E2E_TRAVERSAL_HOST=connect.example
+export GONZBNET_NODE_A_CONFIG=/secure/e2e/node-a.yaml
+export GONZBNET_NODE_B_CONFIG=/secure/e2e/node-b.yaml
+export GONZBNET_NODE_C_CONFIG=/secure/e2e/node-c.yaml
+export GONZBNET_NODE_D_CONFIG=/secure/e2e/node-d.yaml
+./scripts/gonzbnet_e2e.sh test
+```
+
+Each variant must enable `gonzbnet.traversal`, reference a distinct disposable
+coordinator enrollment secret, allowlist the expected ICE-server hostname, and
+set `prefer_direct: false` when the test must prove typed ICE endpoint
+selection. In traversal mode the harness constructs locators from the live
+persistent node IDs, configures a full mesh through the normal peer-management
+API, and checks successful `federation_node_endpoints` observations. The direct
+HTTPS endpoint remains available for the independent TLS and unsigned-request
+security assertions.
+
+For a packet-capture run, set both `GONZBNET_E2E_RELEASE_CANARY` and
+`GONZBNET_E2E_CAPTURE_SECRET_DIR`. The release test embeds the supplied canary
+in the ReleaseCard/manifest workload and writes the generated local API token
+to the ignored secret directory for binary-safe pcap, reassembled-stream, and
+log scans. Never point this option at a tracked directory.
+
+Before removing the experimental label, run the four-node federation flow
+through a container-network matrix covering LAN and IPv6 direct paths, STUN
+through independent and nested NAT, forced TURN/UDP, forced TURN/TLS, and
+direct-path failure followed by ICE restart. Capture coordinator and coturn
+traffic during a recognizable manifest transfer and confirm that federation
+JSON, API tokens, and enrollment/TURN credentials do not appear. Repeat node,
+coordinator, and coturn restarts, revocation, a 10 MiB transfer, and concurrent
+sync soak while enforcing peer, frame, memory, allocation, and bandwidth
+limits. A dependency review, protocol threat-model review, and independent
+security review remain release gates.
+
+The sibling `../gonzb-connect/docs/TRAVERSAL_TEST_PLAN.md` defines the lab
+topology, packet-capture assertions, soak thresholds, automation backlog, and
+release evidence required to execute those gates.
+
 After a public-ready release forms, wait for or trigger ReleaseCard publication
 and pull sync. The automated smoke test covers the following behavior; repeat
 it with the real release:

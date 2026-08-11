@@ -368,7 +368,7 @@ func (ctrl *GoNZBNetController) Node(c *echo.Context) error {
 
 func (ctrl *GoNZBNetController) Caps(c *echo.Context) error {
 	cfg := ctrl.appCtx.Config.GoNZBNet
-	return c.JSON(http.StatusOK, profile.CapsFor(cfg.MaxEventBytes, cfg.MaxManifestBytes))
+	return c.JSON(http.StatusOK, profile.CapsForTransports(cfg.MaxEventBytes, cfg.MaxManifestBytes, cfg.Traversal.Enabled))
 }
 
 func (ctrl *GoNZBNetController) AdmissionPools(c *echo.Context) error {
@@ -401,10 +401,10 @@ func (ctrl *GoNZBNetController) AdmissionPools(c *echo.Context) error {
 		if !item.Enabled || !item.AdmissionEnabled || strings.TrimSpace(item.GenesisEventID) == "" {
 			continue
 		}
-		if item.Visibility == "private" && !poolInvitationAuthorizes(c.Request().Context(), store, invitation, item, ctrl.profileConfig(c).AdvertiseURL) {
+		if item.Visibility == "private" && !poolInvitationAuthorizes(c.Request().Context(), store, invitation, item, ctrl.profileConfig(c).AdvertiseURL, ctrl.profileConfig(c).TraversalLocators) {
 			continue
 		}
-		if ctrl.appCtx.Config.GoNZBNet.Visibility == "private" && !poolInvitationAuthorizes(c.Request().Context(), store, invitation, item, ctrl.profileConfig(c).AdvertiseURL) {
+		if ctrl.appCtx.Config.GoNZBNet.Visibility == "private" && !poolInvitationAuthorizes(c.Request().Context(), store, invitation, item, ctrl.profileConfig(c).AdvertiseURL, ctrl.profileConfig(c).TraversalLocators) {
 			continue
 		}
 		members, err := store.ListPoolMembers(c.Request().Context(), item.PoolID)
@@ -428,11 +428,22 @@ type poolInvitationAdminStore interface {
 	IsActivePoolAdmin(ctx context.Context, poolID, nodeID string) (bool, error)
 }
 
-func poolInvitationAuthorizes(ctx context.Context, store poolInvitationAdminStore, invitation *admission.Invitation, pool pgindex.TrustPoolRecord, relayURL string) bool {
+func poolInvitationAuthorizes(ctx context.Context, store poolInvitationAdminStore, invitation *admission.Invitation, pool pgindex.TrustPoolRecord, relayURL string, alternateLocators ...[]string) bool {
 	if invitation == nil || invitation.PoolID != pool.PoolID || invitation.GenesisEventID != pool.GenesisEventID {
 		return false
 	}
-	if strings.TrimRight(invitation.RelayURL, "/") != strings.TrimRight(strings.TrimSpace(relayURL), "/") {
+	locatorMatches := strings.TrimSpace(invitation.RelayURL) != "" && strings.TrimRight(invitation.RelayURL, "/") == strings.TrimRight(strings.TrimSpace(relayURL), "/")
+	var traversalLocators []string
+	if len(alternateLocators) > 0 {
+		traversalLocators = alternateLocators[0]
+	}
+	for _, locator := range traversalLocators {
+		if strings.TrimSpace(invitation.TraversalLocator) != "" && strings.TrimRight(invitation.TraversalLocator, "/") == strings.TrimRight(locator, "/") {
+			locatorMatches = true
+			break
+		}
+	}
+	if !locatorMatches {
 		return false
 	}
 	active, err := store.IsActivePoolAdmin(ctx, pool.PoolID, invitation.CreatedByNode)
@@ -489,7 +500,7 @@ func (ctrl *GoNZBNetController) SubmitPoolJoin(c *echo.Context) error {
 		invitation = &parsed
 	}
 	if (pool.Visibility == "private" || ctrl.appCtx.Config.GoNZBNet.Visibility == "private") &&
-		!poolInvitationAuthorizes(c.Request().Context(), store, invitation, pool, ctrl.profileConfig(c).AdvertiseURL) {
+		!poolInvitationAuthorizes(c.Request().Context(), store, invitation, pool, ctrl.profileConfig(c).AdvertiseURL, ctrl.profileConfig(c).TraversalLocators) {
 		return federationJSONError(c, http.StatusForbidden, "invitation_required", "a valid invitation from an active pool administrator is required")
 	}
 	publicKeyBytes, err := canonical.DecodeBase64URL(event.AuthorPublicKey)
@@ -1976,6 +1987,38 @@ func (ctrl *GoNZBNetController) GossipWS(c *echo.Context) error {
 	}
 }
 
+func (ctrl *GoNZBNetController) GossipHTTP(c *echo.Context) error {
+	store, ok := ctrl.appCtx.PGIndexStore.(gonzbnetStore)
+	if !ok {
+		return federationJSONError(c, http.StatusServiceUnavailable, "internal_error", "gonzbnet store is unavailable")
+	}
+	cfg := ctrl.appCtx.Config.GoNZBNet
+	if !cfg.WebSocketGossipEnabled || !cfg.Traversal.Enabled {
+		return federationJSONError(c, http.StatusNotFound, "invalid_schema", "traversal gossip is disabled")
+	}
+	payload, err := io.ReadAll(io.LimitReader(c.Request().Body, federationGossipReadLimit(cfg)+1))
+	if err != nil {
+		return federationJSONError(c, http.StatusBadRequest, "invalid_json", err.Error())
+	}
+	if int64(len(payload)) > federationGossipReadLimit(cfg) {
+		return federationJSONError(c, http.StatusRequestEntityTooLarge, "payload_too_large", "gossip batch exceeds limit")
+	}
+	verified, err := requestauth.Verify(
+		c.Request().Context(), store, requestauth.HeaderFromRequest(c.Request()),
+		c.Request().Method, c.Request().URL.Path, c.Request().URL.RawQuery, payload,
+		time.Now(), time.Duration(cfg.TimeToleranceSeconds)*time.Second,
+		time.Duration(cfg.NonceTTLSeconds)*time.Second,
+	)
+	if err != nil {
+		return federationJSONError(c, http.StatusUnauthorized, federationAuthErrorCode(err), err.Error())
+	}
+	var batch gossip.Batch
+	if err := decodeFederationJSON(payload, &batch); err != nil {
+		return federationJSONError(c, http.StatusBadRequest, "invalid_json", err.Error())
+	}
+	return c.JSON(http.StatusOK, ctrl.processGossipBatch(c.Request().Context(), store, batch, verified.NodeID))
+}
+
 func federationGossipReadLimit(cfg config.GoNZBNetConfig) int64 {
 	eventBytes := cfg.MaxEventBytes
 	if eventBytes <= 0 {
@@ -2425,6 +2468,7 @@ func (ctrl *GoNZBNetController) localIdentity() (*identity.Identity, error) {
 
 func (ctrl *GoNZBNetController) profileConfig(c *echo.Context) profile.Config {
 	cfg := ctrl.appCtx.Config.GoNZBNet
+	nodeIdentity, _ := ctrl.localIdentity()
 	return profile.Config{
 		Alias:                         cfg.NodeAlias,
 		AdvertiseURL:                  ctrl.baseURL(c),
@@ -2463,6 +2507,7 @@ func (ctrl *GoNZBNetController) profileConfig(c *echo.Context) profile.Config {
 		MaxManifestBytes:              cfg.MaxManifestBytes,
 		MaxBatchEvents:                cfg.MaxBatchEvents,
 		RateLimitEventsPerMin:         cfg.RateLimitEventsPerMinute,
+		TraversalLocators:             configuredTraversalLocators(c.Request().Context(), cfg, nodeIdentity),
 	}
 }
 
