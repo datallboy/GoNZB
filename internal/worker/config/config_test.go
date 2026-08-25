@@ -29,6 +29,8 @@ gonzb:
 	}
 	t.Setenv("GONZB_WORKER_GONZB_API_TOKEN", "environment-token")
 	t.Setenv("GONZB_WORKER_QBITTORRENT_PASSWORD", "qbit-secret")
+	t.Setenv("GONZB_WORKER_QBITTORRENT_HTTP_BASIC_USERNAME", "proxy-user")
+	t.Setenv("GONZB_WORKER_QBITTORRENT_HTTP_BASIC_PASSWORD", "proxy-secret")
 	cfg, err := Load(filename)
 	if err != nil {
 		t.Fatal(err)
@@ -36,8 +38,31 @@ gonzb:
 	if cfg.GoNZB.APIToken != "environment-token" || cfg.QBittorrent.Password != "qbit-secret" {
 		t.Fatalf("environment overrides were not applied")
 	}
+	if cfg.QBittorrent.HTTPBasicUsername != "proxy-user" || cfg.QBittorrent.HTTPBasicPassword != "proxy-secret" {
+		t.Fatalf("qBittorrent HTTP Basic environment overrides were not applied")
+	}
 	if cfg.Pesto.Compression != "7z" || cfg.Worker.WorkspaceMultiplier != 2.5 {
 		t.Fatalf("defaults not applied: %+v", cfg)
+	}
+}
+
+func TestValidateRequiresCompleteQBittorrentHTTPBasicCredentials(t *testing.T) {
+	cfg := &Config{
+		Worker:      WorkerConfig{DataDir: "/var/lib/gonzb-worker", NodeID: "node", PollIntervalSeconds: 30, WorkspaceMultiplier: 2.5},
+		QBittorrent: QBittorrentConfig{URL: "https://qb.example", HTTPBasicUsername: "proxy-user", TimeoutSecs: 30},
+		Transfer: TransferConfig{
+			Type: "rsync", RsyncBinary: "rsync", SSHHost: "seedbox.example", SSHUser: "worker", SSHPort: 22,
+			SourceRoot: "/downloads",
+		},
+		Pesto: PestoConfig{Binary: "/opt/pesto", Compression: "7z", Obfuscation: "full", PAR2Percent: 10},
+		GoNZB: GoNZBConfig{URL: "https://gonzb.example", APIToken: "token", TimeoutSecs: 60},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected incomplete qBittorrent HTTP Basic credentials to be rejected")
+	}
+	cfg.QBittorrent.HTTPBasicPassword = "proxy-secret"
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
 	}
 }
 

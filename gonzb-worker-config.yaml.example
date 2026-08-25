@@ -10,6 +10,10 @@ qbittorrent:
   url: https://seedbox.example.invalid
   username: ""
   password: ""
+  # Optional credentials for a reverse proxy protecting qBittorrent with
+  # HTTP Basic authentication. These may differ from the Web API login.
+  http_basic_username: ""
+  http_basic_password: ""
   candidate_tag: gonzb-candidate
   timeout_seconds: 30
 
@@ -52,6 +56,8 @@ gonzb:
 # Secret overrides:
 # GONZB_WORKER_QBITTORRENT_USERNAME
 # GONZB_WORKER_QBITTORRENT_PASSWORD
+# GONZB_WORKER_QBITTORRENT_HTTP_BASIC_USERNAME
+# GONZB_WORKER_QBITTORRENT_HTTP_BASIC_PASSWORD
 # GONZB_WORKER_TRANSFER_SSH_KEY
 # GONZB_WORKER_PESTO_CONFIG_PATH
 # GONZB_WORKER_GONZB_API_TOKEN

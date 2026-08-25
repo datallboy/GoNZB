@@ -29,11 +29,13 @@ type WorkerConfig struct {
 }
 
 type QBittorrentConfig struct {
-	URL          string `mapstructure:"url"`
-	Username     string `mapstructure:"username"`
-	Password     string `mapstructure:"password"`
-	CandidateTag string `mapstructure:"candidate_tag"`
-	TimeoutSecs  int    `mapstructure:"timeout_seconds"`
+	URL               string `mapstructure:"url"`
+	Username          string `mapstructure:"username"`
+	Password          string `mapstructure:"password"`
+	HTTPBasicUsername string `mapstructure:"http_basic_username"`
+	HTTPBasicPassword string `mapstructure:"http_basic_password"`
+	CandidateTag      string `mapstructure:"candidate_tag"`
+	TimeoutSecs       int    `mapstructure:"timeout_seconds"`
 }
 
 type TransferConfig struct {
@@ -87,7 +89,8 @@ func Load(filename string) (*Config, error) {
 	for _, key := range []string{
 		"worker.data_dir", "worker.node_id", "worker.poll_interval_seconds", "worker.min_free_space_gb",
 		"worker.workspace_multiplier", "worker.cleanup_on_success", "qbittorrent.url", "qbittorrent.username",
-		"qbittorrent.password", "qbittorrent.candidate_tag", "qbittorrent.timeout_seconds", "transfer.type",
+		"qbittorrent.password", "qbittorrent.http_basic_username", "qbittorrent.http_basic_password",
+		"qbittorrent.candidate_tag", "qbittorrent.timeout_seconds", "transfer.type",
 		"transfer.rsync_binary", "transfer.sshfs_binary", "transfer.unmount_binary", "transfer.ssh_host",
 		"transfer.ssh_user", "transfer.ssh_port", "transfer.ssh_key", "transfer.source_root", "transfer.mount_path",
 		"transfer.manage_mount", "transfer.unmount_on_exit", "pesto.binary", "pesto.config_path", "pesto.compression", "pesto.encryption",
@@ -158,6 +161,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Worker.MinFreeSpaceGB < 0 || c.Worker.WorkspaceMultiplier < 1 {
 		return errors.New("worker disk guard values are invalid")
+	}
+	if (strings.TrimSpace(c.QBittorrent.HTTPBasicUsername) == "") != (strings.TrimSpace(c.QBittorrent.HTTPBasicPassword) == "") {
+		return errors.New("qbittorrent.http_basic_username and qbittorrent.http_basic_password must be set together")
 	}
 	switch c.Transfer.Type {
 	case "rsync":

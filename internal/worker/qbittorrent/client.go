@@ -28,13 +28,24 @@ type Torrent struct {
 }
 
 type Client struct {
-	baseURL  *url.URL
-	username string
-	password string
-	http     *http.Client
+	baseURL           *url.URL
+	username          string
+	password          string
+	httpBasicUsername string
+	httpBasicPassword string
+	http              *http.Client
 }
 
-func New(rawURL, username, password string, timeout time.Duration) (*Client, error) {
+type Option func(*Client)
+
+func WithHTTPBasicAuth(username, password string) Option {
+	return func(client *Client) {
+		client.httpBasicUsername = username
+		client.httpBasicPassword = password
+	}
+}
+
+func New(rawURL, username, password string, timeout time.Duration, options ...Option) (*Client, error) {
 	base, err := url.Parse(strings.TrimRight(rawURL, "/"))
 	if err != nil || base.Scheme == "" || base.Host == "" {
 		return nil, fmt.Errorf("invalid qBittorrent URL %q", rawURL)
@@ -46,10 +57,16 @@ func New(rawURL, username, password string, timeout time.Duration) (*Client, err
 	if err != nil {
 		return nil, fmt.Errorf("create qBittorrent cookie jar: %w", err)
 	}
-	return &Client{
+	client := &Client{
 		baseURL: base, username: username, password: password,
 		http: &http.Client{Timeout: timeout, Jar: jar},
-	}, nil
+	}
+	for _, option := range options {
+		if option != nil {
+			option(client)
+		}
+	}
+	return client, nil
 }
 
 func (c *Client) Login(ctx context.Context) error {
@@ -59,6 +76,7 @@ func (c *Client) Login(ctx context.Context) error {
 		return fmt.Errorf("build qBittorrent login request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	c.applyHTTPBasicAuth(req)
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return fmt.Errorf("qBittorrent login: %w", err)
@@ -86,6 +104,7 @@ func (c *Client) Completed(ctx context.Context, tag, hash string) ([]Torrent, er
 	if err != nil {
 		return nil, fmt.Errorf("build qBittorrent torrent request: %w", err)
 	}
+	c.applyHTTPBasicAuth(req)
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("query qBittorrent torrents: %w", err)
@@ -120,8 +139,18 @@ func (c *Client) Completed(ctx context.Context, tag, hash string) ([]Torrent, er
 }
 
 func (c *Client) endpoint(path string) string {
-	rel := &url.URL{Path: path}
-	return c.baseURL.ResolveReference(rel).String()
+	endpoint := *c.baseURL
+	endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/" + strings.TrimLeft(path, "/")
+	endpoint.RawPath = ""
+	endpoint.RawQuery = ""
+	endpoint.Fragment = ""
+	return endpoint.String()
+}
+
+func (c *Client) applyHTTPBasicAuth(req *http.Request) {
+	if c.httpBasicUsername != "" || c.httpBasicPassword != "" {
+		req.SetBasicAuth(c.httpBasicUsername, c.httpBasicPassword)
+	}
 }
 
 // TrackerIdentity removes announce paths, query parameters, and user info,
