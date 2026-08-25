@@ -82,17 +82,12 @@ func ManifestCoreForLocalRelease(in LocalRelease) (manifest.ManifestCore, error)
 		coreFiles = append(coreFiles, manifest.ManifestFile{
 			Name:      strings.TrimSpace(file.Name),
 			Subject:   strings.TrimSpace(file.Subject),
+			Poster:    strings.TrimSpace(file.Poster),
 			Date:      formatOptionalTime(file.PostedAt),
 			SizeBytes: file.SizeBytes,
 			Segments:  segments,
 		})
 	}
-	sort.Slice(coreFiles, func(i, j int) bool {
-		if coreFiles[i].Name == coreFiles[j].Name {
-			return coreFiles[i].SizeBytes < coreFiles[j].SizeBytes
-		}
-		return coreFiles[i].Name < coreFiles[j].Name
-	})
 	return manifest.ManifestCore{
 		Groups:          groups,
 		Poster:          poster,

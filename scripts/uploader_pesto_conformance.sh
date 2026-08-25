@@ -7,7 +7,7 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 STATE="$ROOT/.e2e/uploader-pesto"
 GONZBNET_STATE="$ROOT/.e2e/gonzbnet"
 GONZBNET_SCRIPT="$ROOT/scripts/gonzbnet_e2e.sh"
-PESTO_COMMIT="ce57ddcde5e57c92392440dd46ac3b74f1c801ed"
+PESTO_COMMIT="b9e2d8a41ddfddb2dd0d0954a5984114b3553636"
 PESTO_SOURCE=${PESTO_SOURCE:-}
 PESTO_RUST_TOOLCHAIN=${PESTO_RUST_TOOLCHAIN:-1.96.0}
 KEEP_STATE=${UPLOADER_PESTO_KEEP_STATE:-0}
@@ -207,7 +207,7 @@ chmod 700 "$STATE/bin/submit-hook"
 # pinned version is deliberately recorded as current inside this disposable
 # config root; the upload itself can then reach loopback only.
 cat >"$STATE/pesto-config/pesto/update_check.json" <<'EOF'
-{"checked_at":4102444800,"latest_version":"0.5.7"}
+{"checked_at":4102444800,"latest_version":"0.8.6"}
 EOF
 
 cat >"$STATE/input/Synthetic.Pesto.Conformance.CC0.txt" <<'EOF'
@@ -236,7 +236,7 @@ env XDG_CONFIG_HOME="$STATE/pesto-config" \
   --article-size 256 --par2 0 --pipeline-depth 1 --retries 1 \
   --check --check-delay 0 --check-retries 1 --check-connections 1 --check-post-retries 0 \
   --message-id-domain example.invalid --date now \
-  --out "$nzb_path" --nzb-name Synthetic.Pesto.Conformance.CC0 \
+  --out "$nzb_path" --nzb-title Synthetic.Pesto.Conformance.CC0 \
   --no-history --no-notify --no-hooks \
   --post-hook "$STATE/bin/submit-hook" \
   --output-format json \

@@ -3,7 +3,6 @@ package manifest
 import (
 	"crypto/sha256"
 	"encoding/base32"
-	"encoding/xml"
 	"fmt"
 	"sort"
 	"strings"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/datallboy/gonzb/internal/gonzbnet/canonical"
 	"github.com/datallboy/gonzb/internal/gonzbnet/events"
+	"github.com/datallboy/gonzb/internal/nzb"
 )
 
 const (
@@ -96,6 +96,7 @@ type ManifestCore struct {
 type ManifestFile struct {
 	Name      string            `json:"name"`
 	Subject   string            `json:"subject"`
+	Poster    string            `json:"poster,omitempty"`
 	Date      string            `json:"date"`
 	SizeBytes int64             `json:"size_bytes"`
 	Segments  []ManifestSegment `json:"segments"`
@@ -182,72 +183,29 @@ func GenerateNZB(in ResolutionManifest) ([]byte, error) {
 	if _, err := Validate(in); err != nil {
 		return nil, err
 	}
-	type groupXML struct {
-		Name string `xml:",chardata"`
-	}
-	type segmentXML struct {
-		Bytes  int64  `xml:"bytes,attr"`
-		Number int    `xml:"number,attr"`
-		ID     string `xml:",chardata"`
-	}
-	type fileXML struct {
-		Poster   string       `xml:"poster,attr"`
-		Date     int64        `xml:"date,attr"`
-		Subject  string       `xml:"subject,attr"`
-		Groups   []groupXML   `xml:"groups>group"`
-		Segments []segmentXML `xml:"segments>segment"`
-	}
-	type metaXML struct {
-		Type  string `xml:"type,attr"`
-		Value string `xml:",chardata"`
-	}
-	type headXML struct {
-		Meta []metaXML `xml:"meta"`
-	}
-	type nzbXML struct {
-		XMLName xml.Name  `xml:"nzb"`
-		Xmlns   string    `xml:"xmlns,attr"`
-		Head    *headXML  `xml:"head,omitempty"`
-		Files   []fileXML `xml:"file"`
-	}
-
 	groups := normalizeStrings(in.ManifestCore.Groups)
 	sort.Strings(groups)
-	doc := nzbXML{
-		Xmlns: "http://www.newzbin.com/DTD/2003/nzb",
-		Files: make([]fileXML, 0, len(in.ManifestCore.Files)),
-	}
-	if password := in.ManifestCore.ArchivePassword; password != "" {
-		doc.Head = &headXML{Meta: []metaXML{{Type: "password", Value: password}}}
-	}
+	doc := &nzb.Model{Files: make([]nzb.File, 0, len(in.ManifestCore.Files))}
 	for _, file := range in.ManifestCore.Files {
-		segments := make([]segmentXML, 0, len(file.Segments))
+		segments := make([]nzb.Segment, 0, len(file.Segments))
 		for _, segment := range file.Segments {
-			segments = append(segments, segmentXML{
-				Bytes:  segment.Bytes,
-				Number: segment.Number,
-				ID:     strings.TrimSpace(segment.MessageID),
+			segments = append(segments, nzb.Segment{
+				Bytes:     segment.Bytes,
+				Number:    segment.Number,
+				MessageID: strings.TrimSpace(segment.MessageID),
 			})
 		}
-		fileGroups := make([]groupXML, 0, len(groups))
-		for _, group := range groups {
-			fileGroups = append(fileGroups, groupXML{Name: group})
-		}
 		subject := firstNonBlank(file.Subject, file.Name, in.ReleaseID)
-		poster := firstNonBlank(in.ManifestCore.Poster, "unknown")
-		doc.Files = append(doc.Files, fileXML{
+		poster := firstNonBlank(file.Poster, in.ManifestCore.Poster, "unknown")
+		doc.Files = append(doc.Files, nzb.File{
 			Poster:   poster,
 			Date:     parseManifestTime(file.Date, in.ManifestCore.PostedAt).Unix(),
 			Subject:  subject,
-			Groups:   fileGroups,
+			Groups:   append([]string(nil), groups...),
 			Segments: segments,
 		})
 	}
-	payload, err := xml.MarshalIndent(doc, "", "  ")
-	if err != nil {
-		return nil, err
-	}
-	return append([]byte(xml.Header), payload...), nil
+	return nzb.CanonicalBytes(doc, in.ManifestCore.ArchivePassword)
 }
 
 func normalizeStrings(values []string) []string {

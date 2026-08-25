@@ -128,6 +128,30 @@ func TestArchivePasswordParticipatesInIDAndGeneratedNZB(t *testing.T) {
 	}
 }
 
+func TestGenerateNZBPreservesPerFilePosters(t *testing.T) {
+	item := testManifest(t)
+	item.ManifestCore.Poster = "fallback@example.invalid"
+	item.ManifestCore.Files[0].Poster = "first@example.invalid"
+	item.ManifestCore.Files = append(item.ManifestCore.Files, ManifestFile{
+		Name: "recovery.par2", Subject: `"recovery.par2" yEnc (1/1)`,
+		Poster: "second@example.invalid", Date: "2026-07-09T12:02:00Z", SizeBytes: 250,
+		Segments: []ManifestSegment{{Number: 1, Bytes: 250, MessageID: "<seg2@example.invalid>"}},
+	})
+	manifestID, _, err := ComputeID(item.ManifestCore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item.ManifestID = manifestID
+	payload, err := GenerateNZB(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(payload)
+	if !strings.Contains(text, `poster="first@example.invalid"`) || !strings.Contains(text, `poster="second@example.invalid"`) {
+		t.Fatalf("generated NZB did not preserve per-file posters: %s", payload)
+	}
+}
+
 func testManifest(t *testing.T) ResolutionManifest {
 	t.Helper()
 	return testManifestWithMessageID(t, "<seg1@example.invalid>")

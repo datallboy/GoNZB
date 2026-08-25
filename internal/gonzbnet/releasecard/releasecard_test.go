@@ -45,6 +45,9 @@ func TestMapLocalReleaseIsDeterministicAcrossInputOrdering(t *testing.T) {
 	if firstCard.ManifestID != expectedManifestID {
 		t.Fatalf("release card manifest id %q does not match manifest id %q", firstCard.ManifestID, expectedManifestID)
 	}
+	if len(core.Files) != 2 || core.Files[0].Poster != "poster-one@example.invalid" || core.Files[1].Poster != "poster-two@example.invalid" {
+		t.Fatalf("manifest core did not preserve per-file posters: %+v", core.Files)
+	}
 
 	firstHash, err := HashBody(firstCard)
 	if err != nil {
@@ -131,7 +134,7 @@ func testLocalRelease() LocalRelease {
 			{
 				Name:         "example.part001.rar",
 				Subject:      "Example.Release.2026.part001.rar yEnc",
-				Poster:       "poster@example.invalid",
+				Poster:       "poster-one@example.invalid",
 				PostedAt:     &file1Posted,
 				SizeBytes:    1000,
 				FileIndex:    1,
@@ -145,7 +148,7 @@ func testLocalRelease() LocalRelease {
 			{
 				Name:         "example.part002.rar",
 				Subject:      "Example.Release.2026.part002.rar yEnc",
-				Poster:       "poster@example.invalid",
+				Poster:       "poster-two@example.invalid",
 				PostedAt:     &file2Posted,
 				SizeBytes:    2000,
 				FileIndex:    2,
