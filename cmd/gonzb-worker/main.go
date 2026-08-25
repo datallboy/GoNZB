@@ -85,7 +85,13 @@ func execute() error {
 		return err
 	}
 	defer store.Close()
-	qbit, err := qbittorrent.New(cfg.QBittorrent.URL, cfg.QBittorrent.Username, cfg.QBittorrent.Password, cfg.QBittorrentTimeout())
+	qbit, err := qbittorrent.New(
+		cfg.QBittorrent.URL,
+		cfg.QBittorrent.Username,
+		cfg.QBittorrent.Password,
+		cfg.QBittorrentTimeout(),
+		qbittorrent.WithHTTPBasicAuth(cfg.QBittorrent.HTTPBasicUsername, cfg.QBittorrent.HTTPBasicPassword),
+	)
 	if err != nil {
 		return err
 	}

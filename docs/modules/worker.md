@@ -89,6 +89,7 @@ Edit `/etc/gonzb-worker/config.yaml`. The important boundaries are:
 
 - `worker.data_dir` is local durable state and temporary posting workspace;
 - `qbittorrent.url` is the qBittorrent Web API base URL, not a torrent URL;
+  reverse-proxy path prefixes such as `/qbittorrent/` are preserved;
 - `qbittorrent.candidate_tag` limits normal polling to explicitly tagged,
   completed items;
 - `transfer.source_root` is the absolute seedbox path that contains every
@@ -103,6 +104,8 @@ Keep secrets out of the YAML by placing overrides in
 ```sh
 GONZB_WORKER_QBITTORRENT_USERNAME=worker-api-user
 GONZB_WORKER_QBITTORRENT_PASSWORD=replace-me
+GONZB_WORKER_QBITTORRENT_HTTP_BASIC_USERNAME=proxy-user
+GONZB_WORKER_QBITTORRENT_HTTP_BASIC_PASSWORD=replace-me
 GONZB_WORKER_TRANSFER_SSH_KEY=/etc/gonzb-worker/seedbox_ed25519
 GONZB_WORKER_GONZB_API_TOKEN=replace-me
 ```
