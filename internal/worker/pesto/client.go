@@ -49,7 +49,7 @@ type Client struct{ config Config }
 
 func New(config Config) (*Client, error) {
 	if strings.TrimSpace(config.Binary) == "" {
-		return nil, errors.New("Pesto binary is required")
+		return nil, errors.New("pesto binary is required")
 	}
 	for _, arg := range config.ExtraArgs {
 		key := strings.SplitN(arg, "=", 2)[0]
@@ -58,7 +58,7 @@ func New(config Config) (*Client, error) {
 			"--output-format", "--password", "--compress", "--compress-temp-dir", "--obfuscate",
 			"--par2", "--post-hook", "--pre-hook", "--watch", "--each", "--season", "--jobs",
 			"--config", "-c", "--dry-run", "--par2-only", "--resume", "--merge-season", "--no-overwrite":
-			return nil, fmt.Errorf("Pesto extra argument %q conflicts with worker-managed posting lifecycle", key)
+			return nil, fmt.Errorf("pesto extra argument %q conflicts with worker-managed posting lifecycle", key)
 		}
 	}
 	return &Client{config: config}, nil
@@ -129,21 +129,21 @@ func (c *Client) Post(ctx context.Context, request PostRequest) (*PostResult, er
 		return result, parseErr
 	}
 	if waitErr != nil {
-		return result, fmt.Errorf("Pesto exited with code %d", result.ExitCode)
+		return result, fmt.Errorf("pesto exited with code %d", result.ExitCode)
 	}
 	if result.ExitCode != 0 {
-		return result, fmt.Errorf("Pesto exited with code %d", result.ExitCode)
+		return result, fmt.Errorf("pesto exited with code %d", result.ExitCode)
 	}
 	info, err := os.Stat(request.OutputNZB)
 	if err != nil || info.Size() == 0 {
-		return result, errors.New("Pesto completed without producing a non-empty NZB")
+		return result, errors.New("pesto completed without producing a non-empty NZB")
 	}
 	password, err := sanitizeNZBFile(request.OutputNZB)
 	if err != nil {
 		return result, fmt.Errorf("sanitize generated NZB: %w", err)
 	}
 	if c.config.Encryption && password == "" {
-		return result, errors.New("Pesto encryption was enabled but the generated NZB has no password metadata")
+		return result, errors.New("pesto encryption was enabled but the generated NZB has no password metadata")
 	}
 	result.Password = password
 	return result, nil
@@ -151,10 +151,10 @@ func (c *Client) Post(ctx context.Context, request PostRequest) (*PostResult, er
 
 func (c *Client) arguments(request PostRequest) ([]string, error) {
 	if !filepath.IsAbs(request.InputPath) || !filepath.IsAbs(request.OutputNZB) {
-		return nil, errors.New("Pesto input and output paths must be absolute")
+		return nil, errors.New("pesto input and output paths must be absolute")
 	}
 	if strings.TrimSpace(request.Name) == "" {
-		return nil, errors.New("Pesto NZB name is required")
+		return nil, errors.New("pesto NZB name is required")
 	}
 	args := make([]string, 0, len(c.config.ExtraArgs)+16)
 	if c.config.ConfigPath != "" {
@@ -203,7 +203,7 @@ func parseEvents(reader io.Reader, result *PostResult) error {
 		var item event
 		if err := json.Unmarshal(line, &item); err != nil {
 			if firstErr == nil {
-				firstErr = errors.New("Pesto emitted invalid structured output")
+				firstErr = errors.New("pesto emitted invalid structured output")
 			}
 			continue
 		}
@@ -222,7 +222,7 @@ func parseEvents(reader io.Reader, result *PostResult) error {
 		case "nzb_written":
 			if filepath.Clean(item.Path) != filepath.Clean(result.NZBPath) {
 				if firstErr == nil {
-					firstErr = errors.New("Pesto reported an unexpected NZB output path")
+					firstErr = errors.New("pesto reported an unexpected NZB output path")
 				}
 			}
 		}
@@ -234,7 +234,7 @@ func parseEvents(reader io.Reader, result *PostResult) error {
 		return firstErr
 	}
 	if !finished {
-		return errors.New("Pesto output did not contain a successful finished event")
+		return errors.New("pesto output did not contain a successful finished event")
 	}
 	return nil
 }
