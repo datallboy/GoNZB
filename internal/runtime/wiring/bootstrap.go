@@ -13,6 +13,7 @@ import (
 	"github.com/datallboy/gonzb/internal/store/pgindex"
 	settingsstore "github.com/datallboy/gonzb/internal/store/settings"
 	"github.com/datallboy/gonzb/internal/store/sqlitejob"
+	"github.com/datallboy/gonzb/internal/store/sqliteuploader"
 )
 
 type blobCacheIndexer interface {
@@ -47,7 +48,7 @@ func BootstrapStores(appCtx *app.Context) error {
 	modules := cfg.Modules
 
 	needsJobStore := modules.Aggregator.Enabled && cfg.Store.SearchPersistenceEnabled
-	needsSettingsStore := modules.Aggregator.Enabled || modules.UsenetIndexer.Enabled || modules.GoNZBNet.Enabled || modules.API.Enabled || modules.WebUI.Enabled
+	needsSettingsStore := modules.Aggregator.Enabled || modules.UsenetIndexer.Enabled || modules.GoNZBNet.Enabled || modules.Uploader.Enabled || modules.API.Enabled || modules.WebUI.Enabled
 
 	closers := make([]io.Closer, 0, 3)
 	closeCreated := func() {
@@ -73,6 +74,16 @@ func BootstrapStores(appCtx *app.Context) error {
 		}
 		appCtx.SettingsStore = settingsStore
 		closers = append(closers, settingsStore)
+	}
+
+	if modules.Uploader.Enabled {
+		uploaderStore, err := sqliteuploader.NewStore(cfg.Store.SQLitePath, filepath.Join(blobStoreRoot(cfg), "uploader"))
+		if err != nil {
+			closeCreated()
+			return fmt.Errorf("failed to initialize uploader store: %w", err)
+		}
+		appCtx.UploaderStore = uploaderStore
+		closers = append(closers, uploaderStore)
 	}
 
 	payloadStore, err := newPayloadCacheStore(cfg, appCtx.JobStore)

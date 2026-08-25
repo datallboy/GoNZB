@@ -1152,17 +1152,30 @@ func (s *runtimeIndexerService) GetRelease(ctx context.Context, releaseID string
 	if err != nil || detail == nil {
 		return detail, err
 	}
-	detail.Capabilities.CanSendToDownloadClient = s.downloadClient != nil && hasEnabledDownloadClient(ctx, s.settingsAdmin)
+	resolverReady := detail.Release.SourceKind != "uploader" || (s.appCtx != nil && s.appCtx.Aggregator != nil)
+	detail.Capabilities.CanSendToDownloadClient = resolverReady && s.downloadClient != nil && hasEnabledDownloadClient(ctx, s.settingsAdmin)
 	return detail, nil
 }
 
 func (s *runtimeIndexerService) SendReleaseToDownloadClient(ctx context.Context, releaseID string) (*app.DownloadClientResult, error) {
-	if s == nil || s.downloadClient == nil {
+	if s == nil || s.store == nil || s.downloadClient == nil {
 		return nil, fmt.Errorf("SAB-compatible download client is not configured")
 	}
+	releaseID = strings.TrimSpace(releaseID)
+	detail, err := s.store.GetPublicIndexerReleaseDetailWithPolicy(ctx, releaseID, s.releaseReadyPolicy(ctx))
+	if err != nil {
+		return nil, err
+	}
+	if detail == nil {
+		return nil, fmt.Errorf("release not found")
+	}
+	sourceKind := "usenet_index"
+	if detail.Release.SourceKind == "uploader" {
+		sourceKind = "aggregator"
+	}
 	return s.downloadClient.SendRelease(ctx, app.DownloadClientSubmission{
-		SourceKind: "usenet_index",
-		ReleaseID:  strings.TrimSpace(releaseID),
+		SourceKind: sourceKind,
+		ReleaseID:  releaseID,
 	})
 }
 

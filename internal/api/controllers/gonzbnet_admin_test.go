@@ -779,6 +779,43 @@ func TestGoNZBNetAdminArticleAvailabilityDiagnostics(t *testing.T) {
 	}
 }
 
+func TestGoNZBNetAdminEventDiagnosticsFilters(t *testing.T) {
+	store := &fakeGoNZBNetAdminStore{}
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/gonzbnet/diagnostics/events?pool_id=pool.remote&node_id=node.remote&event_type=ReleaseCard&validation_status=accepted&projected=false&tombstoned=true&limit=25", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	ctrl := &GoNZBNetAdminController{appCtx: &app.Context{Config: testGoNZBNetAdminConfig(t)}, storeOverride: store}
+
+	if err := ctrl.EventDiagnostics(c); err != nil {
+		t.Fatalf("EventDiagnostics returned error: %v", err)
+	}
+	params := store.eventDiagnosticParams
+	if rec.Code != http.StatusOK || params.PoolID != "pool.remote" || params.NodeID != "node.remote" || params.EventType != "ReleaseCard" || params.ValidationStatus != "accepted" || params.Limit != 25 {
+		t.Fatalf("unexpected event diagnostic params: %+v status=%d", params, rec.Code)
+	}
+	if params.Projected == nil || *params.Projected || params.Tombstoned == nil || !*params.Tombstoned {
+		t.Fatalf("unexpected boolean event filters: %+v", params)
+	}
+}
+
+func TestGoNZBNetAdminReleaseLedgerFilters(t *testing.T) {
+	store := &fakeGoNZBNetAdminStore{}
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/gonzbnet/diagnostics/releases?pool_id=pool.remote&node_id=node.remote&release_id=rel_1&q=fixture&source_kind=local_uploader&state=tombstoned&cursor=cursor_1&limit=20", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	ctrl := &GoNZBNetAdminController{appCtx: &app.Context{Config: testGoNZBNetAdminConfig(t)}, storeOverride: store}
+
+	if err := ctrl.ReleaseLedger(c); err != nil {
+		t.Fatalf("ReleaseLedger returned error: %v", err)
+	}
+	params := store.releaseLedgerParams
+	if rec.Code != http.StatusOK || params.PoolID != "pool.remote" || params.NodeID != "node.remote" || params.ReleaseID != "rel_1" || params.Query != "fixture" || params.SourceKind != "local_uploader" || params.State != "tombstoned" || params.Cursor != "cursor_1" || params.Limit != 20 {
+		t.Fatalf("unexpected release ledger params: %+v status=%d", params, rec.Code)
+	}
+}
+
 const encryptedKeyEnvelopeMarker = "gonzbnet.ed25519.private.v1"
 
 func testGoNZBNetAdminConfig(t *testing.T) *config.Config {
@@ -851,6 +888,8 @@ type fakeGoNZBNetAdminStore struct {
 	activePoolIDs          []string
 	poolHealth             pgindex.FederationPoolHealthReport
 	articleAvailability    []pgindex.ArticleAvailabilityDiagnostic
+	eventDiagnosticParams  pgindex.FederationEventDiagnosticParams
+	releaseLedgerParams    pgindex.FederationReleaseLedgerParams
 }
 
 func (s *fakeGoNZBNetAdminStore) ListFederationActivityRollups(context.Context, pgindex.FederationActivityQuery) ([]activity.Rollup, error) {
@@ -1067,7 +1106,8 @@ func (s *fakeGoNZBNetAdminStore) ListFederationPeerDiagnostics(context.Context, 
 	return nil, nil
 }
 
-func (s *fakeGoNZBNetAdminStore) ListFederationEventDiagnostics(context.Context, int) ([]pgindex.FederationEventDiagnostic, error) {
+func (s *fakeGoNZBNetAdminStore) ListFederationEventDiagnostics(_ context.Context, params pgindex.FederationEventDiagnosticParams) ([]pgindex.FederationEventDiagnostic, error) {
+	s.eventDiagnosticParams = params
 	return nil, nil
 }
 
@@ -1089,6 +1129,11 @@ func (s *fakeGoNZBNetAdminStore) ListValidationTaskDiagnostics(context.Context, 
 
 func (s *fakeGoNZBNetAdminStore) ListFederatedReleaseSourceDiagnostics(context.Context, string, int) ([]pgindex.FederatedReleaseSourceDiagnostic, error) {
 	return nil, nil
+}
+
+func (s *fakeGoNZBNetAdminStore) ListFederationReleaseLedger(_ context.Context, params pgindex.FederationReleaseLedgerParams) (pgindex.FederationReleaseLedgerPage, error) {
+	s.releaseLedgerParams = params
+	return pgindex.FederationReleaseLedgerPage{}, nil
 }
 
 func (s *fakeGoNZBNetAdminStore) ListFederatedManifestSourceDiagnostics(context.Context, string, int) ([]pgindex.FederatedManifestSourceDiagnostic, error) {

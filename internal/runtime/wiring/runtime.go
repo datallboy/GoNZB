@@ -21,7 +21,15 @@ func BuildInitialRuntime(appCtx *app.Context) error {
 		return err
 	}
 
-	if err := LoadAndApplyEffectiveConfig(context.Background(), appCtx); err != nil {
+	effective, err := LoadEffectiveConfig(context.Background(), appCtx)
+	if err != nil {
+		return err
+	}
+	appCtx.Config = effective
+	if err := configureGoNZBNetPeerTransport(appCtx); err != nil {
+		return fmt.Errorf("configure gonzbnet peer transport: %w", err)
+	}
+	if err := ApplyEffectiveConfig(appCtx, effective); err != nil {
 		return err
 	}
 

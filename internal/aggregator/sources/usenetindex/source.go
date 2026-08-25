@@ -137,11 +137,15 @@ func publicReleaseToDomain(item pgindex.PublicIndexerReleaseSummary) *domain.Rel
 		category = strconv.Itoa(newsnab.OtherMisc)
 	}
 
+	source := strings.TrimSpace(item.SourceKind)
+	if source == "" {
+		source = sourceName
+	}
 	return &domain.Release{
 		ID:          item.ReleaseID,
 		Title:       item.Title,
 		GUID:        guid,
-		Source:      sourceName,
+		Source:      source,
 		Size:        item.SizeBytes,
 		PublishDate: publishDate,
 		Category:    category,

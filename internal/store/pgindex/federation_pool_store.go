@@ -208,6 +208,11 @@ func (s *Store) ProjectFederationPoolEvent(ctx context.Context, event *events.Si
 		if err := json.Unmarshal(event.Body, &body); err != nil {
 			return err
 		}
+		candidateURL := strings.TrimRight(strings.TrimSpace(body.CandidateURL), "/")
+		legacyCandidateURL := candidateURL
+		if transport, err := endpointTransport(candidateURL); err == nil && transport == "ice" {
+			legacyCandidateURL = ""
+		}
 		if _, err := s.federationExecutor(ctx).ExecContext(ctx, `
 			UPDATE federation_nodes
 			SET base_url = COALESCE(NULLIF($2, ''), base_url),
@@ -216,8 +221,15 @@ func (s *Store) ProjectFederationPoolEvent(ctx context.Context, event *events.Si
 			        ELSE 'admission_pending'
 			    END,
 			    updated_at = NOW()
-			WHERE node_id = $1`, body.CandidateNodeID, strings.TrimSpace(body.CandidateURL)); err != nil {
+			WHERE node_id = $1`, body.CandidateNodeID, legacyCandidateURL); err != nil {
 			return fmt.Errorf("update pool admission candidate: %w", err)
+		}
+		if candidateURL != "" {
+			if err := upsertFederationNodeEndpoint(ctx, s.federationExecutor(ctx), FederationNodeEndpoint{
+				NodeID: body.CandidateNodeID, Locator: candidateURL, Priority: 100, Enabled: true,
+			}); err != nil {
+				return err
+			}
 		}
 		return s.UpsertFederationAdmission(ctx, FederationAdmissionRecord{
 			ProposalEventID: event.EventID, PoolID: body.PoolID,
@@ -265,6 +277,20 @@ func (s *Store) ProjectFederationPoolEvent(ctx context.Context, event *events.Si
 }
 
 func (s *Store) CanAcceptFederationEventForPools(ctx context.Context, authorNodeID string, poolIDs []string, eventType string) (PoolAuthorizationResult, error) {
+	var nodeStatus string
+	if err := s.federationExecutor(ctx).QueryRowContext(ctx, `
+		SELECT status FROM federation_nodes WHERE node_id = $1`, strings.TrimSpace(authorNodeID)).Scan(&nodeStatus); err != nil {
+		if err == sql.ErrNoRows {
+			return PoolAuthorizationResult{Allowed: false, Reason: "unknown_node"}, nil
+		}
+		return PoolAuthorizationResult{}, err
+	}
+	if nodeStatus == "blocked" {
+		return PoolAuthorizationResult{Allowed: false, Reason: "node_blocked"}, nil
+	}
+	if nodeStatus == "forked" {
+		return PoolAuthorizationResult{Allowed: false, Reason: "node_forked"}, nil
+	}
 	normalizedPools := normalizeStrings(poolIDs)
 	if len(normalizedPools) == 0 {
 		return PoolAuthorizationResult{Allowed: false, Reason: "missing_pool"}, nil
@@ -905,6 +931,7 @@ func defaultAllowedCapabilities(role string, allowed []string) []string {
 		capability.Admin,
 		capability.Scanner,
 		capability.Indexer,
+		capability.ReleasePublisher,
 		capability.ManifestBuilder,
 		capability.ManifestCache,
 		capability.Validator,

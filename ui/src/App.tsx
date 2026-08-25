@@ -10,12 +10,15 @@ const AccountTokensPage = lazy(() => import('./modules/auth/AccountTokensPage').
 const RootRedirect = lazy(() => import('./modules/RootRedirect').then((module) => ({ default: module.RootRedirect })))
 const IndexerReleaseDetailPage = lazy(() => import('./modules/indexer/IndexerReleaseDetailPage').then((module) => ({ default: module.IndexerReleaseDetailPage })))
 const IndexerReleaseListPage = lazy(() => import('./modules/indexer/IndexerReleaseListPage').then((module) => ({ default: module.IndexerReleaseListPage })))
+const UploaderListPage = lazy(() => import('./modules/uploader/UploaderListPage').then((module) => ({ default: module.UploaderListPage })))
+const UploaderDetailPage = lazy(() => import('./modules/uploader/UploaderDetailPage').then((module) => ({ default: module.UploaderDetailPage })))
 const AdminAttentionPage = lazy(() => import('./modules/admin/AdminAttentionPage').then((module) => ({ default: module.AdminAttentionPage })))
 const AdminArticleCohortsPage = lazy(() => import('./modules/admin/AdminArticleCohortsPage').then((module) => ({ default: module.AdminArticleCohortsPage })))
 const AdminDashboardPage = lazy(() => import('./modules/admin/AdminDashboardPage').then((module) => ({ default: module.AdminDashboardPage })))
 const AdminBinaryDetailPage = lazy(() => import('./modules/admin/AdminBinaryDetailPage').then((module) => ({ default: module.AdminBinaryDetailPage })))
 const AdminBinariesPage = lazy(() => import('./modules/admin/AdminBinariesPage').then((module) => ({ default: module.AdminBinariesPage })))
 const AdminGoNZBNetPage = lazy(() => import('./modules/admin/AdminGoNZBNetPage').then((module) => ({ default: module.AdminGoNZBNetPage })))
+const AdminGoNZBNetReleaseCardsPage = lazy(() => import('./modules/admin/AdminGoNZBNetReleaseCardsPage').then((module) => ({ default: module.AdminGoNZBNetReleaseCardsPage })))
 const AdminIndexerWorkPage = lazy(() => import('./modules/admin/AdminIndexerWorkPage').then((module) => ({ default: module.AdminIndexerWorkPage })))
 const AdminMaintenancePage = lazy(() => import('./modules/admin/AdminMaintenancePage').then((module) => ({ default: module.AdminMaintenancePage })))
 const AdminReleaseDetailPage = lazy(() => import('./modules/admin/AdminReleaseDetailPage').then((module) => ({ default: module.AdminReleaseDetailPage })))
@@ -61,6 +64,8 @@ export default function App() {
           <Route path="indexer/browse/:category" element={<IndexerReleaseListPage />} />
           <Route path="indexer/browse/:category/:subcategory" element={<IndexerReleaseListPage />} />
           <Route path="indexer/releases/:id" element={<IndexerReleaseDetailPage />} />
+          <Route path="uploader" element={<RequireAuth permission="uploader.submissions.read"><UploaderListPage /></RequireAuth>} />
+          <Route path="uploader/:id" element={<RequireAuth permission="uploader.submissions.read"><UploaderDetailPage /></RequireAuth>} />
           <Route path="account/tokens" element={<AccountTokensPage />} />
         </Route>
         <Route
@@ -181,6 +186,14 @@ export default function App() {
             element={
               <RequireAuth permission="gonzbnet.admin.read">
                 <AdminGoNZBNetPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="gonzbnet/releases"
+            element={
+              <RequireAuth permission="gonzbnet.admin.read">
+                <AdminGoNZBNetReleaseCardsPage />
               </RequireAuth>
             }
           />

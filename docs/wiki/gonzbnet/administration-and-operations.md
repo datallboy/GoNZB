@@ -37,6 +37,15 @@ protocol detail:
   bounded five-minute/hourly history. Raw protocol diagnostics, manual actions,
   governance, and key operations remain available under **Advanced tools**.
 
+Open `/admin/gonzbnet/releases` or select **ReleaseCards** in the Federation
+navigation for the local node's observed federated catalog. This is deliberately
+separate from **Indexer > Releases**. It identifies each signed card's uploader,
+indexer, or scanner origin; source node and pool; publication and membership
+state; projection integrity; active tombstone; and final effective state. Search
+and filters cover titles, release/manifest IDs, pools, source nodes, origins, and
+effective states. Administrators with moderation permission can sign a release
+tombstone directly from the table.
+
 These views are read-only descriptions of effective behavior. Use **Settings >
 GoNZBNet** to enable jobs or change their cadence and limits.
 
@@ -102,6 +111,66 @@ Use tombstones for signed moderation of federated content. Blocking a node is a
 local transport/acceptance decision and does not rewrite the append-only event
 history.
 
+### Release corrections and suppression
+
+Signed events are immutable. To correct a published title or other metadata:
+
+1. publish the corrected `ReleaseCard` (a title correction normally produces a
+   new stable release ID because normalized title participates in identity);
+2. publish an author-scoped `ReleasePublicationState` with `withdrawn` for the
+   previous release/source and include the reason;
+3. synchronize and confirm the previous source is `withdrawn` and the corrected
+   source is `active` in the release integrity ledger.
+
+For uploader-managed releases, the existing uploader detail view provides the
+pool-specific publish, withdraw, and restore actions that emit these states.
+
+Withdrawal controls only the publisher's own source. For malicious content or
+a source the publisher cannot be trusted to withdraw, a pool administrator can
+tombstone the release, manifest, event, node, or pool member. Revoke the
+member's pool roles/capabilities to stop future accepted publication and apply a
+local node block when transport and acceptance should stop immediately. Signed
+events remain available for audit even when their effective projections are
+suppressed.
+
+Tombstones are evaluated as reversible suppression policy. They do not rewrite
+an accepted ReleaseCard or manifest and do not delete a verified cached NZB.
+An expiring tombstone therefore restores eligibility automatically after its
+expiry, assuming the source still passes membership, trust, publication, and
+integrity checks.
+
+The dedicated **ReleaseCards** page shows the
+signed and projected titles, source event/body hash, source node and pool,
+membership and node state, publication state, active tombstone, and final
+effective state. It can be filtered by pool, node, release, or state and uses a
+stable cursor for pagination. Event diagnostics can be filtered by pool, author
+node, event type, validation status, projection status, and active tombstone
+status.
+
+Equivalent local-admin API reads are:
+
+```text
+GET /api/v1/admin/gonzbnet/diagnostics/releases?pool_id=POOL&node_id=NODE&state=active
+GET /api/v1/admin/gonzbnet/diagnostics/releases?pool_id=POOL&state=tombstoned
+GET /api/v1/admin/gonzbnet/diagnostics/events?pool_id=POOL&node_id=NODE&tombstoned=true
+GET /api/v1/admin/gonzbnet/moderation/tombstones?active=true
+```
+
+The ledger is the observing node's local view. Compare nodes when diagnosing
+sync convergence; changing one aggregator's database does not mutate another
+node or create a new federation event.
+
+For a locally authored uploader card, **Correct & republish** opens the uploader
+review queue filtered to the source title. Return the submission to pending,
+correct and approve it, then explicitly publish the corrected version. For a
+locally authored indexer card, the action opens the indexer release table so its
+authoritative metadata can be corrected before the publisher's next run. A
+content-derived release ID changes when identity-bearing metadata changes; the
+replacement therefore starts a fresh signed publication lifecycle while the old
+card remains withdrawn or tombstoned. A node cannot republish a remote author's
+corrected card: the remote author must sign the replacement, or a pool
+administrator must tombstone the bad card.
+
 ## Metrics
 
 Authenticated local-admin endpoints expose process-local metrics and bounded
@@ -127,7 +196,9 @@ required.
 
 Useful operational signals include accepted/rejected events, signature and
 authorization failures, pull/push delivery results, manifest fetch/cache
-outcomes, admission status, validation work, and stale coverage claims.
+outcomes, cache-integrity failures, admission status, validation work, and stale
+coverage claims. `gonzbnet_manifest_cache_integrity_failures_total` increments
+when a PostgreSQL or filesystem NZB cache payload fails its checksum.
 
 ## Troubleshooting
 
@@ -164,6 +235,10 @@ outcomes, admission status, validation work, and stale coverage claims.
 - Confirm the card has a stable manifest ID and at least one authorized source.
 - Check manifest availability, source health, fetch timeout, response-size
   limit, signature validation, and cache policy.
+- Inspect the release integrity ledger for a blocked/revoked/withdrawn source,
+  active tombstone, or signed/projection mismatch.
+- Check `gonzbnet_manifest_cache_integrity_failures_total`; a corrupt cache entry
+  is repaired from its verified signed manifest or discarded and refetched.
 - A publisher needs `manifest_builder_enabled` to create locally sourced signed
   manifests.
 

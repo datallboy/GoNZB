@@ -17,6 +17,7 @@ import (
 var (
 	ErrFederationSequenceConflict = errors.New("federation sequence conflict")
 	ErrFederationForkDetected     = errors.New("federation event fork detected")
+	ErrUnknownFederationNode      = errors.New("unknown federation node")
 )
 
 type FederationNodeRecord struct {
@@ -26,6 +27,7 @@ type FederationNodeRecord struct {
 	Software          string
 	SoftwareVersion   string
 	BaseURL           string
+	AlternateLocators []string
 	Capabilities      json.RawMessage
 	ModuleStatus      json.RawMessage
 	ScannerCapacity   json.RawMessage
@@ -64,6 +66,10 @@ func (s *Store) UpsertFederationNode(ctx context.Context, node FederationNodeRec
 	if status == "" {
 		status = "unknown"
 	}
+	legacyBaseURL := strings.TrimRight(strings.TrimSpace(node.BaseURL), "/")
+	if transport, err := endpointTransport(legacyBaseURL); err == nil && transport == "ice" {
+		legacyBaseURL = ""
+	}
 
 	executor := s.federationExecutor(ctx)
 	_, err := executor.ExecContext(ctx, `
@@ -93,7 +99,7 @@ func (s *Store) UpsertFederationNode(ctx context.Context, node FederationNodeRec
 		node.Alias,
 		node.Software,
 		node.SoftwareVersion,
-		node.BaseURL,
+		legacyBaseURL,
 		string(capabilities),
 		string(profileJSON),
 		status,
@@ -101,6 +107,24 @@ func (s *Store) UpsertFederationNode(ctx context.Context, node FederationNodeRec
 	)
 	if err != nil {
 		return fmt.Errorf("upsert federation node: %w", err)
+	}
+	if strings.TrimSpace(node.BaseURL) != "" {
+		if err := upsertFederationNodeEndpoint(ctx, executor, FederationNodeEndpoint{
+			NodeID: node.NodeID, Locator: node.BaseURL, Priority: 100, Enabled: true,
+		}); err != nil {
+			return err
+		}
+	}
+	for index, locator := range node.AlternateLocators {
+		locator = strings.TrimSpace(locator)
+		if locator == "" || strings.TrimRight(locator, "/") == strings.TrimRight(node.BaseURL, "/") {
+			continue
+		}
+		if err := upsertFederationNodeEndpoint(ctx, executor, FederationNodeEndpoint{
+			NodeID: node.NodeID, Locator: locator, Priority: 200 + index, Enabled: true,
+		}); err != nil {
+			return err
+		}
 	}
 	if _, err := executor.ExecContext(ctx, `
 		INSERT INTO federation_node_capabilities (
@@ -262,10 +286,35 @@ func (s *Store) GetFederationNodePublicKey(ctx context.Context, nodeID string) (
 		WHERE node_id = $1
 		  AND status <> 'blocked'`, nodeID).Scan(&publicKey)
 	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("unknown federation node")
+		return nil, fmt.Errorf("%w: %s", ErrUnknownFederationNode, nodeID)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("read federation node public key: %w", err)
+	}
+	if len(publicKey) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("stored federation public key has invalid size")
+	}
+	return ed25519.PublicKey(publicKey), nil
+}
+
+// GetFederationNodeTransportPublicKey includes blocked nodes so the traversal
+// layer can still reject identity substitution before application policy
+// independently rejects all pool access for the blocked identity.
+func (s *Store) GetFederationNodeTransportPublicKey(ctx context.Context, nodeID string) (ed25519.PublicKey, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("pgindex store is not initialized")
+	}
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return nil, fmt.Errorf("node_id is required")
+	}
+	var publicKey []byte
+	err := s.db.QueryRowContext(ctx, `SELECT public_key FROM federation_nodes WHERE node_id = $1`, nodeID).Scan(&publicKey)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("%w: %s", ErrUnknownFederationNode, nodeID)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read federation transport public key: %w", err)
 	}
 	if len(publicKey) != ed25519.PublicKeySize {
 		return nil, fmt.Errorf("stored federation public key has invalid size")

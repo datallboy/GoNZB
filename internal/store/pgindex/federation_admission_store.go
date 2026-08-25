@@ -215,7 +215,6 @@ func (s *Store) ListActivePoolMemberEndpoints(ctx context.Context, poolID string
 		WHERE member.pool_id = $1
 		  AND member.status = 'active'
 		  AND node.status <> 'blocked'
-		  AND node.base_url <> ''
 		ORDER BY node.node_id`, strings.TrimSpace(poolID))
 	if err != nil {
 		return nil, fmt.Errorf("list active pool member endpoints: %w", err)
@@ -226,6 +225,18 @@ func (s *Store) ListActivePoolMemberEndpoints(ctx context.Context, poolID string
 		var item admission.MemberEndpoint
 		if err := rows.Scan(&item.NodeID, &item.BaseURL); err != nil {
 			return nil, err
+		}
+		endpoints, err := s.ListFederationNodeEndpoints(ctx, item.NodeID, true)
+		if err != nil {
+			return nil, err
+		}
+		for _, endpoint := range endpoints {
+			item.Locators = append(item.Locators, endpoint.Locator)
+		}
+		if selected, err := s.ResolveFederationNodeEndpoint(ctx, item.NodeID); err != nil {
+			return nil, err
+		} else if selected != nil {
+			item.BaseURL = selected.Locator
 		}
 		items = append(items, item)
 	}

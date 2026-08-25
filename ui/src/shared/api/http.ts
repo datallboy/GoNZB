@@ -34,6 +34,24 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
   return (await response.json()) as T
 }
 
+export async function apiFormRequest<T>(path: string, form: FormData, method = 'POST'): Promise<T> {
+  const headers = new Headers()
+  if (!isSafeMethod(method)) {
+    const csrfToken = readCookie('gonzb_csrf')
+    if (csrfToken) headers.set('X-CSRF-Token', csrfToken)
+  }
+  const response = await fetch(`${API_BASE}${path}`, {
+    method,
+    headers,
+    body: form,
+    credentials: 'include',
+  })
+  if (!response.ok) {
+    throw new Error(await parseError(response))
+  }
+  return (await response.json()) as T
+}
+
 export function apiURL(path: string) {
   return `${API_BASE}${path}`
 }

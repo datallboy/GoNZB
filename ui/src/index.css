@@ -1790,6 +1790,12 @@ textarea {
   background: #c23a45;
 }
 
+.danger-button--small {
+  min-height: 0;
+  padding: 0.45rem 0.7rem;
+  font-size: 0.82rem;
+}
+
 .auth-screen {
   min-height: 100vh;
   display: grid;

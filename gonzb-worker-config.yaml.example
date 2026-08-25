@@ -1,0 +1,57 @@
+worker:
+  data_dir: /var/lib/gonzb-worker
+  node_id: posting-vps-1
+  poll_interval_seconds: 30
+  min_free_space_gb: 30
+  workspace_multiplier: 2.5
+  cleanup_on_success: true
+
+qbittorrent:
+  url: https://seedbox.example.invalid
+  username: ""
+  password: ""
+  candidate_tag: gonzb-candidate
+  timeout_seconds: 30
+
+transfer:
+  # "rsync" copies the completed payload into the job workspace.
+  # "sshfs" mounts source_root read-only and lets Pesto read it directly.
+  type: sshfs
+  rsync_binary: rsync
+  sshfs_binary: sshfs
+  unmount_binary: fusermount3
+  ssh_host: seedbox.example.invalid
+  ssh_user: seedbox-user
+  ssh_port: 22
+  ssh_key: /etc/gonzb-worker/seedbox_ed25519
+  source_root: /downloads
+  # Required only for type: sshfs.
+  mount_path: /mnt/gonzb-worker-seedbox
+  manage_mount: true
+  unmount_on_exit: true
+  # reconnect and SSH keepalives are enforced by the worker. Add optional
+  # performance/cache options here; unsafe writable/shared options are rejected.
+  sshfs_options: []
+  extra_args: []
+
+pesto:
+  binary: /usr/local/bin/pesto
+  config_path: /etc/gonzb-worker/pesto.toml
+  compression: 7z
+  encryption: true
+  obfuscation: full
+  par2_percent: 10
+  # NNTP settings should normally live in the Pesto config file.
+  extra_args: []
+
+gonzb:
+  url: https://gonzb.example.invalid
+  api_token: ""
+  timeout_seconds: 60
+
+# Secret overrides:
+# GONZB_WORKER_QBITTORRENT_USERNAME
+# GONZB_WORKER_QBITTORRENT_PASSWORD
+# GONZB_WORKER_TRANSFER_SSH_KEY
+# GONZB_WORKER_PESTO_CONFIG_PATH
+# GONZB_WORKER_GONZB_API_TOKEN

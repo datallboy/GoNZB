@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -58,6 +59,42 @@ func TestInvitationRoundTripAndTamper(t *testing.T) {
 	decoded.PoolID = "pool.other"
 	if err := decoded.Verify(time.Now().UTC()); err == nil {
 		t.Fatal("expected tampered invitation to fail")
+	}
+}
+
+func TestTraversalInvitationV11RoundTrip(t *testing.T) {
+	signer := newTestIdentity(t)
+	locator := "gonzb+ice://node_" + strings.Repeat("a", 52) + "@connect.example/gonzbnet/v1"
+	invite, err := NewInvitationWithLocators(context.Background(), signer, "pool.test", "evt_genesis", "", locator, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if invite.SchemaVersion != "1.1" {
+		t.Fatalf("schema = %q", invite.SchemaVersion)
+	}
+	link, err := invite.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := ParseInvitation(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := decoded.Verify(time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := decoded.PreferredLocator(false); err == nil || !strings.Contains(err.Error(), "traversal is disabled") {
+		t.Fatalf("expected disabled diagnostic, got %v", err)
+	}
+	if got, err := decoded.PreferredLocator(true); err != nil || got != locator {
+		t.Fatalf("locator = %q, %v", got, err)
+	}
+}
+
+func TestTraversalInvitationRejectsMalformedLocator(t *testing.T) {
+	_, err := NewInvitationWithLocators(context.Background(), newTestIdentity(t), "pool.test", "evt_genesis", "", "gonzb+ice://node_bad@connect.example/gonzbnet/v1", nil)
+	if err == nil {
+		t.Fatal("malformed traversal invitation accepted")
 	}
 }
 

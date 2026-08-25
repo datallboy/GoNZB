@@ -1,13 +1,37 @@
 # Networking And Exposure
 
-GoNZBNet peers communicate over authenticated HTTP endpoints. The module does
-not currently implement UPnP, NAT-PMP, PCP, STUN/TURN, ICE, DHT discovery, or
-connection hole punching. An advertised peer URL therefore must already be
-reachable from the nodes that use it.
+GoNZBNet peers normally communicate over authenticated HTTPS endpoints. An
+experimental, opt-in `gonzb+ice` transport can gather host, STUN-derived, and
+TURN-relayed candidates and carry the same signed HTTP requests over reliable,
+ordered WebRTC DataChannels. UPnP, NAT-PMP, PCP, DHT discovery, and a
+general-purpose tunnel are intentionally not included.
 
 Reachable does not mean public. A WireGuard, Tailscale, or Headscale network
-gives nodes stable private addresses across ordinary home NAT and is the
-recommended setup for a private pool.
+gives nodes stable private addresses across ordinary home NAT and remains the
+recommended setup for a first private pool. Native traversal is not a
+prerequisite for pool operation.
+
+## Experimental Native Traversal
+
+A traversal locator has this form:
+
+```text
+gonzb+ice://node_<identity>@connect.example/gonzbnet/v1
+```
+
+The coordinator authenticates enrolled node identities and routes signed,
+two-minute signaling envelopes. ICE prefers direct UDP and may fall back to
+coturn over UDP, TCP, or TLS. The exact SDP—including DTLS fingerprints—is
+hashed and Ed25519-signed by the persistent GoNZB identity. The coordinator
+can observe node IDs, public addresses, timing, connection duration, and byte
+counts or deny service, but it cannot decrypt GoNZBNet requests, events,
+manifests, evidence, or credentials.
+
+Inbound traversal is restricted to `/.well-known/gonzbnet` and the configured
+GoNZBNet protocol base. `/setup`, `/api`, `/api/v1/admin`, the WebUI, NNTP,
+filesystem paths, and arbitrary proxy destinations are rejected before the
+application handler. Existing request signatures and pool authorization remain
+authoritative; coordinator enrollment never grants pool membership.
 
 ## Which Roles Need Inbound Reachability?
 
@@ -47,10 +71,9 @@ accepted only from the proxy.
 
 BitTorrent peers can use tracker introductions, a distributed hash table,
 UPnP/NAT-PMP port mappings, hole punching, and relay extensions depending on
-the clients and networks involved. GoNZBNet deliberately has none of those
-discovery or traversal mechanisms today. Its trust-pool model uses explicit,
-authenticated peers, so private routing or an operator-managed public endpoint
-is required.
+the clients and networks involved. GoNZBNet keeps explicit authenticated peers
+and does not add public DHT discovery or automatic router port mappings. ICE is
+an optional transport for known node identities, not a public discovery layer.
 
 See [Private Pool Quickstart](./private-pool-quickstart.md) for a deployment
 walkthrough.

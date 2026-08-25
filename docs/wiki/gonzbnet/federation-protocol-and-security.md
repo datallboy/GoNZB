@@ -65,6 +65,13 @@ tolerance, maximum event age, nonce lifetime, body limits, and request rate.
 Nonces prevent a valid signed request from being replayed within its acceptance
 window.
 
+These signatures authenticate the requesting node and protect request
+integrity; they are not PGP-style encryption. HTTPS supplies confidentiality
+and server transport authentication. A `ManifestRequest` is signed by the
+requesting node, binds its declared `requesting_node_id` to that signature, and
+names the exact manifest, release, and pool. The response echoes the random
+request ID so a valid response cannot be substituted between concurrent grabs.
+
 Discovery metadata remains public, but event streams, pool membership, pool
 checkpoints, manifests, coverage mutation, and optional peer exchange require
 the appropriate authenticated node and pool relationship.
@@ -117,7 +124,7 @@ source provenance, authorization, and delivery remain pool-scoped.
 
 ## Discovery And Admission
 
-First contact uses an explicit HTTPS address or signed `gonzbnet://` invitation:
+First contact uses an explicit HTTPS/traversal address or signed `gonzbnet://` invitation:
 
 1. The candidate verifies well-known metadata, node profile, capabilities, and
    the pool's signed genesis.
@@ -132,7 +139,15 @@ First contact uses an explicit HTTPS address or signed `gonzbnet://` invitation:
 The relay has no approval authority merely because it transported the request.
 Duplicate join and approval operations are idempotent. Private pool descriptors
 are revealed only by a valid, unexpired invitation whose signer is still an
-active administrator and whose relay URL matches the contacted node.
+active administrator and whose HTTPS or traversal locator matches the contacted
+node. Schema 1.0 HTTPS invitations remain valid; schema 1.1 may add or substitute
+a signed traversal locator.
+
+Traversal signaling envelopes bind protocol version, message type, session,
+source and target identities, timestamps, nonce, exact-SDP SHA-256, source
+public key, and Ed25519 signature. Receivers reverify signatures and replay
+state. Pion then verifies the signed SDP's DTLS fingerprint, so a coordinator
+cannot substitute endpoints or fingerprints without detection.
 
 A revoked member loses ordinary pool access. It may retrieve only the signed
 revocation addressed to itself so it can converge on its state.
@@ -149,9 +164,10 @@ not automatically trusted and cannot receive pools it has not joined. Delivery
 cursors make repeated synchronization incremental and idempotent.
 
 Resolution manifests use their dedicated authenticated fetch endpoint and are
-not part of the general relay event stream. Relaying a release card therefore
-does not make an unreachable manifest source reachable. Binary-evidence queries
-also require direct reachability to the selected authorized peer.
+not part of the general event-relay stream. Their serving endpoint, and the
+endpoint for binary evidence, is resolved from the node's current authorized
+typed endpoint at request time. HTTPS and traversal carry identical signed
+requests and do not alter pool authorization.
 
 ## Release And Manifest Security
 
@@ -160,10 +176,40 @@ content during typed validation. Cards and manifests reject local-only fields,
 invalid source/pool relationships, malformed message IDs, negative sizes, and
 unsupported policy values.
 
-Manifest resolution authorizes the local role before cache access. Remote fetch
-authenticates only the home node, verifies the signed manifest response, and
-applies configured response-size and timeout limits. `ManifestAvailability`
-statements update only their matching source, pool, release, and manifest.
+Manifest resolution authorizes the local role before cache access. The home
+aggregator selects an eligible advertised source, sends the signed
+`ManifestRequest`, verifies the returned `ResolutionManifest` event, and then
+generates the NZB locally. A peer does not return an unsigned pre-generated NZB.
+Resolution requires all of these bindings to agree:
+
+- response request ID;
+- requested, advertised, and signed release and manifest IDs;
+- selected pool and the signed event's single pool;
+- selected serving node, signed author, current membership/capabilities, node
+  block/fork state, publication state, trust threshold, and tombstones.
+
+The complete typed event-body validator runs before the manifest is cached.
+The cache record is also required to match its stored signed source event.
+PostgreSQL NZB bytes are hashed on every read; a mismatch is regenerated
+deterministically from the verified signed manifest or failed closed when that
+provenance is unavailable. The optional filesystem NZB cache is checked against
+the PostgreSQL checksum before use. These checks are local and add no federation
+messages or background polling.
+
+`ManifestAvailability` statements update only their matching source, pool,
+release, and manifest. Search, get, and cache queries apply current source
+eligibility at read time, so blocking a node, revoking its membership,
+withdrawing its source, disabling a pool, or activating a relevant tombstone
+suppresses it without rewriting signed history. Search/get also compare the
+projected ReleaseCard metadata with its accepted signed source event; a locally
+modified title or detail is excluded and reported as a projection mismatch.
+
+Signatures establish who published exact bytes; they do not establish that a
+title is truthful, Message-IDs reference desirable content, or articles are
+malware-free. A malicious authorized publisher can sign internally consistent
+poison. Pool capability grants, independent validation, trust scores,
+moderation, author-scoped withdrawal, member revocation, and local blocking are
+the policy controls for that threat.
 
 Local Newznab API keys and sessions are not included in federation events,
 requests, or logs. The E2E suite explicitly checks that a generated local API

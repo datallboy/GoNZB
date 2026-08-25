@@ -29,7 +29,15 @@ Stop GoNZB briefly or use a snapshot method that gives SQLite a consistent
 point-in-time copy.
 
 Keep backups encrypted because runtime databases contain credentials and API
-keys that are not encrypted by GoNZB itself.
+keys that are not encrypted by GoNZB itself. When the uploader is enabled, the
+same volume can also contain review artifacts and plaintext archive passwords.
+
+GoNZBNet peers must be upgraded before password-bearing uploader publications
+are enabled. Updated nodes advertise `manifest_archive_password`; resolution of
+a passworded release fails closed when a source does not advertise it. Existing
+pool policies must allow `ReleaseCard`, `ResolutionManifest`, and
+`ReleasePublicationState`; grant non-admin uploader nodes the
+`release_publisher` capability.
 
 ## Normal v0.8-or-newer upgrade
 

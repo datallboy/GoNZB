@@ -34,6 +34,15 @@ nodes. Pools, capabilities, validation, trust, and direct binary evidence are
 independently configurable. Start with the private-pool guide before exposing a
 node to peers.
 
+### Posting worker
+
+`gonzb-worker` is an optional separate Linux binary for a posting VPS. It polls
+explicitly tagged, completed qBittorrent items, reads the selected seedbox
+payload through validated read-only SSHFS or copies it with rsync-over-SSH,
+runs the local posting lifecycle, and submits only the sanitized completed NZB
+and metadata to GoNZB's uploader. Seedbox, SSH, and NNTP credentials remain off
+the GoNZB server. See the [posting worker guide](docs/modules/worker.md).
+
 ### External download clients
 
 GoNZB does not contain a download engine and does not monitor completed
@@ -54,6 +63,11 @@ The modules retain explicit ownership boundaries and may run as:
 2. indexer with aggregator/Newznab API
 3. GoNZBNet consumer, publisher, or validator
 4. all-in-one indexer, aggregator, and GoNZBNet node
+
+The posting worker is a separate deployment companion rather than another
+role inside the GoNZB server process or container. Its supported deployment is
+the native Linux binary under the included systemd unit; a privileged
+SSHFS-enabled worker container is not shipped.
 
 SQLite stores authentication, runtime settings, and optional aggregator cache
 metadata. PostgreSQL stores the indexing pipeline and release catalog. The
@@ -151,6 +165,7 @@ Radarr/Sonarr notification endpoints.
 - [Documentation index](docs/index.md)
 - [Usenet indexer guide](docs/modules/indexer.md)
 - [GoNZBNet guide](docs/modules/gonzbnet.md)
+- [Posting worker guide](docs/modules/worker.md)
 - [Newznab and download-client integrations](docs/wiki/integrations/README.md)
 
 Repository-only development references are maintained in the

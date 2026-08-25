@@ -74,12 +74,13 @@ type gonzbnetAdminStore interface {
 	ListValidationGaps(ctx context.Context, poolID string, limit int) ([]pgindex.ValidationGap, error)
 	MaterializeCoverageStaleClaimPenalties(ctx context.Context, poolID string) (int64, error)
 	ListFederationPeerDiagnostics(ctx context.Context, limit int) ([]pgindex.FederationPeerDiagnostic, error)
-	ListFederationEventDiagnostics(ctx context.Context, limit int) ([]pgindex.FederationEventDiagnostic, error)
+	ListFederationEventDiagnostics(ctx context.Context, params pgindex.FederationEventDiagnosticParams) ([]pgindex.FederationEventDiagnostic, error)
 	ListFederationRejectedEventDiagnostics(ctx context.Context, limit int) ([]pgindex.FederationRejectedEventDiagnostic, error)
 	ListFederationRejectedEventSummary(ctx context.Context, limit int) ([]pgindex.FederationRejectedEventSummary, error)
 	ListFederationPeerDeliveryDiagnostics(ctx context.Context, limit int) ([]pgindex.FederationPeerDeliveryDiagnostic, error)
 	ListValidationTaskDiagnostics(ctx context.Context, limit int) ([]pgindex.ValidationTaskDiagnostic, error)
 	ListFederatedReleaseSourceDiagnostics(ctx context.Context, poolID string, limit int) ([]pgindex.FederatedReleaseSourceDiagnostic, error)
+	ListFederationReleaseLedger(ctx context.Context, params pgindex.FederationReleaseLedgerParams) (pgindex.FederationReleaseLedgerPage, error)
 	ListFederatedManifestSourceDiagnostics(ctx context.Context, poolID string, limit int) ([]pgindex.FederatedManifestSourceDiagnostic, error)
 	ListHealthAttestationDiagnostics(ctx context.Context, poolID string, limit int) ([]pgindex.HealthAttestationDiagnostic, error)
 	ListReputationDiagnostics(ctx context.Context, limit int) ([]pgindex.ReputationDiagnostic, error)
@@ -430,7 +431,7 @@ func (ctrl *GoNZBNetAdminController) ConfigValidation(c *echo.Context) error {
 		issue("warning", "gonzbnet.allow_insecure_peer_http", "local development only; non-local HTTP peers are still rejected")
 	}
 	for i, peerURL := range cfg.ManualPeers {
-		if err := transportpolicy.ValidateHTTPURL(peerURL, cfg.AllowInsecurePeerHTTP); err != nil {
+		if err := transportpolicy.ValidatePeerURL(peerURL, cfg.AllowInsecurePeerHTTP, cfg.Traversal.Enabled); err != nil {
 			issue("error", fmt.Sprintf("gonzbnet.manual_peers[%d]", i), err.Error())
 		}
 	}
@@ -627,25 +628,11 @@ func (ctrl *GoNZBNetAdminController) UpsertPool(c *echo.Context) error {
 	}
 	acceptedTypes := req.AcceptedEventTypes
 	if len(acceptedTypes) == 0 {
-		acceptedTypes = []string{
-			pools.EventTypeReleaseCard,
-			pools.EventTypeHealthAttestation,
-			pools.EventTypeTombstone,
-			pools.EventTypeValidatorCapacity,
-			pools.EventTypeArticleAvailabilityAttestation,
-			pools.EventTypeChecksumAttestation,
-			pools.EventTypeManifestAvailability,
-			pools.EventTypeScannerCapacity,
-			pools.EventTypeScannerHeartbeat,
-			pools.EventTypeGroupObservation,
-			pools.EventTypeCoveragePlan,
-			pools.EventTypeCoverageAssignment,
-			pools.EventTypeRangeClaim,
-			pools.EventTypeTimeWindowClaim,
-			pools.EventTypeCoverageCheckpoint,
-			pools.EventTypeRangeComplete,
-			pools.EventTypeRangeFailed,
-		}
+		// Keep API-created pools aligned with the canonical pool-policy default.
+		// A hand-maintained subset previously omitted ResolutionManifest and
+		// ReleasePublicationState, which made explicit uploader publication
+		// ineligible on otherwise default pools.
+		acceptedTypes = pools.NormalizePolicy(pools.Policy{}, 1).AcceptedEventTypes
 	}
 	policy := pools.Policy{
 		MembershipThreshold:         req.MembershipThreshold,
@@ -745,7 +732,7 @@ func (ctrl *GoNZBNetAdminController) DiscoverAdmissionNode(c *echo.Context) erro
 	if err != nil {
 		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}
-	client := admission.NewClient(nodeIdentity, ctrl.appCtx.Config.GoNZBNet.AllowInsecurePeerHTTP)
+	client := ctrl.admissionClient(nodeIdentity)
 	remote, err := client.Discover(c.Request().Context(), req.Locator, req.ExpectedNodeID)
 	if err != nil {
 		return jsonError(c, http.StatusBadGateway, err.Error())
@@ -777,7 +764,10 @@ func (ctrl *GoNZBNetAdminController) JoinAdmissionPool(c *echo.Context) error {
 			return jsonError(c, http.StatusBadRequest, err.Error())
 		}
 		invitation = &value
-		locator = value.RelayURL
+		locator, err = value.PreferredLocator(ctrl.appCtx.Config.GoNZBNet.Traversal.Enabled)
+		if err != nil {
+			return jsonError(c, http.StatusBadRequest, err.Error())
+		}
 		if req.PoolID == "" {
 			req.PoolID = value.PoolID
 		}
@@ -786,7 +776,7 @@ func (ctrl *GoNZBNetAdminController) JoinAdmissionPool(c *echo.Context) error {
 	if err != nil {
 		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}
-	client := admission.NewClient(nodeIdentity, ctrl.appCtx.Config.GoNZBNet.AllowInsecurePeerHTTP)
+	client := ctrl.admissionClient(nodeIdentity)
 	discoveryLocator := locator
 	if invitation != nil {
 		discoveryLocator = strings.TrimSpace(req.Locator)
@@ -885,12 +875,17 @@ func (ctrl *GoNZBNetAdminController) JoinAdmissionPool(c *echo.Context) error {
 		}
 	}
 	now := time.Now().UTC()
+	candidateProfile := ctrl.adminProfileConfig(c)
+	candidateURL := candidateProfile.AdvertiseURL
+	if ctrl.appCtx.Config.GoNZBNet.Traversal.Enabled && strings.TrimSpace(ctrl.appCtx.Config.GoNZBNet.AdvertiseURL) == "" && len(candidateProfile.TraversalLocators) > 0 {
+		candidateURL = candidateProfile.TraversalLocators[0]
+	}
 	body := pools.JoinRequest{
 		SchemaVersion: "1.0", Type: pools.EventTypePoolJoinRequest,
 		PoolID: descriptor.PoolID, CandidateNodeID: nodeID,
 		RequestedRoles:        []string{firstNonBlank(req.Role, pools.RoleMember)},
 		RequestedCapabilities: capabilities, Message: strings.TrimSpace(req.Message),
-		GenesisEventID: descriptor.GenesisEventID, CandidateURL: ctrl.adminProfileConfig(c).AdvertiseURL,
+		GenesisEventID: descriptor.GenesisEventID, CandidateURL: candidateURL,
 		RelayNodeID: remote.Profile.NodeID, RelayURL: remote.WellKnown.BaseURL,
 		CreatedAt: now.Format(time.RFC3339),
 	}
@@ -946,7 +941,7 @@ func (ctrl *GoNZBNetAdminController) RefreshAdmission(c *echo.Context) error {
 	if err != nil {
 		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}
-	client := admission.NewClient(nodeIdentity, ctrl.appCtx.Config.GoNZBNet.AllowInsecurePeerHTTP)
+	client := ctrl.admissionClient(nodeIdentity)
 	status, err := client.FetchStatus(c.Request().Context(), record.RelayURL, record.PoolID, record.ProposalEventID)
 	if err != nil {
 		return jsonError(c, http.StatusBadGateway, err.Error())
@@ -985,7 +980,7 @@ func (ctrl *GoNZBNetAdminController) RefreshAdmission(c *echo.Context) error {
 			if strings.TrimSpace(endpoint.NodeID) == "" || endpoint.NodeID == localNodeID || strings.TrimSpace(endpoint.BaseURL) == "" {
 				continue
 			}
-			if err := transportpolicy.ValidateHTTPURL(endpoint.BaseURL, ctrl.appCtx.Config.GoNZBNet.AllowInsecurePeerHTTP); err != nil {
+			if err := transportpolicy.ValidatePeerURL(endpoint.BaseURL, ctrl.appCtx.Config.GoNZBNet.AllowInsecurePeerHTTP, ctrl.appCtx.Config.GoNZBNet.Traversal.Enabled); err != nil {
 				return jsonError(c, http.StatusBadGateway, "pool member endpoint failed transport policy")
 			}
 			if _, err := store.UpsertFederationPeerURL(c.Request().Context(), endpoint.BaseURL); err != nil {
@@ -1029,7 +1024,16 @@ func (ctrl *GoNZBNetAdminController) CreatePoolInvitation(c *echo.Context) error
 		value := time.Now().UTC().Add(time.Duration(req.ExpiresInHours) * time.Hour)
 		expires = &value
 	}
-	invite, err := admission.NewInvitation(c.Request().Context(), nodeIdentity, pool.PoolID, pool.GenesisEventID, ctrl.adminProfileConfig(c).AdvertiseURL, expires)
+	profileCfg := ctrl.adminProfileConfig(c)
+	traversalLocator := ""
+	if len(profileCfg.TraversalLocators) > 0 {
+		traversalLocator = profileCfg.TraversalLocators[0]
+	}
+	directLocator := profileCfg.AdvertiseURL
+	if ctrl.appCtx.Config.GoNZBNet.Traversal.Enabled && strings.TrimSpace(ctrl.appCtx.Config.GoNZBNet.AdvertiseURL) == "" {
+		directLocator = ""
+	}
+	invite, err := admission.NewInvitationWithLocators(c.Request().Context(), nodeIdentity, pool.PoolID, pool.GenesisEventID, directLocator, traversalLocator, expires)
 	if err != nil {
 		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}
@@ -1078,7 +1082,7 @@ func (ctrl *GoNZBNetAdminController) ApproveAdmission(c *echo.Context) error {
 		}
 		return c.JSON(http.StatusOK, status)
 	}
-	client := admission.NewClient(nodeIdentity, ctrl.appCtx.Config.GoNZBNet.AllowInsecurePeerHTTP)
+	client := ctrl.admissionClient(nodeIdentity)
 	status, err := client.SubmitApproval(c.Request().Context(), record.RelayURL, fragment)
 	if err != nil {
 		return jsonError(c, http.StatusBadGateway, err.Error())
@@ -1124,7 +1128,7 @@ func (ctrl *GoNZBNetAdminController) RejectAdmission(c *echo.Context) error {
 	if err != nil {
 		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}
-	client := admission.NewClient(nodeIdentity, ctrl.appCtx.Config.GoNZBNet.AllowInsecurePeerHTTP)
+	client := ctrl.admissionClient(nodeIdentity)
 	status, err := client.SubmitRejection(c.Request().Context(), record.RelayURL, fragment)
 	if err != nil {
 		return jsonError(c, http.StatusBadGateway, err.Error())
@@ -1789,7 +1793,7 @@ func (ctrl *GoNZBNetAdminController) UpsertPeer(c *echo.Context) error {
 	if err := decodeJSONBody(c, &req); err != nil {
 		return jsonError(c, http.StatusBadRequest, err.Error())
 	}
-	if err := transportpolicy.ValidateHTTPURL(req.PeerURL, ctrl.appCtx.Config.GoNZBNet.AllowInsecurePeerHTTP); err != nil {
+	if err := transportpolicy.ValidatePeerURL(req.PeerURL, ctrl.appCtx.Config.GoNZBNet.AllowInsecurePeerHTTP, ctrl.appCtx.Config.GoNZBNet.Traversal.Enabled); err != nil {
 		return jsonError(c, http.StatusBadRequest, err.Error())
 	}
 	peerID, err := store.UpsertFederationPeerURL(c.Request().Context(), req.PeerURL)
@@ -1936,7 +1940,31 @@ func (ctrl *GoNZBNetAdminController) EventDiagnostics(c *echo.Context) error {
 	if !ok {
 		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
 	}
-	items, err := store.ListFederationEventDiagnostics(c.Request().Context(), parseIntDefault(queryParamTrimmed(c, "limit"), 100))
+	var projected *bool
+	if raw := queryParamTrimmed(c, "projected"); raw != "" {
+		value, parseErr := strconv.ParseBool(raw)
+		if parseErr != nil {
+			return jsonError(c, http.StatusBadRequest, "projected must be true or false")
+		}
+		projected = &value
+	}
+	var tombstoned *bool
+	if raw := queryParamTrimmed(c, "tombstoned"); raw != "" {
+		value, parseErr := strconv.ParseBool(raw)
+		if parseErr != nil {
+			return jsonError(c, http.StatusBadRequest, "tombstoned must be true or false")
+		}
+		tombstoned = &value
+	}
+	items, err := store.ListFederationEventDiagnostics(c.Request().Context(), pgindex.FederationEventDiagnosticParams{
+		PoolID:           queryParamTrimmed(c, "pool_id"),
+		NodeID:           queryParamTrimmed(c, "node_id"),
+		EventType:        queryParamTrimmed(c, "event_type"),
+		ValidationStatus: queryParamTrimmed(c, "validation_status"),
+		Projected:        projected,
+		Tombstoned:       tombstoned,
+		Limit:            parseIntDefault(queryParamTrimmed(c, "limit"), 100),
+	})
 	if err != nil {
 		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}
@@ -2009,6 +2037,30 @@ func (ctrl *GoNZBNetAdminController) ReleaseSourceDiagnostics(c *echo.Context) e
 		return jsonError(c, http.StatusInternalServerError, err.Error())
 	}
 	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
+func (ctrl *GoNZBNetAdminController) ReleaseLedger(c *echo.Context) error {
+	store, ok := ctrl.store()
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet admin store is unavailable")
+	}
+	page, err := store.ListFederationReleaseLedger(c.Request().Context(), pgindex.FederationReleaseLedgerParams{
+		PoolID:     queryParamTrimmed(c, "pool_id"),
+		NodeID:     queryParamTrimmed(c, "node_id"),
+		ReleaseID:  queryParamTrimmed(c, "release_id"),
+		Query:      queryParamTrimmed(c, "q"),
+		SourceKind: queryParamTrimmed(c, "source_kind"),
+		State:      queryParamTrimmed(c, "state"),
+		Cursor:     queryParamTrimmed(c, "cursor"),
+		Limit:      parseIntDefault(queryParamTrimmed(c, "limit"), 100),
+	})
+	if err != nil {
+		if strings.Contains(err.Error(), "invalid release ledger cursor") {
+			return jsonError(c, http.StatusBadRequest, err.Error())
+		}
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, page)
 }
 
 func (ctrl *GoNZBNetAdminController) ManifestSourceDiagnostics(c *echo.Context) error {
@@ -2296,8 +2348,10 @@ func (ctrl *GoNZBNetAdminController) syncService() (*gonzbnetsync.Service, error
 	}
 	return gonzbnetsync.NewWithOptions(nodeIdentity, syncStore, ctrl.appCtx.Logger, gonzbnetsync.Options{
 		AllowInsecurePeerHTTP: ctrl.appCtx.Config.GoNZBNet.AllowInsecurePeerHTTP,
+		TraversalEnabled:      ctrl.appCtx.Config.GoNZBNet.Traversal.Enabled,
 		EventTimeTolerance:    time.Duration(ctrl.appCtx.Config.GoNZBNet.TimeToleranceSeconds) * time.Second,
 		MaxEventAge:           time.Duration(ctrl.appCtx.Config.GoNZBNet.MaxEventAgeHours) * time.Hour,
+		HTTPClient:            gonzbnetPeerHTTPClient(ctrl.appCtx, 15*time.Second),
 	}), nil
 }
 
@@ -2315,10 +2369,45 @@ func (ctrl *GoNZBNetAdminController) manifestResolver() (*manifestresolver.Resol
 	}
 	return manifestresolver.NewWithOptions(nodeIdentity, resolverStore, manifestresolver.Options{
 		AllowInsecurePeerHTTP: ctrl.appCtx.Config.GoNZBNet.AllowInsecurePeerHTTP,
+		TraversalEnabled:      ctrl.appCtx.Config.GoNZBNet.Traversal.Enabled,
 		EventTimeTolerance:    time.Duration(ctrl.appCtx.Config.GoNZBNet.TimeToleranceSeconds) * time.Second,
 		MaxEventAge:           time.Duration(ctrl.appCtx.Config.GoNZBNet.MaxEventAgeHours) * time.Hour,
 		MaxManifestBytes:      int64(ctrl.appCtx.Config.GoNZBNet.MaxManifestBytes),
+		HTTPClient:            gonzbnetPeerHTTPClient(ctrl.appCtx, time.Duration(ctrl.appCtx.Config.GoNZBNet.ManifestFetchTimeoutSeconds)*time.Second),
 	}), nil
+}
+
+func (ctrl *GoNZBNetAdminController) TraversalStatus(c *echo.Context) error {
+	if ctrl == nil || ctrl.appCtx == nil || ctrl.appCtx.GoNZBNetTraversal == nil {
+		return c.JSON(http.StatusOK, map[string]any{"enabled": false, "coordinators": []any{}})
+	}
+	return c.JSON(http.StatusOK, map[string]any{
+		"enabled":      true,
+		"coordinators": ctrl.appCtx.GoNZBNetTraversal.CoordinatorStatus(),
+	})
+}
+
+func (ctrl *GoNZBNetAdminController) NodeEndpoints(c *echo.Context) error {
+	store, ok := ctrl.appCtx.PGIndexStore.(interface {
+		ListFederationNodeEndpoints(context.Context, string, bool) ([]pgindex.FederationNodeEndpoint, error)
+	})
+	if !ok {
+		return jsonError(c, http.StatusServiceUnavailable, "gonzbnet endpoint store is unavailable")
+	}
+	items, err := store.ListFederationNodeEndpoints(c.Request().Context(), pathParamTrimmed(c, "node_id"), false)
+	if err != nil {
+		return jsonError(c, http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
+func (ctrl *GoNZBNetAdminController) admissionClient(nodeIdentity *identity.Identity) *admission.Client {
+	cfg := ctrl.appCtx.Config.GoNZBNet
+	return admission.NewClientWithOptions(nodeIdentity, admission.ClientOptions{
+		AllowInsecure:    cfg.AllowInsecurePeerHTTP,
+		TraversalEnabled: cfg.Traversal.Enabled,
+		HTTPClient:       gonzbnetPeerHTTPClient(ctrl.appCtx, 15*time.Second),
+	})
 }
 
 func signPoolMemberApproval(ctx context.Context, signer events.Identity, body pools.MemberApproved, approvedAt string) (pools.Approval, error) {
@@ -2426,6 +2515,7 @@ func (ctrl *GoNZBNetAdminController) store() (gonzbnetAdminStore, bool) {
 
 func (ctrl *GoNZBNetAdminController) adminProfileConfig(c *echo.Context) profile.Config {
 	cfg := ctrl.appCtx.Config.GoNZBNet
+	nodeIdentity, _ := ctrl.localIdentity()
 	return profile.Config{
 		Alias:                         cfg.NodeAlias,
 		AdvertiseURL:                  ctrl.adminBaseURL(c),
@@ -2438,6 +2528,7 @@ func (ctrl *GoNZBNetAdminController) adminProfileConfig(c *echo.Context) profile
 		Consumer:                      cfg.ConsumerEnabled,
 		Scanner:                       cfg.ScannerEnabled,
 		Indexer:                       ctrl.appCtx.Config.Modules.UsenetIndexer.Enabled,
+		ReleasePublisher:              ctrl.appCtx.Config.Modules.Uploader.Enabled,
 		IndexProjection:               cfg.IndexProjectionEnabled,
 		ManifestBuilder:               cfg.ManifestBuilderEnabled,
 		ManifestCache:                 cfg.ManifestCacheEnabled,
@@ -2459,6 +2550,7 @@ func (ctrl *GoNZBNetAdminController) adminProfileConfig(c *echo.Context) profile
 		MaxEventBytes:                 cfg.MaxEventBytes,
 		MaxManifestBytes:              cfg.MaxManifestBytes,
 		MaxBatchEvents:                cfg.MaxBatchEvents,
+		TraversalLocators:             configuredTraversalLocators(c.Request().Context(), cfg, nodeIdentity),
 	}
 }
 
@@ -2476,6 +2568,9 @@ func (ctrl *GoNZBNetAdminController) recommendedLocalCapabilities() []string {
 	}
 	if ctrl.appCtx.Config.Modules.UsenetIndexer.Enabled || cfg.IndexProjectionEnabled {
 		values = append(values, capability.Indexer)
+	}
+	if ctrl.appCtx.Config.Modules.Uploader.Enabled {
+		values = append(values, capability.ReleasePublisher)
 	}
 	if cfg.ManifestBuilderEnabled {
 		values = append(values, capability.ManifestBuilder)

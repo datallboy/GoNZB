@@ -63,6 +63,14 @@ add publishing or validation only when the node has the required local data and
 provider access. See the [GoNZBNet overview](../modules/gonzbnet.md) for role
 guidance.
 
+### Posting worker
+
+Optional separate Linux service for an operator who wants to turn explicitly
+tagged, completed seedbox payloads into completed NZBs. It reads the seedbox
+through read-only SSHFS or copies through rsync-over-SSH, performs posting on
+the worker VPS, then submits only the NZB and authenticated metadata to the
+GoNZB uploader. See the [posting worker guide](../modules/worker.md).
+
 ## What success looks like
 
 Before adding more newsgroups or peers, verify:

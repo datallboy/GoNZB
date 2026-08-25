@@ -246,6 +246,12 @@ export function AdminReleaseDetailPage() {
         </div>
       </div>
 
+      {release.source_kind === 'uploader' ? (
+        <div className="banner">
+          This catalog release came from an approved completed-NZB submission. Manage its review state and source metadata in the <Link className="table-link" to="/uploader">Uploader</Link> area.
+        </div>
+      ) : null}
+
       <div className="dashboard-grid">
         <div className="page-card">
           <h2 className="section-title">Release Summary</h2>
@@ -254,6 +260,10 @@ export function AdminReleaseDetailPage() {
             <div>
               <dt>Overall Binary Completion</dt>
               <dd>{formatPercent(diagnostics.known_binary_completion_pct)}</dd>
+            </div>
+            <div>
+              <dt>Origin</dt>
+              <dd>{release.source_kind === 'uploader' ? 'Uploader projection' : 'Indexer formation'}</dd>
             </div>
             <div>
               <dt>Main Payload Completion</dt>

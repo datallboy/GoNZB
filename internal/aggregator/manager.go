@@ -16,8 +16,10 @@ import (
 )
 
 const gonzbnetSourceName = "gonzbnet"
+const uploaderSourceName = "uploader"
 
 const maxCachedNZBBytes int64 = 64 << 20
+const maxRecentResults = 1000
 
 type Manager struct {
 	mu                       sync.RWMutex
@@ -94,7 +96,7 @@ func (m *Manager) SearchAllWithRequest(ctx context.Context, req app.SearchReques
 			for _, rel := range cacheResults {
 				// The shared cache does not retain federation pool identity. GoNZBNet
 				// search results must come from its pool-filtered PostgreSQL source.
-				if isGoNZBNetRelease(rel) {
+				if isAuthoritativeOnlyRelease(rel) {
 					continue
 				}
 				addOrMerge(rel, false)
@@ -160,7 +162,14 @@ func (m *Manager) SearchAllWithRequest(ctx context.Context, req app.SearchReques
 	})
 
 	m.mu.Lock()
-	m.recentResults = make(map[string]*domain.Release, len(allResults))
+	// Newznab clients commonly perform several searches before following an
+	// earlier result's download URL. Keep a bounded lookup window instead of
+	// invalidating every prior URL whenever another search completes. Policy-
+	// aware sources are still reauthorized by GetNZB before cached or remote
+	// bytes are returned.
+	if len(m.recentResults)+len(allResults) > maxRecentResults {
+		m.recentResults = make(map[string]*domain.Release, len(allResults))
+	}
 	for _, rel := range allResults {
 		if rel == nil || rel.ID == "" {
 			continue
@@ -189,23 +198,21 @@ func (m *Manager) GetNZB(ctx context.Context, rel *domain.Release) (io.ReadClose
 		return nil, fmt.Errorf("gonzbnet get permission is required")
 	}
 
-	var src catalogSource
-	if isGoNZBNetRelease(rel) {
-		// Resolve the source before consulting the shared blob cache so pool
-		// authorization cannot be bypassed by a prior user's cached download.
-		m.mu.RLock()
-		src = m.sources[rel.Source]
-		m.mu.RUnlock()
-		if src == nil {
-			return nil, fmt.Errorf("aggregator source %s not found", rel.Source)
-		}
-		authorizer, ok := src.(getAuthorizer)
-		if !ok {
-			return nil, fmt.Errorf("gonzbnet source does not provide get authorization")
-		}
+	// Resolve and authorize every policy-aware source before consulting the
+	// shared blob cache. This prevents stale cached payloads from bypassing a
+	// later uploader unapproval or federation pool-access change.
+	m.mu.RLock()
+	src := m.sources[rel.Source]
+	m.mu.RUnlock()
+	if src == nil {
+		return nil, fmt.Errorf("aggregator source %s not found", rel.Source)
+	}
+	if authorizer, ok := src.(getAuthorizer); ok {
 		if err := authorizer.AuthorizeGet(ctx, rel); err != nil {
 			return nil, err
 		}
+	} else if isGoNZBNetRelease(rel) {
+		return nil, fmt.Errorf("gonzbnet source does not provide get authorization")
 	}
 
 	// Check the file store
@@ -220,17 +227,34 @@ func (m *Manager) GetNZB(ctx context.Context, rel *domain.Release) (io.ReadClose
 			}
 		}
 
-		return m.store.GetNZBReader(rel.ID)
-	}
-	if src == nil {
-		m.mu.RLock()
-		src = m.sources[rel.Source]
-		m.mu.RUnlock()
-		if src == nil {
-			return nil, fmt.Errorf("aggregator source %s not found", rel.Source)
+		reader, readErr := m.store.GetNZBReader(rel.ID)
+		if validator, ok := src.(cachedPayloadValidator); ok {
+			if readErr == nil {
+				payload, payloadErr := io.ReadAll(io.LimitReader(reader, maxCachedNZBBytes+1))
+				_ = reader.Close()
+				if payloadErr == nil && int64(len(payload)) <= maxCachedNZBBytes {
+					if validationErr := validator.ValidateCachedNZB(ctx, rel, payload); validationErr == nil {
+						return io.NopCloser(bytes.NewReader(payload)), nil
+					} else {
+						m.logger.Warn("Rejected cached NZB for %s: %v", rel.ID, validationErr)
+					}
+				} else if payloadErr != nil {
+					m.logger.Warn("Failed reading cached NZB for %s: %v", rel.ID, payloadErr)
+				} else {
+					m.logger.Warn("Rejected oversized cached NZB for %s", rel.ID)
+				}
+			} else {
+				m.logger.Warn("Failed opening cached NZB for %s: %v", rel.ID, readErr)
+			}
+			// Fail closed for the cached bytes and continue through the source;
+			// a successful fetch below atomically replaces the bad entry.
+		} else {
+			if readErr != nil {
+				return nil, readErr
+			}
+			return reader, nil
 		}
 	}
-
 	// This calls either the raw DownloadNZB or the local store indexer.
 	body, err := src.GetNZB(ctx, rel)
 	if err != nil {
@@ -276,6 +300,14 @@ func isGoNZBNetRelease(rel *domain.Release) bool {
 	return rel != nil && strings.TrimSpace(rel.Source) == gonzbnetSourceName
 }
 
+func isAuthoritativeOnlyRelease(rel *domain.Release) bool {
+	if rel == nil {
+		return false
+	}
+	source := strings.TrimSpace(rel.Source)
+	return source == gonzbnetSourceName || source == uploaderSourceName
+}
+
 func principalHas(ctx context.Context, permission string) bool {
 	principal, ok := auth.PrincipalFromContext(ctx)
 	return ok && principal != nil && principal.Has(permission)
@@ -293,11 +325,50 @@ func (m *Manager) GetResultByID(ctx context.Context, id string) (*domain.Release
 	enabled := m.searchPersistenceEnabled
 	m.mu.RUnlock()
 
+	m.mu.RLock()
+	directSources := make([]resultByIDSource, 0, len(m.sources))
+	for _, src := range m.sources {
+		if direct, ok := src.(resultByIDSource); ok {
+			directSources = append(directSources, direct)
+		}
+	}
+	m.mu.RUnlock()
+	for _, src := range directSources {
+		rel, err := src.GetByID(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if rel != nil {
+			return cloneRelease(rel), nil
+		}
+	}
+
 	if !enabled {
 		return nil, nil
 	}
 
-	return m.store.GetAggregatorReleaseCacheByID(ctx, id)
+	rel, err := m.store.GetAggregatorReleaseCacheByID(ctx, id)
+	if err != nil || rel == nil {
+		return rel, err
+	}
+	if isAuthoritativeOnlyRelease(rel) {
+		m.mu.RLock()
+		src := m.sources[strings.TrimSpace(rel.Source)]
+		m.mu.RUnlock()
+		rehydrator, ok := src.(persistedResultRehydrator)
+		if !ok {
+			return nil, nil
+		}
+		canonical, err := rehydrator.RehydratePersistedResult(ctx, cloneRelease(rel))
+		if err != nil || canonical == nil {
+			return canonical, err
+		}
+		if canonical.ID != id || strings.TrimSpace(canonical.Source) != strings.TrimSpace(rel.Source) {
+			return nil, fmt.Errorf("authoritative result identity mismatch")
+		}
+		return cloneRelease(canonical), nil
+	}
+	return rel, nil
 }
 
 func cloneRelease(in *domain.Release) *domain.Release {

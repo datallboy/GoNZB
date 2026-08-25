@@ -20,6 +20,9 @@ func TestPoolMemberCapabilityAllowed(t *testing.T) {
 	if !poolMemberCapabilityAllowed(pools.RoleMember, []string{capability.ManifestCache}, capability.RequiredForEvent("ResolutionManifest")) {
 		t.Fatalf("manifest cache member should be allowed to publish manifests")
 	}
+	if !poolMemberCapabilityAllowed(pools.RoleMember, []string{capability.ReleasePublisher}, capability.RequiredForEvent("ReleasePublicationState")) {
+		t.Fatalf("release publisher member should be allowed to manage its publication lifecycle")
+	}
 	if poolMemberCapabilityAllowed(pools.RoleMember, []string{capability.Validator}, capability.RequiredForEvent("ReleaseCard")) {
 		t.Fatalf("validator-only member should not publish release cards")
 	}

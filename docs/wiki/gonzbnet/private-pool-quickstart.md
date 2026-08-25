@@ -4,9 +4,11 @@ This guide creates a small, invitation-only GoNZBNet pool whose nodes are
 reachable over a private routed network. It avoids exposing the GoNZB admin UI
 or federation API directly to the public internet.
 
-GoNZBNet does not provide NAT traversal. Each peer URL must be reachable by the
-other pool members. A private WireGuard, Tailscale, or Headscale network is the
-simplest default. A public reverse proxy is also possible, but is not required.
+Use a private WireGuard, Tailscale, or Headscale network for the first pool.
+GoNZBNet's experimental native traversal is deliberately not required here;
+validate admission, pull synchronization, manifest resolution, revocation,
+restart behavior, and backups over the overlay before enabling advanced
+transports. A public reverse proxy is also possible, but is not required.
 
 ## 1. Prepare Each Node
 
@@ -98,6 +100,8 @@ publisher to serve manifests it authored itself.
 - Back up each node identity key separately from replaceable caches.
 - Review rejected events, quarantines, sync failures, and membership changes.
 - Revoke a lost or retired node instead of reusing its identity.
+- Test PostgreSQL restoration and node-identity restoration separately, then
+  perform a member-revocation drill before expanding the pool.
 
 See [Networking And Exposure](./networking-and-exposure.md) for the reachability
 model and [Administration And Operations](./administration-and-operations.md)

@@ -15,6 +15,8 @@ modules:
     enabled: true
   gonzbnet:
     enabled: false
+  uploader:
+    enabled: false
   web_ui:
     enabled: true
   api:
@@ -33,6 +35,22 @@ api:
   # X-Forwarded-Proto to mark session and CSRF cookies Secure.
   trusted_proxy_cidrs: []
 
+# Producer-neutral completed-NZB intake. GoNZB never receives torrents,
+# magnet links, source payload paths, or NNTP posting credentials.
+uploader:
+  inbox:
+    enabled: false
+    path: "/store/uploader-inbox"
+    scan_interval_seconds: 15
+    settle_age_seconds: 60
+  max_nzb_bytes: 67108864
+  max_files: 100000
+  max_segments: 5000000
+  max_xml_depth: 32
+  max_metadata_length: 16384
+  max_artifact_bytes: 33554432
+  max_submission_bytes: 134217728
+
 # GoNZBNet federation is disabled by default. Enable only the capabilities this
 # node will operate; see docs/wiki/gonzbnet/ for the current configuration guide.
 gonzbnet:
@@ -48,6 +66,20 @@ gonzbnet:
   network_id: "default"
   local_pool_id: "pool.local"
   manual_peers: []
+  # Experimental native ICE transport. Keep disabled for the initial private
+  # pool and use Headscale/Tailscale until traversal has been security-reviewed.
+  traversal:
+    enabled: false
+    coordinators: []
+    # - url: "https://connect.example"
+    #   credential_file: "/run/secrets/gonzb-connect-token"
+    #   allowed_ice_server_hosts: ["turn.example"]
+    prefer_direct: true
+    allow_turn: true
+    gather_timeout_seconds: 10
+    connect_timeout_seconds: 25
+    idle_timeout_minutes: 10
+    max_peer_connections: 32
   consumer_enabled: true
   scanner_enabled: false
   index_projection_enabled: true

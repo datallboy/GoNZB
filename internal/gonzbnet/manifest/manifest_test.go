@@ -2,8 +2,41 @@ package manifest
 
 import (
 	"encoding/xml"
+	"strings"
 	"testing"
+	"time"
 )
+
+func TestValidateRequestRejectsMissingAndStaleBindings(t *testing.T) {
+	now := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
+	valid := Request{
+		SchemaVersion: "1.0", Type: "ManifestRequest", RequestID: "req_1",
+		ManifestID: "man_1", ReleaseID: "rel_1", PoolID: "pool_1",
+		RequestingNodeID: "node_1", Reason: "user_get", CreatedAt: now.Format(time.RFC3339),
+	}
+	if err := ValidateRequest(valid, now, 2*time.Minute); err != nil {
+		t.Fatalf("validate request: %v", err)
+	}
+	tests := []struct {
+		name   string
+		mutate func(*Request)
+	}{
+		{name: "missing release", mutate: func(in *Request) { in.ReleaseID = "" }},
+		{name: "missing pool", mutate: func(in *Request) { in.PoolID = "" }},
+		{name: "wrong type", mutate: func(in *Request) { in.Type = "OtherRequest" }},
+		{name: "stale timestamp", mutate: func(in *Request) { in.CreatedAt = now.Add(-3 * time.Minute).Format(time.RFC3339) }},
+		{name: "future timestamp", mutate: func(in *Request) { in.CreatedAt = now.Add(3 * time.Minute).Format(time.RFC3339) }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			item := valid
+			tt.mutate(&item)
+			if err := ValidateRequest(item, now, 2*time.Minute); err == nil {
+				t.Fatal("expected request validation failure")
+			}
+		})
+	}
+}
 
 func TestValidateManifestIDAndRejectTamper(t *testing.T) {
 	item := testManifest(t)
@@ -71,6 +104,51 @@ func TestGenerateNZBProducesParsableXML(t *testing.T) {
 	}
 	if doc.XMLName.Local != "nzb" || len(doc.Files) != 1 || len(doc.Files[0].Segments) != 1 {
 		t.Fatalf("unexpected nzb document: %+v", doc)
+	}
+}
+
+func TestArchivePasswordParticipatesInIDAndGeneratedNZB(t *testing.T) {
+	item := testManifest(t)
+	withoutPassword := item.ManifestID
+	item.ManifestCore.ArchivePassword = " synthetic-secret "
+	manifestID, _, err := ComputeID(item.ManifestCore)
+	if err != nil {
+		t.Fatalf("compute passworded manifest ID: %v", err)
+	}
+	if manifestID == withoutPassword {
+		t.Fatal("archive password must participate in the manifest ID")
+	}
+	item.ManifestID = manifestID
+	payload, err := GenerateNZB(item)
+	if err != nil {
+		t.Fatalf("generate passworded NZB: %v", err)
+	}
+	if !strings.Contains(string(payload), `<meta type="password"> synthetic-secret </meta>`) {
+		t.Fatalf("generated NZB does not contain the archive password: %s", payload)
+	}
+}
+
+func TestGenerateNZBPreservesPerFilePosters(t *testing.T) {
+	item := testManifest(t)
+	item.ManifestCore.Poster = "fallback@example.invalid"
+	item.ManifestCore.Files[0].Poster = "first@example.invalid"
+	item.ManifestCore.Files = append(item.ManifestCore.Files, ManifestFile{
+		Name: "recovery.par2", Subject: `"recovery.par2" yEnc (1/1)`,
+		Poster: "second@example.invalid", Date: "2026-07-09T12:02:00Z", SizeBytes: 250,
+		Segments: []ManifestSegment{{Number: 1, Bytes: 250, MessageID: "<seg2@example.invalid>"}},
+	})
+	manifestID, _, err := ComputeID(item.ManifestCore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item.ManifestID = manifestID
+	payload, err := GenerateNZB(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(payload)
+	if !strings.Contains(text, `poster="first@example.invalid"`) || !strings.Contains(text, `poster="second@example.invalid"`) {
+		t.Fatalf("generated NZB did not preserve per-file posters: %s", payload)
 	}
 }
 

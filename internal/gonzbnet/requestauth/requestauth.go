@@ -131,17 +131,41 @@ func ParseAuthorization(header string) (map[string]string, error) {
 		return nil, fmt.Errorf("missing gonzbnet authorization")
 	}
 	rest := strings.TrimSpace(strings.TrimPrefix(header, Scheme))
+	if rest == "" {
+		return nil, fmt.Errorf("missing authorization fields")
+	}
+	allowed := map[string]struct{}{
+		"node_id": {}, "timestamp": {}, "nonce": {}, "signature": {},
+	}
 	values := make(map[string]string)
 	for _, part := range strings.Split(rest, ",") {
 		part = strings.TrimSpace(part)
 		if part == "" {
-			continue
+			return nil, fmt.Errorf("invalid authorization field")
 		}
 		key, value, ok := strings.Cut(part, "=")
 		if !ok {
 			return nil, fmt.Errorf("invalid authorization field")
 		}
-		values[strings.TrimSpace(key)] = strings.Trim(strings.TrimSpace(value), `"`)
+		key = strings.TrimSpace(key)
+		if _, ok := allowed[key]; !ok {
+			return nil, fmt.Errorf("unknown authorization field %q", key)
+		}
+		if _, exists := values[key]; exists {
+			return nil, fmt.Errorf("duplicate authorization field %q", key)
+		}
+		value = strings.TrimSpace(value)
+		if len(value) < 3 || value[0] != '"' || value[len(value)-1] != '"' {
+			return nil, fmt.Errorf("authorization field %q must be a non-empty quoted value", key)
+		}
+		value = value[1 : len(value)-1]
+		if strings.ContainsAny(value, "\"\\\r\n") {
+			return nil, fmt.Errorf("authorization field %q contains invalid characters", key)
+		}
+		values[key] = value
+	}
+	if len(values) != len(allowed) {
+		return nil, fmt.Errorf("missing authorization fields")
 	}
 	return values, nil
 }

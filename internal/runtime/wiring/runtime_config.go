@@ -9,6 +9,7 @@ import (
 	gonzbnetsource "github.com/datallboy/gonzb/internal/aggregator/sources/gonzbnet"
 	"github.com/datallboy/gonzb/internal/aggregator/sources/localblob"
 	"github.com/datallboy/gonzb/internal/aggregator/sources/newznab"
+	uploadersource "github.com/datallboy/gonzb/internal/aggregator/sources/uploader"
 	"github.com/datallboy/gonzb/internal/aggregator/sources/usenetindex"
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/domain"
@@ -116,15 +117,21 @@ func buildAggregator(appCtx *app.Context, effective *config.Config) app.IndexerA
 			if err == nil {
 				manager.AddSource(gonzbnetsource.NewWithResolver(store, manifestresolver.NewWithOptions(nodeIdentity, store, manifestresolver.Options{
 					AllowInsecurePeerHTTP: effective.GoNZBNet.AllowInsecurePeerHTTP,
+					TraversalEnabled:      effective.GoNZBNet.Traversal.Enabled,
 					EventTimeTolerance:    time.Duration(effective.GoNZBNet.TimeToleranceSeconds) * time.Second,
 					MaxEventAge:           time.Duration(effective.GoNZBNet.MaxEventAgeHours) * time.Hour,
 					MaxManifestBytes:      int64(effective.GoNZBNet.MaxManifestBytes),
 					FetchTimeout:          time.Duration(effective.GoNZBNet.ManifestFetchTimeoutSeconds) * time.Second,
+					HTTPClient:            peerHTTPClient(appCtx, time.Duration(effective.GoNZBNet.ManifestFetchTimeoutSeconds)*time.Second),
 				})))
 			} else if appCtx.Logger != nil {
 				appCtx.Logger.Warn("gonzbnet aggregator source disabled: %v", err)
 			}
 		}
+	}
+
+	if effective.Modules.Uploader.Enabled && appCtx.UploaderStore != nil {
+		manager.AddSource(uploadersource.New(appCtx.UploaderStore))
 	}
 
 	for _, idxCfg := range effective.Indexers {

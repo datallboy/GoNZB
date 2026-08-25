@@ -16,6 +16,7 @@ import (
 	"github.com/datallboy/gonzb/internal/gonzbnet/health"
 	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
 	"github.com/datallboy/gonzb/internal/gonzbnet/profile"
+	"github.com/datallboy/gonzb/internal/gonzbnet/publicationstate"
 	"github.com/datallboy/gonzb/internal/gonzbnet/releasecard"
 	"github.com/datallboy/gonzb/internal/gonzbnet/requestauth"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
@@ -672,6 +673,10 @@ func (s *fakeSyncStore) AppendRejectedFederationEvent(_ context.Context, _, _, _
 
 func (s *fakeSyncStore) UpsertFederatedReleaseCardProjection(_ context.Context, projection releasecard.Projection) error {
 	s.projections = append(s.projections, projection)
+	return nil
+}
+
+func (s *fakeSyncStore) ProjectReleasePublicationState(context.Context, publicationstate.Projection) error {
 	return nil
 }
 

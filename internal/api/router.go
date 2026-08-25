@@ -38,6 +38,8 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 			echo.HeaderAccept,
 			echo.HeaderAuthorization,
 			"X-API-Key",
+			"Idempotency-Key",
+			echo.HeaderXCSRFToken,
 		},
 	}))
 
@@ -69,6 +71,7 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 	modules := appCtx.Config.Modules
 	settingsCtrl := controllers.NewSettingsController(appCtx.SettingsAdmin)
 	settingsConnectionCtrl := controllers.NewSettingsConnectionController(appCtx)
+	uploaderCtrl := controllers.NewUploaderController(appCtx.Uploader, appCtx.UploaderFederation, appCtx.Config.Uploader.MaxNZBBytes, int64(appCtx.Config.Uploader.MaxMetadataLength), appCtx.Config.Uploader.MaxArtifactBytes, appCtx.Config.Uploader.MaxSubmissionBytes)
 	indexerCtrl := controllers.NewIndexerController(appCtx)
 	indexerAdminCtrl := controllers.NewIndexerAdminController(indexerCtrl.Service)
 	indexerScrapeAdminCtrl := controllers.NewIndexerScrapeAdminController(appCtx)
@@ -142,6 +145,64 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		})
 	}
 
+	if modules.API.Enabled && modules.Uploader.Enabled {
+		multipartLimit := appCtx.Config.Uploader.MaxSubmissionBytes
+		if multipartLimit <= 0 {
+			multipartLimit = 128 << 20
+		}
+		multipartLimit += 1 << 20
+		v1Uploader := e.Group("/api/v1/uploader", bodyLimitMiddleware(defaultJSONBodyLimit, multipartLimit))
+		v1Uploader.Use(auditLogMiddleware(appCtx, "uploader"))
+		v1Uploader.GET("/submissions", uploaderCtrl.List, authMiddleware(authSvc, false, auth.PermissionUploaderSubmissionsRead))
+		v1Uploader.GET("/submissions/:id", uploaderCtrl.Get, authMiddleware(authSvc, false, auth.PermissionUploaderSubmissionsRead))
+		v1Uploader.GET("/submissions/:id/nzb", uploaderCtrl.DownloadNZB, authMiddleware(authSvc, false, auth.PermissionUploaderSubmissionsReview))
+		v1Uploader.GET("/submissions/:id/artifacts/:artifact_id", uploaderCtrl.DownloadArtifact, authMiddleware(authSvc, false, auth.PermissionUploaderSubmissionsRead))
+		v1Uploader.GET("/federation-pools", uploaderCtrl.EligibleFederationPools, authMiddleware(authSvc, false, auth.PermissionUploaderPublicationsManage))
+		v1Uploader.GET("/submissions/:id/federation-publications", uploaderCtrl.ListFederationPublications, authMiddleware(authSvc, false, auth.PermissionUploaderSubmissionsRead))
+		v1Uploader.POST(
+			"/submissions",
+			uploaderCtrl.Create,
+			authMiddleware(authSvc, false, auth.PermissionUploaderSubmissionsCreate),
+			csrfProtectionMiddleware(),
+		)
+		v1Uploader.PATCH(
+			"/submissions/:id",
+			uploaderCtrl.Update,
+			authMiddleware(authSvc, false, auth.PermissionUploaderSubmissionsReview),
+			csrfProtectionMiddleware(),
+		)
+		v1Uploader.POST(
+			"/submissions/:id/federation-publications",
+			uploaderCtrl.CreateFederationPublications,
+			authMiddleware(authSvc, false, auth.PermissionUploaderPublicationsManage),
+			csrfProtectionMiddleware(),
+		)
+		v1Uploader.DELETE(
+			"/submissions/:id/federation-publications/:pool_id",
+			uploaderCtrl.WithdrawFederationPublication,
+			authMiddleware(authSvc, false, auth.PermissionUploaderPublicationsManage),
+			csrfProtectionMiddleware(),
+		)
+		v1Uploader.POST(
+			"/submissions/:id/actions/approve",
+			uploaderCtrl.Approve,
+			authMiddleware(authSvc, false, auth.PermissionUploaderSubmissionsReview),
+			csrfProtectionMiddleware(),
+		)
+		v1Uploader.POST(
+			"/submissions/:id/actions/reject",
+			uploaderCtrl.Reject,
+			authMiddleware(authSvc, false, auth.PermissionUploaderSubmissionsReview),
+			csrfProtectionMiddleware(),
+		)
+		v1Uploader.POST(
+			"/submissions/:id/actions/return-to-pending",
+			uploaderCtrl.ReturnToPending,
+			authMiddleware(authSvc, false, auth.PermissionUploaderSubmissionsReview),
+			csrfProtectionMiddleware(),
+		)
+	}
+
 	if modules.API.Enabled && modules.GoNZBNet.Enabled {
 		if appCtx.Config.GoNZBNet.HTTPEnabled {
 			e.GET("/.well-known/gonzbnet", gonzbnetCtrl.WellKnown, federationRateLimit)
@@ -162,6 +223,7 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 			fed.GET("/events/:event_id", gonzbnetCtrl.Event)
 			fed.POST("/events/batch", gonzbnetCtrl.Inbox)
 			fed.POST("/inbox", gonzbnetCtrl.Inbox)
+			fed.POST("/gossip", gonzbnetCtrl.GossipHTTP)
 			fed.POST("/manifests/:manifest_id/request", gonzbnetCtrl.RequestManifest)
 			fed.GET("/manifests/:manifest_id", gonzbnetCtrl.GetManifest)
 			fed.GET("/coverage/groups", gonzbnetCtrl.CoverageGroups)
@@ -223,9 +285,12 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		v1AdminGoNZBNet.GET("/diagnostics/validation-tasks", gonzbnetAdminCtrl.ValidationTaskDiagnostics)
 		v1AdminGoNZBNet.GET("/diagnostics/binary-evidence", gonzbnetAdminCtrl.BinaryEvidenceDiagnostics)
 		v1AdminGoNZBNet.GET("/diagnostics/release-sources", gonzbnetAdminCtrl.ReleaseSourceDiagnostics)
+		v1AdminGoNZBNet.GET("/diagnostics/releases", gonzbnetAdminCtrl.ReleaseLedger)
 		v1AdminGoNZBNet.GET("/diagnostics/manifest-sources", gonzbnetAdminCtrl.ManifestSourceDiagnostics)
 		v1AdminGoNZBNet.GET("/diagnostics/article-availability", gonzbnetAdminCtrl.ArticleAvailabilityDiagnostics)
 		v1AdminGoNZBNet.GET("/diagnostics/health", gonzbnetAdminCtrl.HealthDiagnostics)
+		v1AdminGoNZBNet.GET("/traversal/status", gonzbnetAdminCtrl.TraversalStatus)
+		v1AdminGoNZBNet.GET("/nodes/:node_id/endpoints", gonzbnetAdminCtrl.NodeEndpoints)
 		v1AdminGoNZBNet.GET("/diagnostics/reputation", gonzbnetAdminCtrl.ReputationDiagnostics)
 		v1AdminGoNZBNet.POST("/manifests/resolve", gonzbnetAdminCtrl.ResolveManifest)
 		v1AdminGoNZBNet.POST("/scores/recompute", gonzbnetAdminCtrl.RecomputeScores)

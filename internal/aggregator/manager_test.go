@@ -140,18 +140,125 @@ func TestGetNZBReturnsAuthorizedGoNZBNetBlobCache(t *testing.T) {
 	}
 }
 
+func TestGetNZBRejectsInvalidGoNZBNetBlobCacheAndRefetches(t *testing.T) {
+	store := &fakeManagerStore{exists: true, cachePayload: []byte("tampered")}
+	manager := NewManager(store, fakeLogger{}, true, false)
+	source := &fakeCatalogSource{name: gonzbnetSourceName, validateCachedErr: io.ErrUnexpectedEOF}
+	manager.AddSource(source)
+	ctx := auth.ContextWithPrincipal(context.Background(), &auth.Principal{
+		Permissions: map[string]struct{}{auth.PermissionGoNZBNetGet: {}},
+	})
+
+	reader, err := manager.GetNZB(ctx, &domain.Release{
+		ID: "cached-federated-result", Source: gonzbnetSourceName, GUID: "rel_fed",
+	})
+	if err != nil {
+		t.Fatalf("refetch invalid cached NZB: %v", err)
+	}
+	_ = reader.Close()
+	if source.validateCachedCalls != 1 || source.gets != 1 || store.cacheWrites != 1 {
+		t.Fatalf("expected invalid cache to be replaced: validations=%d gets=%d writes=%d", source.validateCachedCalls, source.gets, store.cacheWrites)
+	}
+}
+
+func TestGetResultByIDUsesAuthoritativeDirectSourceWithoutPriorSearch(t *testing.T) {
+	manager := NewManager(&fakeManagerStore{}, fakeLogger{}, false, false)
+	source := &fakeCatalogSource{
+		name:   uploaderSourceName,
+		direct: &domain.Release{ID: "uploader-release", Source: uploaderSourceName, Title: "Uploaded"},
+	}
+	manager.AddSource(source)
+
+	release, err := manager.GetResultByID(t.Context(), "uploader-release")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if release == nil || release.Source != uploaderSourceName || source.directGets != 1 {
+		t.Fatalf("unexpected direct result: release=%+v gets=%d", release, source.directGets)
+	}
+}
+
+func TestGetResultByIDRehydratesPersistedGoNZBNetResult(t *testing.T) {
+	releaseID := "rel_signed"
+	id := domain.GenerateCompositeID(gonzbnetSourceName, releaseID)
+	store := &fakeManagerStore{cachedResult: &domain.Release{
+		ID: id, Source: gonzbnetSourceName, GUID: releaseID, Title: "Tampered cache title",
+	}}
+	manager := NewManager(store, fakeLogger{}, false, true)
+	source := &fakeCatalogSource{
+		name:       gonzbnetSourceName,
+		rehydrated: &domain.Release{ID: id, Source: gonzbnetSourceName, GUID: releaseID, Title: "Signed title"},
+	}
+	manager.AddSource(source)
+
+	release, err := manager.GetResultByID(t.Context(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if release == nil || release.Title != "Signed title" || source.rehydrateCalls != 1 {
+		t.Fatalf("expected signed result rehydration, release=%+v calls=%d", release, source.rehydrateCalls)
+	}
+}
+
+func TestGetResultByIDRejectsRehydratedIdentityMismatch(t *testing.T) {
+	releaseID := "rel_signed"
+	id := domain.GenerateCompositeID(gonzbnetSourceName, releaseID)
+	store := &fakeManagerStore{cachedResult: &domain.Release{
+		ID: id, Source: gonzbnetSourceName, GUID: releaseID,
+	}}
+	manager := NewManager(store, fakeLogger{}, false, true)
+	manager.AddSource(&fakeCatalogSource{
+		name:       gonzbnetSourceName,
+		rehydrated: &domain.Release{ID: "different", Source: gonzbnetSourceName, GUID: releaseID},
+	})
+
+	if release, err := manager.GetResultByID(t.Context(), id); err == nil || release != nil {
+		t.Fatalf("expected mismatched signed identity to fail closed, release=%+v err=%v", release, err)
+	}
+}
+
+func TestSearchKeepsPriorResultAvailableForLaterDownload(t *testing.T) {
+	store := &fakeManagerStore{}
+	manager := NewManager(store, fakeLogger{}, false, false)
+	source := &queryCatalogSource{results: map[string]*domain.Release{
+		"movie": {ID: "movie-result", Source: "fixture", GUID: "movie-guid"},
+		"show":  {ID: "show-result", Source: "fixture", GUID: "show-guid"},
+	}}
+	manager.AddSource(source)
+
+	if _, err := manager.SearchAll(t.Context(), "movie"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.SearchAll(t.Context(), "show"); err != nil {
+		t.Fatal(err)
+	}
+
+	release, err := manager.GetResultByID(t.Context(), "movie-result")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if release == nil || release.GUID != "movie-guid" {
+		t.Fatalf("earlier search result was invalidated: %+v", release)
+	}
+}
+
 type fakeManagerStore struct {
 	searchResults []*domain.Release
+	cachedResult  *domain.Release
 	exists        bool
 	cacheReads    int
+	cacheWrites   int
+	cachePayload  []byte
 }
 
 func (s *fakeManagerStore) GetNZBReader(string) (io.ReadCloser, error) {
 	s.cacheReads++
-	return io.NopCloser(bytes.NewReader(nil)), nil
+	return io.NopCloser(bytes.NewReader(s.cachePayload)), nil
 }
 
-func (s *fakeManagerStore) SaveNZBAtomically(string, []byte) error {
+func (s *fakeManagerStore) SaveNZBAtomically(_ string, payload []byte) error {
+	s.cacheWrites++
+	s.cachePayload = append([]byte(nil), payload...)
 	return nil
 }
 
@@ -168,7 +275,7 @@ func (s *fakeManagerStore) SearchAggregatorReleaseCache(context.Context, string,
 }
 
 func (s *fakeManagerStore) GetAggregatorReleaseCacheByID(context.Context, string) (*domain.Release, error) {
-	return nil, nil
+	return cloneRelease(s.cachedResult), nil
 }
 
 type fakeLogger struct{}
@@ -179,10 +286,49 @@ func (fakeLogger) Warn(string, ...interface{})  {}
 func (fakeLogger) Error(string, ...interface{}) {}
 
 type fakeCatalogSource struct {
-	name           string
-	gets           int
-	authorizeCalls int
-	authorizeErr   error
+	name                string
+	direct              *domain.Release
+	directGets          int
+	rehydrated          *domain.Release
+	rehydrateCalls      int
+	gets                int
+	authorizeCalls      int
+	authorizeErr        error
+	validateCachedCalls int
+	validateCachedErr   error
+}
+
+type queryCatalogSource struct {
+	results map[string]*domain.Release
+}
+
+func (*queryCatalogSource) Name() string { return "fixture" }
+
+func (s *queryCatalogSource) Search(_ context.Context, req SearchRequest) ([]*domain.Release, error) {
+	release := s.results[req.Query]
+	if release == nil {
+		return []*domain.Release{}, nil
+	}
+	copy := *release
+	return []*domain.Release{&copy}, nil
+}
+
+func (*queryCatalogSource) GetNZB(context.Context, *domain.Release) (io.ReadCloser, error) {
+	return io.NopCloser(bytes.NewReader([]byte("<nzb/>"))), nil
+}
+
+func (s *fakeCatalogSource) GetByID(_ context.Context, id string) (*domain.Release, error) {
+	s.directGets++
+	if s.direct != nil && s.direct.ID == id {
+		copy := *s.direct
+		return &copy, nil
+	}
+	return nil, nil
+}
+
+func (s *fakeCatalogSource) RehydratePersistedResult(_ context.Context, _ *domain.Release) (*domain.Release, error) {
+	s.rehydrateCalls++
+	return cloneRelease(s.rehydrated), nil
 }
 
 func (s *fakeCatalogSource) Name() string {
@@ -201,4 +347,9 @@ func (s *fakeCatalogSource) GetNZB(context.Context, *domain.Release) (io.ReadClo
 func (s *fakeCatalogSource) AuthorizeGet(context.Context, *domain.Release) error {
 	s.authorizeCalls++
 	return s.authorizeErr
+}
+
+func (s *fakeCatalogSource) ValidateCachedNZB(context.Context, *domain.Release, []byte) error {
+	s.validateCachedCalls++
+	return s.validateCachedErr
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -22,6 +23,7 @@ type Config struct {
 	Indexing   IndexingConfig   `mapstructure:"indexing" yaml:"indexing"`
 	Aggregator AggregatorConfig `mapstructure:"aggregator" yaml:"aggregator"`
 	GoNZBNet   GoNZBNetConfig   `mapstructure:"gonzbnet" yaml:"gonzbnet"`
+	Uploader   UploaderConfig   `mapstructure:"uploader" yaml:"uploader"`
 	Modules    ModulesConfig    `mapstructure:"modules" yaml:"modules"`
 
 	Port        string `mapstructure:"port" yaml:"port"`
@@ -89,97 +91,136 @@ type AggregatorSourcesConfig struct {
 	GoNZBNet      ModuleToggle `mapstructure:"gonzbnet" yaml:"gonzbnet"`
 }
 
+type UploaderConfig struct {
+	Inbox              UploaderInboxConfig `mapstructure:"inbox" yaml:"inbox"`
+	MaxNZBBytes        int64               `mapstructure:"max_nzb_bytes" yaml:"max_nzb_bytes"`
+	MaxFiles           int                 `mapstructure:"max_files" yaml:"max_files"`
+	MaxSegments        int                 `mapstructure:"max_segments" yaml:"max_segments"`
+	MaxXMLDepth        int                 `mapstructure:"max_xml_depth" yaml:"max_xml_depth"`
+	MaxMetadataLength  int                 `mapstructure:"max_metadata_length" yaml:"max_metadata_length"`
+	MaxArtifactBytes   int64               `mapstructure:"max_artifact_bytes" yaml:"max_artifact_bytes"`
+	MaxSubmissionBytes int64               `mapstructure:"max_submission_bytes" yaml:"max_submission_bytes"`
+}
+
+type UploaderInboxConfig struct {
+	Enabled             bool   `mapstructure:"enabled" yaml:"enabled"`
+	Path                string `mapstructure:"path" yaml:"path"`
+	ScanIntervalSeconds int    `mapstructure:"scan_interval_seconds" yaml:"scan_interval_seconds"`
+	SettleAgeSeconds    int    `mapstructure:"settle_age_seconds" yaml:"settle_age_seconds"`
+}
+
 type GoNZBNetConfig struct {
-	Mode                           string   `mapstructure:"mode" yaml:"mode"`
-	NodeAlias                      string   `mapstructure:"node_alias" yaml:"node_alias"`
-	AdvertiseURL                   string   `mapstructure:"advertise_url" yaml:"advertise_url"`
-	KeysDir                        string   `mapstructure:"keys_dir" yaml:"keys_dir"`
-	KeyPassword                    string   `mapstructure:"key_password" yaml:"key_password"`
-	SpecVersion                    string   `mapstructure:"spec_version" yaml:"spec_version"`
-	HTTPEnabled                    bool     `mapstructure:"http_enabled" yaml:"http_enabled"`
-	HTTPBasePath                   string   `mapstructure:"http_base_path" yaml:"http_base_path"`
-	AllowInsecurePeerHTTP          bool     `mapstructure:"allow_insecure_peer_http" yaml:"allow_insecure_peer_http"`
-	PrivateNetwork                 bool     `mapstructure:"private_network" yaml:"private_network"`
-	NetworkID                      string   `mapstructure:"network_id" yaml:"network_id"`
-	LocalPoolID                    string   `mapstructure:"local_pool_id" yaml:"local_pool_id"`
-	PublishPoolIDs                 []string `mapstructure:"publish_pool_ids" yaml:"publish_pool_ids"`
-	ManualPeers                    []string `mapstructure:"manual_peers" yaml:"manual_peers"`
-	Visibility                     string   `mapstructure:"visibility" yaml:"visibility"`
-	AllowPoolCreation              bool     `mapstructure:"allow_pool_creation" yaml:"allow_pool_creation"`
-	AllowJoinRequests              bool     `mapstructure:"allow_join_requests" yaml:"allow_join_requests"`
-	AdmissionRelayEnabled          bool     `mapstructure:"admission_relay_enabled" yaml:"admission_relay_enabled"`
-	ConsumerEnabled                bool     `mapstructure:"consumer_enabled" yaml:"consumer_enabled"`
-	ScannerEnabled                 bool     `mapstructure:"scanner_enabled" yaml:"scanner_enabled"`
-	IndexProjectionEnabled         bool     `mapstructure:"index_projection_enabled" yaml:"index_projection_enabled"`
-	ManifestBuilderEnabled         bool     `mapstructure:"manifest_builder_enabled" yaml:"manifest_builder_enabled"`
-	ManifestCacheEnabled           bool     `mapstructure:"manifest_cache_enabled" yaml:"manifest_cache_enabled"`
-	ValidatorEnabled               bool     `mapstructure:"validator_enabled" yaml:"validator_enabled"`
-	HealthCheckerEnabled           bool     `mapstructure:"health_checker_enabled" yaml:"health_checker_enabled"`
-	CoverageEnabled                bool     `mapstructure:"coverage_enabled" yaml:"coverage_enabled"`
-	SchedulerEnabled               bool     `mapstructure:"scheduler_enabled" yaml:"scheduler_enabled"`
-	PublishReleaseCardsEnabled     bool     `mapstructure:"publish_release_cards_enabled" yaml:"publish_release_cards_enabled"`
-	PublishReleaseCardsBatchSize   int      `mapstructure:"publish_release_cards_batch_size" yaml:"publish_release_cards_batch_size"`
-	PublishReleaseCardsIntervalMin float64  `mapstructure:"publish_release_cards_interval_minutes" yaml:"publish_release_cards_interval_minutes"`
-	ManifestAvailabilityEnabled    bool     `mapstructure:"manifest_availability_enabled" yaml:"manifest_availability_enabled"`
-	HealthAttestationsEnabled      bool     `mapstructure:"health_attestations_enabled" yaml:"health_attestations_enabled"`
-	HealthAttestationsBatchSize    int      `mapstructure:"health_attestations_batch_size" yaml:"health_attestations_batch_size"`
-	HealthAttestationsIntervalMin  float64  `mapstructure:"health_attestations_interval_minutes" yaml:"health_attestations_interval_minutes"`
-	ScannerMaxGroups               int      `mapstructure:"scanner_max_groups" yaml:"scanner_max_groups"`
-	ScannerMaxArticlesPerHour      int64    `mapstructure:"scanner_max_articles_per_hour" yaml:"scanner_max_articles_per_hour"`
-	ScannerClaimTTLMinutes         int      `mapstructure:"scanner_claim_ttl_minutes" yaml:"scanner_claim_ttl_minutes"`
-	ScannerCheckpointIntervalSecs  int      `mapstructure:"scanner_checkpoint_interval_seconds" yaml:"scanner_checkpoint_interval_seconds"`
-	ScannerRespectRemoteClaims     bool     `mapstructure:"scanner_respect_remote_claims" yaml:"scanner_respect_remote_claims"`
-	ScannerAllowUnassignedWork     bool     `mapstructure:"scanner_allow_unassigned_work" yaml:"scanner_allow_unassigned_work"`
-	CoverageMode                   string   `mapstructure:"coverage_mode" yaml:"coverage_mode"`
-	CoverageMinTrustForClaim       float64  `mapstructure:"coverage_min_trust_for_claim" yaml:"coverage_min_trust_for_claim"`
-	CoverageValidationOverlapPct   int      `mapstructure:"coverage_validation_overlap_percent" yaml:"coverage_validation_overlap_percent"`
-	CoverageStaleClaimPenalty      bool     `mapstructure:"coverage_stale_claim_penalty" yaml:"coverage_stale_claim_penalty"`
-	CoverageProviderScopeMode      string   `mapstructure:"coverage_provider_scope_mode" yaml:"coverage_provider_scope_mode"`
-	ValidationBatchSize            int      `mapstructure:"validation_batch_size" yaml:"validation_batch_size"`
-	ValidationIntervalMin          float64  `mapstructure:"validation_interval_minutes" yaml:"validation_interval_minutes"`
-	ValidationTiers                []string `mapstructure:"validation_tiers" yaml:"validation_tiers"`
-	ValidationMaxManifestsPerHour  int      `mapstructure:"validation_max_manifests_per_hour" yaml:"validation_max_manifests_per_hour"`
-	ValidationSamplePercent        int      `mapstructure:"validation_sample_percent" yaml:"validation_sample_percent"`
-	ValidationAllowSamplePayload   bool     `mapstructure:"validation_allow_sample_payload_fetch" yaml:"validation_allow_sample_payload_fetch"`
-	ValidationAllowPAR2            bool     `mapstructure:"validation_allow_par2_validation" yaml:"validation_allow_par2_validation"`
-	ValidationPublishProviderScope bool     `mapstructure:"validation_publish_provider_scope_hash" yaml:"validation_publish_provider_scope_hash"`
-	ChecksumValidationEnabled      bool     `mapstructure:"checksum_validation_enabled" yaml:"checksum_validation_enabled"`
-	ManifestCacheMaxBytes          int64    `mapstructure:"manifest_cache_max_bytes" yaml:"manifest_cache_max_bytes"`
-	ManifestCacheTTLDays           int      `mapstructure:"manifest_cache_ttl_days" yaml:"manifest_cache_ttl_days"`
-	ManifestCacheServeTrustedPools bool     `mapstructure:"manifest_cache_serve_to_trusted_pools" yaml:"manifest_cache_serve_to_trusted_pools"`
-	PullSyncEnabled                bool     `mapstructure:"pull_sync_enabled" yaml:"pull_sync_enabled"`
-	PullSyncIntervalMin            float64  `mapstructure:"pull_sync_interval_minutes" yaml:"pull_sync_interval_minutes"`
-	PushSyncEnabled                bool     `mapstructure:"push_sync_enabled" yaml:"push_sync_enabled"`
-	PushSyncIntervalMin            float64  `mapstructure:"push_sync_interval_minutes" yaml:"push_sync_interval_minutes"`
-	PushSyncBatchSize              int      `mapstructure:"push_sync_batch_size" yaml:"push_sync_batch_size"`
-	WebSocketGossipEnabled         bool     `mapstructure:"websocket_gossip_enabled" yaml:"websocket_gossip_enabled"`
-	GossipIntervalMin              float64  `mapstructure:"gossip_interval_minutes" yaml:"gossip_interval_minutes"`
-	GossipBatchSize                int      `mapstructure:"gossip_batch_size" yaml:"gossip_batch_size"`
-	GossipTTL                      int      `mapstructure:"gossip_ttl" yaml:"gossip_ttl"`
-	GossipFanout                   int      `mapstructure:"gossip_fanout" yaml:"gossip_fanout"`
-	PeerExchangeEnabled            bool     `mapstructure:"peer_exchange_enabled" yaml:"peer_exchange_enabled"`
-	BinaryEvidenceConsumeEnabled   bool     `mapstructure:"binary_evidence_consume_enabled" yaml:"binary_evidence_consume_enabled"`
-	BinaryEvidenceServeEnabled     bool     `mapstructure:"binary_evidence_serve_enabled" yaml:"binary_evidence_serve_enabled"`
-	BinaryEvidencePeerTimeoutSecs  int      `mapstructure:"binary_evidence_peer_timeout_seconds" yaml:"binary_evidence_peer_timeout_seconds"`
-	BinaryEvidencePeerFanout       int      `mapstructure:"binary_evidence_peer_fanout" yaml:"binary_evidence_peer_fanout"`
-	BinaryEvidenceYEncBatchSize    int      `mapstructure:"binary_evidence_yenc_batch_size" yaml:"binary_evidence_yenc_batch_size"`
-	BinaryEvidenceSegmentLimit     int      `mapstructure:"binary_evidence_segment_limit" yaml:"binary_evidence_segment_limit"`
-	BinaryEvidenceMaxResponseBytes int      `mapstructure:"binary_evidence_max_response_bytes" yaml:"binary_evidence_max_response_bytes"`
-	BinaryEvidenceCooldownMinutes  int      `mapstructure:"binary_evidence_circuit_breaker_cooldown_minutes" yaml:"binary_evidence_circuit_breaker_cooldown_minutes"`
-	RelayEnabled                   bool     `mapstructure:"relay_enabled" yaml:"relay_enabled"`
-	RelayAPIKey                    string   `mapstructure:"relay_api_key" yaml:"relay_api_key"`
-	MaxEventBytes                  int      `mapstructure:"max_event_bytes" yaml:"max_event_bytes"`
-	MaxManifestBytes               int      `mapstructure:"max_manifest_bytes" yaml:"max_manifest_bytes"`
-	ManifestFetchTimeoutSeconds    int      `mapstructure:"manifest_fetch_timeout_seconds" yaml:"manifest_fetch_timeout_seconds"`
-	MaxBatchEvents                 int      `mapstructure:"max_batch_events" yaml:"max_batch_events"`
-	RateLimitEventsPerMinute       int      `mapstructure:"rate_limit_events_per_minute" yaml:"rate_limit_events_per_minute"`
-	TimeToleranceSeconds           int      `mapstructure:"time_tolerance_seconds" yaml:"time_tolerance_seconds"`
-	MaxEventAgeHours               int      `mapstructure:"max_event_age_hours" yaml:"max_event_age_hours"`
-	NonceTTLSeconds                int      `mapstructure:"nonce_ttl_seconds" yaml:"nonce_ttl_seconds"`
-	LiveQueryEnabled               bool     `mapstructure:"live_query_enabled" yaml:"live_query_enabled"`
-	SendUserContext                bool     `mapstructure:"send_user_context" yaml:"send_user_context"`
-	ShareProviderBackbone          bool     `mapstructure:"share_provider_backbone_hash" yaml:"share_provider_backbone_hash"`
-	ShareSourceIndexer             bool     `mapstructure:"share_source_indexer_hash" yaml:"share_source_indexer_hash"`
+	Mode                           string                  `mapstructure:"mode" yaml:"mode"`
+	NodeAlias                      string                  `mapstructure:"node_alias" yaml:"node_alias"`
+	AdvertiseURL                   string                  `mapstructure:"advertise_url" yaml:"advertise_url"`
+	KeysDir                        string                  `mapstructure:"keys_dir" yaml:"keys_dir"`
+	KeyPassword                    string                  `mapstructure:"key_password" yaml:"key_password"`
+	SpecVersion                    string                  `mapstructure:"spec_version" yaml:"spec_version"`
+	HTTPEnabled                    bool                    `mapstructure:"http_enabled" yaml:"http_enabled"`
+	HTTPBasePath                   string                  `mapstructure:"http_base_path" yaml:"http_base_path"`
+	AllowInsecurePeerHTTP          bool                    `mapstructure:"allow_insecure_peer_http" yaml:"allow_insecure_peer_http"`
+	PrivateNetwork                 bool                    `mapstructure:"private_network" yaml:"private_network"`
+	NetworkID                      string                  `mapstructure:"network_id" yaml:"network_id"`
+	LocalPoolID                    string                  `mapstructure:"local_pool_id" yaml:"local_pool_id"`
+	PublishPoolIDs                 []string                `mapstructure:"publish_pool_ids" yaml:"publish_pool_ids"`
+	ManualPeers                    []string                `mapstructure:"manual_peers" yaml:"manual_peers"`
+	Traversal                      GoNZBNetTraversalConfig `mapstructure:"traversal" yaml:"traversal"`
+	Visibility                     string                  `mapstructure:"visibility" yaml:"visibility"`
+	AllowPoolCreation              bool                    `mapstructure:"allow_pool_creation" yaml:"allow_pool_creation"`
+	AllowJoinRequests              bool                    `mapstructure:"allow_join_requests" yaml:"allow_join_requests"`
+	AdmissionRelayEnabled          bool                    `mapstructure:"admission_relay_enabled" yaml:"admission_relay_enabled"`
+	ConsumerEnabled                bool                    `mapstructure:"consumer_enabled" yaml:"consumer_enabled"`
+	ScannerEnabled                 bool                    `mapstructure:"scanner_enabled" yaml:"scanner_enabled"`
+	IndexProjectionEnabled         bool                    `mapstructure:"index_projection_enabled" yaml:"index_projection_enabled"`
+	ManifestBuilderEnabled         bool                    `mapstructure:"manifest_builder_enabled" yaml:"manifest_builder_enabled"`
+	ManifestCacheEnabled           bool                    `mapstructure:"manifest_cache_enabled" yaml:"manifest_cache_enabled"`
+	ValidatorEnabled               bool                    `mapstructure:"validator_enabled" yaml:"validator_enabled"`
+	HealthCheckerEnabled           bool                    `mapstructure:"health_checker_enabled" yaml:"health_checker_enabled"`
+	CoverageEnabled                bool                    `mapstructure:"coverage_enabled" yaml:"coverage_enabled"`
+	SchedulerEnabled               bool                    `mapstructure:"scheduler_enabled" yaml:"scheduler_enabled"`
+	PublishReleaseCardsEnabled     bool                    `mapstructure:"publish_release_cards_enabled" yaml:"publish_release_cards_enabled"`
+	PublishReleaseCardsBatchSize   int                     `mapstructure:"publish_release_cards_batch_size" yaml:"publish_release_cards_batch_size"`
+	PublishReleaseCardsIntervalMin float64                 `mapstructure:"publish_release_cards_interval_minutes" yaml:"publish_release_cards_interval_minutes"`
+	ManifestAvailabilityEnabled    bool                    `mapstructure:"manifest_availability_enabled" yaml:"manifest_availability_enabled"`
+	HealthAttestationsEnabled      bool                    `mapstructure:"health_attestations_enabled" yaml:"health_attestations_enabled"`
+	HealthAttestationsBatchSize    int                     `mapstructure:"health_attestations_batch_size" yaml:"health_attestations_batch_size"`
+	HealthAttestationsIntervalMin  float64                 `mapstructure:"health_attestations_interval_minutes" yaml:"health_attestations_interval_minutes"`
+	ScannerMaxGroups               int                     `mapstructure:"scanner_max_groups" yaml:"scanner_max_groups"`
+	ScannerMaxArticlesPerHour      int64                   `mapstructure:"scanner_max_articles_per_hour" yaml:"scanner_max_articles_per_hour"`
+	ScannerClaimTTLMinutes         int                     `mapstructure:"scanner_claim_ttl_minutes" yaml:"scanner_claim_ttl_minutes"`
+	ScannerCheckpointIntervalSecs  int                     `mapstructure:"scanner_checkpoint_interval_seconds" yaml:"scanner_checkpoint_interval_seconds"`
+	ScannerRespectRemoteClaims     bool                    `mapstructure:"scanner_respect_remote_claims" yaml:"scanner_respect_remote_claims"`
+	ScannerAllowUnassignedWork     bool                    `mapstructure:"scanner_allow_unassigned_work" yaml:"scanner_allow_unassigned_work"`
+	CoverageMode                   string                  `mapstructure:"coverage_mode" yaml:"coverage_mode"`
+	CoverageMinTrustForClaim       float64                 `mapstructure:"coverage_min_trust_for_claim" yaml:"coverage_min_trust_for_claim"`
+	CoverageValidationOverlapPct   int                     `mapstructure:"coverage_validation_overlap_percent" yaml:"coverage_validation_overlap_percent"`
+	CoverageStaleClaimPenalty      bool                    `mapstructure:"coverage_stale_claim_penalty" yaml:"coverage_stale_claim_penalty"`
+	CoverageProviderScopeMode      string                  `mapstructure:"coverage_provider_scope_mode" yaml:"coverage_provider_scope_mode"`
+	ValidationBatchSize            int                     `mapstructure:"validation_batch_size" yaml:"validation_batch_size"`
+	ValidationIntervalMin          float64                 `mapstructure:"validation_interval_minutes" yaml:"validation_interval_minutes"`
+	ValidationTiers                []string                `mapstructure:"validation_tiers" yaml:"validation_tiers"`
+	ValidationMaxManifestsPerHour  int                     `mapstructure:"validation_max_manifests_per_hour" yaml:"validation_max_manifests_per_hour"`
+	ValidationSamplePercent        int                     `mapstructure:"validation_sample_percent" yaml:"validation_sample_percent"`
+	ValidationAllowSamplePayload   bool                    `mapstructure:"validation_allow_sample_payload_fetch" yaml:"validation_allow_sample_payload_fetch"`
+	ValidationAllowPAR2            bool                    `mapstructure:"validation_allow_par2_validation" yaml:"validation_allow_par2_validation"`
+	ValidationPublishProviderScope bool                    `mapstructure:"validation_publish_provider_scope_hash" yaml:"validation_publish_provider_scope_hash"`
+	ChecksumValidationEnabled      bool                    `mapstructure:"checksum_validation_enabled" yaml:"checksum_validation_enabled"`
+	ManifestCacheMaxBytes          int64                   `mapstructure:"manifest_cache_max_bytes" yaml:"manifest_cache_max_bytes"`
+	ManifestCacheTTLDays           int                     `mapstructure:"manifest_cache_ttl_days" yaml:"manifest_cache_ttl_days"`
+	ManifestCacheServeTrustedPools bool                    `mapstructure:"manifest_cache_serve_to_trusted_pools" yaml:"manifest_cache_serve_to_trusted_pools"`
+	PullSyncEnabled                bool                    `mapstructure:"pull_sync_enabled" yaml:"pull_sync_enabled"`
+	PullSyncIntervalMin            float64                 `mapstructure:"pull_sync_interval_minutes" yaml:"pull_sync_interval_minutes"`
+	PushSyncEnabled                bool                    `mapstructure:"push_sync_enabled" yaml:"push_sync_enabled"`
+	PushSyncIntervalMin            float64                 `mapstructure:"push_sync_interval_minutes" yaml:"push_sync_interval_minutes"`
+	PushSyncBatchSize              int                     `mapstructure:"push_sync_batch_size" yaml:"push_sync_batch_size"`
+	WebSocketGossipEnabled         bool                    `mapstructure:"websocket_gossip_enabled" yaml:"websocket_gossip_enabled"`
+	GossipIntervalMin              float64                 `mapstructure:"gossip_interval_minutes" yaml:"gossip_interval_minutes"`
+	GossipBatchSize                int                     `mapstructure:"gossip_batch_size" yaml:"gossip_batch_size"`
+	GossipTTL                      int                     `mapstructure:"gossip_ttl" yaml:"gossip_ttl"`
+	GossipFanout                   int                     `mapstructure:"gossip_fanout" yaml:"gossip_fanout"`
+	PeerExchangeEnabled            bool                    `mapstructure:"peer_exchange_enabled" yaml:"peer_exchange_enabled"`
+	BinaryEvidenceConsumeEnabled   bool                    `mapstructure:"binary_evidence_consume_enabled" yaml:"binary_evidence_consume_enabled"`
+	BinaryEvidenceServeEnabled     bool                    `mapstructure:"binary_evidence_serve_enabled" yaml:"binary_evidence_serve_enabled"`
+	BinaryEvidencePeerTimeoutSecs  int                     `mapstructure:"binary_evidence_peer_timeout_seconds" yaml:"binary_evidence_peer_timeout_seconds"`
+	BinaryEvidencePeerFanout       int                     `mapstructure:"binary_evidence_peer_fanout" yaml:"binary_evidence_peer_fanout"`
+	BinaryEvidenceYEncBatchSize    int                     `mapstructure:"binary_evidence_yenc_batch_size" yaml:"binary_evidence_yenc_batch_size"`
+	BinaryEvidenceSegmentLimit     int                     `mapstructure:"binary_evidence_segment_limit" yaml:"binary_evidence_segment_limit"`
+	BinaryEvidenceMaxResponseBytes int                     `mapstructure:"binary_evidence_max_response_bytes" yaml:"binary_evidence_max_response_bytes"`
+	BinaryEvidenceCooldownMinutes  int                     `mapstructure:"binary_evidence_circuit_breaker_cooldown_minutes" yaml:"binary_evidence_circuit_breaker_cooldown_minutes"`
+	RelayEnabled                   bool                    `mapstructure:"relay_enabled" yaml:"relay_enabled"`
+	RelayAPIKey                    string                  `mapstructure:"relay_api_key" yaml:"relay_api_key"`
+	MaxEventBytes                  int                     `mapstructure:"max_event_bytes" yaml:"max_event_bytes"`
+	MaxManifestBytes               int                     `mapstructure:"max_manifest_bytes" yaml:"max_manifest_bytes"`
+	ManifestFetchTimeoutSeconds    int                     `mapstructure:"manifest_fetch_timeout_seconds" yaml:"manifest_fetch_timeout_seconds"`
+	MaxBatchEvents                 int                     `mapstructure:"max_batch_events" yaml:"max_batch_events"`
+	RateLimitEventsPerMinute       int                     `mapstructure:"rate_limit_events_per_minute" yaml:"rate_limit_events_per_minute"`
+	TimeToleranceSeconds           int                     `mapstructure:"time_tolerance_seconds" yaml:"time_tolerance_seconds"`
+	MaxEventAgeHours               int                     `mapstructure:"max_event_age_hours" yaml:"max_event_age_hours"`
+	NonceTTLSeconds                int                     `mapstructure:"nonce_ttl_seconds" yaml:"nonce_ttl_seconds"`
+	LiveQueryEnabled               bool                    `mapstructure:"live_query_enabled" yaml:"live_query_enabled"`
+	SendUserContext                bool                    `mapstructure:"send_user_context" yaml:"send_user_context"`
+	ShareProviderBackbone          bool                    `mapstructure:"share_provider_backbone_hash" yaml:"share_provider_backbone_hash"`
+	ShareSourceIndexer             bool                    `mapstructure:"share_source_indexer_hash" yaml:"share_source_indexer_hash"`
+}
+
+// GoNZBNetTraversalConfig is bootstrap-only because coordinator credentials
+// are node secrets and must never be persisted through runtime settings.
+type GoNZBNetTraversalConfig struct {
+	Enabled               bool                        `mapstructure:"enabled" yaml:"enabled"`
+	Coordinators          []GoNZBNetCoordinatorConfig `mapstructure:"coordinators" yaml:"coordinators"`
+	PreferDirect          bool                        `mapstructure:"prefer_direct" yaml:"prefer_direct"`
+	AllowTURN             bool                        `mapstructure:"allow_turn" yaml:"allow_turn"`
+	GatherTimeoutSeconds  int                         `mapstructure:"gather_timeout_seconds" yaml:"gather_timeout_seconds"`
+	ConnectTimeoutSeconds int                         `mapstructure:"connect_timeout_seconds" yaml:"connect_timeout_seconds"`
+	IdleTimeoutMinutes    int                         `mapstructure:"idle_timeout_minutes" yaml:"idle_timeout_minutes"`
+	MaxPeerConnections    int                         `mapstructure:"max_peer_connections" yaml:"max_peer_connections"`
+}
+
+type GoNZBNetCoordinatorConfig struct {
+	URL                   string   `mapstructure:"url" yaml:"url"`
+	CredentialFile        string   `mapstructure:"credential_file" yaml:"credential_file"`
+	CredentialEnv         string   `mapstructure:"credential_env" yaml:"credential_env"`
+	AllowedICEServerHosts []string `mapstructure:"allowed_ice_server_hosts" yaml:"allowed_ice_server_hosts"`
 }
 
 type IndexingConfig struct {
@@ -329,6 +370,7 @@ type ModulesConfig struct {
 	Aggregator    ModuleToggle `mapstructure:"aggregator" yaml:"aggregator"`
 	UsenetIndexer ModuleToggle `mapstructure:"usenet_indexer" yaml:"usenet_indexer"`
 	GoNZBNet      ModuleToggle `mapstructure:"gonzbnet" yaml:"gonzbnet"`
+	Uploader      ModuleToggle `mapstructure:"uploader" yaml:"uploader"`
 	WebUI         ModuleToggle `mapstructure:"web_ui" yaml:"web_ui"`
 	API           ModuleToggle `mapstructure:"api" yaml:"api"`
 }
@@ -521,11 +563,23 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("modules.aggregator.enabled", true)
 	v.SetDefault("modules.usenet_indexer.enabled", true)
 	v.SetDefault("modules.gonzbnet.enabled", false)
+	v.SetDefault("modules.uploader.enabled", false)
 	v.SetDefault("modules.web_ui.enabled", true)
 	v.SetDefault("modules.api.enabled", true)
 	v.SetDefault("aggregator.sources.local_blob.enabled", false)
 	v.SetDefault("aggregator.sources.usenet_indexer.enabled", false)
 	v.SetDefault("aggregator.sources.gonzbnet.enabled", false)
+	v.SetDefault("uploader.inbox.enabled", false)
+	v.SetDefault("uploader.inbox.path", "./data/uploader-inbox")
+	v.SetDefault("uploader.inbox.scan_interval_seconds", 15)
+	v.SetDefault("uploader.inbox.settle_age_seconds", 60)
+	v.SetDefault("uploader.max_nzb_bytes", int64(64<<20))
+	v.SetDefault("uploader.max_files", 100000)
+	v.SetDefault("uploader.max_segments", 5000000)
+	v.SetDefault("uploader.max_xml_depth", 32)
+	v.SetDefault("uploader.max_metadata_length", 16384)
+	v.SetDefault("uploader.max_artifact_bytes", int64(32<<20))
+	v.SetDefault("uploader.max_submission_bytes", int64(128<<20))
 	v.SetDefault("gonzbnet.mode", "integrated")
 	v.SetDefault("gonzbnet.node_alias", "")
 	v.SetDefault("gonzbnet.advertise_url", "")
@@ -589,6 +643,13 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("gonzbnet.push_sync_interval_minutes", 10.0)
 	v.SetDefault("gonzbnet.push_sync_batch_size", 100)
 	v.SetDefault("gonzbnet.websocket_gossip_enabled", false)
+	v.SetDefault("gonzbnet.traversal.enabled", false)
+	v.SetDefault("gonzbnet.traversal.prefer_direct", true)
+	v.SetDefault("gonzbnet.traversal.allow_turn", true)
+	v.SetDefault("gonzbnet.traversal.gather_timeout_seconds", 10)
+	v.SetDefault("gonzbnet.traversal.connect_timeout_seconds", 25)
+	v.SetDefault("gonzbnet.traversal.idle_timeout_minutes", 10)
+	v.SetDefault("gonzbnet.traversal.max_peer_connections", 32)
 	v.SetDefault("gonzbnet.gossip_interval_minutes", 1.0)
 	v.SetDefault("gonzbnet.gossip_batch_size", 100)
 	v.SetDefault("gonzbnet.gossip_ttl", 4)
@@ -730,6 +791,22 @@ func (c *Config) validate() error {
 	}
 	if err := validateGoNZBNetConfig(c.GoNZBNet, c.Modules.GoNZBNet.Enabled); err != nil {
 		return err
+	}
+	if c.Modules.Uploader.Enabled && c.Uploader.Inbox.ScanIntervalSeconds <= 0 {
+		return errors.New("uploader.inbox.scan_interval_seconds must be greater than 0")
+	}
+	if c.Uploader.Inbox.SettleAgeSeconds < 0 {
+		return errors.New("uploader.inbox.settle_age_seconds must be greater than or equal to 0")
+	}
+	if c.Uploader.Inbox.Enabled && strings.TrimSpace(c.Uploader.Inbox.Path) == "" {
+		return errors.New("uploader.inbox.path is required when uploader.inbox.enabled is true")
+	}
+	if c.Modules.Uploader.Enabled && (c.Uploader.MaxNZBBytes <= 0 || c.Uploader.MaxFiles <= 0 || c.Uploader.MaxSegments <= 0 ||
+		c.Uploader.MaxXMLDepth <= 0 || c.Uploader.MaxMetadataLength <= 0 || c.Uploader.MaxArtifactBytes <= 0 || c.Uploader.MaxSubmissionBytes <= 0) {
+		return errors.New("uploader validation limits must be greater than 0")
+	}
+	if c.Modules.Uploader.Enabled && c.Uploader.MaxSubmissionBytes < c.Uploader.MaxNZBBytes {
+		return errors.New("uploader.max_submission_bytes must be at least max_nzb_bytes")
 	}
 	if err := validateIndexingStageConfig("indexing.scrape_latest", c.Indexing.ScrapeLatest); err != nil {
 		return err
@@ -917,6 +994,7 @@ func (c *Config) validate() error {
 	if !c.Modules.Aggregator.Enabled &&
 		!c.Modules.UsenetIndexer.Enabled &&
 		!c.Modules.GoNZBNet.Enabled &&
+		!c.Modules.Uploader.Enabled &&
 		!c.Modules.API.Enabled &&
 		!c.Modules.WebUI.Enabled {
 		return errors.New("at least one module must be enabled")
@@ -974,6 +1052,42 @@ func (c *Config) validate() error {
 }
 
 func validateGoNZBNetConfig(cfg GoNZBNetConfig, moduleEnabled bool) error {
+	if len(cfg.Traversal.Coordinators) > 3 {
+		return errors.New("gonzbnet.traversal.coordinators supports at most 3 coordinators")
+	}
+	if cfg.Traversal.Enabled {
+		if !moduleEnabled {
+			return errors.New("gonzbnet.traversal.enabled requires modules.gonzbnet.enabled")
+		}
+		if len(cfg.Traversal.Coordinators) == 0 {
+			return errors.New("gonzbnet.traversal.coordinators requires at least one coordinator")
+		}
+		seen := make(map[string]struct{}, len(cfg.Traversal.Coordinators))
+		for i, coordinator := range cfg.Traversal.Coordinators {
+			rawURL := strings.TrimSpace(coordinator.URL)
+			parsed, err := url.Parse(rawURL)
+			if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+				return fmt.Errorf("gonzbnet.traversal.coordinators[%d].url must be an absolute https URL", i)
+			}
+			if _, ok := seen[strings.ToLower(parsed.Host)]; ok {
+				return fmt.Errorf("gonzbnet.traversal.coordinators contains duplicate host %q", parsed.Host)
+			}
+			seen[strings.ToLower(parsed.Host)] = struct{}{}
+			credentialFile := strings.TrimSpace(coordinator.CredentialFile)
+			credentialEnv := strings.TrimSpace(coordinator.CredentialEnv)
+			if (credentialFile == "") == (credentialEnv == "") {
+				return fmt.Errorf("gonzbnet.traversal.coordinators[%d] requires exactly one credential_file or credential_env", i)
+			}
+			if len(coordinator.AllowedICEServerHosts) == 0 || len(coordinator.AllowedICEServerHosts) > 4 {
+				return fmt.Errorf("gonzbnet.traversal.coordinators[%d] requires one to four allowed_ice_server_hosts", i)
+			}
+		}
+		if cfg.Traversal.GatherTimeoutSeconds <= 0 || cfg.Traversal.ConnectTimeoutSeconds <= 0 ||
+			cfg.Traversal.IdleTimeoutMinutes <= 0 || cfg.Traversal.MaxPeerConnections <= 0 ||
+			cfg.Traversal.MaxPeerConnections > 256 {
+			return errors.New("gonzbnet traversal timeouts and connection limits are invalid")
+		}
+	}
 	switch strings.TrimSpace(cfg.Visibility) {
 	case "", "private", "unlisted", "pool", "public":
 	default:

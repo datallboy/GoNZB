@@ -13,6 +13,7 @@ import (
 
 type PublicIndexerReleaseListParams struct {
 	Query             string
+	SourceKind        string
 	Limit             int
 	Offset            int
 	Sort              string
@@ -41,6 +42,7 @@ type PublicIndexerReleaseListParams struct {
 type PublicIndexerReleaseSummary struct {
 	ReleaseID         string     `json:"release_id"`
 	GUID              string     `json:"guid"`
+	SourceKind        string     `json:"source_kind"`
 	Title             string     `json:"title"`
 	PostedAt          *time.Time `json:"posted_at,omitempty"`
 	AddedAt           *time.Time `json:"added_at,omitempty"`
@@ -144,6 +146,7 @@ func scanPublicIndexerReleaseSummary(scanner interface {
 	if err := scanner.Scan(
 		&item.ReleaseID,
 		&item.GUID,
+		&item.SourceKind,
 		&item.Title,
 		&postedAt,
 		&addedAt,
@@ -229,6 +232,9 @@ func buildPublicIndexerFilterSQL(params PublicIndexerReleaseListParams) (string,
 		arg += len(values)
 	}
 
+	if sourceKind := strings.TrimSpace(params.SourceKind); sourceKind != "" {
+		add(fmt.Sprintf("r.source_kind = $%d", arg), sourceKind)
+	}
 	if query := strings.TrimSpace(params.Query); query != "" {
 		add(fmt.Sprintf("r.search_title ILIKE '%%' || $%d || '%%'", arg), query)
 	}
@@ -368,6 +374,7 @@ func (s *Store) ListPublicIndexerReleases(ctx context.Context, params PublicInde
 		SELECT
 			r.release_id,
 			r.guid,
+			r.source_kind,
 			COALESCE(NULLIF(ro.display_title, ''), r.title) AS title,
 			r.posted_at,
 			r.created_at,
@@ -432,6 +439,7 @@ func (s *Store) GetPublicIndexerReleaseDetailWithPolicy(ctx context.Context, rel
 		SELECT
 			r.release_id,
 			r.guid,
+			r.source_kind,
 			COALESCE(NULLIF(ro.display_title, ''), r.title) AS title,
 			r.posted_at,
 			r.created_at,

@@ -19,6 +19,7 @@ export type SetupStatusResponse = {
 export type PublicReleaseSummary = {
   release_id: string
   guid: string
+  source_kind: string
   title: string
   posted_at?: string
   added_at?: string
@@ -564,6 +565,7 @@ export type AdminRunListParams = {
 export type AdminReleaseSummary = {
   release_id: string
   guid: string
+  source_kind: string
   provider_id: number
   title: string
   group_name: string
@@ -801,6 +803,7 @@ export type AdminPredbMatch = {
 export type AdminReleaseRecord = {
   release_id: string
   guid: string
+  source_kind: string
   provider_id: number
   release_key: string
   group_name: string
@@ -1574,6 +1577,12 @@ export type ControlPlaneCapabilities = {
   revision?: number
 }
 
+export type HealthResponse = {
+  status: string
+  timestamp: string
+  modules: Record<string, { enabled: boolean; ready: boolean; status: string }>
+}
+
 export type GoNZBNetListResponse<T> = {
   items: T[]
   count: number
@@ -1767,6 +1776,17 @@ export type GoNZBNetEventDiagnostic = {
   rejection_reason?: string
   projected: boolean
   projected_at?: string
+	tombstoned: boolean
+}
+
+export type GoNZBNetEventDiagnosticParams = {
+	pool_id?: string
+	node_id?: string
+	event_type?: string
+	validation_status?: string
+	projected?: boolean
+	tombstoned?: boolean
+	limit?: number
 }
 
 export type GoNZBNetRejectedEventDiagnostic = {
@@ -2068,6 +2088,50 @@ export type GoNZBNetReleaseSourceDiagnostic = {
   posted_at?: string
   first_seen_at: string
   last_seen_at: string
+}
+
+export type GoNZBNetReleaseLedgerItem = {
+  release_id: string
+  manifest_id: string
+  projected_title: string
+  signed_title: string
+  projection_matches_signed_event: boolean
+  source_node_id: string
+  source_event_id: string
+  source_body_hash: string
+  source_kind: string
+  pool_id: string
+  node_status: string
+  membership_status: string
+  publication_state: string
+  publication_event_id?: string
+  publication_reason?: string
+  publication_changed_at?: string
+  tombstone_target_type?: string
+  tombstone_target_id?: string
+  tombstone_severity?: string
+  tombstone_source_event_id?: string
+  effective_state: 'active' | 'withdrawn' | 'blocked' | 'revoked' | 'tombstoned' | 'projection_mismatch'
+  posted_at?: string
+  first_seen_at: string
+  last_seen_at: string
+}
+
+export type GoNZBNetReleaseLedgerResponse = {
+  items: GoNZBNetReleaseLedgerItem[]
+  count: number
+  next_cursor?: string
+}
+
+export type GoNZBNetReleaseLedgerParams = {
+  pool_id?: string
+  node_id?: string
+  release_id?: string
+  q?: string
+  source_kind?: string
+  state?: string
+  cursor?: string
+  limit?: number
 }
 
 export type GoNZBNetManifestSourceDiagnostic = {
@@ -2429,4 +2493,128 @@ export type GoNZBNetKeyRotateResponse = {
   backup_path: string
   rotated_at: string
   warning: string
+}
+export type UploaderState = 'pending_review' | 'approved' | 'rejected'
+
+export type UploaderFile = {
+  name: string
+  subject: string
+  poster: string
+  posted_at: string
+  groups: string[]
+  size_bytes: number
+  segment_count: number
+}
+
+export type UploaderArtifact = {
+  id: string
+  submission_id: string
+  kind: 'nfo' | 'screenshot' | 'sample' | 'subtitle' | 'metadata' | 'other'
+  original_filename: string
+  label?: string
+  declared_media_type?: string
+  detected_media_type: string
+  size_bytes: number
+  sha256: string
+  display_order: number
+  created_at: string
+}
+
+export type UploaderSubmission = {
+  id: string
+  state: UploaderState
+  release_id: string
+  title: string
+  normalized_title: string
+  category_id: number
+  category: string
+  size_bytes: number
+  posted_at: string
+  poster: string
+  groups: string[]
+  file_count: number
+  segment_count: number
+  has_password: boolean
+  password?: string
+  has_par2: boolean
+  has_nfo: boolean
+  obfuscated_subjects: boolean
+  encrypted_names: boolean
+  imdb_id?: string
+  tmdb_id?: number
+  tvdb_id?: number
+  year?: number
+  resolution?: string
+  media_source?: string
+  video_codec?: string
+  audio_codec?: string
+  nzb_sha256: string
+  intake_kind: 'http' | 'inbox' | 'manual'
+  provenance_tool?: string
+  provenance_version?: string
+  provenance_external_id?: string
+  original_filename: string
+  submitted_by: string
+  reviewer?: string
+  review_note?: string
+  files?: UploaderFile[]
+  artifacts?: UploaderArtifact[]
+  created_at: string
+  updated_at: string
+  reviewed_at?: string
+  approved_at?: string
+  rejected_at?: string
+}
+
+export type UploaderEvent = {
+  id: number
+  submission_id: string
+  event_type: string
+  actor: string
+  prior_state?: UploaderState
+  next_state?: UploaderState
+  note?: string
+  created_at: string
+}
+
+export type UploaderFederationPublication = {
+  submission_id: string
+  pool_id: string
+  state: 'requested' | 'published' | 'withdrawal_requested' | 'withdrawn' | 'failed'
+  release_id?: string
+  manifest_id?: string
+  card_event_id?: string
+  manifest_event_id?: string
+  publication_state_event_id?: string
+  attempt_count: number
+  last_error?: string
+  next_attempt_at?: string
+  requested_by?: string
+  created_at: string
+  updated_at: string
+}
+
+export type UploaderListResponse = { items: UploaderSubmission[]; count: number }
+export type UploaderSubmissionResponse = { submission: UploaderSubmission; created?: boolean }
+export type UploaderDetailResponse = {
+  submission: UploaderSubmission
+  events: UploaderEvent[]
+  federation_publications: UploaderFederationPublication[]
+}
+export type UploaderFederationPublicationsResponse = { items: UploaderFederationPublication[]; count: number }
+export type UploaderFederationPoolsResponse = { items: string[]; count: number }
+export type UploaderUpdate = {
+  title?: string
+  category_id?: number
+  posted_at?: string
+  password?: string
+  imdb_id?: string
+  tmdb_id?: number
+  tvdb_id?: number
+  year?: number
+  resolution?: string
+  media_source?: string
+  video_codec?: string
+  audio_codec?: string
+  note?: string
 }

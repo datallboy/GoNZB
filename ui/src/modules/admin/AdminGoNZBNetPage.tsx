@@ -564,6 +564,11 @@ export function AdminGoNZBNetPage() {
   const [plan, setPlan] = useState<GoNZBNetCoveragePlan | null>(null)
   const [peerDiagnostics, setPeerDiagnostics] = useState<GoNZBNetPeerDiagnostic[]>([])
   const [eventDiagnostics, setEventDiagnostics] = useState<GoNZBNetEventDiagnostic[]>([])
+  const [eventNodeID, setEventNodeID] = useState('')
+  const [eventType, setEventType] = useState('')
+  const [eventValidationStatus, setEventValidationStatus] = useState('')
+  const [eventProjected, setEventProjected] = useState('')
+  const [eventTombstoned, setEventTombstoned] = useState('')
   const [rejectedDiagnostics, setRejectedDiagnostics] = useState<GoNZBNetRejectedEventDiagnostic[]>([])
   const [rejectedSummary, setRejectedSummary] = useState<GoNZBNetRejectedEventSummary[]>([])
   const [deliveryDiagnostics, setDeliveryDiagnostics] = useState<GoNZBNetPeerDeliveryDiagnostic[]>([])
@@ -646,6 +651,24 @@ export function AdminGoNZBNetPage() {
     }, { replace: true })
   }
 
+  async function loadEventDiagnostics() {
+    try {
+      const response = await getGoNZBNetEventDiagnostics({
+        pool_id: effectivePoolID,
+        node_id: eventNodeID.trim() || undefined,
+        event_type: eventType.trim() || undefined,
+        validation_status: eventValidationStatus || undefined,
+        projected: eventProjected === '' ? undefined : eventProjected === 'true',
+        tombstoned: eventTombstoned === '' ? undefined : eventTombstoned === 'true',
+        limit: 100,
+      })
+      setEventDiagnostics(response.items ?? [])
+      setError(null)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load event diagnostics')
+    }
+  }
+
   const refresh = useCallback(async () => {
     setLoading(true)
     try {
@@ -692,7 +715,7 @@ export function AdminGoNZBNetPage() {
           getGoNZBNetCoverageSuggestions({ pool_id: effectivePoolID, limit: 25 }),
           getGoNZBNetCoveragePlan({ pool_id: effectivePoolID, limit: 25 }),
           getGoNZBNetPeerDiagnostics(100),
-          getGoNZBNetEventDiagnostics(100),
+          getGoNZBNetEventDiagnostics({ pool_id: effectivePoolID, limit: 100 }),
           getGoNZBNetRejectedEventDiagnostics(100),
           getGoNZBNetPeerDeliveryDiagnostics(100),
           getGoNZBNetValidationTaskDiagnostics(100),
@@ -1424,6 +1447,7 @@ export function AdminGoNZBNetPage() {
         <StatCard label="Events accepted" value={formatNumber(protocolMetrics?.counters.gonzbnet_events_accepted_total ?? 0)} detail={`${formatNumber(protocolMetrics?.counters.gonzbnet_release_cards_projected_total ?? 0)} release cards`} />
         <StatCard label="Peer failures" value={formatNumber(protocolMetrics?.counters.gonzbnet_peer_failures_total ?? 0)} detail={`${peerSyncAverage.toFixed(3)}s average sync`} />
         <StatCard label="Manifest requests" value={formatNumber(protocolMetrics?.counters.gonzbnet_manifest_requests_total ?? 0)} detail={`${formatNumber(protocolMetrics?.counters.gonzbnet_manifest_request_failures_total ?? 0)} failures`} />
+        <StatCard label="Cache integrity" value={formatNumber(protocolMetrics?.counters.gonzbnet_manifest_cache_integrity_failures_total ?? 0)} detail="checksum failures" />
         <StatCard label="Health attestations" value={formatNumber(protocolMetrics?.counters.gonzbnet_health_attestations_total ?? 0)} detail="projected" />
         <StatCard label="Active tombstones" value={formatNumber(protocolMetrics?.gauges.gonzbnet_tombstones_active_total ?? 0)} detail="current database state" />
         <StatCard label="Evidence peer hits" value={formatNumber(protocolMetrics?.counters.gonzbnet_binary_evidence_yenc_hits_total ?? 0)} detail={`${formatNumber(protocolMetrics?.counters.gonzbnet_binary_evidence_peer_requests_total ?? 0)} requests`} />
@@ -2137,7 +2161,43 @@ export function AdminGoNZBNetPage() {
       </SectionTable>
 
       <SectionTable title="Event diagnostics" count={eventDiagnostics.length}>
-        <table className="data-table data-table--compact">
+        <div className="stack">
+          <div className="toolbar-grid">
+            <label className="field">
+              <span>Author node</span>
+              <input className="table-input" placeholder="node_id" value={eventNodeID} onChange={(event) => setEventNodeID(event.target.value)} />
+            </label>
+            <label className="field">
+              <span>Event type</span>
+              <input className="table-input" placeholder="ReleaseCard" value={eventType} onChange={(event) => setEventType(event.target.value)} />
+            </label>
+            <label className="field">
+              <span>Validation</span>
+              <select className="table-input" value={eventValidationStatus} onChange={(event) => setEventValidationStatus(event.target.value)}>
+                <option value="">All</option>
+                <option value="accepted">Accepted</option>
+                <option value="rejected">Rejected</option>
+              </select>
+            </label>
+            <label className="field">
+              <span>Projected</span>
+              <select className="table-input" value={eventProjected} onChange={(event) => setEventProjected(event.target.value)}>
+                <option value="">All</option>
+                <option value="true">Yes</option>
+                <option value="false">No</option>
+              </select>
+            </label>
+            <label className="field">
+              <span>Tombstoned</span>
+              <select className="table-input" value={eventTombstoned} onChange={(event) => setEventTombstoned(event.target.value)}>
+                <option value="">All</option>
+                <option value="true">Yes</option>
+                <option value="false">No</option>
+              </select>
+            </label>
+            <button className="secondary-button align-end" type="button" onClick={() => void loadEventDiagnostics()}>Apply filters</button>
+          </div>
+          <table className="data-table data-table--compact">
           <thead>
             <tr>
               <th>Event</th>
@@ -2158,6 +2218,7 @@ export function AdminGoNZBNetPage() {
                 <td className="breakable-value">{(item.pool_ids ?? []).join(', ') || 'local'}</td>
                 <td>
                   <span className="status-pill status-pill--table">{item.validation_status}</span>
+                  {item.tombstoned ? <div className="muted-copy">tombstoned</div> : null}
                   {item.rejection_reason ? <div className="muted-copy breakable-value">{item.rejection_reason}</div> : null}
                 </td>
                 <td>{item.projected ? formatDateTime(item.projected_at) : 'no'}</td>
@@ -2165,7 +2226,8 @@ export function AdminGoNZBNetPage() {
               </tr>
             ))}
           </tbody>
-        </table>
+          </table>
+        </div>
       </SectionTable>
 
       <SectionTable title="Rejected event rates" count={rejectedSummary.length}>

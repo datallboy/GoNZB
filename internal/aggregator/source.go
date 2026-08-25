@@ -37,10 +37,29 @@ type catalogSource interface {
 	GetNZB(ctx context.Context, rel *domain.Release) (io.ReadCloser, error)
 }
 
+// resultByIDSource supports authoritative direct retrieval for sources whose
+// results are intentionally excluded from generic persisted-cache lookup.
+type resultByIDSource interface {
+	GetByID(ctx context.Context, id string) (*domain.Release, error)
+}
+
+// persistedResultRehydrator reconstructs an authoritative result from its
+// signed/current source data. The persisted release is only an identity hint;
+// its display metadata must not be trusted.
+type persistedResultRehydrator interface {
+	RehydratePersistedResult(ctx context.Context, persisted *domain.Release) (*domain.Release, error)
+}
+
 // getAuthorizer is implemented by sources whose result access depends on
 // request-local policy beyond the source's global permission.
 type getAuthorizer interface {
 	AuthorizeGet(ctx context.Context, rel *domain.Release) error
+}
+
+// cachedPayloadValidator lets policy-aware sources bind a shared filesystem
+// cache entry to their authoritative content checksum before any bytes leave.
+type cachedPayloadValidator interface {
+	ValidateCachedNZB(ctx context.Context, rel *domain.Release, payload []byte) error
 }
 
 type store interface {

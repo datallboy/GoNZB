@@ -27,6 +27,7 @@ import (
 	"github.com/datallboy/gonzb/internal/gonzbnet/moderation"
 	"github.com/datallboy/gonzb/internal/gonzbnet/pools"
 	"github.com/datallboy/gonzb/internal/gonzbnet/profile"
+	"github.com/datallboy/gonzb/internal/gonzbnet/publicationstate"
 	"github.com/datallboy/gonzb/internal/gonzbnet/releasecard"
 	"github.com/datallboy/gonzb/internal/gonzbnet/requestauth"
 	"github.com/datallboy/gonzb/internal/gonzbnet/transportpolicy"
@@ -48,6 +49,7 @@ type Store interface {
 	AppendVerifiedFederationEvent(ctx context.Context, event *events.SignedEvent, validation *events.ValidationResult) error
 	AppendRejectedFederationEvent(ctx context.Context, eventID, authorNodeID, eventType string, rawEventJSON []byte, reason string) error
 	UpsertFederatedReleaseCardProjection(ctx context.Context, projection releasecard.Projection) error
+	ProjectReleasePublicationState(ctx context.Context, projection publicationstate.Projection) error
 	ProjectValidatorCapacity(ctx context.Context, projection pgindex.ValidatorCapacityProjection) error
 	ProjectArticleAvailabilityAttestation(ctx context.Context, projection pgindex.ArticleAvailabilityProjection) error
 	ProjectChecksumAttestation(ctx context.Context, projection pgindex.ChecksumAttestationProjection) error
@@ -93,6 +95,7 @@ type Service struct {
 	client                *http.Client
 	logger                Logger
 	allowInsecurePeerHTTP bool
+	traversalEnabled      bool
 	eventTimeTolerance    time.Duration
 	maxEventAge           time.Duration
 }
@@ -157,6 +160,14 @@ func (s *Service) replayProjection(ctx context.Context, event *events.SignedEven
 			poolID = event.PoolIDs[0]
 		}
 		return s.store.UpsertFederatedReleaseCardProjection(ctx, releasecard.Projection{Card: card, EventID: event.EventID, SourceNodeID: event.AuthorNodeID, PoolID: poolID})
+	case pools.EventTypeReleasePublicationState:
+		var state publicationstate.State
+		if err := json.Unmarshal(event.Body, &state); err != nil {
+			return err
+		}
+		return s.store.ProjectReleasePublicationState(ctx, publicationstate.Projection{
+			Publication: state, EventID: event.EventID, AuthorNodeID: event.AuthorNodeID, Sequence: event.Sequence,
+		})
 	case pools.EventTypeCoveragePlan, pools.EventTypeCoverageAssignment, pools.EventTypeRangeClaim, pools.EventTypeTimeWindowClaim, pools.EventTypeCoverageCheckpoint, pools.EventTypeRangeComplete, pools.EventTypeRangeFailed:
 		return s.store.ProjectCoverageEvent(ctx, event)
 	default:
@@ -178,7 +189,7 @@ func (s *Service) appendAndProject(ctx context.Context, event *events.SignedEven
 }
 
 func receivedEventHasProjection(eventType string) bool {
-	return pools.EventIsPoolControl(eventType) || eventType == pools.EventTypeReleaseCard || isSyncCoverageEvent(eventType) || isValidationProjectionEvent(eventType)
+	return pools.EventIsPoolControl(eventType) || eventType == pools.EventTypeReleaseCard || eventType == pools.EventTypeReleasePublicationState || isSyncCoverageEvent(eventType) || isValidationProjectionEvent(eventType)
 }
 
 type Result struct {
@@ -229,6 +240,8 @@ type GossipOptions struct {
 
 type Options struct {
 	AllowInsecurePeerHTTP bool
+	TraversalEnabled      bool
+	HTTPClient            *http.Client
 	EventTimeTolerance    time.Duration
 	MaxEventAge           time.Duration
 }
@@ -242,16 +255,19 @@ func NewWithOptions(identity Identity, store Store, logger Logger, opts Options)
 	if eventTimeTolerance <= 0 {
 		eventTimeTolerance = 2 * time.Minute
 	}
+	client := opts.HTTPClient
+	if client == nil {
+		client = &http.Client{Timeout: 15 * time.Second}
+	}
 	return &Service{
 		identity:              identity,
 		store:                 store,
 		logger:                logger,
 		allowInsecurePeerHTTP: opts.AllowInsecurePeerHTTP,
+		traversalEnabled:      opts.TraversalEnabled,
 		eventTimeTolerance:    eventTimeTolerance,
 		maxEventAge:           opts.MaxEventAge,
-		client: &http.Client{
-			Timeout: 15 * time.Second,
-		},
+		client:                client,
 	}
 }
 
@@ -264,7 +280,7 @@ func (s *Service) UpsertManualPeers(ctx context.Context, peerURLs []string) erro
 		if peerURL == "" {
 			continue
 		}
-		if err := transportpolicy.ValidateHTTPURL(peerURL, s.allowInsecurePeerHTTP); err != nil {
+		if err := transportpolicy.ValidatePeerURL(peerURL, s.allowInsecurePeerHTTP, s.traversalEnabled); err != nil {
 			return err
 		}
 		if _, err := s.store.UpsertFederationPeerURL(ctx, peerURL); err != nil {
@@ -724,28 +740,6 @@ func (s *Service) gossipPeer(ctx context.Context, peer pgindex.FederationPeerRec
 			batchEvents = append(batchEvents, *item)
 		}
 	}
-	wsURL := websocketURL(nodeProfile, wellKnown.BaseURL)
-	if err := transportpolicy.ValidateWebSocketURL(wsURL, s.allowInsecurePeerHTTP); err != nil {
-		return result, err
-	}
-	parsed, err := url.Parse(wsURL)
-	if err != nil {
-		return result, err
-	}
-	authorization, err := requestauth.Sign(ctx, s.identity, http.MethodGet, parsed.Path, parsed.RawQuery, nil, time.Now())
-	if err != nil {
-		return result, err
-	}
-	cfg, err := websocket.NewConfig(wsURL, wellKnown.BaseURL)
-	if err != nil {
-		return result, err
-	}
-	cfg.Header.Set("Authorization", authorization)
-	ws, err := websocket.DialConfig(cfg)
-	if err != nil {
-		return result, err
-	}
-	defer ws.Close()
 	peers := []string{}
 	if opts.PeerExchangeEnabled {
 		knownPeers, err := s.store.ListEnabledFederationPeers(ctx)
@@ -755,7 +749,7 @@ func (s *Service) gossipPeer(ctx context.Context, peer pgindex.FederationPeerRec
 			}
 		}
 	}
-	if err := websocket.JSON.Send(ws, gossip.Batch{
+	batch := gossip.Batch{
 		SchemaVersion: "1.0",
 		Type:          gossip.Type,
 		NetworkID:     opts.NetworkID,
@@ -763,12 +757,42 @@ func (s *Service) gossipPeer(ctx context.Context, peer pgindex.FederationPeerRec
 		Events:        batchEvents,
 		WantMissing:   false,
 		Peers:         gossip.FilterPeers(peers, opts.PeerExchangeEnabled, opts.Fanout),
-	}); err != nil {
-		return result, err
 	}
 	var response gossip.Response
-	if err := websocket.JSON.Receive(ws, &response); err != nil {
-		return result, err
+	if parsedBase, _ := url.Parse(wellKnown.BaseURL); parsedBase.Scheme == transportpolicy.TraversalScheme {
+		response, err = s.gossipDataChannel(ctx, wellKnown.BaseURL, batch)
+		if err != nil {
+			return result, err
+		}
+	} else {
+		wsURL := websocketURL(nodeProfile, wellKnown.BaseURL)
+		if err := transportpolicy.ValidateWebSocketURL(wsURL, s.allowInsecurePeerHTTP); err != nil {
+			return result, err
+		}
+		parsed, err := url.Parse(wsURL)
+		if err != nil {
+			return result, err
+		}
+		authorization, err := requestauth.Sign(ctx, s.identity, http.MethodGet, parsed.Path, parsed.RawQuery, nil, time.Now())
+		if err != nil {
+			return result, err
+		}
+		cfg, err := websocket.NewConfig(wsURL, wellKnown.BaseURL)
+		if err != nil {
+			return result, err
+		}
+		cfg.Header.Set("Authorization", authorization)
+		ws, err := websocket.DialConfig(cfg)
+		if err != nil {
+			return result, err
+		}
+		defer ws.Close()
+		if err := websocket.JSON.Send(ws, batch); err != nil {
+			return result, err
+		}
+		if err := websocket.JSON.Receive(ws, &response); err != nil {
+			return result, err
+		}
 	}
 	for _, item := range response.Accepted {
 		result.Accepted++
@@ -784,13 +808,52 @@ func (s *Service) gossipPeer(ctx context.Context, peer pgindex.FederationPeerRec
 	}
 	if opts.PeerExchangeEnabled {
 		for _, peerURL := range gossip.FilterPeers(response.Peers, true, opts.Fanout) {
-			if err := transportpolicy.ValidateHTTPURL(peerURL, s.allowInsecurePeerHTTP); err != nil {
+			if err := transportpolicy.ValidatePeerURL(peerURL, s.allowInsecurePeerHTTP, s.traversalEnabled); err != nil {
 				continue
 			}
 			_, _ = s.store.UpsertFederationPeerURL(ctx, peerURL)
 		}
 	}
 	return result, nil
+}
+
+func (s *Service) gossipDataChannel(ctx context.Context, baseURL string, batch gossip.Batch) (gossip.Response, error) {
+	var out gossip.Response
+	payload, err := json.Marshal(batch)
+	if err != nil {
+		return out, err
+	}
+	endpoint := strings.TrimRight(baseURL, "/") + "/gossip"
+	if err := transportpolicy.ValidatePeerRequestURL(endpoint, s.allowInsecurePeerHTTP, s.traversalEnabled); err != nil {
+		return out, err
+	}
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return out, err
+	}
+	authorization, err := requestauth.Sign(ctx, s.identity, http.MethodPost, parsed.Path, parsed.RawQuery, payload, time.Now())
+	if err != nil {
+		return out, err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return out, err
+	}
+	request.Header.Set("Authorization", authorization)
+	request.Header.Set("Content-Type", "application/gonzbnet+json")
+	response, err := s.client.Do(request)
+	if err != nil {
+		return out, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(response.Body, 2048))
+		return out, fmt.Errorf("traversal gossip status=%d body=%s", response.StatusCode, strings.TrimSpace(string(body)))
+	}
+	if err := json.NewDecoder(response.Body).Decode(&out); err != nil {
+		return out, err
+	}
+	return out, nil
 }
 
 func websocketURL(nodeProfile profile.NodeProfile, baseURL string) string {
@@ -822,7 +885,7 @@ func (s *Service) pushEvents(ctx context.Context, baseURL string, items []*event
 		return out, err
 	}
 	endpoint := strings.TrimRight(baseURL, "/") + "/inbox"
-	if err := transportpolicy.ValidateHTTPURL(endpoint, s.allowInsecurePeerHTTP); err != nil {
+	if err := transportpolicy.ValidatePeerRequestURL(endpoint, s.allowInsecurePeerHTTP, s.traversalEnabled); err != nil {
 		return out, err
 	}
 	u, err := url.Parse(endpoint)
@@ -860,13 +923,16 @@ func (s *Service) fetchWellKnown(ctx context.Context, peerURL string) (profile.W
 	if err != nil {
 		return out, err
 	}
-	if err := transportpolicy.ValidateHTTPURL(endpoint, s.allowInsecurePeerHTTP); err != nil {
+	if err := transportpolicy.ValidatePeerRequestURL(endpoint, s.allowInsecurePeerHTTP, s.traversalEnabled); err != nil {
 		return out, err
 	}
 	if err := s.getJSON(ctx, endpoint, &out); err != nil {
 		return out, err
 	}
 	out.BaseURL = strings.TrimRight(out.BaseURL, "/")
+	if parsed, _ := transportpolicy.ParseLocator(peerURL, s.allowInsecurePeerHTTP, s.traversalEnabled); parsed.Kind == transportpolicy.LocatorICE {
+		out.BaseURL = strings.TrimRight(strings.TrimSpace(peerURL), "/")
+	}
 	return out, nil
 }
 
@@ -905,7 +971,7 @@ func (s *Service) fetchOutbox(ctx context.Context, baseURL, cursor string) (Outb
 }
 
 func (s *Service) getSignedJSON(ctx context.Context, endpoint string, out any) error {
-	if err := transportpolicy.ValidateHTTPURL(endpoint, s.allowInsecurePeerHTTP); err != nil {
+	if err := transportpolicy.ValidatePeerRequestURL(endpoint, s.allowInsecurePeerHTTP, s.traversalEnabled); err != nil {
 		return err
 	}
 	parsed, err := url.Parse(endpoint)
@@ -944,7 +1010,7 @@ func (s *Service) getSignedJSON(ctx context.Context, endpoint string, out any) e
 }
 
 func (s *Service) getJSON(ctx context.Context, endpoint string, out any) error {
-	if err := transportpolicy.ValidateHTTPURL(endpoint, s.allowInsecurePeerHTTP); err != nil {
+	if err := transportpolicy.ValidatePeerRequestURL(endpoint, s.allowInsecurePeerHTTP, s.traversalEnabled); err != nil {
 		return err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
@@ -1000,7 +1066,7 @@ func (s *Service) handshake(ctx context.Context, baseURL string) error {
 	body["signature"] = canonical.Base64URL(signature)
 	payload, _ := json.Marshal(body)
 	endpoint := strings.TrimRight(baseURL, "/") + "/handshake"
-	if err := transportpolicy.ValidateHTTPURL(endpoint, s.allowInsecurePeerHTTP); err != nil {
+	if err := transportpolicy.ValidatePeerRequestURL(endpoint, s.allowInsecurePeerHTTP, s.traversalEnabled); err != nil {
 		return err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
@@ -1060,6 +1126,7 @@ func federationNodeRecordFromProfile(nodeProfile profile.NodeProfile, baseURL st
 		Software:          nodeProfile.Software,
 		SoftwareVersion:   nodeProfile.SoftwareVersion,
 		BaseURL:           baseURL,
+		AlternateLocators: append([]string(nil), nodeProfile.Endpoints.Alternate...),
 		Capabilities:      capabilitiesJSON,
 		ModuleStatus:      moduleStatusJSON,
 		ScannerCapacity:   scannerCapacityJSON,
@@ -1195,19 +1262,7 @@ func isValidationProjectionEvent(eventType string) bool {
 }
 
 func wellKnownURL(peerURL string) (string, error) {
-	peerURL = strings.TrimRight(strings.TrimSpace(peerURL), "/")
-	u, err := url.Parse(peerURL)
-	if err != nil {
-		return "", err
-	}
-	if u.Scheme == "" || u.Host == "" {
-		return "", fmt.Errorf("peer url must be absolute")
-	}
-	root := *u
-	root.Path = ""
-	root.RawQuery = ""
-	root.Fragment = ""
-	return strings.TrimRight(root.String(), "/") + "/.well-known/gonzbnet", nil
+	return transportpolicy.WellKnownURL(peerURL)
 }
 
 func firstNonBlank(values ...string) string {

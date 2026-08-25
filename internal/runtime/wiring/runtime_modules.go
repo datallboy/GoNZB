@@ -8,11 +8,14 @@ import (
 
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/infra/config"
+	"github.com/datallboy/gonzb/internal/nzb"
+	"github.com/datallboy/gonzb/internal/uploader"
 )
 
 const (
 	moduleNameAggregator    = "aggregator"
 	moduleNameUsenetIndexer = "usenet_indexer"
+	moduleNameUploader      = "uploader"
 )
 
 type aggregatorRuntimeModule struct {
@@ -62,9 +65,135 @@ func aggregatorHasSource(cfg *config.Config) bool {
 		return false
 	}
 	return len(cfg.Indexers) > 0 ||
+		cfg.Modules.Uploader.Enabled ||
 		cfg.Aggregator.Sources.LocalBlob.Enabled ||
 		cfg.Aggregator.Sources.UsenetIndexer.Enabled ||
 		cfg.Aggregator.Sources.GoNZBNet.Enabled
+}
+
+type uploaderRuntimeModule struct {
+	appCtx  *app.Context
+	scanner *uploader.InboxScanner
+	cancel  context.CancelFunc
+}
+
+func (m *uploaderRuntimeModule) Name() string { return moduleNameUploader }
+
+func (m *uploaderRuntimeModule) Enabled() bool {
+	return m.appCtx != nil && m.appCtx.Config != nil && m.appCtx.Config.Modules.Uploader.Enabled
+}
+
+func (m *uploaderRuntimeModule) Build(ctx context.Context) error {
+	if !m.Enabled() {
+		m.appCtx.Uploader = nil
+		m.appCtx.UploaderFederation = nil
+		m.scanner = nil
+		return nil
+	}
+	if m.appCtx.UploaderStore == nil {
+		return fmt.Errorf("uploader store is required")
+	}
+	cfg := m.appCtx.Config.Uploader
+	m.appCtx.Uploader = uploader.NewService(m.appCtx.UploaderStore, nzb.Limits{
+		MaxBytes:          cfg.MaxNZBBytes,
+		MaxFiles:          cfg.MaxFiles,
+		MaxSegments:       cfg.MaxSegments,
+		MaxXMLDepth:       cfg.MaxXMLDepth,
+		MaxMetadataLength: cfg.MaxMetadataLength,
+	}, uploader.IntakeLimits{MaxArtifactBytes: cfg.MaxArtifactBytes, MaxSubmissionBytes: cfg.MaxSubmissionBytes})
+	if m.appCtx.Config.Modules.UsenetIndexer.Enabled && m.appCtx.PGIndexStore != nil {
+		if projector, ok := m.appCtx.PGIndexStore.(uploader.CatalogProjector); ok {
+			m.appCtx.Uploader.SetCatalogProjector(projector)
+			if err := m.appCtx.Uploader.ReconcileCatalog(ctx); err != nil {
+				return err
+			}
+		}
+	}
+	if m.appCtx.UploaderFederationBackend != nil {
+		m.appCtx.UploaderFederation = uploader.NewFederationService(m.appCtx.Uploader, m.appCtx.UploaderFederationBackend)
+	} else {
+		m.appCtx.UploaderFederation = nil
+	}
+	if cfg.Inbox.Enabled {
+		m.scanner = uploader.NewInboxScanner(m.appCtx.Uploader, uploader.InboxOptions{
+			Root:         cfg.Inbox.Path,
+			ScanInterval: time.Duration(cfg.Inbox.ScanIntervalSeconds) * time.Second,
+			SettleAge:    time.Duration(cfg.Inbox.SettleAgeSeconds) * time.Second,
+			MaxNZBBytes:  cfg.MaxNZBBytes,
+			Logger:       m.appCtx.Logger,
+		})
+	} else {
+		m.scanner = nil
+	}
+	return nil
+}
+
+func (m *uploaderRuntimeModule) Start(ctx context.Context) error {
+	if !m.Enabled() {
+		return nil
+	}
+	if m.scanner != nil {
+		if err := m.scanner.Check(); err != nil {
+			return err
+		}
+	}
+	if m.scanner == nil && m.appCtx.UploaderFederation == nil {
+		return nil
+	}
+	child, cancel := context.WithCancel(ctx)
+	m.cancel = cancel
+	if m.scanner != nil {
+		go func() {
+			if err := m.scanner.Start(child); err != nil && child.Err() == nil && m.appCtx.Logger != nil {
+				m.appCtx.Logger.Error("uploader inbox stopped: %v", err)
+			}
+		}()
+	}
+	if m.appCtx.UploaderFederation != nil {
+		go m.appCtx.UploaderFederation.Run(child, 30*time.Second)
+	}
+	return nil
+}
+
+func (m *uploaderRuntimeModule) Reload(ctx context.Context) error {
+	wasRunning := m.cancel != nil
+	if m.cancel != nil {
+		m.cancel()
+		m.cancel = nil
+	}
+	if err := m.Build(ctx); err != nil {
+		return err
+	}
+	if wasRunning {
+		return m.Start(ctx)
+	}
+	return nil
+}
+
+func (m *uploaderRuntimeModule) Close() error {
+	if m.cancel != nil {
+		m.cancel()
+		m.cancel = nil
+	}
+	return nil
+}
+
+func (m *uploaderRuntimeModule) ReadinessChecks(ctx context.Context) []app.RuntimeCheck {
+	if !m.Enabled() {
+		return nil
+	}
+	checks := []app.RuntimeCheck{
+		runtimeBoolCheck("uploader_service", m.appCtx.Uploader != nil, "uploader service is required"),
+		runtimeBoolCheck("uploader_store", m.appCtx.UploaderStore != nil, "uploader store is required"),
+	}
+	if m.appCtx.UploaderStore != nil {
+		checks = append(checks, runtimeErrorCheck("uploader_store_ping", m.appCtx.UploaderStore.Ping(ctx)))
+		checks = append(checks, runtimeErrorCheck("uploader_store_schema", m.appCtx.UploaderStore.ValidateSchema(ctx)))
+	}
+	if m.scanner != nil {
+		checks = append(checks, runtimeErrorCheck("uploader_inbox", m.scanner.Check()))
+	}
+	return checks
 }
 
 type usenetIndexerRuntimeModule struct {
@@ -272,6 +401,7 @@ func registerRuntimeModules(appCtx *app.Context) {
 		&aggregatorRuntimeModule{appCtx: appCtx},
 		&usenetIndexerRuntimeModule{appCtx: appCtx},
 		&gonzbnetRuntimeModule{appCtx: appCtx},
+		&uploaderRuntimeModule{appCtx: appCtx},
 	)
 }
 

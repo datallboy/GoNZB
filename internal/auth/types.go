@@ -33,6 +33,10 @@ const (
 	PermissionGoNZBNetAdminValidator     = "gonzbnet.admin.validator"
 	PermissionGoNZBNetAdminScheduler     = "gonzbnet.admin.scheduler"
 	PermissionDownloadClientsSend        = "download_clients.send"
+	PermissionUploaderSubmissionsRead    = "uploader.submissions.read"
+	PermissionUploaderSubmissionsCreate  = "uploader.submissions.create"
+	PermissionUploaderSubmissionsReview  = "uploader.submissions.review"
+	PermissionUploaderPublicationsManage = "uploader.publications.manage"
 	PermissionAuthUsersRead              = "auth.users.read"
 	PermissionAuthUsersWrite             = "auth.users.write"
 	PermissionAuthRolesRead              = "auth.roles.read"
@@ -109,6 +113,8 @@ func DefaultRoles() []Role {
 				PermissionAggregatorReleasesRead,
 				PermissionAggregatorRuntimeRead,
 				PermissionDownloadClientsSend,
+				PermissionUploaderSubmissionsRead,
+				PermissionUploaderSubmissionsCreate,
 			},
 		},
 		{
@@ -146,6 +152,10 @@ func DefaultRoles() []Role {
 				PermissionGoNZBNetAdminValidator,
 				PermissionGoNZBNetAdminScheduler,
 				PermissionDownloadClientsSend,
+				PermissionUploaderSubmissionsRead,
+				PermissionUploaderSubmissionsCreate,
+				PermissionUploaderSubmissionsReview,
+				PermissionUploaderPublicationsManage,
 				PermissionAuthUsersRead,
 				PermissionAuthUsersWrite,
 				PermissionAuthRolesRead,

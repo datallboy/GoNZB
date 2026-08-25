@@ -1,0 +1,19 @@
+[Unit]
+Description=GoNZB posting worker
+Documentation=https://datallboy.github.io/GoNZB/modules/worker/
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=gonzb-worker
+Group=gonzb-worker
+EnvironmentFile=-/etc/gonzb-worker/gonzb-worker.env
+ExecStart=/usr/local/bin/gonzb-worker -config /etc/gonzb-worker/config.yaml
+Restart=on-failure
+RestartSec=10s
+TimeoutStopSec=30s
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

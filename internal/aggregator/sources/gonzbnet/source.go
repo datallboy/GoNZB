@@ -2,6 +2,8 @@ package gonzbnet
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"strconv"
@@ -12,6 +14,8 @@ import (
 	"github.com/datallboy/gonzb/internal/auth"
 	"github.com/datallboy/gonzb/internal/categories/newsnab"
 	"github.com/datallboy/gonzb/internal/domain"
+	gonzbnetmetrics "github.com/datallboy/gonzb/internal/gonzbnet/metrics"
+	"github.com/datallboy/gonzb/internal/gonzbnet/releasecard"
 	"github.com/datallboy/gonzb/internal/store/pgindex"
 )
 
@@ -20,7 +24,9 @@ const sourceName = "gonzbnet"
 type Store interface {
 	ListFederationSearchPoolsForPrincipal(ctx context.Context, userID string, roleIDs []string) ([]string, error)
 	CanGetFederatedReleaseForPrincipal(ctx context.Context, releaseID, userID string, roleIDs []string) (bool, error)
+	GetFederatedReleaseCardForPrincipal(ctx context.Context, releaseID, userID string, roleIDs []string) (*releasecard.ReleaseCard, bool, error)
 	SearchFederatedReleaseCards(ctx context.Context, params pgindex.FederatedReleaseCardSearchParams) ([]pgindex.FederatedReleaseCardSummary, error)
+	GetFederatedNZBSHA256ByReleaseID(ctx context.Context, releaseID string) (string, bool, error)
 }
 
 type Source struct {
@@ -91,6 +97,38 @@ func (s *Source) GetNZB(ctx context.Context, rel *domain.Release) (io.ReadCloser
 	return s.resolver.ResolveNZB(ctx, rel.GUID)
 }
 
+// RehydratePersistedResult uses the persisted result only to locate the
+// release. All returned metadata comes from a currently authorized, signed
+// ReleaseCard so a stale or modified aggregator cache cannot change a grab.
+func (s *Source) RehydratePersistedResult(ctx context.Context, persisted *domain.Release) (*domain.Release, error) {
+	if s == nil || s.store == nil {
+		return nil, fmt.Errorf("gonzbnet source is not configured")
+	}
+	if persisted == nil || strings.TrimSpace(persisted.Source) != sourceName {
+		return nil, nil
+	}
+	releaseID := strings.TrimSpace(persisted.GUID)
+	if releaseID == "" || domain.GenerateCompositeID(sourceName, releaseID) != persisted.ID {
+		return nil, nil
+	}
+	principal, ok := auth.PrincipalFromContext(ctx)
+	if !ok || principal == nil || !principal.Has(auth.PermissionGoNZBNetGet) || !principal.Has(auth.PermissionGoNZBNetResolveManifest) {
+		return nil, nil
+	}
+	card, found, err := s.store.GetFederatedReleaseCardForPrincipal(ctx, releaseID, principal.UserID, principal.RoleIDs)
+	if err != nil {
+		return nil, fmt.Errorf("rehydrate signed gonzbnet release: %w", err)
+	}
+	if !found || card == nil || card.ReleaseID != releaseID {
+		return nil, nil
+	}
+	canonical := releaseCardToDomain(*card)
+	if canonical.ID != persisted.ID {
+		return nil, fmt.Errorf("signed gonzbnet release identity mismatch")
+	}
+	return canonical, nil
+}
+
 func (s *Source) AuthorizeGet(ctx context.Context, rel *domain.Release) error {
 	if s == nil || s.store == nil {
 		return fmt.Errorf("gonzbnet source is not configured")
@@ -120,6 +158,27 @@ func (s *Source) AuthorizeGet(ctx context.Context, rel *domain.Release) error {
 	return nil
 }
 
+func (s *Source) ValidateCachedNZB(ctx context.Context, rel *domain.Release, payload []byte) error {
+	if s == nil || s.store == nil || rel == nil || strings.TrimSpace(rel.GUID) == "" {
+		return fmt.Errorf("gonzbnet cached release is required")
+	}
+	expected, ok, err := s.store.GetFederatedNZBSHA256ByReleaseID(ctx, strings.TrimSpace(rel.GUID))
+	if err != nil {
+		return err
+	}
+	if !ok {
+		gonzbnetmetrics.Default.Add(gonzbnetmetrics.ManifestCacheIntegrityFailuresTotal, 1)
+		return fmt.Errorf("verified gonzbnet cache checksum is unavailable")
+	}
+	sum := sha256.Sum256(payload)
+	actual := "sha256:" + hex.EncodeToString(sum[:])
+	if !strings.EqualFold(strings.TrimSpace(expected), actual) {
+		gonzbnetmetrics.Default.Add(gonzbnetmetrics.ManifestCacheIntegrityFailuresTotal, 1)
+		return fmt.Errorf("gonzbnet filesystem cache checksum mismatch")
+	}
+	return nil
+}
+
 func federatedReleaseToDomain(item pgindex.FederatedReleaseCardSummary) *domain.Release {
 	publishDate := time.Now().UTC()
 	if item.PostedAt != nil {
@@ -138,6 +197,25 @@ func federatedReleaseToDomain(item pgindex.FederatedReleaseCardSummary) *domain.
 		PublishDate: publishDate,
 		Category:    category,
 	}
+}
+
+func releaseCardToDomain(card releasecard.ReleaseCard) *domain.Release {
+	var postedAt *time.Time
+	if value := strings.TrimSpace(card.PostedAt); value != "" {
+		if parsed, err := time.Parse(time.RFC3339, value); err == nil {
+			parsed = parsed.UTC()
+			postedAt = &parsed
+		}
+	}
+	return federatedReleaseToDomain(pgindex.FederatedReleaseCardSummary{
+		ReleaseID:         card.ReleaseID,
+		ManifestID:        card.ManifestID,
+		Title:             card.Title,
+		NormalizedTitle:   card.NormalizedTitle,
+		NewznabCategories: append([]int(nil), card.NewznabCategories...),
+		SizeBytes:         card.SizeBytes,
+		PostedAt:          postedAt,
+	})
 }
 
 func firstNewznabCategory(categories []int) string {

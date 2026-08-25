@@ -44,6 +44,14 @@ and the authoritative `content_v1` ID for a complete binary. The content ID is
 SHA-256 over the ordered `(part_number, message_id)` list and does not contain
 local database, provider, or article-number identifiers.
 
+The unpartitioned release catalog is source-tagged. Release formation owns
+`source_kind = usenet_index` rows. Completed-NZB approval may project
+`source_kind = uploader` rows into `releases`, `release_catalog_files`, and
+`release_newsgroups`; those rows have no `release_files`/binary lineage and are
+reconciled from the uploader SQLite store. Queries and maintenance work that
+require indexer provenance must continue to restrict themselves to
+`source_kind = usenet_index`.
+
 ## Partitioned Source And Work Tables
 
 - source/header lineage: `article_headers`,

@@ -3,7 +3,8 @@ import { Link, NavLink, Outlet, useLocation } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
 import { browseCategories } from '../../modules/indexer/browse'
 import { getCapabilities } from '../api/settings'
-import type { ControlPlaneCapabilities } from '../types'
+import { apiRequest } from '../api/http'
+import type { ControlPlaneCapabilities, HealthResponse } from '../types'
 
 function canOpenAdminPortal(permissions: string[]) {
   return permissions.some((permission) =>
@@ -65,6 +66,14 @@ function AccountMenu({ viewerLink }: { viewerLink?: boolean }) {
 }
 
 export function PublicAppShell() {
+  const { hasPermission } = useAuth()
+  const [health, setHealth] = useState<HealthResponse | null>(null)
+
+  useEffect(() => {
+    void apiRequest<HealthResponse>('/healthz').then(setHealth).catch(() => setHealth(null))
+  }, [])
+
+  const uploaderVisible = Boolean(health?.modules.uploader?.enabled) && hasPermission('uploader.submissions.read')
   return (
     <div className="public-frame">
       <header className="public-topbar">
@@ -80,6 +89,7 @@ export function PublicAppShell() {
                 {category.label}
               </NavLink>
             ))}
+            {uploaderVisible ? <NavLink to="/uploader">Uploader</NavLink> : null}
           </nav>
         </div>
         <AccountMenu />
@@ -140,7 +150,8 @@ export function AdminAppShell() {
           {moduleVisible('gonzbnet') && hasPermission('gonzbnet.admin.read') ? (
             <div className="shell-nav__section">
               <span className="shell-nav__heading">Federation</span>
-              <NavLink to="/admin/gonzbnet">GoNZBNet</NavLink>
+              <NavLink end to="/admin/gonzbnet">GoNZBNet</NavLink>
+              <NavLink to="/admin/gonzbnet/releases">ReleaseCards</NavLink>
             </div>
           ) : null}
           {moduleVisible('usenet_indexer') && hasPermission('indexer.runtime.read') ? (

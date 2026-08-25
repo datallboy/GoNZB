@@ -1,10 +1,22 @@
 package app
 
 import (
+	"context"
+	"io"
+	"net/http"
+
 	"github.com/datallboy/gonzb/internal/infra/config"
 	"github.com/datallboy/gonzb/internal/infra/logger"
-	"io"
+	"github.com/datallboy/gonzb/internal/uploader"
 )
+
+type GoNZBNetTraversalTransport interface {
+	http.RoundTripper
+	Start(context.Context) error
+	SetHandler(http.Handler)
+	Close() error
+	CoordinatorStatus() []map[string]any
+}
 
 // Context hold the core environment and shared resources for GoNZB.
 // It acts as the "Single Source of Truth" for the application state.
@@ -16,20 +28,26 @@ type Context struct {
 	DisableReleasePurgeArchivedSources bool
 
 	// High-level interfaces for services to use
-	NNTP                NNTPManager
-	Aggregator          IndexerAggregator
-	Resolver            ReleaseResolver
-	UsenetIndexer       UsenetIndexerService
-	DownloadClient      DownloadClient
-	JobStore            JobStore
-	BlobStore           BlobStore
-	IndexerArchiveStore BlobStore
-	PayloadFetcher      PayloadFetcher
-	PayloadCacheStore   PayloadCacheStore
-	SettingsStore       SettingsStore
-	PGIndexStore        UsenetIndexStore
-	AggregatorModule    AggregatorModule
-	SettingsAdmin       SettingsAdmin
+	NNTP                      NNTPManager
+	Aggregator                IndexerAggregator
+	Resolver                  ReleaseResolver
+	UsenetIndexer             UsenetIndexerService
+	DownloadClient            DownloadClient
+	JobStore                  JobStore
+	BlobStore                 BlobStore
+	IndexerArchiveStore       BlobStore
+	PayloadFetcher            PayloadFetcher
+	PayloadCacheStore         PayloadCacheStore
+	SettingsStore             SettingsStore
+	PGIndexStore              UsenetIndexStore
+	AggregatorModule          AggregatorModule
+	SettingsAdmin             SettingsAdmin
+	UploaderStore             uploader.Store
+	Uploader                  *uploader.Service
+	UploaderFederationBackend uploader.FederationBackend
+	UploaderFederation        *uploader.FederationService
+	GoNZBNetPeerTransport     http.RoundTripper
+	GoNZBNetTraversal         GoNZBNetTraversalTransport
 
 	closers            []io.Closer
 	runtimeModules     map[string]RuntimeModule

@@ -67,6 +67,7 @@ func (r *Runner) ExecuteServerWithOptions(opts ServerOptions) {
 	}
 
 	api.RegisterRoutes(e, appCtx)
+	wiring.BindGoNZBNetTraversalHandler(appCtx, e)
 
 	srv := &http.Server{
 		Addr:              httpListenAddress(appCtx.Config.BindAddress, appCtx.Config.Port),

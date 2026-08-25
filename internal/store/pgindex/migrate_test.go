@@ -234,8 +234,8 @@ func TestConcurrentFreshMigrationsAreSerialized(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read schema version: %v", err)
 	}
-	if version != v090BaselineVersion {
-		t.Fatalf("schema version = %d, want %d", version, v090BaselineVersion)
+	if version != expectedMigrationVersion() {
+		t.Fatalf("schema version = %d, want %d", version, expectedMigrationVersion())
 	}
 }
 
@@ -284,8 +284,8 @@ func TestMigrationRejectsUnknownSchemaStates(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read schema version: %v", err)
 		}
-		if version != v090BaselineVersion {
-			t.Fatalf("schema version = %d, want %d", version, v090BaselineVersion)
+		if version != expectedMigrationVersion() {
+			t.Fatalf("schema version = %d, want %d", version, expectedMigrationVersion())
 		}
 		if _, err := db.Exec(`DROP EXTENSION amcheck`); err != nil {
 			t.Fatalf("drop diagnostic extension: %v", err)

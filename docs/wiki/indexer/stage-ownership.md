@@ -12,7 +12,13 @@
 - `recover_yenc` owns `yenc_recovery_work_items` retry/progress state and
   recovered identity state.
 - Release refresh owns release summary and ready-candidate work tables.
-- Release formation owns release catalog and release lineage tables.
+- Release formation owns `source_kind = usenet_index` release catalog rows and
+  release lineage tables.
+- Uploader approval owns only `source_kind = uploader` rows in the terminal
+  `releases`, `release_catalog_files`, and `release_newsgroups` catalog. These
+  rows are catalog projections, not release-formation output. They are excluded
+  from automatic GoNZBNet indexer publication; federation publication remains
+  an explicit uploader action.
 - Inspect stages own inspection history, artifacts, archive entries, text/media
   evidence, PAR2 sets, PAR2 targets, and their ready queue.
 - Release persistence publishes inspection-ready events. A durable
@@ -48,9 +54,15 @@ Projection tables are owned by the stage that derives them:
 - yEnc recovery owns recovery work items, recovered identity, superseded-source
   lineage, and recovery-driven dirty-family enqueue;
 - release summary refresh owns readiness summaries and ready candidates;
-- release formation owns release catalog and lineage;
+- release formation owns indexer-sourced release catalog rows and lineage;
+- uploader approval owns uploader-sourced terminal catalog projections;
 - inspect owns inspection ready/history/evidence tables and inspection
   reconciliation state.
+
+The uploader projector must never write `release_files`, binary projections,
+inspection tables, release-ready candidates, or formation lineage. Approval
+and startup reconciliation may upsert terminal uploader catalog rows;
+unapproval may delete only rows whose `source_kind` is `uploader`.
 
 ## Guardrails
 

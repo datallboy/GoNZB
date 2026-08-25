@@ -579,7 +579,7 @@ The baseline points to these bottleneck classes:
 
 The 2026-06-23 emergency disk check found the PostgreSQL data partition at `100%` used with about `64 MB` free and the live database at about `266 GB`. The normal application role could not read `current_setting('data_directory')`, and in Docker-style deployments the Postgres container path (`/var/lib/postgresql/data`) is not necessarily visible from the Go process even when the setting is readable. The previous storage guard treated this unknown filesystem state as allowed, which meant supervisor stages could continue writing while the Postgres partition was critically full.
 
-The storage guard now fails closed when it is enabled and filesystem free space is unavailable. Operators should configure `indexing.storage_guard.data_directory` to the host-visible Postgres data path when the app and Postgres do not share the same filesystem namespace. For this audit host, the correct path is `/mnt/vm-store/docker-vols/gonzb_gonzb_postgres_data`. When the path is not configured, non-exempt supervisor stages are blocked until filesystem visibility is fixed.
+The storage guard now fails closed when it is enabled and filesystem free space is unavailable. Operators should configure `indexing.storage_guard.data_directory` to the same protected host path used for the PostgreSQL bind mount when the app and PostgreSQL do not share a filesystem namespace. When the path is not configured, non-exempt supervisor stages are blocked until filesystem visibility is fixed.
 
 Low-space exemptions are intentionally narrow. Only archive and purge-specific stages may bypass the low-space block:
 

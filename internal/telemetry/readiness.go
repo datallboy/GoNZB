@@ -38,6 +38,7 @@ func Health(appCtx *app.Context) ProbeResponse {
 		modules["web_ui"] = simpleHealthModule(cfg.WebUI.Enabled)
 		modules["aggregator"] = simpleHealthModule(cfg.Aggregator.Enabled)
 		modules["usenet_indexer"] = simpleHealthModule(cfg.UsenetIndexer.Enabled)
+		modules["uploader"] = simpleHealthModule(cfg.Uploader.Enabled)
 	}
 
 	return ProbeResponse{
@@ -73,6 +74,12 @@ func Readiness(ctx context.Context, appCtx *app.Context) (int, ProbeResponse) {
 	usenetIndexer := evaluateRuntimeModule(ctx, appCtx.RuntimeModule("usenet_indexer"))
 	modules["usenet_indexer"] = usenetIndexer
 	if usenetIndexer.Enabled && !usenetIndexer.Ready {
+		overallReady = false
+	}
+
+	uploader := evaluateRuntimeModule(ctx, appCtx.RuntimeModule("uploader"))
+	modules["uploader"] = uploader
+	if uploader.Enabled && !uploader.Ready {
 		overallReady = false
 	}
 
