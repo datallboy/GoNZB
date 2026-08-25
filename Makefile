@@ -1,20 +1,28 @@
 BINARY_NAME=gonzb
+WORKER_BINARY_NAME=gonzb-worker
 VERSION=$(shell git describe --tags --always --dirty)
 BUILD_TIME=$(shell date -u +'%Y-%m-%dT%H:%M:%SZ')
 GOOS=$(shell go env GOOS)
 GOARCH=$(shell go env GOARCH)
 DIST_NAME=$(BINARY_NAME)_$(VERSION)_$(GOOS)_$(GOARCH)
+WORKER_DIST_NAME=$(WORKER_BINARY_NAME)_$(VERSION)_$(GOOS)_$(GOARCH)
 PKG=./cmd/gonzb
+WORKER_PKG=./cmd/gonzb-worker
 
 LDFLAGS=-ldflags "-X github.com/datallboy/gonzb/internal/buildinfo.Version=$(VERSION) -X github.com/datallboy/gonzb/internal/buildinfo.BuildTime=$(BUILD_TIME)"
 
-.PHONY: all build build-release ui-build clean test test-ci test-postgres vet lint install gonzbnet-e2e-test gonzbnet-e2e-start gonzbnet-e2e-bootstrap gonzbnet-e2e-verify gonzbnet-e2e-stop gonzbnet-e2e-status gonzbnet-e2e-reset
+.PHONY: all build build-worker build-release ui-build clean test test-ci test-postgres vet lint install gonzbnet-e2e-test gonzbnet-e2e-start gonzbnet-e2e-bootstrap gonzbnet-e2e-verify gonzbnet-e2e-stop gonzbnet-e2e-status gonzbnet-e2e-reset
 
 all: build
 
 build: ui-build
 	@echo "Building $(DIST_NAME)..."
 	GOCACHE=$${GOCACHE:-/tmp/gocache} go build $(LDFLAGS) -o bin/$(DIST_NAME) $(PKG)
+
+build-worker:
+	@echo "Building $(WORKER_DIST_NAME)..."
+	@mkdir -p bin
+	GOCACHE=$${GOCACHE:-/tmp/gocache} go build $(LDFLAGS) -o bin/$(WORKER_DIST_NAME) $(WORKER_PKG)
 
 build-release: ui-build
 	@echo "Building release binaries..."
@@ -28,6 +36,11 @@ build-release: ui-build
 		echo "Building $$OUT"; \
 		CGO_ENABLED=0 GOCACHE=$${GOCACHE:-/tmp/gocache} GOOS=$$GOOS GOARCH=$$GOARCH go build $(LDFLAGS) -o "$$OUT" $(PKG); \
 	done
+	@OUT="bin/$(WORKER_BINARY_NAME)_$(VERSION)_linux_amd64"; \
+		echo "Building $$OUT"; \
+		CGO_ENABLED=0 GOCACHE=$${GOCACHE:-/tmp/gocache} GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o "$$OUT" $(WORKER_PKG)
+	cp gonzb-worker-config.yaml.example bin/
+	cp deploy/systemd/gonzb-worker.service bin/
 		
 ui-build:
 	@echo "Building embedded web UI..."

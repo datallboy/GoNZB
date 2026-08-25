@@ -25,6 +25,30 @@ private users / automation
 
 PostgreSQL and the GoNZB admin UI should not be directly public.
 
+## Separate posting worker
+
+Run `gonzb-worker` on a separate Linux VPS when seedbox source files and NNTP
+posting credentials should remain outside the GoNZB server. The worker polls
+only completed qBittorrent items carrying its configured candidate tag. It
+reads them through a validated read-only SSHFS mount or copies them with
+rsync-over-SSH, performs posting locally, and sends the completed sanitized NZB
+to GoNZB over HTTPS.
+
+```text
+seedbox -- SSHFS (read-only) or rsync-over-SSH --> posting worker VPS
+   |                                                   |
+qBittorrent Web API                         HTTPS uploader submission
+                                                       |
+                                                     GoNZB
+```
+
+Keep the worker's SSH key, qBittorrent credentials, NNTP credentials, local
+workspace, and durable job database on the worker VPS. Give it a dedicated
+GoNZB API token with only `uploader.submissions.create`. Approval and GoNZBNet
+publication remain explicit GoNZB actions. See the
+[posting worker guide](../modules/worker.md) for installation and SSHFS smoke
+testing.
+
 ## When separate hosts help
 
 Use another GoNZB node when it adds something real:
