@@ -108,5 +108,8 @@ jobs:
               with:
                 files: |
                   bin/gonzb_*
+                  bin/gonzb-worker_*
+                  bin/gonzb-worker-config.yaml.example
+                  bin/gonzb-worker.service
                   bin/checksums.txt
                 generate_release_notes: true

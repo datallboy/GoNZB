@@ -9,6 +9,7 @@ docs_dir: docs
 site_dir: site
 strict: true
 exclude_docs: |
+  active/
   archive/
   ARCHITECTURE.md
   wiki/indexer/
@@ -62,6 +63,7 @@ nav:
       - Troubleshooting: getting-started/troubleshooting.md
   - Integrations: wiki/integrations/README.md
   - Completed-NZB uploader: modules/uploader.md
+  - Posting worker: modules/worker.md
   - Usenet indexer: modules/indexer.md
   - GoNZBNet:
       - Overview and roles: modules/gonzbnet.md

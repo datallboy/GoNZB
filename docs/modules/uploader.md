@@ -6,6 +6,10 @@ Browse catalog, Admin Releases, aggregator, and Newznab API. It does not accept
 torrents, magnet links, source payload paths, BitTorrent client credentials, or
 NNTP posting credentials.
 
+For the supported separate-VPS pipeline, see the
+[GoNZB posting worker](worker.md). The worker submits through this same bounded
+HTTP intake and does not bypass review or federation controls.
+
 ```text
 upstream acquisition and posting (outside GoNZB)
   -> completed valid NZB
@@ -250,8 +254,8 @@ It resets all disposable state on completion. Set
 
 ### Live pesto conformance
 
-The optional harness is pinned to pesto commit
-`ce57ddcde5e57c92392440dd46ac3b74f1c801ed` and Rust toolchain 1.96.0. Provide a
+The optional harness is pinned to pesto `0.8.6` commit
+`b9e2d8a41ddfddb2dd0d0954a5984114b3553636` and Rust toolchain 1.96.0. Provide a
 clean checkout and run:
 
 ```sh
@@ -264,6 +268,50 @@ generated NZB, two injected HTTP `503` retries, least-privilege intake,
 deduplication, approval, exact-byte Newznab search/get, and withdrawal. It
 disables pesto's courtesy version check during the run, so it does not contact
 GitHub or any Usenet provider.
+
+### Full gonzb-worker conformance
+
+The worker harness uses the same pinned pesto commit and only disposable,
+locally authored CC0 text. It runs the complete boundary through a loopback
+qBittorrent API fixture, a source-confined rsync fixture, pesto, a loopback NNTP
+POST/STAT fixture, Node A uploader intake, explicit review approval and
+`pool.e2e` publication. It then verifies search and exact-byte NZB retrieval
+through the GoNZBNet-backed aggregator on Node D, including signed manifest
+cache reuse. It never contacts a torrent network, seedbox, tracker, or external
+Usenet provider.
+
+Run the entire disposable scenario:
+
+```sh
+PESTO_SOURCE=/path/to/pesto ./scripts/uploader_worker_conformance.sh test
+```
+
+The stages can also be run separately for diagnosis or focused testing:
+
+```sh
+PESTO_SOURCE=/path/to/pesto ./scripts/uploader_worker_conformance.sh start
+./scripts/uploader_worker_conformance.sh worker
+./scripts/uploader_worker_conformance.sh approve
+./scripts/uploader_worker_conformance.sh federate
+./scripts/uploader_worker_conformance.sh aggregator
+./scripts/uploader_worker_conformance.sh reset
+```
+
+`worker` verifies Pesto's generated NZB plus the worker-supplied uploader
+metadata and `gonzb-worker.json` provenance artifact. `approve` verifies the
+source node's local aggregator. `federate` verifies signed pool publication and
+the remote projection. `aggregator` verifies that a different node returns the
+release and resolves the exact NZB through its federated aggregator source.
+Set `UPLOADER_WORKER_KEEP_STATE=1` to retain artifacts under `.e2e/` after a
+full run.
+
+Before intake, the worker rewrites Pesto's NZB into GoNZB's deterministic
+private form. The NZB head retains only the archive password; titles,
+categories, external IDs, and tags such as `obfuscated:full` are removed. File
+subjects remain obfuscated, and each file's independent poster is retained in
+the signed resolution manifest. Node A's uploader response and Node D's
+manifest reconstruction must therefore be byte-identical to the sanitized
+worker NZB.
 
 ## Safe conformance test
 

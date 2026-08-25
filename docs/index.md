@@ -16,7 +16,8 @@ download queues, repair, extraction, and completed files.
 - **Private sharing pool:** finish a normal install before using the
   [private pool quickstart](modules/private-pool.md).
 - **Understand the modules:** read about the [Usenet indexer](modules/indexer.md)
-  [completed-NZB uploader](modules/uploader.md), and [GoNZBNet](modules/gonzbnet.md).
+  [completed-NZB uploader](modules/uploader.md),
+  [posting worker](modules/worker.md), and [GoNZBNet](modules/gonzbnet.md).
 
 ## What you can run
 
@@ -25,6 +26,7 @@ download queues, repair, extraction, and completed files.
 | Search several existing indexers | Aggregator | One or more Newznab sources |
 | Build your own NZB catalog | Indexer + aggregator | PostgreSQL and an NNTP provider |
 | Review completed NZBs from a posting pipeline | Uploader, optionally aggregator | A producer that emits valid NZBs |
+| Post selected seedbox payloads from a separate VPS | Posting worker + uploader | qBittorrent, SSHFS or rsync, and a posting engine |
 | Share signed catalog data | GoNZBNet + aggregator | PostgreSQL and reachable pool peers |
 | Run everything for one operator | Indexer + aggregator + GoNZBNet | PostgreSQL, NNTP, optional peers |
 
