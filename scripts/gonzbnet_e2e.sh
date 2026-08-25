@@ -232,6 +232,20 @@ db_exec() {
     psql -v ON_ERROR_STOP=1 -U gonzb -d "$database" -c "$query" >/dev/null
 }
 
+export_manifest_nzb() {
+  database="$1"
+  manifest_id="$2"
+  destination="$3"
+  db_scalar "$database" "
+    SELECT encode(generated_nzb, 'base64')
+    FROM resolution_manifests
+    WHERE manifest_id = '$manifest_id'
+      AND validation_status = 'accepted'" |
+    tr -d '\r\n' |
+    base64 --decode >"$destination"
+  test -s "$destination"
+}
+
 run_indexer_stage() {
   stage="$1"
   before=$(db_scalar gonzbnet_a "SELECT COALESCE(MAX(id), 0) FROM indexer_stage_runs WHERE stage_name = '$stage'")
@@ -710,8 +724,12 @@ release_smoke() {
     --data-urlencode "id=$composite_id" \
     --data-urlencode "apikey=$token" \
     http://127.0.0.1:18084/api >"$STATE/first-grab.nzb"
-  grep -Fq "&lt;$scan_id@example.invalid&gt;" "$STATE/first-grab.nzb" || {
-    echo "first Node D grab did not return the expected NZB" >&2
+  export_manifest_nzb gonzbnet_a "$manifest_id" "$STATE/source-manifest.nzb" || {
+    echo "Node A did not retain the signed manifest-generated NZB" >&2
+    return 1
+  }
+  cmp "$STATE/source-manifest.nzb" "$STATE/first-grab.nzb" || {
+    echo "first Node D grab was not byte-identical to Node A's signed manifest NZB" >&2
     return 1
   }
   source_requests_after_first=$(grep -F -c "$request_path" "$STATE/node-a/gonzb.log" || true)
@@ -830,6 +848,7 @@ indexer_federation_smoke() {
     return 1
   }
   federated_release_id=$(printf '%s' "$publication" | cut -d'|' -f1)
+  federated_manifest_id=$(printf '%s' "$publication" | cut -d'|' -f2)
 
   admin_post node-a 18081 /api/v1/admin/gonzbnet/sync/push '{}'
   admin_post node-d 18084 /api/v1/admin/gonzbnet/sync/pull '{}'
@@ -856,11 +875,19 @@ indexer_federation_smoke() {
     --data-urlencode "apikey=$token" \
     http://127.0.0.1:18084/api >"$STATE/indexer-release-grab.nzb"
   for article in 1 2 3 4; do
-    grep -Fq "&lt;gonzbnet-e2e-$article@example.invalid&gt;" "$STATE/indexer-release-grab.nzb" || {
+    grep -Fq ">gonzbnet-e2e-$article@example.invalid</segment>" "$STATE/indexer-release-grab.nzb" || {
       echo "federated NZB is missing deterministic article $article" >&2
       return 1
     }
   done
+  export_manifest_nzb gonzbnet_a "$federated_manifest_id" "$STATE/indexer-source-manifest.nzb" || {
+    echo "Node A did not retain the indexed release's signed manifest NZB" >&2
+    return 1
+  }
+  cmp "$STATE/indexer-source-manifest.nzb" "$STATE/indexer-release-grab.nzb" || {
+    echo "Node D indexed-release grab was not byte-identical to Node A's signed manifest NZB" >&2
+    return 1
+  }
 
   echo "NNTP headers formed release $release_id with 3 files and 4 segments"
   publication_transport=${GONZBNET_E2E_TRANSPORT:-https}
