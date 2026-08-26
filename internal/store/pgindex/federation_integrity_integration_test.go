@@ -267,11 +267,11 @@ func TestFederationIntegrityLedgerAndCacheRepairIntegration(t *testing.T) {
 	}); err == nil {
 		t.Fatal("expected manifest record that differs from its signed source event to be rejected")
 	}
-	if err := store.StoreResolutionManifest(ctx, ResolutionManifestRecord{
-		Manifest: manifestBody, SourceNodeID: nodeID, FetchedFromNodeID: nodeID,
-		SourceEventID: manifestEvent.EventID, PoolID: poolID, GeneratedNZB: nzb,
-	}); err != nil {
-		t.Fatal(err)
+	if err := store.MaterializeAcceptedResolutionManifest(ctx, manifestEvent, nodeID, 2*time.Minute); err != nil {
+		t.Fatalf("materialize accepted signed manifest: %v", err)
+	}
+	if cachedNZB, ok, err := store.GetCachedFederatedNZBByReleaseID(ctx, card.ReleaseID); err != nil || !ok || !bytes.Equal(cachedNZB, nzb) {
+		t.Fatalf("expected deterministic cached NZB after intake materialization: ok=%v err=%v", ok, err)
 	}
 	secondPoolID := "pool.integrity.second"
 	if err := store.UpsertTrustPool(ctx, TrustPoolRecord{

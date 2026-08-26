@@ -30,6 +30,7 @@ type Identity interface {
 type Store interface {
 	GetCachedFederatedNZBByReleaseID(ctx context.Context, releaseID string) ([]byte, bool, error)
 	FindFederatedManifestSource(ctx context.Context, releaseID string) (*pgindex.FederatedManifestSource, error)
+	FindAcceptedResolutionManifestEvent(ctx context.Context, source pgindex.FederatedManifestSource) (*events.SignedEvent, error)
 	AuthorizeFederatedManifestSource(ctx context.Context, source pgindex.FederatedManifestSource, authorNodeID string) error
 	AppendVerifiedFederationEvent(ctx context.Context, event *events.SignedEvent, validation *events.ValidationResult) error
 	StoreResolutionManifest(ctx context.Context, record pgindex.ResolutionManifestRecord) error
@@ -131,6 +132,28 @@ func (r *Resolver) ResolveNZB(ctx context.Context, releaseID string) (reader io.
 	if source == nil {
 		return nil, fmt.Errorf("federated manifest source not found")
 	}
+	localEvent, err := r.store.FindAcceptedResolutionManifestEvent(ctx, *source)
+	if err != nil {
+		return nil, err
+	}
+	if localEvent != nil {
+		// The event already passed federation intake checks. Re-verify its
+		// signature and current time window, but do not apply the inbound event
+		// age limit again: accepted events remain durable protocol state.
+		validation, err := events.VerifyAt(localEvent, time.Now(), r.eventTimeTolerance)
+		if err != nil {
+			return nil, err
+		}
+		if validation == nil || !validation.OK {
+			return nil, fmt.Errorf("cached manifest event verification failed: %s", validationReason(validation))
+		}
+		nzbPayload, err := r.materializeManifest(ctx, *source, localEvent, validation, false)
+		if err != nil {
+			return nil, err
+		}
+		failed = false
+		return io.NopCloser(bytes.NewReader(nzbPayload)), nil
+	}
 	if err := r.store.AuthorizeFederatedManifestSource(ctx, *source, ""); err != nil {
 		return nil, err
 	}
@@ -149,41 +172,59 @@ func (r *Resolver) ResolveNZB(ctx context.Context, releaseID string) (reader io.
 	if validation == nil || !validation.OK {
 		return failSource(fmt.Errorf("manifest event verification failed: %s", validationReason(validation)))
 	}
+	nzbPayload, err := r.materializeManifest(ctx, *source, event, validation, true)
+	if err != nil {
+		return failSource(err)
+	}
+	_ = r.store.RecordFederatedManifestSourceSuccess(ctx, *source)
+	failed = false
+	return io.NopCloser(bytes.NewReader(nzbPayload)), nil
+}
+
+func (r *Resolver) materializeManifest(
+	ctx context.Context,
+	source pgindex.FederatedManifestSource,
+	event *events.SignedEvent,
+	validation *events.ValidationResult,
+	appendEvent bool,
+) ([]byte, error) {
 	if event.EventType != manifest.Type {
-		return failSource(fmt.Errorf("unexpected manifest event type %q", event.EventType))
+		return nil, fmt.Errorf("unexpected manifest event type %q", event.EventType)
 	}
 	if err := eventbody.Validate(event, time.Now().UTC(), r.eventTimeTolerance); err != nil {
-		return failSource(fmt.Errorf("invalid manifest event body: %w", err))
+		return nil, fmt.Errorf("invalid manifest event body: %w", err)
 	}
 	if event.BodySchema != manifest.BodySchema {
-		return failSource(fmt.Errorf("unexpected manifest body schema %q", event.BodySchema))
+		return nil, fmt.Errorf("unexpected manifest body schema %q", event.BodySchema)
 	}
 	if len(event.PoolIDs) != 1 || strings.TrimSpace(event.PoolIDs[0]) != strings.TrimSpace(source.PoolID) {
-		return failSource(fmt.Errorf("manifest event pool mismatch"))
+		return nil, fmt.Errorf("manifest event pool mismatch")
 	}
 	var body manifest.ResolutionManifest
 	if err := json.Unmarshal(event.Body, &body); err != nil {
-		return failSource(err)
+		return nil, err
 	}
 	canonicalCore, err := manifest.Validate(body)
 	if err != nil {
-		return failSource(err)
+		return nil, err
 	}
 	if body.ManifestID != source.ManifestID {
-		return failSource(fmt.Errorf("manifest_id mismatch"))
+		return nil, fmt.Errorf("manifest_id mismatch")
 	}
-	if body.ReleaseID != releaseID || body.ReleaseID != source.ReleaseID {
-		return failSource(fmt.Errorf("release_id mismatch"))
+	if body.ReleaseID != source.ReleaseID {
+		return nil, fmt.Errorf("release_id mismatch")
 	}
-	if err := r.store.AuthorizeFederatedManifestSource(ctx, *source, event.AuthorNodeID); err != nil {
-		return failSource(err)
+	if err := r.store.AuthorizeFederatedManifestSource(ctx, source, event.AuthorNodeID); err != nil {
+		return nil, err
 	}
 	nzbPayload, err := manifest.GenerateNZB(body)
 	if err != nil {
-		return failSource(err)
-	}
-	if err := r.store.AppendVerifiedFederationEvent(ctx, event, validation); err != nil {
 		return nil, err
+	}
+	if appendEvent {
+		if err := r.store.AppendVerifiedFederationEvent(ctx, event, validation); err != nil {
+			return nil, err
+		}
 	}
 	if err := r.store.StoreResolutionManifest(ctx, pgindex.ResolutionManifestRecord{
 		Manifest:              body,
@@ -197,9 +238,7 @@ func (r *Resolver) ResolveNZB(ctx context.Context, releaseID string) (reader io.
 		return nil, err
 	}
 	activity.Default.Record(activity.ComponentManifestCache, source.PoolID, activity.Result{ItemsIn: 1, ItemsOut: 1, BytesIn: int64(len(nzbPayload))})
-	_ = r.store.RecordFederatedManifestSourceSuccess(ctx, *source)
-	failed = false
-	return io.NopCloser(bytes.NewReader(nzbPayload)), nil
+	return nzbPayload, nil
 }
 
 func (r *Resolver) fetchManifest(ctx context.Context, source pgindex.FederatedManifestSource) (*events.SignedEvent, error) {

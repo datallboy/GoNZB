@@ -117,6 +117,8 @@ func (r *Runner) ExecuteGoNZBNetSync(mode string, limit int) {
 	cfg := appCtx.Config.GoNZBNet
 	service := gonzbnetsync.NewWithOptions(nodeIdentity, store, appCtx.Logger, gonzbnetsync.Options{
 		AllowInsecurePeerHTTP: cfg.AllowInsecurePeerHTTP,
+		TraversalEnabled:      cfg.Traversal.Enabled,
+		ManifestCacheEnabled:  cfg.ManifestCacheEnabled,
 		EventTimeTolerance:    time.Duration(cfg.TimeToleranceSeconds) * time.Second,
 		MaxEventAge:           time.Duration(cfg.MaxEventAgeHours) * time.Hour,
 	})

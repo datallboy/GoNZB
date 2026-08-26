@@ -82,6 +82,87 @@ func TestResolveNZBFetchesSignedManifestWithoutUserContext(t *testing.T) {
 	}
 }
 
+func TestResolveNZBMaterializesAcceptedManifestWithoutPublisher(t *testing.T) {
+	ctx := context.Background()
+	localIdentity, err := identity.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("local identity: %v", err)
+	}
+	_, manifestEvent := testManifestEvent(t)
+	var body manifest.ResolutionManifest
+	if err := json.Unmarshal(manifestEvent.Body, &body); err != nil {
+		t.Fatalf("manifest body: %v", err)
+	}
+	store := &fakeResolverStore{
+		acceptedEvent: manifestEvent,
+		source: &pgindex.FederatedManifestSource{
+			ManifestID:   body.ManifestID,
+			ReleaseID:    body.ReleaseID,
+			SourceNodeID: manifestEvent.AuthorNodeID,
+			PoolID:       "pool.local",
+			BaseURL:      "http://127.0.0.1:1",
+			TrustScore:   1,
+		},
+	}
+
+	reader, err := NewWithOptions(localIdentity, store, Options{AllowInsecurePeerHTTP: true}).ResolveNZB(ctx, body.ReleaseID)
+	if err != nil {
+		t.Fatalf("resolve accepted manifest: %v", err)
+	}
+	payload, _ := io.ReadAll(reader)
+	_ = reader.Close()
+	if !strings.Contains(string(payload), "<nzb") {
+		t.Fatalf("expected generated nzb, got %q", string(payload))
+	}
+	if store.stored == nil || len(store.stored.GeneratedNZB) == 0 {
+		t.Fatal("expected accepted manifest to be materialized")
+	}
+	if store.appended != 0 {
+		t.Fatalf("accepted event should not be appended again, got %d appends", store.appended)
+	}
+	if store.failures != 0 {
+		t.Fatalf("local materialization should not record a publisher failure, got %d", store.failures)
+	}
+}
+
+func TestResolveNZBRejectsExpiredAcceptedManifestWithoutRemoteFallback(t *testing.T) {
+	ctx := context.Background()
+	localIdentity, err := identity.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("local identity: %v", err)
+	}
+	now := time.Now().UTC()
+	expiresAt := now.Add(-time.Minute)
+	_, manifestEvent := testManifestEventWithTimes(t, now.Add(-10*time.Minute), &expiresAt)
+	var body manifest.ResolutionManifest
+	if err := json.Unmarshal(manifestEvent.Body, &body); err != nil {
+		t.Fatalf("manifest body: %v", err)
+	}
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		requests++
+	}))
+	defer server.Close()
+	store := &fakeResolverStore{
+		acceptedEvent: manifestEvent,
+		source: &pgindex.FederatedManifestSource{
+			ManifestID: body.ManifestID, ReleaseID: body.ReleaseID,
+			SourceNodeID: manifestEvent.AuthorNodeID, PoolID: "pool.local", BaseURL: server.URL,
+		},
+	}
+
+	_, err = NewWithOptions(localIdentity, store, Options{AllowInsecurePeerHTTP: true}).ResolveNZB(ctx, body.ReleaseID)
+	if err == nil || !strings.Contains(err.Error(), "event expired") {
+		t.Fatalf("expected expired accepted event rejection, got %v", err)
+	}
+	if requests != 0 {
+		t.Fatalf("invalid accepted event must fail closed without remote fallback, got %d requests", requests)
+	}
+	if store.stored != nil || store.failures != 0 {
+		t.Fatalf("expired accepted event changed cache/source state: stored=%v failures=%d", store.stored != nil, store.failures)
+	}
+}
+
 func TestResolveNZBRejectsInsecureNonLocalHTTPSource(t *testing.T) {
 	ctx := context.Background()
 	localIdentity, err := identity.LoadOrCreate(t.TempDir())
@@ -341,9 +422,11 @@ func testManifestEventWithOptions(t *testing.T, releaseID, poolID string, create
 }
 
 type fakeResolverStore struct {
-	source   *pgindex.FederatedManifestSource
-	stored   *pgindex.ResolutionManifestRecord
-	failures int
+	source        *pgindex.FederatedManifestSource
+	acceptedEvent *events.SignedEvent
+	stored        *pgindex.ResolutionManifestRecord
+	appended      int
+	failures      int
 }
 
 func (s *fakeResolverStore) GetCachedFederatedNZBByReleaseID(context.Context, string) ([]byte, bool, error) {
@@ -354,11 +437,16 @@ func (s *fakeResolverStore) FindFederatedManifestSource(context.Context, string)
 	return s.source, nil
 }
 
+func (s *fakeResolverStore) FindAcceptedResolutionManifestEvent(context.Context, pgindex.FederatedManifestSource) (*events.SignedEvent, error) {
+	return s.acceptedEvent, nil
+}
+
 func (s *fakeResolverStore) AuthorizeFederatedManifestSource(context.Context, pgindex.FederatedManifestSource, string) error {
 	return nil
 }
 
 func (s *fakeResolverStore) AppendVerifiedFederationEvent(context.Context, *events.SignedEvent, *events.ValidationResult) error {
+	s.appended++
 	return nil
 }
 

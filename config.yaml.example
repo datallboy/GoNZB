@@ -52,22 +52,37 @@ uploader:
   max_submission_bytes: 134217728
 
 # GoNZBNet federation is disabled by default. Enable only the capabilities this
-# node will operate; see docs/wiki/gonzbnet/ for the current configuration guide.
+# node will operate; see docs/wiki/gonzbnet/ for the complete settings reference.
+#
+# PRECEDENCE: fields marked "runtime-editable" below are bootstrap defaults only.
+# After Settings > GoNZBNet has been saved once, its SQLite runtime snapshot
+# overrides those YAML values and reloads the module. Change operational values
+# in the WebUI/API after that point. Fields marked "bootstrap-only" always come
+# from YAML/environment and require a process restart.
 gonzbnet:
+  # Bootstrap-only protocol, identity, listener, and network boundaries.
   mode: "integrated"
-  node_alias: ""
-  advertise_url: ""
   keys_dir: "data/gonzbnet/keys"
+  # Supply key_password through a protected environment/secret source, not Git.
+  key_password: ""
   spec_version: "gonzbnet/1.0"
   http_enabled: true
   http_base_path: "/gonzbnet/v1"
-  allow_insecure_peer_http: false
   private_network: true
   network_id: "default"
   local_pool_id: "pool.local"
+
+  # Runtime-editable identity label and reachability. advertise_url is the
+  # protocol base URL peers call; it grants neither membership nor trust.
+  node_alias: ""
+  advertise_url: ""
+  visibility: "unlisted" # private, unlisted, pool, or public discovery posture
+  allow_insecure_peer_http: false # keep false outside explicit local/private tests
+  publish_pool_ids: [] # empty = every active membership that grants publication
   manual_peers: []
-  # Experimental native ICE transport. Keep disabled for the initial private
-  # pool and use Headscale/Tailscale until traversal has been security-reviewed.
+
+  # Bootstrap-only native ICE transport and coordinator credentials. HTTPS
+  # remains the normal transport unless an ICE locator is configured/preferred.
   traversal:
     enabled: false
     coordinators: []
@@ -80,6 +95,15 @@ gonzbnet:
     connect_timeout_seconds: 25
     idle_timeout_minutes: 10
     max_peer_connections: 32
+
+  # Runtime-editable admission policy. These switches expose workflows; they
+  # never self-approve a node or bypass pool capability checks.
+  allow_pool_creation: true
+  allow_join_requests: true
+  admission_relay_enabled: true
+
+  # Runtime-editable roles. A role says what this process is prepared to do;
+  # the pool must independently grant the corresponding capability.
   consumer_enabled: true
   scanner_enabled: false
   index_projection_enabled: true
@@ -89,16 +113,51 @@ gonzbnet:
   health_checker_enabled: false
   coverage_enabled: false
   scheduler_enabled: false
+
+  # Runtime-editable publication. Role flags enable producers; these flags
+  # decide whether their results leave this node.
   publish_release_cards_enabled: false
   publish_release_cards_batch_size: 50
   publish_release_cards_interval_minutes: 10
-  manifest_availability_enabled: false
+  manifest_availability_enabled: false # advertise this node as a manifest source
   health_attestations_enabled: false
   health_attestations_batch_size: 50
   health_attestations_interval_minutes: 30
+
+  # Runtime-editable scanner/coverage budgets and coordination policy.
+  scanner_max_groups: 25
+  scanner_max_articles_per_hour: 250000
+  scanner_claim_ttl_minutes: 30
+  scanner_checkpoint_interval_seconds: 300
+  scanner_respect_remote_claims: true
+  scanner_allow_unassigned_work: false
+  coverage_mode: "manual" # manual, scheduler, or automatic
+  coverage_min_trust_for_claim: 0.65
+  coverage_validation_overlap_percent: 10
+  coverage_stale_claim_penalty: true
+  coverage_provider_scope_mode: "hash_only" # hash_only or disabled
+
+  # Runtime-editable validation policy. NNTP-backed tiers consume provider
+  # bandwidth; body sampling, PAR2, and checksum work are deliberately opt-in.
   validation_batch_size: 25
   validation_interval_minutes: 15
+  validation_tiers: ["metadata", "article_stat", "segment_stat"]
+  validation_max_manifests_per_hour: 500
+  validation_sample_percent: 10
+  validation_allow_sample_payload_fetch: false
+  validation_allow_par2_validation: false
+  validation_publish_provider_scope_hash: true
   checksum_validation_enabled: false
+
+  # Runtime-editable manifest/NZB cache policy. When enabled, accepted signed
+  # manifests are verified and materialized immediately, so grabs do not need
+  # the original publisher online. Bounds still apply to the generated cache.
+  manifest_cache_max_bytes: 10737418240 # 10 GiB
+  manifest_cache_ttl_days: 90
+  manifest_cache_serve_to_trusted_pools: true
+
+  # Runtime-editable synchronization. Pull asks peers for their accepted
+  # outbox; push sends locally authored events for lower propagation latency.
   pull_sync_enabled: false
   pull_sync_interval_minutes: 10
   push_sync_enabled: false
@@ -110,6 +169,7 @@ gonzbnet:
   gossip_ttl: 4
   gossip_fanout: 4
   peer_exchange_enabled: false
+
   # Direct recovery evidence is consumed by default, but no peer can serve it
   # until both the local serve switch and pool policy are explicitly enabled.
   binary_evidence_consume_enabled: true
@@ -120,14 +180,33 @@ gonzbnet:
   binary_evidence_segment_limit: 5000
   binary_evidence_max_response_bytes: 10485760
   binary_evidence_circuit_breaker_cooldown_minutes: 5
+
+  # Runtime-editable relay role advertisement/reporting. Pull, push, and gossip
+  # perform delivery; ordinary authenticated outbox convergence does not require
+  # this role. Relayed events retain their author and normal pool authorization.
   relay_enabled: false
+  # Bootstrap-only reserved relay credential. Prefer authenticated pool
+  # transport; never commit a real value.
   relay_api_key: ""
+
+  # Runtime-editable protocol bounds. Coordinate increases with pool peers;
+  # mismatched smaller limits can reject otherwise valid exchanges.
   max_event_bytes: 262144
   max_manifest_bytes: 10485760
+  manifest_fetch_timeout_seconds: 20
   max_batch_events: 100
   rate_limit_events_per_minute: 120
   time_tolerance_seconds: 120
+  max_event_age_hours: 720
   nonce_ttl_seconds: 600
+
+  # Runtime-editable optional privacy disclosures. These publish scoped hashes,
+  # never provider credentials or plain provider/indexer names.
+  share_provider_backbone_hash: false
+  share_source_indexer_hash: false
+
+  # Bootstrap-only reserved privacy controls. Live remote search and forwarding
+  # local user/API context are intentionally unsupported and must remain off.
   live_query_enabled: false
   send_user_context: false
 

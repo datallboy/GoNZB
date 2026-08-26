@@ -83,6 +83,10 @@ type transactionalProjectionStore interface {
 	AppendVerifiedFederationEventWithProjection(context.Context, *events.SignedEvent, *events.ValidationResult, func(context.Context) error) error
 }
 
+type acceptedResolutionManifestCacher interface {
+	MaterializeAcceptedResolutionManifest(context.Context, *events.SignedEvent, string, time.Duration) error
+}
+
 type Logger interface {
 	Info(format string, args ...any)
 	Warn(format string, args ...any)
@@ -98,6 +102,7 @@ type Service struct {
 	traversalEnabled      bool
 	eventTimeTolerance    time.Duration
 	maxEventAge           time.Duration
+	manifestCacheEnabled  bool
 }
 
 func (s *Service) recordProjectionFailure(ctx context.Context, event *events.SignedEvent, kind string, err error) {
@@ -168,6 +173,8 @@ func (s *Service) replayProjection(ctx context.Context, event *events.SignedEven
 		return s.store.ProjectReleasePublicationState(ctx, publicationstate.Projection{
 			Publication: state, EventID: event.EventID, AuthorNodeID: event.AuthorNodeID, Sequence: event.Sequence,
 		})
+	case pools.EventTypeResolutionManifest:
+		return s.cacheAcceptedResolutionManifest(ctx, event, "")
 	case pools.EventTypeCoveragePlan, pools.EventTypeCoverageAssignment, pools.EventTypeRangeClaim, pools.EventTypeTimeWindowClaim, pools.EventTypeCoverageCheckpoint, pools.EventTypeRangeComplete, pools.EventTypeRangeFailed:
 		return s.store.ProjectCoverageEvent(ctx, event)
 	default:
@@ -175,7 +182,15 @@ func (s *Service) replayProjection(ctx context.Context, event *events.SignedEven
 	}
 }
 
-func (s *Service) appendAndProject(ctx context.Context, event *events.SignedEvent, validationResult *events.ValidationResult) error {
+func (s *Service) appendAndProject(ctx context.Context, event *events.SignedEvent, validationResult *events.ValidationResult, fetchedFromNodeID string) error {
+	// Manifest caching must run after the accepted event commits because cache
+	// provenance validation reads the durable event back from PostgreSQL.
+	if event != nil && event.EventType == pools.EventTypeResolutionManifest {
+		if err := s.store.AppendVerifiedFederationEvent(ctx, event, validationResult); err != nil {
+			return err
+		}
+		return s.cacheAcceptedResolutionManifest(ctx, event, fetchedFromNodeID)
+	}
 	project := func(projectCtx context.Context) error {
 		return s.replayProjection(projectCtx, event)
 	}
@@ -186,6 +201,17 @@ func (s *Service) appendAndProject(ctx context.Context, event *events.SignedEven
 		return err
 	}
 	return project(ctx)
+}
+
+func (s *Service) cacheAcceptedResolutionManifest(ctx context.Context, event *events.SignedEvent, fetchedFromNodeID string) error {
+	if !s.manifestCacheEnabled {
+		return nil
+	}
+	cacher, ok := s.store.(acceptedResolutionManifestCacher)
+	if !ok {
+		return fmt.Errorf("sync store does not support accepted manifest caching")
+	}
+	return cacher.MaterializeAcceptedResolutionManifest(ctx, event, strings.TrimSpace(fetchedFromNodeID), s.eventTimeTolerance)
 }
 
 func receivedEventHasProjection(eventType string) bool {
@@ -241,6 +267,7 @@ type GossipOptions struct {
 type Options struct {
 	AllowInsecurePeerHTTP bool
 	TraversalEnabled      bool
+	ManifestCacheEnabled  bool
 	HTTPClient            *http.Client
 	EventTimeTolerance    time.Duration
 	MaxEventAge           time.Duration
@@ -265,6 +292,7 @@ func NewWithOptions(identity Identity, store Store, logger Logger, opts Options)
 		logger:                logger,
 		allowInsecurePeerHTTP: opts.AllowInsecurePeerHTTP,
 		traversalEnabled:      opts.TraversalEnabled,
+		manifestCacheEnabled:  opts.ManifestCacheEnabled,
 		eventTimeTolerance:    eventTimeTolerance,
 		maxEventAge:           opts.MaxEventAge,
 		client:                client,
@@ -579,7 +607,7 @@ func (s *Service) syncPeer(ctx context.Context, peer pgindex.FederationPeerRecor
 					continue
 				}
 			}
-			if err := s.appendAndProject(ctx, &event, validation); err != nil {
+			if err := s.appendAndProject(ctx, &event, validation, nodeProfile.NodeID); err != nil {
 				if errors.Is(err, pgindex.ErrFederationSequenceConflict) || errors.Is(err, pgindex.ErrFederationForkDetected) {
 					reason := "fork_detected"
 					if errors.Is(err, pgindex.ErrFederationSequenceConflict) {
