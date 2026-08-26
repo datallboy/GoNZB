@@ -6,6 +6,13 @@ conservative: a new node can consume and cache authorized data, but it does not
 scan NNTP, publish local releases, validate payloads, contact peers, or relay
 events until the operator opts in.
 
+The matching keys in `config.yaml` are initial defaults, not a second live
+configuration source. Once a GoNZBNet runtime-settings snapshot has been saved,
+that snapshot overrides every runtime-editable YAML key. Continue changing
+those values in the WebUI/API; editing a shadowed YAML value will not change the
+effective runtime. Identity, listener, protocol-network, and traversal-secret
+fields remain bootstrap-only and are called out in `config.yaml.example`.
+
 Bootstrap identity and listener settings remain in `config.yaml`; see
 [Configuration And Deployment](./configuration-and-deployment.md).
 
@@ -45,12 +52,12 @@ corresponding capability.
 | `scanner_enabled` | off | Connects indexer scraping to eligible coverage work and permits scanner evidence/publication paths. Requires indexer and NNTP configuration. |
 | `index_projection_enabled` | on | Projects accepted release cards into the local federated catalog. Enable this on nodes that search, report, or retain the catalog. |
 | `manifest_builder_enabled` | off | Builds signed resolution manifests from eligible releases in the local indexer. It has nothing to build on a consumer-only node. |
-| `manifest_cache_enabled` | on | Stores verified manifests for repeat resolution and, when allowed, serves them to trusted pool members. |
+| `manifest_cache_enabled` | on | Verifies accepted signed manifests, materializes their deterministic NZBs during federation intake, and stores them for offline/repeat resolution. Older accepted events are materialized on first grab. When allowed, the node can serve cached manifests to trusted pool members. |
 | `validator_enabled` | off | Runs configured validation tiers against manifests and article samples. Requires NNTP access for article-level work. |
 | `health_checker_enabled` | off | Produces local release/manifest health observations. Enable health publication separately to share them. |
 | `coverage_enabled` | off | Reads and publishes coverage plans, assignments, claims, checkpoints, and outcomes. It does not perform the NNTP scan itself. |
 | `scheduler_enabled` | off | Permits coordination work. In automatic mode the current runtime reassigns stale claims; initial plans/assignments are still created administratively. |
-| `relay_enabled` | off | Forwards eligible signed pool events. It does not bypass event authorization or turn the process into a separate relay service. |
+| `relay_enabled` | off | Advertises the intentional relay role and records relay activity. Pull, push, and gossip settings control delivery; ordinary authenticated outbox convergence does not require this flag. Relaying never changes authorship or bypasses event authorization. |
 
 It is valid to enable every role on one node. Splitting roles is an operational
 choice for independent evidence, availability, security boundaries, and

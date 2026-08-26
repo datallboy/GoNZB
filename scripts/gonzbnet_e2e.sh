@@ -82,14 +82,32 @@ start_node() {
   echo "$!" >"$dir/pid"
 }
 
+stop_node() {
+  name="$1"
+  pidfile="$STATE/$name/pid"
+  if [ -f "$pidfile" ]; then
+    pid=$(cat "$pidfile")
+    kill "$pid" 2>/dev/null || true
+    rm -f "$pidfile"
+  fi
+}
+
+wait_node_stopped() {
+  port="$1"
+  attempts=0
+  while [ "$attempts" -lt 30 ] && curl -fsS "http://127.0.0.1:$port/healthz" >/dev/null 2>&1; do
+    attempts=$((attempts + 1))
+    sleep 1
+  done
+  if curl -fsS "http://127.0.0.1:$port/healthz" >/dev/null 2>&1; then
+    echo "node on port $port did not stop" >&2
+    return 1
+  fi
+}
+
 stop_nodes() {
   for name in node-a node-b node-c node-d; do
-    pidfile="$STATE/$name/pid"
-    if [ -f "$pidfile" ]; then
-      pid=$(cat "$pidfile")
-      kill "$pid" 2>/dev/null || true
-      rm -f "$pidfile"
-    fi
+    stop_node "$name"
   done
 }
 
@@ -586,6 +604,10 @@ release_smoke() {
       return 1
     }
   done
+  # Keep the eventual consumer offline during publication. It must catch up
+  # from another pool member after the original publisher is unavailable.
+  stop_node node-d
+  wait_node_stopped 18084
 
   scan_id="e2e-release-$(date +%s)"
   release_canary=${GONZBNET_E2E_RELEASE_CANARY:-}
@@ -674,6 +696,39 @@ release_smoke() {
   manifest_id=$(printf '%s' "$publication" | cut -d'|' -f2)
 
   admin_post node-a 18081 /api/v1/admin/gonzbnet/sync/push '{}'
+  attempts=0
+  seeded=0
+  while [ "$attempts" -lt 30 ]; do
+    seeded=$(db_scalar gonzbnet_b "
+      SELECT count(*)
+      FROM resolution_manifests cached
+      JOIN federation_events source ON source.event_id = cached.source_event_id
+      WHERE cached.manifest_id = '$manifest_id'
+        AND cached.validation_status = 'accepted'
+        AND cached.generated_nzb IS NOT NULL
+        AND cached.nzb_sha256 IS NOT NULL
+        AND source.event_type = 'ResolutionManifest'
+        AND source.validation_status = 'accepted'")
+    [ "$seeded" = "1" ] && break
+    attempts=$((attempts + 1))
+    sleep 1
+  done
+  [ "$seeded" = "1" ] || {
+    echo "Node B did not seed the accepted signed manifest from Node A" >&2
+    return 1
+  }
+  export_manifest_nzb gonzbnet_a "$manifest_id" "$STATE/source-manifest.nzb" || {
+    echo "Node A did not retain the signed manifest-generated NZB" >&2
+    return 1
+  }
+  request_path="/manifests/$manifest_id/request"
+  source_requests_before=$(grep -F -c "$request_path" "$STATE/node-a/gonzb.log" || true)
+  stop_node node-a
+  wait_node_stopped 18081
+
+  start_node node-d "$NODE_D_CONFIG"
+  wait_http 18084
+  wait_https 18484
   admin_post node-d 18084 /api/v1/admin/gonzbnet/sync/pull '{}'
   attempts=0
   projected=0
@@ -693,6 +748,20 @@ release_smoke() {
     return 1
   }
 
+  cached=$(db_scalar gonzbnet_d "
+    SELECT count(*)
+    FROM resolution_manifests cached
+    JOIN federation_events source ON source.event_id = cached.source_event_id
+    WHERE cached.manifest_id = '$manifest_id'
+      AND cached.validation_status = 'accepted'
+      AND cached.generated_nzb IS NOT NULL
+      AND cached.nzb_sha256 IS NOT NULL
+      AND source.event_type = 'ResolutionManifest'
+      AND source.validation_status = 'accepted'")
+  [ "$cached" = "1" ] || {
+    echo "Node D did not materialize the accepted signed manifest before a Newznab request" >&2
+    return 1
+  }
   token=$(admin_request node-d 18084 /api/v1/auth/tokens \
     "$(jq -cn --arg name "gonzbnet-e2e-$scan_id" '{name:$name}')" | jq -r '.secret')
   test -n "$token" && test "$token" != "null"
@@ -717,36 +786,18 @@ release_smoke() {
     return 1
   }
 
-  request_path="/manifests/$manifest_id/request"
-  source_requests_before=$(grep -F -c "$request_path" "$STATE/node-a/gonzb.log" || true)
   curl -fsS --get \
     --data-urlencode 't=get' \
     --data-urlencode "id=$composite_id" \
     --data-urlencode "apikey=$token" \
     http://127.0.0.1:18084/api >"$STATE/first-grab.nzb"
-  export_manifest_nzb gonzbnet_a "$manifest_id" "$STATE/source-manifest.nzb" || {
-    echo "Node A did not retain the signed manifest-generated NZB" >&2
-    return 1
-  }
   cmp "$STATE/source-manifest.nzb" "$STATE/first-grab.nzb" || {
     echo "first Node D grab was not byte-identical to Node A's signed manifest NZB" >&2
     return 1
   }
   source_requests_after_first=$(grep -F -c "$request_path" "$STATE/node-a/gonzb.log" || true)
-  [ "$source_requests_after_first" -gt "$source_requests_before" ] || {
-    echo "first Node D grab did not request the manifest from Node A" >&2
-    return 1
-  }
-
-  cached=$(db_scalar gonzbnet_d "
-    SELECT count(*)
-    FROM resolution_manifests cached
-    JOIN federation_events source ON source.event_id = cached.source_event_id
-    WHERE cached.manifest_id = '$manifest_id'
-      AND cached.validation_status = 'accepted'
-      AND source.event_type = 'ResolutionManifest'")
-  [ "$cached" = "1" ] || {
-    echo "Node D did not cache the verified signed manifest" >&2
+  [ "$source_requests_after_first" = "$source_requests_before" ] || {
+    echo "first Node D grab contacted Node A despite the eager local cache" >&2
     return 1
   }
 
@@ -762,6 +813,10 @@ release_smoke() {
     return 1
   }
 
+  start_node node-a "$NODE_A_CONFIG"
+  wait_http 18081
+  wait_https 18481
+
   for database in gonzbnet_a gonzbnet_b gonzbnet_c gonzbnet_d; do
     leaked=$(db_scalar "$database" "SELECT count(*) FROM federation_events WHERE body_json::text LIKE '%$token%'")
     [ "$leaked" = "0" ] || {
@@ -776,8 +831,9 @@ release_smoke() {
     fi
   done
 
-  echo "Node D searched, resolved, verified, and cached release $release_id"
-  echo "repeat Newznab grab reused the local manifest/NZB cache"
+  echo "Node D caught up from seeding peer Node B after publisher Node A went offline"
+  echo "Node D verified and materialized release $release_id before Newznab access"
+  echo "first and repeat Newznab grabs succeeded from the local cache while Node A remained offline"
 }
 
 indexer_federation_smoke() {

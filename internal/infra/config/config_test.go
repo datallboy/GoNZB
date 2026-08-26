@@ -7,6 +7,16 @@ import (
 	"testing"
 )
 
+func TestExampleConfigLoads(t *testing.T) {
+	cfg, err := Load(filepath.Join("..", "..", "..", "config.yaml.example"))
+	if err != nil {
+		t.Fatalf("load config.yaml.example: %v", err)
+	}
+	if cfg.GoNZBNet.ManifestCacheMaxBytes != 10*1024*1024*1024 || cfg.GoNZBNet.ManifestCacheTTLDays != 90 {
+		t.Fatalf("unexpected example manifest cache policy: bytes=%d ttl_days=%d", cfg.GoNZBNet.ManifestCacheMaxBytes, cfg.GoNZBNet.ManifestCacheTTLDays)
+	}
+}
+
 func TestAggregatorBootstrapDoesNotRequireSource(t *testing.T) {
 	cfg := minimalAggregatorConfig()
 

@@ -135,6 +135,14 @@ type gonzbnetTransactionalProjectionStore interface {
 	AppendVerifiedFederationEventWithProjection(context.Context, *events.SignedEvent, *events.ValidationResult, func(context.Context) error) error
 }
 
+type gonzbnetAcceptedManifestCacher interface {
+	MaterializeAcceptedResolutionManifest(context.Context, *events.SignedEvent, string, time.Duration) error
+}
+
+type gonzbnetProjectionFailureRecorder interface {
+	RecordFederationProjectionFailure(context.Context, string, string, string, error) error
+}
+
 type gonzbnetHandshakeStore interface {
 	RegisterFederationHandshake(context.Context, pgindex.FederationNodeRecord, string, time.Time) (bool, error)
 }
@@ -2115,12 +2123,17 @@ func (ctrl *GoNZBNetController) acceptInboxEvent(ctx context.Context, store gonz
 	if event == nil {
 		return inboxEventResult{Status: "rejected", Code: "invalid_schema", Message: "event is required"}
 	}
+	cfg := ctrl.appCtx.Config.GoNZBNet
 	if exists, err := store.FederationEventExists(ctx, event.EventID); err != nil {
 		return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "internal_error", Message: err.Error()}
 	} else if exists {
+		if storedEvent, readErr := store.GetFederationEvent(ctx, event.EventID); readErr != nil {
+			return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "internal_error", Message: readErr.Error()}
+		} else if cacheErr := ctrl.materializeAcceptedResolutionManifest(ctx, store, storedEvent, transportNodeID); cacheErr != nil {
+			ctrl.recordManifestCacheFailure(ctx, store, storedEvent, cacheErr)
+		}
 		return inboxEventResult{EventID: event.EventID, Status: "duplicate"}
 	}
-	cfg := ctrl.appCtx.Config.GoNZBNet
 	validation, err := events.VerifyWithin(
 		event,
 		time.Now(),
@@ -2401,6 +2414,11 @@ func (ctrl *GoNZBNetController) acceptInboxEvent(ctx context.Context, store gonz
 		}
 		return inboxEventResult{EventID: event.EventID, Status: "rejected", Code: "internal_error", Message: err.Error()}
 	}
+	if cacheErr := ctrl.materializeAcceptedResolutionManifest(ctx, store, event, transportNodeID); cacheErr != nil {
+		// The signed event is already durably accepted. Keep federation delivery
+		// successful and retry only the local cache projection.
+		ctrl.recordManifestCacheFailure(ctx, store, event, cacheErr)
+	}
 	if event.EventType == pools.EventTypeReleaseCard {
 		gonzbnetmetrics.Default.Add(gonzbnetmetrics.ReleaseCardsProjectedTotal, 1)
 	}
@@ -2408,6 +2426,30 @@ func (ctrl *GoNZBNetController) acceptInboxEvent(ctx context.Context, store gonz
 		gonzbnetmetrics.Default.Add(gonzbnetmetrics.HealthAttestationsTotal, 1)
 	}
 	return inboxEventResult{EventID: event.EventID, Status: "accepted"}
+}
+
+func (ctrl *GoNZBNetController) materializeAcceptedResolutionManifest(ctx context.Context, store gonzbnetStore, event *events.SignedEvent, fetchedFromNodeID string) error {
+	if event == nil || event.EventType != pools.EventTypeResolutionManifest || !ctrl.appCtx.Config.GoNZBNet.ManifestCacheEnabled {
+		return nil
+	}
+	cacher, ok := store.(gonzbnetAcceptedManifestCacher)
+	if !ok {
+		return fmt.Errorf("gonzbnet store does not support accepted manifest caching")
+	}
+	tolerance := time.Duration(ctrl.appCtx.Config.GoNZBNet.TimeToleranceSeconds) * time.Second
+	return cacher.MaterializeAcceptedResolutionManifest(ctx, event, strings.TrimSpace(fetchedFromNodeID), tolerance)
+}
+
+func (ctrl *GoNZBNetController) recordManifestCacheFailure(ctx context.Context, store gonzbnetStore, event *events.SignedEvent, cause error) {
+	if event == nil || cause == nil {
+		return
+	}
+	if recorder, ok := store.(gonzbnetProjectionFailureRecorder); ok {
+		_ = recorder.RecordFederationProjectionFailure(ctx, event.EventID, event.EventType, "manifest_cache", cause)
+	}
+	if ctrl.appCtx != nil && ctrl.appCtx.Logger != nil {
+		ctrl.appCtx.Logger.Warn("gonzbnet accepted manifest cache failed event=%s: %v", event.EventID, cause)
+	}
 }
 
 func decodeInboxEvents(body []byte) ([]events.SignedEvent, error) {

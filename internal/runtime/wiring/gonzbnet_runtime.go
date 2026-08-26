@@ -147,6 +147,7 @@ func (m *gonzbnetRuntimeModule) Build(ctx context.Context) error {
 	m.pullSync = gonzbnetsync.NewWithOptions(nodeIdentity, syncStore, m.appCtx.Logger, gonzbnetsync.Options{
 		AllowInsecurePeerHTTP: m.appCtx.Config.GoNZBNet.AllowInsecurePeerHTTP,
 		TraversalEnabled:      m.appCtx.Config.GoNZBNet.Traversal.Enabled,
+		ManifestCacheEnabled:  m.appCtx.Config.GoNZBNet.ManifestCacheEnabled,
 		EventTimeTolerance:    time.Duration(m.appCtx.Config.GoNZBNet.TimeToleranceSeconds) * time.Second,
 		MaxEventAge:           time.Duration(m.appCtx.Config.GoNZBNet.MaxEventAgeHours) * time.Hour,
 		HTTPClient:            peerHTTPClient(m.appCtx, 15*time.Second),

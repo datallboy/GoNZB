@@ -284,6 +284,90 @@ func nzbSHA256(payload []byte) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
+// FindAcceptedResolutionManifestEvent returns the durable signed manifest
+// already accepted for an authorized release source. The resolver re-verifies
+// the envelope and source authorization before materializing an NZB from it.
+func (s *Store) FindAcceptedResolutionManifestEvent(ctx context.Context, source FederatedManifestSource) (*events.SignedEvent, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("pgindex store is not initialized")
+	}
+	manifestID := strings.TrimSpace(source.ManifestID)
+	releaseID := strings.TrimSpace(source.ReleaseID)
+	poolID := strings.TrimSpace(source.PoolID)
+	if manifestID == "" || releaseID == "" || poolID == "" {
+		return nil, fmt.Errorf("manifest source provenance is incomplete")
+	}
+	event, err := scanFederationEvent(s.federationExecutor(ctx).QueryRowContext(ctx, `
+		SELECT event_id, signature, canonical_event_json
+		FROM federation_events
+		WHERE event_type = 'ResolutionManifest'
+		  AND validation_status = 'accepted'
+		  AND visibility <> 'local'
+		  AND pool_ids = jsonb_build_array($3::text)
+		  AND body_json->>'manifest_id' = $1
+		  AND body_json->>'release_id' = $2
+		ORDER BY created_at DESC, event_id DESC
+		LIMIT 1`, manifestID, releaseID, poolID))
+	if isNoRows(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("find accepted resolution manifest event: %w", err)
+	}
+	return event, nil
+}
+
+// MaterializeAcceptedResolutionManifest verifies an already accepted signed
+// manifest, deterministically generates its NZB, and stores both under the
+// configured bounded cache policy. StoreResolutionManifest rechecks that the
+// event is still accepted and that its persisted provenance matches the body.
+func (s *Store) MaterializeAcceptedResolutionManifest(ctx context.Context, event *events.SignedEvent, fetchedFromNodeID string, futureTolerance time.Duration) error {
+	if event == nil {
+		return fmt.Errorf("resolution manifest event is required")
+	}
+	validation, err := events.VerifyAt(event, time.Now().UTC(), futureTolerance)
+	if err != nil {
+		return err
+	}
+	if validation == nil || !validation.OK {
+		reason := "missing validation result"
+		if validation != nil && strings.TrimSpace(validation.Reason) != "" {
+			reason = strings.TrimSpace(validation.Reason)
+		}
+		return fmt.Errorf("resolution manifest event verification failed: %s", reason)
+	}
+	if event.EventType != manifest.Type || event.BodySchema != manifest.BodySchema {
+		return fmt.Errorf("resolution manifest event type or schema mismatch")
+	}
+	if len(event.PoolIDs) != 1 || strings.TrimSpace(event.PoolIDs[0]) == "" {
+		return fmt.Errorf("resolution manifest event requires exactly one pool")
+	}
+	if err := eventbody.Validate(event, time.Now().UTC(), futureTolerance); err != nil {
+		return fmt.Errorf("invalid resolution manifest event body: %w", err)
+	}
+	var body manifest.ResolutionManifest
+	if err := json.Unmarshal(event.Body, &body); err != nil {
+		return fmt.Errorf("decode resolution manifest event: %w", err)
+	}
+	canonicalCore, err := manifest.Validate(body)
+	if err != nil {
+		return err
+	}
+	generatedNZB, err := manifest.GenerateNZB(body)
+	if err != nil {
+		return err
+	}
+	return s.StoreResolutionManifest(ctx, ResolutionManifestRecord{
+		Manifest:              body,
+		SourceNodeID:          event.AuthorNodeID,
+		FetchedFromNodeID:     strings.TrimSpace(fetchedFromNodeID),
+		SourceEventID:         event.EventID,
+		PoolID:                strings.TrimSpace(event.PoolIDs[0]),
+		CanonicalManifestJSON: canonicalCore,
+		GeneratedNZB:          generatedNZB,
+	})
+}
+
 func (s *Store) FindFederatedManifestSource(ctx context.Context, releaseID string) (*FederatedManifestSource, error) {
 	if s == nil || s.db == nil {
 		return nil, fmt.Errorf("pgindex store is not initialized")
