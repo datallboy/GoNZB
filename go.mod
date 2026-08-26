@@ -5,7 +5,7 @@ go 1.25.13
 require (
 	github.com/at-wat/ebml-go v0.18.0
 	github.com/cyberphone/json-canonicalization v0.0.0-20241213102144-19d51d7fe467
-	github.com/datallboy/gonzb-connect v0.1.0
+	github.com/datallboy/gonzb-connect v0.1.1
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/jackc/pgx/v5 v5.10.0
