@@ -2349,6 +2349,7 @@ func (ctrl *GoNZBNetAdminController) syncService() (*gonzbnetsync.Service, error
 	return gonzbnetsync.NewWithOptions(nodeIdentity, syncStore, ctrl.appCtx.Logger, gonzbnetsync.Options{
 		AllowInsecurePeerHTTP: ctrl.appCtx.Config.GoNZBNet.AllowInsecurePeerHTTP,
 		TraversalEnabled:      ctrl.appCtx.Config.GoNZBNet.Traversal.Enabled,
+		ManifestCacheEnabled:  ctrl.appCtx.Config.GoNZBNet.ManifestCacheEnabled,
 		EventTimeTolerance:    time.Duration(ctrl.appCtx.Config.GoNZBNet.TimeToleranceSeconds) * time.Second,
 		MaxEventAge:           time.Duration(ctrl.appCtx.Config.GoNZBNet.MaxEventAgeHours) * time.Hour,
 		HTTPClient:            gonzbnetPeerHTTPClient(ctrl.appCtx, 15*time.Second),

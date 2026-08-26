@@ -15,6 +15,7 @@ import (
 	"github.com/datallboy/gonzb/internal/gonzbnet/events"
 	"github.com/datallboy/gonzb/internal/gonzbnet/health"
 	"github.com/datallboy/gonzb/internal/gonzbnet/identity"
+	"github.com/datallboy/gonzb/internal/gonzbnet/manifest"
 	"github.com/datallboy/gonzb/internal/gonzbnet/profile"
 	"github.com/datallboy/gonzb/internal/gonzbnet/publicationstate"
 	"github.com/datallboy/gonzb/internal/gonzbnet/releasecard"
@@ -49,6 +50,33 @@ func TestSyncOnceAcceptsAndProjectsRemoteReleaseCard(t *testing.T) {
 	}
 	if store.successCursor == "" {
 		t.Fatalf("expected cursor to be stored")
+	}
+}
+
+func TestAppendAndProjectCachesAcceptedResolutionManifest(t *testing.T) {
+	ctx := context.Background()
+	localIdentity, err := identity.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("local identity: %v", err)
+	}
+	_, event := testRemoteResolutionManifestEvent(t)
+	validation, err := events.Verify(event)
+	if err != nil || validation == nil || !validation.OK {
+		t.Fatalf("verify manifest event: validation=%+v err=%v", validation, err)
+	}
+	store := &fakeSyncStore{}
+	service := NewWithOptions(localIdentity, store, nil, Options{ManifestCacheEnabled: true})
+	if err := service.appendAndProject(ctx, event, validation, "node_transport"); err != nil {
+		t.Fatalf("append and cache manifest: %v", err)
+	}
+	if len(store.events) != 1 || store.events[0].EventID != event.EventID {
+		t.Fatalf("expected accepted manifest append, got %+v", store.events)
+	}
+	if len(store.cachedManifests) != 1 || store.cachedManifests[0].EventID != event.EventID {
+		t.Fatalf("expected accepted manifest cache, got %+v", store.cachedManifests)
+	}
+	if store.cachedFromNodeID != "node_transport" {
+		t.Fatalf("expected transport provenance, got %q", store.cachedFromNodeID)
 	}
 }
 
@@ -574,6 +602,51 @@ func testRemoteReleaseCardEventAt(t *testing.T, createdAt time.Time, expiresAt *
 	return nodeIdentity, event
 }
 
+func testRemoteResolutionManifestEvent(t *testing.T) (*identity.Identity, *events.SignedEvent) {
+	t.Helper()
+	node, err := identity.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("remote identity: %v", err)
+	}
+	core := manifest.ManifestCore{
+		Groups:   []string{"alt.binaries.example"},
+		Poster:   "poster@example.invalid",
+		PostedAt: "2026-07-07T12:00:00Z",
+		Files: []manifest.ManifestFile{{
+			Name:      "example.rar",
+			Subject:   "Example example.rar yEnc",
+			Date:      "2026-07-07T12:00:00Z",
+			SizeBytes: 1000,
+			Segments:  []manifest.ManifestSegment{{Number: 1, Bytes: 1000, MessageID: "<seg1@example.invalid>"}},
+		}},
+		NZB: manifest.NZBInfo{Generator: "GoNZBNet", XMLCharset: "utf-8"},
+	}
+	manifestID, _, err := manifest.ComputeID(core)
+	if err != nil {
+		t.Fatalf("compute manifest id: %v", err)
+	}
+	body := manifest.ResolutionManifest{
+		SchemaVersion: "1.0",
+		Type:          manifest.Type,
+		ManifestID:    manifestID,
+		ReleaseID:     "rel_manifest",
+		ManifestCore:  core,
+	}
+	event, validation, err := events.Create(context.Background(), node, events.CreateOptions{
+		EventType:  manifest.Type,
+		Sequence:   1,
+		CreatedAt:  time.Now().UTC(),
+		PoolIDs:    []string{"pool.local"},
+		Visibility: "pool",
+		BodySchema: manifest.BodySchema,
+		Body:       body,
+	})
+	if err != nil || validation == nil || !validation.OK {
+		t.Fatalf("create manifest event: validation=%+v err=%v", validation, err)
+	}
+	return node, event
+}
+
 func testRemoteUnsupportedEvent(t *testing.T) (*identity.Identity, *events.SignedEvent) {
 	t.Helper()
 	nodeIdentity, err := identity.LoadOrCreate(t.TempDir())
@@ -643,6 +716,8 @@ type fakeSyncStore struct {
 	authorization         *pgindex.PoolAuthorizationResult
 	appendErr             error
 	lastUndeliveredNodeID string
+	cachedManifests       []*events.SignedEvent
+	cachedFromNodeID      string
 }
 
 func (s *fakeSyncStore) UpsertFederationPeerURL(context.Context, string) (int64, error) {
@@ -663,6 +738,12 @@ func (s *fakeSyncStore) AppendVerifiedFederationEvent(_ context.Context, event *
 		return s.appendErr
 	}
 	s.events = append(s.events, event)
+	return nil
+}
+
+func (s *fakeSyncStore) MaterializeAcceptedResolutionManifest(_ context.Context, event *events.SignedEvent, fetchedFromNodeID string, _ time.Duration) error {
+	s.cachedManifests = append(s.cachedManifests, event)
+	s.cachedFromNodeID = fetchedFromNodeID
 	return nil
 }
 

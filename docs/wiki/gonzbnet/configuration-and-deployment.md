@@ -225,7 +225,9 @@ Capability flags are independent so deployments remain modular:
 - `health_checker_enabled` produces health evidence.
 - `coverage_enabled` participates in coordination.
 - `scheduler_enabled` creates or maintains coordinated coverage work.
-- `relay_enabled` forwards eligible signed events in-process.
+- `relay_enabled` advertises an intentional relay role and enables relay activity
+  reporting. The pull, push, and gossip settings select the delivery workers;
+  normal authenticated outbox convergence does not require the relay role.
 - `pull_sync_enabled`, `push_sync_enabled`, and
   `websocket_gossip_enabled` select transport workers.
 

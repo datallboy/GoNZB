@@ -501,23 +501,39 @@ aggregator_stage() {
     echo "Node D aggregator did not return the worker release" >&2
     exit 1
   }
-  newznab_get 18084 "$remote_token" "$remote_guid" "$STATE/node-d-first-grab.nzb"
-  cmp "$(cat "$STATE/nzb-path")" "$STATE/node-d-first-grab.nzb"
-  newznab_get 18084 "$remote_token" "$remote_guid" "$STATE/node-d-second-grab.nzb"
-  cmp "$STATE/node-d-first-grab.nzb" "$STATE/node-d-second-grab.nzb"
 
+  # Federation intake must materialize the signed manifest before any user GET.
+  # This is the durability guarantee that lets a consumer keep serving the NZB
+  # after the original publisher disconnects.
   cached=$(db_scalar gonzbnet_d "
     SELECT count(*)
     FROM resolution_manifests cached
     JOIN federation_events source ON source.event_id = cached.source_event_id
     WHERE cached.manifest_id = '$manifest_id'
       AND cached.validation_status = 'accepted'
+      AND cached.generated_nzb IS NOT NULL
+      AND cached.nzb_sha256 IS NOT NULL
       AND source.event_type = 'ResolutionManifest'
       AND source.pool_ids @> '[\"pool.e2e\"]'::jsonb")
   [ "$cached" = "1" ] || {
-    echo "Node D did not cache the signed worker manifest" >&2
+    echo "Node D did not eagerly cache the signed worker manifest before grab" >&2
     exit 1
   }
+
+  if [ -s "$GONZBNET_STATE/node-a/pid" ]; then
+    source_pid=$(cat "$GONZBNET_STATE/node-a/pid")
+    kill "$source_pid" 2>/dev/null || true
+    attempts=0
+    while kill -0 "$source_pid" 2>/dev/null && [ "$attempts" -lt 50 ]; do
+      attempts=$((attempts + 1))
+      sleep 0.1
+    done
+    rm -f "$GONZBNET_STATE/node-a/pid"
+  fi
+  newznab_get 18084 "$remote_token" "$remote_guid" "$STATE/node-d-first-grab.nzb"
+  cmp "$(cat "$STATE/nzb-path")" "$STATE/node-d-first-grab.nzb"
+  newznab_get 18084 "$remote_token" "$remote_guid" "$STATE/node-d-second-grab.nzb"
+  cmp "$STATE/node-d-first-grab.nzb" "$STATE/node-d-second-grab.nzb"
   projected=$(db_scalar gonzbnet_d "
     SELECT count(*) FROM federated_release_sources
     WHERE release_id = '$release_id' AND pool_id = 'pool.e2e' AND resolvable")
@@ -525,7 +541,7 @@ aggregator_stage() {
     echo "Node D aggregator result is not backed by the expected federated projection" >&2
     exit 1
   }
-  echo "Remote aggregator passed: Node D search/grab/cache resolved Node A worker release"
+  echo "Remote aggregator passed: Node D eagerly cached and served the NZB with Node A offline"
 }
 
 reset_stage() {
