@@ -33,6 +33,7 @@ type AggregatorDownloadResult struct {
 
 type AggregatorModule interface {
 	Search(ctx context.Context, req SearchRequest) ([]*domain.Release, error)
+	Lookup(ctx context.Context, id string) (*domain.Release, error)
 	PrepareDownload(ctx context.Context, id string) (*AggregatorDownloadResult, error)
 }
 

@@ -8,11 +8,11 @@ export function listPublicReleases(params: Record<string, string | number>) {
       query.set(key, String(value))
     }
   })
-  return apiRequest<PublicReleaseListResponse>(`/api/v1/indexer/releases?${query.toString()}`)
+  return apiRequest<PublicReleaseListResponse>(`/api/v1/catalog/releases?${query.toString()}`)
 }
 
 export function getPublicRelease(id: string) {
-  return apiRequest<PublicReleaseDetail>(`/api/v1/indexer/releases/${id}`)
+	return apiRequest<PublicReleaseDetail>(`/api/v1/catalog/releases/${id}`)
 }
 
 export function sendReleaseToDownloadClient(releaseID: string) {

@@ -126,6 +126,7 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		v1AdminAuth.POST("/users", authCtrl.UpsertUser, authMiddleware(authSvc, false, auth.PermissionAuthUsersWrite))
 		v1AdminAuth.DELETE("/users/:id", authCtrl.DeleteUser, authMiddleware(authSvc, false, auth.PermissionAuthUsersWrite))
 		v1AdminAuth.GET("/roles", authCtrl.ListRoles, authMiddleware(authSvc, false, auth.PermissionAuthRolesRead))
+		v1AdminAuth.GET("/permissions", authCtrl.ListPermissions, authMiddleware(authSvc, false, auth.PermissionAuthRolesRead))
 		v1AdminAuth.POST("/roles", authCtrl.UpsertRole, authMiddleware(authSvc, false, auth.PermissionAuthRolesWrite))
 		v1AdminAuth.DELETE("/roles/:id", authCtrl.DeleteRole, authMiddleware(authSvc, false, auth.PermissionAuthRolesWrite))
 		v1AdminAuth.GET("/tokens", authCtrl.ListTokens, authMiddleware(authSvc, false, auth.PermissionAuthTokensRead))
@@ -340,6 +341,10 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		v1Agg := e.Group("/api/v1", bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit), apiTokenMiddleware(authSvc, auth.PermissionAggregatorReleasesRead))
 		v1Agg.GET("/releases/search", aggCtrl.SearchReleases)
 
+		v1Catalog := e.Group("/api/v1/catalog", bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit), authMiddleware(authSvc, false, auth.PermissionAggregatorReleasesRead))
+		v1Catalog.GET("/releases", aggCtrl.ListCatalogReleases)
+		v1Catalog.GET("/releases/:id", aggCtrl.GetCatalogRelease)
+
 		// Keep direct NZB download endpoint under aggregator ownership.
 		e.GET("/nzb/:id", nzbCtrl.HandleDownload, apiTokenMiddleware(authSvc, auth.PermissionAggregatorReleasesRead))
 	}
@@ -363,6 +368,12 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		)
 		v1Indexer.GET("/binaries/:id", indexerCtrl.GetBinary)
 		v1Indexer.GET("/files/:id", indexerCtrl.GetFile)
+
+		if !modules.Aggregator.Enabled {
+			v1Catalog := e.Group("/api/v1/catalog", bodyLimitMiddleware(defaultJSONBodyLimit, defaultMultipartBodyLimit), authMiddleware(authSvc, false, auth.PermissionIndexerReleasesRead))
+			v1Catalog.GET("/releases", indexerCtrl.ListReleases)
+			v1Catalog.GET("/releases/:id", indexerCtrl.GetRelease)
+		}
 
 		v1AdminIndexer := e.Group("/api/v1/admin/indexer", bodyLimitMiddleware(adminJSONBodyLimit, defaultMultipartBodyLimit))
 		v1AdminIndexer.Use(authMiddleware(authSvc, false, auth.PermissionIndexerRuntimeRead))

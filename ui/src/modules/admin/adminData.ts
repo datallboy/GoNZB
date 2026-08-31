@@ -36,37 +36,3 @@ export const runTriggerOptions = [
   { value: 'scheduled', label: 'Scheduled' },
   { value: 'manual', label: 'Manual' },
 ] as const
-
-export const permissionGroups = [
-  {
-    label: 'Catalog access',
-    permissions: [
-      'indexer.releases.read',
-      'aggregator.releases.read',
-      'indexer.releases.override',
-      'indexer.releases.hide',
-      'indexer.releases.purge',
-    ],
-  },
-  {
-    label: 'Indexer runtime',
-    permissions: [
-      'indexer.runtime.read',
-      'indexer.runtime.run',
-      'indexer.runtime.pause',
-      'indexer.runtime.configure',
-    ],
-  },
-  {
-    label: 'Auth users',
-    permissions: ['auth.users.read', 'auth.users.write'],
-  },
-  {
-    label: 'Auth roles',
-    permissions: ['auth.roles.read', 'auth.roles.write'],
-  },
-  {
-    label: 'Auth tokens',
-    permissions: ['auth.tokens.read', 'auth.tokens.write'],
-  },
-] as const

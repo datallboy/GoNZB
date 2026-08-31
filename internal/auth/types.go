@@ -98,6 +98,17 @@ func DefaultRoles() []Role {
 			Permissions: []string{
 				PermissionIndexerReleasesRead,
 				PermissionAggregatorReleasesRead,
+				PermissionGoNZBNetSearch,
+				PermissionGoNZBNetGet,
+				PermissionGoNZBNetResolveManifest,
+			},
+		},
+		{
+			ID:      "uploader",
+			Name:    "Uploader",
+			Builtin: true,
+			Permissions: []string{
+				PermissionUploaderSubmissionsCreate,
 			},
 		},
 		{
@@ -112,6 +123,9 @@ func DefaultRoles() []Role {
 				PermissionAdminSettingsRead,
 				PermissionAggregatorReleasesRead,
 				PermissionAggregatorRuntimeRead,
+				PermissionGoNZBNetSearch,
+				PermissionGoNZBNetGet,
+				PermissionGoNZBNetResolveManifest,
 				PermissionDownloadClientsSend,
 				PermissionUploaderSubmissionsRead,
 				PermissionUploaderSubmissionsCreate,

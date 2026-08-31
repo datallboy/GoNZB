@@ -46,6 +46,19 @@ func (m *Module) Search(ctx context.Context, req app.SearchRequest) ([]*domain.R
 	return results, nil
 }
 
+func (m *Module) Lookup(ctx context.Context, id string) (*domain.Release, error) {
+	aggregator := m.provider.Aggregator()
+	if aggregator == nil {
+		return nil, ErrUnavailable
+	}
+
+	release, err := aggregator.GetResultByID(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("lookup release: %w", err)
+	}
+	return release, nil
+}
+
 func (m *Module) PrepareDownload(ctx context.Context, id string) (*app.AggregatorDownloadResult, error) {
 	aggregator := m.provider.Aggregator()
 	if aggregator == nil {

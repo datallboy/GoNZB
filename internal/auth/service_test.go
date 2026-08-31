@@ -76,6 +76,31 @@ func TestSetupInitialUserOnlyAllowedOnce(t *testing.T) {
 	}
 }
 
+func TestCustomRoleValidationAndBuiltInProtection(t *testing.T) {
+	ctx := context.Background()
+	store := newTestAuthStore(t)
+	svc := auth.NewService(store)
+	if err := svc.Bootstrap(ctx); err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	if _, err := svc.UpsertRole(ctx, auth.Role{ID: "viewer", Name: "Changed"}); !errors.Is(err, auth.ErrForbidden) {
+		t.Fatalf("expected built-in role modification to be forbidden, got %v", err)
+	}
+	if _, err := svc.UpsertRole(ctx, auth.Role{ID: "custom", Name: "Custom", Permissions: []string{"not.a.permission"}}); err == nil {
+		t.Fatal("expected unknown permission to be rejected")
+	}
+	role, err := svc.UpsertRole(ctx, auth.Role{ID: "custom", Name: "Custom", Permissions: []string{
+		auth.PermissionUploaderSubmissionsCreate,
+		auth.PermissionUploaderSubmissionsCreate,
+	}})
+	if err != nil {
+		t.Fatalf("upsert custom role: %v", err)
+	}
+	if len(role.Permissions) != 1 || role.Permissions[0] != auth.PermissionUploaderSubmissionsCreate {
+		t.Fatalf("unexpected normalized permissions: %+v", role.Permissions)
+	}
+}
+
 func newTestAuthStore(t *testing.T) *settingsstore.Store {
 	t.Helper()
 	dir := t.TempDir()

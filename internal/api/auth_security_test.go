@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -10,11 +11,26 @@ import (
 
 	"github.com/datallboy/gonzb/internal/app"
 	"github.com/datallboy/gonzb/internal/auth"
+	"github.com/datallboy/gonzb/internal/domain"
 	"github.com/datallboy/gonzb/internal/infra/config"
 	"github.com/datallboy/gonzb/internal/infra/logger"
 	settingsstore "github.com/datallboy/gonzb/internal/store/settings"
 	"github.com/labstack/echo/v5"
 )
+
+type catalogAuthTestModule struct{}
+
+func (catalogAuthTestModule) Search(context.Context, app.SearchRequest) ([]*domain.Release, error) {
+	return []*domain.Release{}, nil
+}
+
+func (catalogAuthTestModule) Lookup(context.Context, string) (*domain.Release, error) {
+	return nil, nil
+}
+
+func (catalogAuthTestModule) PrepareDownload(context.Context, string) (*app.AggregatorDownloadResult, error) {
+	return nil, nil
+}
 
 func TestAuthSetupAndRBACFlow(t *testing.T) {
 	e := echo.New()
@@ -79,6 +95,18 @@ func TestAuthSetupAndRBACFlow(t *testing.T) {
 	usersResp := performJSONRequest(t, e, http.MethodGet, "/api/v1/admin/auth/users", nil, []*http.Cookie{sessionCookie}, "")
 	if usersResp.Code != http.StatusOK {
 		t.Fatalf("expected 200 for admin users list, got %d body=%s", usersResp.Code, usersResp.Body.String())
+	}
+	permissionsResp := performJSONRequest(t, e, http.MethodGet, "/api/v1/admin/auth/permissions", nil, []*http.Cookie{sessionCookie}, "")
+	if permissionsResp.Code != http.StatusOK {
+		t.Fatalf("expected 200 for permission catalog, got %d body=%s", permissionsResp.Code, permissionsResp.Body.String())
+	}
+	var permissionsBody struct {
+		Count  int                    `json:"count"`
+		Groups []auth.PermissionGroup `json:"groups"`
+	}
+	mustDecodeJSON(t, permissionsResp, &permissionsBody)
+	if permissionsBody.Count != 40 || len(permissionsBody.Groups) == 0 {
+		t.Fatalf("unexpected permission catalog: %s", permissionsResp.Body.String())
 	}
 
 	createViewerResp := performJSONRequest(t, e, http.MethodPost, "/api/v1/admin/auth/users", map[string]any{
@@ -202,6 +230,30 @@ func TestInitialSetupRequiresConfiguredBootstrapToken(t *testing.T) {
 	}, nil, "")
 	if repeatResp.Code != http.StatusConflict {
 		t.Fatalf("expected completed setup to hide token validation, got %d body=%s", repeatResp.Code, repeatResp.Body.String())
+	}
+}
+
+func TestAggregatorCatalogAcceptsBrowserSession(t *testing.T) {
+	e := echo.New()
+	appCtx := newAuthTestAppContext(t)
+	appCtx.Config.Modules.Aggregator.Enabled = true
+	appCtx.AggregatorModule = catalogAuthTestModule{}
+	RegisterRoutes(e, appCtx)
+
+	unauthorized := performJSONRequest(t, e, http.MethodGet, "/api/v1/catalog/releases", nil, nil, "")
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("expected unauthenticated catalog request to return 401, got %d", unauthorized.Code)
+	}
+	setup := performJSONRequest(t, e, http.MethodPost, "/api/v1/auth/setup", map[string]string{
+		"username": "owner", "password": "very-secure-pass",
+	}, nil, "")
+	if setup.Code != http.StatusCreated {
+		t.Fatalf("expected setup 201, got %d body=%s", setup.Code, setup.Body.String())
+	}
+	session := cookieMap(setup.Result().Cookies())["gonzb_session"]
+	authorized := performJSONRequest(t, e, http.MethodGet, "/api/v1/catalog/releases", nil, []*http.Cookie{session}, "")
+	if authorized.Code != http.StatusOK {
+		t.Fatalf("expected session-authenticated catalog request to return 200, got %d body=%s", authorized.Code, authorized.Body.String())
 	}
 }
 
