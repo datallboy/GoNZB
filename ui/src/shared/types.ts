@@ -1146,6 +1146,8 @@ export type Token = {
 
 export type UserListResponse = { items: User[]; count: number }
 export type RoleListResponse = { items: Role[]; count: number }
+export type PermissionGroup = { label: string; permissions: string[] }
+export type PermissionCatalogResponse = { groups: PermissionGroup[]; count: number }
 export type TokenListResponse = { items: Token[]; count: number }
 export type UserDetailResponse = { user: User; tokens: Token[] }
 

@@ -1,8 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
-import { deleteRole, getRoles, upsertRole } from '../../shared/api/auth'
-import type { Role } from '../../shared/types'
-import { permissionGroups } from './adminData'
+import { deleteRole, getPermissionCatalog, getRoles, upsertRole } from '../../shared/api/auth'
+import type { PermissionGroup, Role } from '../../shared/types'
 
 function togglePermission(current: string[], permission: string) {
   if (current.includes(permission)) {
@@ -13,12 +12,14 @@ function togglePermission(current: string[], permission: string) {
 
 export function AdminRolesPage() {
   const [roles, setRoles] = useState<Role[]>([])
+  const [permissionGroups, setPermissionGroups] = useState<PermissionGroup[]>([])
   const [message, setMessage] = useState<string | null>(null)
   const [form, setForm] = useState({ id: '', name: '', permissions: ['indexer.releases.read'] })
 
   async function refresh() {
-    const response = await getRoles()
-    setRoles(response.items)
+    const [roleResponse, permissionResponse] = await Promise.all([getRoles(), getPermissionCatalog()])
+    setRoles(roleResponse.items)
+    setPermissionGroups(permissionResponse.groups)
   }
 
   useEffect(() => {
@@ -113,12 +114,22 @@ export function AdminRolesPage() {
                 {roles.map((role) => (
                   <tr key={role.id}>
                     <td>{role.name}</td>
-                    <td><code>{role.id}</code></td>
-                    <td>{role.permissions.length}</td>
+                    <td>
+                      <code>{role.id}</code>
+                    </td>
+                    <td>
+                      {role.permissions.length}
+                      <div className="muted-copy">{role.permissions.join(', ')}</div>
+                    </td>
                     <td>{role.builtin ? 'yes' : 'no'}</td>
                     <td>
                       <div className="button-row">
-                        <button className="secondary-button" type="button" onClick={() => editRole(role)}>
+                        <button
+                          className="secondary-button"
+                          type="button"
+                          onClick={() => editRole(role)}
+                          disabled={role.builtin}
+                        >
                           Edit
                         </button>
                         <button

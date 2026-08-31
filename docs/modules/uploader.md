@@ -54,8 +54,8 @@ protect the store volume and its backups.
 
 ## Generic HTTP handoff
 
-Create a dedicated GoNZB user whose role contains only
-`uploader.submissions.create`, then create an API token for it. Install the
+Create a dedicated GoNZB user with the built-in `uploader` role, which contains
+only `uploader.submissions.create`, then create an API token for it. Install the
 repository helper and provide its environment securely:
 
 ```sh

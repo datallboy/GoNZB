@@ -50,7 +50,8 @@ second worker service for the mount.
 - SSH key authentication and either SSHFS/FUSE or rsync;
 - the supported posting engine and its NNTP configuration on the worker VPS;
 - HTTPS access to a GoNZB node with the uploader enabled;
-- a dedicated GoNZB API token with only `uploader.submissions.create`.
+- a dedicated GoNZB API token for a user with the built-in `uploader` role;
+  that role grants only `uploader.submissions.create`.
 
 Release assets currently include a Linux AMD64 worker binary. Other Linux
 architectures can build it from source with `make build-worker`. The SSHFS mode

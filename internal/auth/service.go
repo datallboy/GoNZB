@@ -281,6 +281,30 @@ func (s *Service) ListRoles(ctx context.Context) ([]Role, error) {
 }
 
 func (s *Service) UpsertRole(ctx context.Context, role Role) (*Role, error) {
+	roles, err := s.store.ListAuthRoles(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, existing := range roles {
+		if existing.ID == strings.TrimSpace(role.ID) && existing.Builtin {
+			return nil, ErrForbidden
+		}
+	}
+	known := knownPermissions()
+	seen := make(map[string]struct{}, len(role.Permissions))
+	permissions := make([]string, 0, len(role.Permissions))
+	for _, raw := range role.Permissions {
+		permission := strings.TrimSpace(raw)
+		if _, ok := known[permission]; !ok {
+			return nil, fmt.Errorf("unknown permission %q", permission)
+		}
+		if _, duplicate := seen[permission]; duplicate {
+			continue
+		}
+		seen[permission] = struct{}{}
+		permissions = append(permissions, permission)
+	}
+	role.Permissions = permissions
 	if strings.TrimSpace(role.ID) == "" {
 		role.ID = ksuid.New().String()
 	}
@@ -292,7 +316,7 @@ func (s *Service) UpsertRole(ctx context.Context, role Role) (*Role, error) {
 	if err := s.store.UpsertAuthRole(ctx, role); err != nil {
 		return nil, err
 	}
-	roles, err := s.store.ListAuthRoles(ctx)
+	roles, err = s.store.ListAuthRoles(ctx)
 	if err != nil {
 		return nil, err
 	}

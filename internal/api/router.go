@@ -126,6 +126,7 @@ func RegisterRoutes(e *echo.Echo, appCtx *app.Context) {
 		v1AdminAuth.POST("/users", authCtrl.UpsertUser, authMiddleware(authSvc, false, auth.PermissionAuthUsersWrite))
 		v1AdminAuth.DELETE("/users/:id", authCtrl.DeleteUser, authMiddleware(authSvc, false, auth.PermissionAuthUsersWrite))
 		v1AdminAuth.GET("/roles", authCtrl.ListRoles, authMiddleware(authSvc, false, auth.PermissionAuthRolesRead))
+		v1AdminAuth.GET("/permissions", authCtrl.ListPermissions, authMiddleware(authSvc, false, auth.PermissionAuthRolesRead))
 		v1AdminAuth.POST("/roles", authCtrl.UpsertRole, authMiddleware(authSvc, false, auth.PermissionAuthRolesWrite))
 		v1AdminAuth.DELETE("/roles/:id", authCtrl.DeleteRole, authMiddleware(authSvc, false, auth.PermissionAuthRolesWrite))
 		v1AdminAuth.GET("/tokens", authCtrl.ListTokens, authMiddleware(authSvc, false, auth.PermissionAuthTokensRead))
