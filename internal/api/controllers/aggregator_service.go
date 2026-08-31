@@ -27,6 +27,7 @@ type aggregatorSearchRequest struct {
 
 type aggregatorService interface {
 	Search(ctx context.Context, req aggregatorSearchRequest) ([]*domain.Release, error)
+	Lookup(ctx context.Context, id string) (*domain.Release, error)
 	PrepareDownload(ctx context.Context, id string) (*app.AggregatorDownloadResult, error)
 }
 
@@ -67,6 +68,13 @@ func (s *runtimeAggregatorService) Search(ctx context.Context, req aggregatorSea
 	}
 
 	return results, nil
+}
+
+func (s *runtimeAggregatorService) Lookup(ctx context.Context, id string) (*domain.Release, error) {
+	if s == nil || s.module == nil {
+		return nil, aggregatormodule.ErrUnavailable
+	}
+	return s.module.Lookup(ctx, id)
 }
 
 func (s *runtimeAggregatorService) PrepareDownload(ctx context.Context, id string) (*app.AggregatorDownloadResult, error) {
