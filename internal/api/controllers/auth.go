@@ -274,6 +274,15 @@ func (ctrl *AuthController) ListRoles(c *echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]any{"items": items, "count": len(items)})
 }
 
+func (ctrl *AuthController) ListPermissions(c *echo.Context) error {
+	groups := auth.PermissionGroups()
+	count := 0
+	for _, group := range groups {
+		count += len(group.Permissions)
+	}
+	return c.JSON(http.StatusOK, map[string]any{"groups": groups, "count": count})
+}
+
 func (ctrl *AuthController) UpsertRole(c *echo.Context) error {
 	var req upsertRoleRequest
 	if err := decodeJSONBody(c, &req); err != nil {
@@ -285,6 +294,9 @@ func (ctrl *AuthController) UpsertRole(c *echo.Context) error {
 		Permissions: req.Permissions,
 	})
 	if err != nil {
+		if errors.Is(err, auth.ErrForbidden) {
+			return jsonError(c, http.StatusForbidden, "built-in roles cannot be modified")
+		}
 		return jsonError(c, http.StatusBadRequest, err.Error())
 	}
 	return c.JSON(http.StatusOK, map[string]any{"role": role})

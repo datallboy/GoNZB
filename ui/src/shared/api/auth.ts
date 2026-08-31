@@ -1,5 +1,6 @@
 import { apiRequest } from './http'
 import type {
+  PermissionCatalogResponse,
   RoleListResponse,
   SetupStatusResponse,
   SessionResponse,
@@ -50,6 +51,10 @@ export function getUserDetail(id: string) {
 
 export function getRoles() {
   return apiRequest<RoleListResponse>('/api/v1/admin/auth/roles')
+}
+
+export function getPermissionCatalog() {
+  return apiRequest<PermissionCatalogResponse>('/api/v1/admin/auth/permissions')
 }
 
 export function upsertRole(body: UpsertRoleRequest) {

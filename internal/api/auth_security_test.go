@@ -80,6 +80,18 @@ func TestAuthSetupAndRBACFlow(t *testing.T) {
 	if usersResp.Code != http.StatusOK {
 		t.Fatalf("expected 200 for admin users list, got %d body=%s", usersResp.Code, usersResp.Body.String())
 	}
+	permissionsResp := performJSONRequest(t, e, http.MethodGet, "/api/v1/admin/auth/permissions", nil, []*http.Cookie{sessionCookie}, "")
+	if permissionsResp.Code != http.StatusOK {
+		t.Fatalf("expected 200 for permission catalog, got %d body=%s", permissionsResp.Code, permissionsResp.Body.String())
+	}
+	var permissionsBody struct {
+		Count  int                    `json:"count"`
+		Groups []auth.PermissionGroup `json:"groups"`
+	}
+	mustDecodeJSON(t, permissionsResp, &permissionsBody)
+	if permissionsBody.Count != 40 || len(permissionsBody.Groups) == 0 {
+		t.Fatalf("unexpected permission catalog: %s", permissionsResp.Body.String())
+	}
 
 	createViewerResp := performJSONRequest(t, e, http.MethodPost, "/api/v1/admin/auth/users", map[string]any{
 		"username": "viewer1",
