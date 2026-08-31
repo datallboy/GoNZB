@@ -11,11 +11,11 @@ import (
 	"net/textproto"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/datallboy/gonzb/internal/uploader"
+	"github.com/datallboy/gonzb/internal/worker/naming"
 )
 
 type Request struct {
@@ -97,7 +97,7 @@ func (c *Client) Submit(ctx context.Context, input Request) (*Result, error) {
 	writeDone := make(chan error, 1)
 	go func() {
 		defer close(writeDone)
-		if err := writeMultipart(multipartWriter, nzb, filepath.Base(input.NZBPath), metadataBytes, provenanceBytes); err != nil {
+		if err := writeMultipart(multipartWriter, nzb, naming.NZBFilename(input.ReleaseName), metadataBytes, provenanceBytes); err != nil {
 			_ = writer.CloseWithError(err)
 			writeDone <- err
 			return

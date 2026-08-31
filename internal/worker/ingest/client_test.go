@@ -25,6 +25,7 @@ func TestSubmitUsesAuthenticatedIdempotentUploaderContract(t *testing.T) {
 			return
 		}
 		fields := map[string][]byte{}
+		var nzbFilename string
 		for {
 			part, err := reader.NextPart()
 			if err == io.EOF {
@@ -39,6 +40,13 @@ func TestSubmitUsesAuthenticatedIdempotentUploaderContract(t *testing.T) {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
+			if part.FormName() == "nzb" {
+				nzbFilename = part.FileName()
+			}
+		}
+		if nzbFilename != "Release.nzb" {
+			http.Error(w, "unexpected NZB filename: "+nzbFilename, http.StatusBadRequest)
+			return
 		}
 		var metadata uploader.Metadata
 		if err := json.Unmarshal(fields["metadata"], &metadata); err != nil || metadata.Provenance.ExternalID != "torrent-hash" || metadata.Password != "archive-password" {
@@ -56,7 +64,7 @@ func TestSubmitUsesAuthenticatedIdempotentUploaderContract(t *testing.T) {
 	}))
 	defer server.Close()
 
-	nzbPath := filepath.Join(t.TempDir(), "release.nzb")
+	nzbPath := filepath.Join(t.TempDir(), "Release.nzb")
 	if err := os.WriteFile(nzbPath, []byte("<nzb/>"), 0o600); err != nil {
 		t.Fatal(err)
 	}

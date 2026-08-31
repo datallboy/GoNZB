@@ -15,6 +15,7 @@ import (
 	workerconfig "github.com/datallboy/gonzb/internal/worker/config"
 	"github.com/datallboy/gonzb/internal/worker/ingest"
 	"github.com/datallboy/gonzb/internal/worker/jobs"
+	"github.com/datallboy/gonzb/internal/worker/naming"
 	"github.com/datallboy/gonzb/internal/worker/pesto"
 	"github.com/datallboy/gonzb/internal/worker/qbittorrent"
 	"github.com/datallboy/gonzb/internal/worker/transfer"
@@ -187,7 +188,7 @@ func (r *Runner) postJob(ctx context.Context, job *jobs.Job) error {
 		_ = r.store.MarkRetryableFailure(ctx, job.ID, jobs.StateTransferred, err)
 		return fmt.Errorf("job %s source verification before Pesto: %w", job.ID, err)
 	}
-	output := filepath.Join(job.WorkspacePath, "output", "release.nzb")
+	output := filepath.Join(job.WorkspacePath, "output", naming.NZBFilename(job.ReleaseName))
 	result, err := r.pesto.Post(ctx, pesto.PostRequest{
 		InputPath: job.InputPath, OutputNZB: output, Name: job.ReleaseName,
 		OnStarted: func(pid int, started time.Time) error {
