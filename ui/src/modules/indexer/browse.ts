@@ -107,6 +107,19 @@ export function releaseCategoryLabel(release: Pick<PublicReleaseSummary, 'catego
   return 'uncategorized'
 }
 
+export function releaseOriginLabel(sourceKind: string) {
+	switch (sourceKind.trim().toLowerCase()) {
+		case 'uploader':
+			return 'Uploader'
+		case 'gonzbnet':
+			return 'GoNZBNet'
+		case 'usenet_index':
+			return 'Indexer'
+		default:
+			return sourceKind || 'Unknown'
+	}
+}
+
 export function simpleSceneName(title: string) {
   return title
     .trim()

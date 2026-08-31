@@ -29,6 +29,8 @@ func TestRegisterRoutesAggregatorOnly(t *testing.T) {
 	routes := routePaths(e)
 
 	assertRoutePresent(t, routes, "/api/v1/releases/search")
+	assertRoutePresent(t, routes, "/api/v1/catalog/releases")
+	assertRoutePresent(t, routes, "/api/v1/catalog/releases/:id")
 	assertRoutePresent(t, routes, "/nzb/:id")
 	assertRouteMissing(t, routes, "/api/v1/queue")
 	assertRouteMissing(t, routes, "/api/sab")
@@ -60,6 +62,8 @@ func TestRegisterRoutesIndexerOnly(t *testing.T) {
 	assertRoutePresent(t, routes, "/api/v1/indexer/releases")
 	assertRoutePresent(t, routes, "/api/v1/indexer/releases/:id")
 	assertRoutePresent(t, routes, "/api/v1/indexer/releases/:id/actions/send-to-download-client")
+	assertRoutePresent(t, routes, "/api/v1/catalog/releases")
+	assertRoutePresent(t, routes, "/api/v1/catalog/releases/:id")
 	assertRoutePresent(t, routes, "/api/v1/indexer/binaries/:id")
 	assertRoutePresent(t, routes, "/api/v1/indexer/files/:id")
 	assertRoutePresent(t, routes, "/api/v1/admin/indexer/overview")

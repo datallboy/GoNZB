@@ -4,7 +4,7 @@ import { Link, NavLink, useParams, useSearchParams } from 'react-router-dom'
 import { listPublicReleases } from '../../shared/api/indexer'
 import { formatBytes, formatRelativeAge } from '../../shared/lib/format'
 import type { PublicReleaseListResponse } from '../../shared/types'
-import { browseCategories, findBrowseCategory, releaseCategoryLabel } from './browse'
+import { browseCategories, findBrowseCategory, releaseCategoryLabel, releaseOriginLabel } from './browse'
 
 const defaultResponse: PublicReleaseListResponse = {
   items: [],
@@ -168,7 +168,7 @@ export function IndexerReleaseListPage() {
                       {item.title}
                     </Link>
                   </td>
-                  <td>{item.source_kind === 'uploader' ? 'Uploader' : 'Indexer'}</td>
+                  <td>{releaseOriginLabel(item.source_kind)}</td>
                   <td>{formatRelativeAge(item.posted_at)}</td>
                   <td>{releaseCategoryLabel(item)}</td>
                   <td>{item.file_count}</td>

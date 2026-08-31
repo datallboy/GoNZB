@@ -4,7 +4,7 @@ import { getPublicRelease, sendReleaseToDownloadClient } from '../../shared/api/
 import { formatBytes, formatDateTime, formatRuntime } from '../../shared/lib/format'
 import { useAuth } from '../../shared/auth/useAuth'
 import type { PublicReleaseDetail } from '../../shared/types'
-import { releaseCategoryLabel, simpleSceneName } from './browse'
+import { releaseCategoryLabel, releaseOriginLabel, simpleSceneName } from './browse'
 
 function publicFileTypeLabel(fileName: string, isPars: boolean) {
   const name = fileName.toLowerCase()
@@ -111,7 +111,7 @@ export function IndexerReleaseDetailPage() {
             </div>
             <div>
               <dt>Origin</dt>
-              <dd>{release.source_kind === 'uploader' ? 'Approved uploader submission' : 'Usenet indexer'}</dd>
+              <dd>{releaseOriginLabel(release.source_kind)}</dd>
             </div>
             <div>
               <dt>Size</dt>
