@@ -33,7 +33,7 @@ func DefaultRuntimeSettings() *RuntimeSettings {
 			ScrapeDeferred:              defaultScrapeStage(true),
 			PosterMaterialize:           defaultStage(false, 2, 10000, 0),
 			CrosspostPopularityRefresh:  defaultStage(false, 2, 1000, 0),
-			ArticleCohortSchedule:       defaultStage(true, 0.25, 50000, 0),
+			ArticleCohortSchedule:       defaultArticleCohortStage(true),
 			Assemble:                    defaultAssembleStage(false, 2, 5000, 1),
 			RecoverYEnc:                 defaultRecoverYEncStage(false),
 			SourceWindow:                defaultSourceWindowSettings(),
@@ -146,9 +146,17 @@ func defaultReleaseSummaryRefreshStage(enabled bool) IndexingStageRuntimeSetting
 func defaultAssembleStage(enabled bool, interval float64, batch, concurrency int) IndexingStageRuntimeSettings {
 	stage := defaultStage(enabled, interval, batch, concurrency)
 	stage.BinaryUpsertDBChunkSize = 1000
+	stage.BinaryPartUpsertDBChunkSize = 5000
+	stage.BinaryStatsRefreshDBChunkSize = 500
 	stage.LaneATargetPct = 70
 	stage.LaneBMinPct = 30
 	stage.LaneATimeWindowMinutes = 15
+	return stage
+}
+
+func defaultArticleCohortStage(enabled bool) IndexingStageRuntimeSettings {
+	stage := defaultStage(enabled, 0.25, 50000, 0)
+	stage.SubjectQueueBatchSize = 1000
 	return stage
 }
 
@@ -340,7 +348,7 @@ func IndexingRuntimeFromConfig(cfg config.IndexingConfig) IndexingRuntimeSetting
 	out.ScrapeDeferred = defaultScrapeStage(true)
 	out.PosterMaterialize = indexStageRuntimeFromConfig(cfg.PosterMaterialize, true, 2, 10000)
 	out.CrosspostPopularityRefresh = indexStageRuntimeFromConfig(cfg.CrosspostPopularityRefresh, true, 2, 1000)
-	out.ArticleCohortSchedule = defaultStage(true, 0.25, 50000, 0)
+	out.ArticleCohortSchedule = defaultArticleCohortStage(true)
 	out.Assemble = mergeStageRuntimeSettings(
 		defaultAssembleStage(false, 2, 5000, 1),
 		indexStageRuntimeFromConfigWithConcurrency(cfg.Assemble, false, 2, 5000),
@@ -1159,7 +1167,7 @@ func cloneIndexing(in *IndexingRuntimeSettings) *IndexingRuntimeSettings {
 		ScrapeDeferred:              mergeStageRuntimeSettings(defaultScrapeStage(true), in.ScrapeDeferred),
 		PosterMaterialize:           mergeStageRuntimeSettings(defaultStage(false, 2, 10000, 0), in.PosterMaterialize),
 		CrosspostPopularityRefresh:  mergeStageRuntimeSettings(defaultStage(false, 2, 1000, 0), in.CrosspostPopularityRefresh),
-		ArticleCohortSchedule:       mergeStageRuntimeSettings(defaultStage(false, 0.25, 50000, 0), in.ArticleCohortSchedule),
+		ArticleCohortSchedule:       mergeStageRuntimeSettings(defaultArticleCohortStage(false), in.ArticleCohortSchedule),
 		Assemble:                    mergeStageRuntimeSettings(defaultAssembleStage(false, 2, 5000, 1), in.Assemble),
 		RecoverYEnc:                 mergeStageRuntimeSettings(defaultRecoverYEncStage(false), in.RecoverYEnc),
 		SourceWindow:                normalizeSourceWindowRuntimeSettings(in.SourceWindow),
@@ -1648,6 +1656,15 @@ func mergeStageRuntimeSettings(base, override IndexingStageRuntimeSettings) Inde
 	if override.BinaryUpsertDBChunkSize > 0 {
 		base.BinaryUpsertDBChunkSize = override.BinaryUpsertDBChunkSize
 	}
+	if override.BinaryPartUpsertDBChunkSize > 0 {
+		base.BinaryPartUpsertDBChunkSize = override.BinaryPartUpsertDBChunkSize
+	}
+	if override.BinaryStatsRefreshDBChunkSize > 0 {
+		base.BinaryStatsRefreshDBChunkSize = override.BinaryStatsRefreshDBChunkSize
+	}
+	if override.SubjectQueueBatchSize > 0 {
+		base.SubjectQueueBatchSize = override.SubjectQueueBatchSize
+	}
 	if override.LaneATargetPct > 0 {
 		base.LaneATargetPct = override.LaneATargetPct
 	}
@@ -1749,21 +1766,23 @@ func cloneStringMap(in map[string]string) map[string]string {
 
 func indexStageRuntimeFromConfig(cfg config.IndexingStageConfig, defaultEnabled bool, defaultInterval float64, defaultBatch int) IndexingStageRuntimeSettings {
 	return IndexingStageRuntimeSettings{
-		Enabled:                 boolValue(cfg.Enabled, defaultEnabled),
-		IntervalMinutes:         float64Value(cfg.IntervalMinutes, defaultInterval),
-		BatchSize:               intValue(cfg.BatchSize, defaultBatch),
-		MaxBatches:              intValue(cfg.MaxBatches, 0),
-		MaxEffectiveConcurrency: intValue(cfg.MaxEffectiveConcurrency, 0),
-		BackoffSeconds:          intValue(cfg.BackoffSeconds, 0),
-		BinaryUpsertDBChunkSize: intValue(cfg.BinaryUpsertDBChunkSize, 0),
-		LaneATargetPct:          intValue(cfg.LaneATargetPct, 0),
-		LaneBMinPct:             intValue(cfg.LaneBMinPct, 0),
-		LaneATimeWindowMinutes:  intValue(cfg.LaneATimeWindowMinutes, 0),
-		TargetWindowEnabled:     boolValue(cfg.TargetWindowEnabled, false),
-		TargetWindowStart:       stringValue(cfg.TargetWindowStart, ""),
-		TargetWindowEnd:         stringValue(cfg.TargetWindowEnd, ""),
-		TargetWindowPct:         intValue(cfg.TargetWindowPct, 0),
-		NewestPct:               intValue(cfg.NewestPct, 0),
+		Enabled:                       boolValue(cfg.Enabled, defaultEnabled),
+		IntervalMinutes:               float64Value(cfg.IntervalMinutes, defaultInterval),
+		BatchSize:                     intValue(cfg.BatchSize, defaultBatch),
+		MaxBatches:                    intValue(cfg.MaxBatches, 0),
+		MaxEffectiveConcurrency:       intValue(cfg.MaxEffectiveConcurrency, 0),
+		BackoffSeconds:                intValue(cfg.BackoffSeconds, 0),
+		BinaryUpsertDBChunkSize:       intValue(cfg.BinaryUpsertDBChunkSize, 0),
+		BinaryPartUpsertDBChunkSize:   intValue(cfg.BinaryPartUpsertDBChunkSize, 0),
+		BinaryStatsRefreshDBChunkSize: intValue(cfg.BinaryStatsRefreshDBChunkSize, 0),
+		LaneATargetPct:                intValue(cfg.LaneATargetPct, 0),
+		LaneBMinPct:                   intValue(cfg.LaneBMinPct, 0),
+		LaneATimeWindowMinutes:        intValue(cfg.LaneATimeWindowMinutes, 0),
+		TargetWindowEnabled:           boolValue(cfg.TargetWindowEnabled, false),
+		TargetWindowStart:             stringValue(cfg.TargetWindowStart, ""),
+		TargetWindowEnd:               stringValue(cfg.TargetWindowEnd, ""),
+		TargetWindowPct:               intValue(cfg.TargetWindowPct, 0),
+		NewestPct:                     intValue(cfg.NewestPct, 0),
 	}
 }
 
@@ -1791,6 +1810,12 @@ func toStageConfig(in IndexingStageRuntimeSettings) config.IndexingStageConfig {
 	}
 	if in.BinaryUpsertDBChunkSize > 0 {
 		out.BinaryUpsertDBChunkSize = intPtr(in.BinaryUpsertDBChunkSize)
+	}
+	if in.BinaryPartUpsertDBChunkSize > 0 {
+		out.BinaryPartUpsertDBChunkSize = intPtr(in.BinaryPartUpsertDBChunkSize)
+	}
+	if in.BinaryStatsRefreshDBChunkSize > 0 {
+		out.BinaryStatsRefreshDBChunkSize = intPtr(in.BinaryStatsRefreshDBChunkSize)
 	}
 	if in.LaneATargetPct > 0 {
 		out.LaneATargetPct = intPtr(in.LaneATargetPct)

@@ -60,19 +60,21 @@ type articleFetcher interface {
 }
 
 type Options struct {
-	BatchSize               int
-	ClaimOwner              string
-	ClaimLease              time.Duration
-	Concurrency             int
-	MaxYEncRecoveryAttempts int
-	BinaryUpsertDBChunkSize int
-	Lane                    string
-	LaneATargetPct          int
-	LaneBMinPct             int
-	LaneATimeWindowMinutes  int
-	TargetWindowEnabled     bool
-	TargetWindowStart       string
-	TargetWindowEnd         string
+	BatchSize                     int
+	ClaimOwner                    string
+	ClaimLease                    time.Duration
+	Concurrency                   int
+	MaxYEncRecoveryAttempts       int
+	BinaryUpsertDBChunkSize       int
+	BinaryPartUpsertDBChunkSize   int
+	BinaryStatsRefreshDBChunkSize int
+	Lane                          string
+	LaneATargetPct                int
+	LaneBMinPct                   int
+	LaneATimeWindowMinutes        int
+	TargetWindowEnabled           bool
+	TargetWindowStart             string
+	TargetWindowEnd               string
 }
 
 type recoveryCounters struct {
@@ -135,6 +137,12 @@ func NewService(repo repository, matcher subjectMatcher, fetcher articleFetcher,
 	}
 	if opts.BinaryUpsertDBChunkSize <= 0 {
 		opts.BinaryUpsertDBChunkSize = 1000
+	}
+	if opts.BinaryPartUpsertDBChunkSize <= 0 {
+		opts.BinaryPartUpsertDBChunkSize = 5000
+	}
+	if opts.BinaryStatsRefreshDBChunkSize <= 0 {
+		opts.BinaryStatsRefreshDBChunkSize = 500
 	}
 	if opts.LaneATargetPct <= 0 {
 		opts.LaneATargetPct = 70
@@ -629,6 +637,9 @@ func (s *Service) buildAssembleWork(ctx context.Context, headers []pgindex.Assem
 }
 
 func (s *Service) persistAssembleWork(ctx context.Context, started time.Time, metrics map[string]any, work assembleWork, batchSize int) (map[string]any, error) {
+	metrics["binary_upsert_db_chunk_size"] = s.opts.BinaryUpsertDBChunkSize
+	metrics["binary_part_upsert_db_chunk_size"] = s.opts.BinaryPartUpsertDBChunkSize
+	metrics["binary_stats_refresh_db_chunk_size"] = s.opts.BinaryStatsRefreshDBChunkSize
 	refreshed := make(map[int64]struct{}, len(work.partSeeds))
 	assembledCount := 0
 	binaryIDsByKey := make(map[string]int64, len(work.binaryRecordsByKey))
@@ -700,7 +711,8 @@ func (s *Service) persistAssembleWork(ctx context.Context, started time.Time, me
 	})
 
 	binaryPartUpsertStarted := time.Now()
-	if err := s.repo.UpsertBinaryParts(ctx, partRecords); err != nil {
+	partUpsertCtx := pgindex.WithBinaryPartUpsertChunkSize(ctx, s.opts.BinaryPartUpsertDBChunkSize)
+	if err := s.repo.UpsertBinaryParts(partUpsertCtx, partRecords); err != nil {
 		metrics["processed_headers"] = assembledCount
 		metrics["binaries_refreshed"] = len(refreshed)
 		binaryPartUpsertDuration += time.Since(binaryPartUpsertStarted)
@@ -718,6 +730,7 @@ func (s *Service) persistAssembleWork(ctx context.Context, started time.Time, me
 	if len(refreshIDs) > 0 {
 		refreshStarted := time.Now()
 		refreshCtx := pgindex.WithSkipYEncRecoveryWorkItemRetire(ctx)
+		refreshCtx = pgindex.WithBinaryStatsRefreshChunkSize(refreshCtx, s.opts.BinaryStatsRefreshDBChunkSize)
 		// Assembly owns binary formation and aggregate refresh. Recovery queue
 		// admission is handled by recover_yenc's priority and generic backfill
 		// paths, and must not hold or roll back the assembly refresh transaction.

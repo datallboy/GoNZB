@@ -101,23 +101,26 @@ type usenetIndexerConfig struct {
 }
 
 type indexerStageConfig struct {
-	Enabled                 bool
-	Interval                time.Duration
-	BatchSize               int
-	MaxBatches              int
-	Concurrency             int
-	MaxEffectiveConcurrency int
-	Backoff                 time.Duration
-	BinaryUpsertDBChunkSize int
-	LaneATargetPct          int
-	LaneBMinPct             int
-	LaneATimeWindowMinutes  int
-	TargetWindowEnabled     bool
-	TargetWindowStart       string
-	TargetWindowEnd         string
-	TargetWindowPct         int
-	FetchTimeoutSeconds     int
-	NewestPct               int
+	Enabled                       bool
+	Interval                      time.Duration
+	BatchSize                     int
+	MaxBatches                    int
+	Concurrency                   int
+	MaxEffectiveConcurrency       int
+	Backoff                       time.Duration
+	BinaryUpsertDBChunkSize       int
+	BinaryPartUpsertDBChunkSize   int
+	BinaryStatsRefreshDBChunkSize int
+	SubjectQueueBatchSize         int
+	LaneATargetPct                int
+	LaneBMinPct                   int
+	LaneATimeWindowMinutes        int
+	TargetWindowEnabled           bool
+	TargetWindowStart             string
+	TargetWindowEnd               string
+	TargetWindowPct               int
+	FetchTimeoutSeconds           int
+	NewestPct                     int
 }
 
 func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetIndexerRuntime, error) {
@@ -341,17 +344,19 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 		assembleFetcher,
 		appCtx.Logger,
 		assemble.Options{
-			BatchSize:               runtimeCfg.Assemble.BatchSize,
-			ClaimOwner:              "assemble",
-			ClaimLease:              5 * time.Minute,
-			Concurrency:             runtimeCfg.Assemble.Concurrency,
-			BinaryUpsertDBChunkSize: runtimeCfg.Assemble.BinaryUpsertDBChunkSize,
-			LaneATargetPct:          runtimeCfg.Assemble.LaneATargetPct,
-			LaneBMinPct:             runtimeCfg.Assemble.LaneBMinPct,
-			LaneATimeWindowMinutes:  runtimeCfg.Assemble.LaneATimeWindowMinutes,
-			TargetWindowEnabled:     runtimeCfg.Assemble.TargetWindowEnabled,
-			TargetWindowStart:       runtimeCfg.Assemble.TargetWindowStart,
-			TargetWindowEnd:         runtimeCfg.Assemble.TargetWindowEnd,
+			BatchSize:                     runtimeCfg.Assemble.BatchSize,
+			ClaimOwner:                    "assemble",
+			ClaimLease:                    5 * time.Minute,
+			Concurrency:                   runtimeCfg.Assemble.Concurrency,
+			BinaryUpsertDBChunkSize:       runtimeCfg.Assemble.BinaryUpsertDBChunkSize,
+			BinaryPartUpsertDBChunkSize:   runtimeCfg.Assemble.BinaryPartUpsertDBChunkSize,
+			BinaryStatsRefreshDBChunkSize: runtimeCfg.Assemble.BinaryStatsRefreshDBChunkSize,
+			LaneATargetPct:                runtimeCfg.Assemble.LaneATargetPct,
+			LaneBMinPct:                   runtimeCfg.Assemble.LaneBMinPct,
+			LaneATimeWindowMinutes:        runtimeCfg.Assemble.LaneATimeWindowMinutes,
+			TargetWindowEnabled:           runtimeCfg.Assemble.TargetWindowEnabled,
+			TargetWindowStart:             runtimeCfg.Assemble.TargetWindowStart,
+			TargetWindowEnd:               runtimeCfg.Assemble.TargetWindowEnd,
 		},
 	)
 	recoverYEncSvc := yencrecover.NewService(
@@ -528,16 +533,18 @@ func buildUsenetIndexerRuntime(appCtx *app.Context, stageOwner string) (*usenetI
 			Backoff:     runtimeCfg.ArticleCohortSchedule.Backoff,
 			Runner: supervisor.ResultRunnerFunc(func(ctx context.Context) (json.RawMessage, error) {
 				result, err := appCtx.PGIndexStore.RunArticleCohortScheduler(ctx, pgindex.ArticleCohortSchedulerRequest{
-					BatchSize:         runtimeCfg.ArticleCohortSchedule.BatchSize,
-					TargetWindowStart: cohortTargetStart,
-					TargetWindowEnd:   cohortTargetEnd,
-					DisableYEnc:       !app.IndexingRecoveryProfileUsesYEnc(runtimeCfg.RecoveryProfile),
+					BatchSize:             runtimeCfg.ArticleCohortSchedule.BatchSize,
+					SubjectQueueBatchSize: runtimeCfg.ArticleCohortSchedule.SubjectQueueBatchSize,
+					TargetWindowStart:     cohortTargetStart,
+					TargetWindowEnd:       cohortTargetEnd,
+					DisableYEnc:           !app.IndexingRecoveryProfileUsesYEnc(runtimeCfg.RecoveryProfile),
 				})
 				if result == nil {
 					return marshalStageMetrics(map[string]any{}, err)
 				}
 				return marshalStageMetrics(map[string]any{
 					"subject_cohorts_upserted": result.SubjectCohortsUpserted,
+					"subject_queue_batch_size": runtimeCfg.ArticleCohortSchedule.SubjectQueueBatchSize,
 					"opaque_cohorts_upserted":  result.OpaqueCohortsUpserted,
 					"assembly_queued":          result.AssemblyQueued,
 					"yenc_queued":              result.YEncQueued,
@@ -1129,23 +1136,26 @@ func deriveUsenetIndexerConfig(cfg *config.Config, runtimeIndexing ...*app.Index
 
 func newIndexerStageConfig(in app.IndexingStageRuntimeSettings) indexerStageConfig {
 	return indexerStageConfig{
-		Enabled:                 in.Enabled,
-		Interval:                time.Duration(in.IntervalMinutes * float64(time.Minute)),
-		BatchSize:               in.BatchSize,
-		MaxBatches:              in.MaxBatches,
-		Concurrency:             in.Concurrency,
-		MaxEffectiveConcurrency: in.MaxEffectiveConcurrency,
-		Backoff:                 time.Duration(in.BackoffSeconds) * time.Second,
-		BinaryUpsertDBChunkSize: in.BinaryUpsertDBChunkSize,
-		LaneATargetPct:          in.LaneATargetPct,
-		LaneBMinPct:             in.LaneBMinPct,
-		LaneATimeWindowMinutes:  in.LaneATimeWindowMinutes,
-		TargetWindowEnabled:     in.TargetWindowEnabled,
-		TargetWindowStart:       in.TargetWindowStart,
-		TargetWindowEnd:         in.TargetWindowEnd,
-		TargetWindowPct:         in.TargetWindowPct,
-		FetchTimeoutSeconds:     in.FetchTimeoutSeconds,
-		NewestPct:               in.NewestPct,
+		Enabled:                       in.Enabled,
+		Interval:                      time.Duration(in.IntervalMinutes * float64(time.Minute)),
+		BatchSize:                     in.BatchSize,
+		MaxBatches:                    in.MaxBatches,
+		Concurrency:                   in.Concurrency,
+		MaxEffectiveConcurrency:       in.MaxEffectiveConcurrency,
+		Backoff:                       time.Duration(in.BackoffSeconds) * time.Second,
+		BinaryUpsertDBChunkSize:       in.BinaryUpsertDBChunkSize,
+		BinaryPartUpsertDBChunkSize:   in.BinaryPartUpsertDBChunkSize,
+		BinaryStatsRefreshDBChunkSize: in.BinaryStatsRefreshDBChunkSize,
+		SubjectQueueBatchSize:         in.SubjectQueueBatchSize,
+		LaneATargetPct:                in.LaneATargetPct,
+		LaneBMinPct:                   in.LaneBMinPct,
+		LaneATimeWindowMinutes:        in.LaneATimeWindowMinutes,
+		TargetWindowEnabled:           in.TargetWindowEnabled,
+		TargetWindowStart:             in.TargetWindowStart,
+		TargetWindowEnd:               in.TargetWindowEnd,
+		TargetWindowPct:               in.TargetWindowPct,
+		FetchTimeoutSeconds:           in.FetchTimeoutSeconds,
+		NewestPct:                     in.NewestPct,
 	}
 }
 

@@ -21,6 +21,31 @@ func TestAssembleStoreDoesNotUseArticleHeaderWriteBackState(t *testing.T) {
 	}
 }
 
+func TestBinaryStatsRefreshUsesBoundedPartAndHeaderLookups(t *testing.T) {
+	src := readGuardrailSource(t, "assembly_store.go")
+	start := strings.Index(src, "func refreshBinaryStatsIDsInTxForWindow")
+	end := strings.Index(src, "func (s *Store) RepairStaleBinaryObservationStats")
+	if start < 0 || end <= start {
+		t.Fatal("could not locate binary stats refresh query")
+	}
+	refreshSrc := src[start:end]
+
+	if strings.Contains(refreshSrc, "JOIN binary_effective_parts") {
+		t.Fatal("binary stats refresh must not expand binary_effective_parts before filtering requested binary IDs")
+	}
+	for _, required := range []string{
+		"JOIN binary_parts bp",
+		"LEFT JOIN LATERAL",
+		"ah.source_posted_at = bp.source_posted_at",
+		"ah.id = bp.article_header_id",
+		"JOIN binary_peer_segments ps",
+	} {
+		if !strings.Contains(refreshSrc, required) {
+			t.Fatalf("binary stats refresh must retain bounded local and peer part hydration; missing %q", required)
+		}
+	}
+}
+
 func TestYEncRecoveryDoesNotWriteBackToScrapeOwnedSourceTables(t *testing.T) {
 	for _, fileName := range []string{"assembly_store.go", "yenc_recovery_store.go", "yenc_work_item_store.go"} {
 		src := readGuardrailSource(t, fileName)

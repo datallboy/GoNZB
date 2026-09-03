@@ -170,23 +170,26 @@ type NNTPPoolRuntimeSettings struct {
 }
 
 type IndexingStageRuntimeSettings struct {
-	Enabled                 bool    `json:"enabled,omitempty"`
-	IntervalMinutes         float64 `json:"interval_minutes,omitempty"`
-	BatchSize               int     `json:"batch_size,omitempty"`
-	MaxBatches              int     `json:"max_batches,omitempty"`
-	Concurrency             int     `json:"concurrency,omitempty"`
-	MaxEffectiveConcurrency int     `json:"max_effective_concurrency,omitempty"`
-	BackoffSeconds          int     `json:"backoff_seconds,omitempty"`
-	BinaryUpsertDBChunkSize int     `json:"binary_upsert_db_chunk_size,omitempty"`
-	LaneATargetPct          int     `json:"lane_a_target_pct,omitempty"`
-	LaneBMinPct             int     `json:"lane_b_min_pct,omitempty"`
-	LaneATimeWindowMinutes  int     `json:"lane_a_time_window_minutes,omitempty"`
-	TargetWindowEnabled     bool    `json:"target_window_enabled,omitempty"`
-	TargetWindowStart       string  `json:"target_window_start,omitempty"`
-	TargetWindowEnd         string  `json:"target_window_end,omitempty"`
-	TargetWindowPct         int     `json:"target_window_pct,omitempty"`
-	FetchTimeoutSeconds     int     `json:"fetch_timeout_seconds,omitempty"`
-	NewestPct               int     `json:"newest_pct"`
+	Enabled                       bool    `json:"enabled,omitempty"`
+	IntervalMinutes               float64 `json:"interval_minutes,omitempty"`
+	BatchSize                     int     `json:"batch_size,omitempty"`
+	MaxBatches                    int     `json:"max_batches,omitempty"`
+	Concurrency                   int     `json:"concurrency,omitempty"`
+	MaxEffectiveConcurrency       int     `json:"max_effective_concurrency,omitempty"`
+	BackoffSeconds                int     `json:"backoff_seconds,omitempty"`
+	BinaryUpsertDBChunkSize       int     `json:"binary_upsert_db_chunk_size,omitempty"`
+	BinaryPartUpsertDBChunkSize   int     `json:"binary_part_upsert_db_chunk_size,omitempty"`
+	BinaryStatsRefreshDBChunkSize int     `json:"binary_stats_refresh_db_chunk_size,omitempty"`
+	SubjectQueueBatchSize         int     `json:"subject_queue_batch_size,omitempty"`
+	LaneATargetPct                int     `json:"lane_a_target_pct,omitempty"`
+	LaneBMinPct                   int     `json:"lane_b_min_pct,omitempty"`
+	LaneATimeWindowMinutes        int     `json:"lane_a_time_window_minutes,omitempty"`
+	TargetWindowEnabled           bool    `json:"target_window_enabled,omitempty"`
+	TargetWindowStart             string  `json:"target_window_start,omitempty"`
+	TargetWindowEnd               string  `json:"target_window_end,omitempty"`
+	TargetWindowPct               int     `json:"target_window_pct,omitempty"`
+	FetchTimeoutSeconds           int     `json:"fetch_timeout_seconds,omitempty"`
+	NewestPct                     int     `json:"newest_pct"`
 }
 
 type IndexingSourceWindowRuntimeSettings struct {

@@ -520,6 +520,9 @@ export type AdminStageConfigPatch = {
   max_effective_concurrency?: number
   backoff_seconds?: number
   binary_upsert_db_chunk_size?: number
+  binary_part_upsert_db_chunk_size?: number
+  binary_stats_refresh_db_chunk_size?: number
+  subject_queue_batch_size?: number
   lane_a_target_pct?: number
   lane_b_min_pct?: number
   target_window_enabled?: boolean
@@ -1316,6 +1319,7 @@ export type IndexingRuntimeSettings = {
   scrape_deferred: AdminStageConfigPatch
   poster_materialize: AdminStageConfigPatch
   crosspost_popularity_refresh: AdminStageConfigPatch
+  article_cohort_schedule: AdminStageConfigPatch
   assemble: AdminStageConfigPatch
   recover_yenc: AdminStageConfigPatch
   source_window?: {

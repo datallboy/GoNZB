@@ -37,3 +37,29 @@ func TestRetryRetryablePostgresTxDoesNotRetryNonRetryableError(t *testing.T) {
 		t.Fatalf("expected 1 attempt, got %d", attempts)
 	}
 }
+
+func TestAssemblyChunkSizesFromContext(t *testing.T) {
+	ctx := context.Background()
+	if got := binaryUpsertChunkSizeFromContext(ctx); got != 1000 {
+		t.Fatalf("default binary upsert chunk = %d, want 1000", got)
+	}
+	if got := binaryPartUpsertChunkSizeFromContext(ctx); got != 5000 {
+		t.Fatalf("default binary part upsert chunk = %d, want 5000", got)
+	}
+	if got := binaryStatsRefreshChunkSizeFromContext(ctx); got != 500 {
+		t.Fatalf("default binary stats refresh chunk = %d, want 500", got)
+	}
+
+	ctx = WithBinaryUpsertChunkSize(ctx, 200)
+	ctx = WithBinaryPartUpsertChunkSize(ctx, 300)
+	ctx = WithBinaryStatsRefreshChunkSize(ctx, 400)
+	if got := binaryUpsertChunkSizeFromContext(ctx); got != 200 {
+		t.Fatalf("binary upsert chunk = %d, want 200", got)
+	}
+	if got := binaryPartUpsertChunkSizeFromContext(ctx); got != 300 {
+		t.Fatalf("binary part upsert chunk = %d, want 300", got)
+	}
+	if got := binaryStatsRefreshChunkSizeFromContext(ctx); got != 400 {
+		t.Fatalf("binary stats refresh chunk = %d, want 400", got)
+	}
+}

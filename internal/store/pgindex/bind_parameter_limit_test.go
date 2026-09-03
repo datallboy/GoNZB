@@ -9,7 +9,7 @@ func TestDynamicBatchSizesStayBelowPostgresBindParameterSoftLimit(t *testing.T) 
 		"binary completion key sync":               1,
 		"binary stats refresh":                     1,
 		"binary part article lookup":               binaryPartArticleLookupChunk,
-		"binary part upsert":                       binaryPartUpsertBatchRecords * 7,
+		"binary part upsert":                       maxBinaryPartUpsertDBChunkSize * 7,
 		"predb entry id lookup":                    predbEntryIDLookupChunk,
 		"release family dirty keys":                releaseFamilyDirtyBatchSize * 4,
 		"release family summary merge":             releaseFamilySummaryMergeRowsMax * 24,

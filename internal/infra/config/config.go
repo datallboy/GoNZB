@@ -253,22 +253,24 @@ type IndexingConfig struct {
 }
 
 type IndexingStageConfig struct {
-	Enabled                 *bool    `mapstructure:"enabled" yaml:"enabled"`
-	IntervalMinutes         *float64 `mapstructure:"interval_minutes" yaml:"interval_minutes"`
-	BatchSize               *int     `mapstructure:"batch_size" yaml:"batch_size"`
-	MaxBatches              *int     `mapstructure:"max_batches" yaml:"max_batches"`
-	Concurrency             *int     `mapstructure:"concurrency" yaml:"concurrency"`
-	MaxEffectiveConcurrency *int     `mapstructure:"max_effective_concurrency" yaml:"max_effective_concurrency"`
-	BackoffSeconds          *int     `mapstructure:"backoff_seconds" yaml:"backoff_seconds"`
-	BinaryUpsertDBChunkSize *int     `mapstructure:"binary_upsert_db_chunk_size" yaml:"binary_upsert_db_chunk_size"`
-	LaneATargetPct          *int     `mapstructure:"lane_a_target_pct" yaml:"lane_a_target_pct"`
-	LaneBMinPct             *int     `mapstructure:"lane_b_min_pct" yaml:"lane_b_min_pct"`
-	LaneATimeWindowMinutes  *int     `mapstructure:"lane_a_time_window_minutes" yaml:"lane_a_time_window_minutes"`
-	TargetWindowEnabled     *bool    `mapstructure:"target_window_enabled" yaml:"target_window_enabled"`
-	TargetWindowStart       *string  `mapstructure:"target_window_start" yaml:"target_window_start"`
-	TargetWindowEnd         *string  `mapstructure:"target_window_end" yaml:"target_window_end"`
-	TargetWindowPct         *int     `mapstructure:"target_window_pct" yaml:"target_window_pct"`
-	NewestPct               *int     `mapstructure:"newest_pct" yaml:"newest_pct"`
+	Enabled                       *bool    `mapstructure:"enabled" yaml:"enabled"`
+	IntervalMinutes               *float64 `mapstructure:"interval_minutes" yaml:"interval_minutes"`
+	BatchSize                     *int     `mapstructure:"batch_size" yaml:"batch_size"`
+	MaxBatches                    *int     `mapstructure:"max_batches" yaml:"max_batches"`
+	Concurrency                   *int     `mapstructure:"concurrency" yaml:"concurrency"`
+	MaxEffectiveConcurrency       *int     `mapstructure:"max_effective_concurrency" yaml:"max_effective_concurrency"`
+	BackoffSeconds                *int     `mapstructure:"backoff_seconds" yaml:"backoff_seconds"`
+	BinaryUpsertDBChunkSize       *int     `mapstructure:"binary_upsert_db_chunk_size" yaml:"binary_upsert_db_chunk_size"`
+	BinaryPartUpsertDBChunkSize   *int     `mapstructure:"binary_part_upsert_db_chunk_size" yaml:"binary_part_upsert_db_chunk_size"`
+	BinaryStatsRefreshDBChunkSize *int     `mapstructure:"binary_stats_refresh_db_chunk_size" yaml:"binary_stats_refresh_db_chunk_size"`
+	LaneATargetPct                *int     `mapstructure:"lane_a_target_pct" yaml:"lane_a_target_pct"`
+	LaneBMinPct                   *int     `mapstructure:"lane_b_min_pct" yaml:"lane_b_min_pct"`
+	LaneATimeWindowMinutes        *int     `mapstructure:"lane_a_time_window_minutes" yaml:"lane_a_time_window_minutes"`
+	TargetWindowEnabled           *bool    `mapstructure:"target_window_enabled" yaml:"target_window_enabled"`
+	TargetWindowStart             *string  `mapstructure:"target_window_start" yaml:"target_window_start"`
+	TargetWindowEnd               *string  `mapstructure:"target_window_end" yaml:"target_window_end"`
+	TargetWindowPct               *int     `mapstructure:"target_window_pct" yaml:"target_window_pct"`
+	NewestPct                     *int     `mapstructure:"newest_pct" yaml:"newest_pct"`
 }
 
 type IndexingMatchConfig struct {
@@ -442,6 +444,8 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("indexing.scrape_backfill.max_batches", 1)
 	v.SetDefault("indexing.scrape_backfill.backoff_seconds", 0)
 	v.SetDefault("indexing.assemble.binary_upsert_db_chunk_size", 1000)
+	v.SetDefault("indexing.assemble.binary_part_upsert_db_chunk_size", 5000)
+	v.SetDefault("indexing.assemble.binary_stats_refresh_db_chunk_size", 500)
 	v.SetDefault("indexing.assemble.lane_a_target_pct", 70)
 	v.SetDefault("indexing.assemble.lane_b_min_pct", 30)
 	v.SetDefault("indexing.assemble.lane_a_time_window_minutes", 15)
@@ -1216,6 +1220,15 @@ func validateIndexingStageConfig(name string, cfg IndexingStageConfig) error {
 	}
 	if cfg.BinaryUpsertDBChunkSize != nil && *cfg.BinaryUpsertDBChunkSize <= 0 {
 		return fmt.Errorf("%s.binary_upsert_db_chunk_size must be greater than 0", name)
+	}
+	if cfg.BinaryPartUpsertDBChunkSize != nil && *cfg.BinaryPartUpsertDBChunkSize <= 0 {
+		return fmt.Errorf("%s.binary_part_upsert_db_chunk_size must be greater than 0", name)
+	}
+	if cfg.BinaryPartUpsertDBChunkSize != nil && *cfg.BinaryPartUpsertDBChunkSize > 7000 {
+		return fmt.Errorf("%s.binary_part_upsert_db_chunk_size must be less than or equal to 7000", name)
+	}
+	if cfg.BinaryStatsRefreshDBChunkSize != nil && *cfg.BinaryStatsRefreshDBChunkSize <= 0 {
+		return fmt.Errorf("%s.binary_stats_refresh_db_chunk_size must be greater than 0", name)
 	}
 	if cfg.LaneATimeWindowMinutes != nil && *cfg.LaneATimeWindowMinutes <= 0 {
 		return fmt.Errorf("%s.lane_a_time_window_minutes must be greater than 0", name)

@@ -20,6 +20,7 @@ type StageKey =
   | 'scrape_deferred'
   | 'poster_materialize'
   | 'crosspost_popularity_refresh'
+  | 'article_cohort_schedule'
   | 'assemble'
   | 'recover_yenc'
   | 'release_summary_refresh'
@@ -43,6 +44,7 @@ type StageDefinition = {
   description: string
   supportsConcurrency: boolean
   showBinaryUpsertChunk?: boolean
+  showSubjectQueueBatch?: boolean
   showLaneBalance?: boolean
   showMaxEffectiveConcurrency?: boolean
   showYEncTargetWindow?: boolean
@@ -61,6 +63,7 @@ const stageDefinitions: StageDefinition[] = [
   { key: 'scrape_deferred', label: 'Drain deferred scrape ranges', supportsConcurrency: false, showMaxBatches: true, defaultMaxBatches: 1, description: 'Claims durable article ranges postponed by partition-day or recovery-cap limits. Keep enabled whenever latest, backfill, or historical scrape can create deferred work.', batchHelpText: 'Maximum article numbers in the claimed deferred range; the saved range itself remains the source of truth.', maxBatchesHelpText: 'Maximum deferred ranges claimed per run. Default 1 prevents catch-up work from displacing latest freshness.' },
   { key: 'poster_materialize', label: 'Poster materialize', supportsConcurrency: false, description: 'Drains queued raw poster names into the poster dimension and per-header poster projection without mutating scrape payload rows.', batchHelpText: 'Queued poster rows claimed per run.' },
   { key: 'crosspost_popularity_refresh', label: 'Crosspost popularity', supportsConcurrency: false, description: 'Refreshes the cross-post popularity report from raw Xref telemetry. Reporting-only; not required for release formation.', batchHelpText: 'Observed cross-post groups claimed per run.' },
+  { key: 'article_cohort_schedule', label: 'Article cohort schedule', supportsConcurrency: false, showSubjectQueueBatch: true, description: 'Ranks structured and opaque article cohorts and admits them to assemble and yEnc recovery queues.', batchHelpText: 'Maximum candidate rows scanned per scheduler pass.' },
   { key: 'assemble', label: 'Assemble', supportsConcurrency: true, showBinaryUpsertChunk: true, showLaneBalance: true, description: 'Creates and completes binary files from scraped article headers. Internally balances completion work and fresh binary creation.', batchHelpText: 'Article headers claimed per worker pass.', concurrencyHelpText: 'CPU/DB workers. Raise only if Postgres and CPU have headroom.' },
   { key: 'recover_yenc', label: 'Recover yEnc', supportsConcurrency: true, showYEncTargetWindow: true, description: 'Post-assemble repair stage. Reads only the start of BODY for weak obfuscated binaries, extracts the yEnc file name, and re-groups binaries without slowing assemble.', batchHelpText: 'Recovery work items claimed per run.', concurrencyHelpText: 'Requested NNTP BODY prefix fetch workers. Higher values consume more provider connections and create more short-lived BODY sessions.' },
   { key: 'release_summary_refresh', label: 'Release summary refresh', supportsConcurrency: false, showMaxBatches: true, defaultMaxBatches: 10, description: 'Deferred readiness-summary drain. Converts dirty release-family keys into materialized release candidates before release formation runs.', batchHelpText: 'Requested summary keys per repository refresh call. Internal safety chunks may split this work.', maxBatchesHelpText: 'Maximum refresh calls per scheduled run. Effective per-run budget is roughly batch size times max batches, bounded by repository safety caps.' },
@@ -79,7 +82,7 @@ const stageDefinitions: StageDefinition[] = [
 
 const stageGroups: Array<{ title: string; keys: StageKey[] }> = [
   { title: 'Scrape commands', keys: ['scrape_latest', 'scrape_backfill', 'scrape_timeframe', 'scrape_deferred', 'poster_materialize', 'crosspost_popularity_refresh'] },
-  { title: 'Assemble and recovery commands', keys: ['assemble', 'recover_yenc'] },
+  { title: 'Assemble and recovery commands', keys: ['article_cohort_schedule', 'assemble', 'recover_yenc'] },
   { title: 'Release commands', keys: ['release_summary_refresh', 'release', 'release_generate_nzb', 'release_archive_nzb'] },
   { title: 'Inspection commands', keys: ['inspect_discovery', 'inspect_par2', 'inspect_nfo', 'inspect_archive', 'inspect_password', 'inspect_media'] },
   { title: 'Enrichment commands', keys: ['enrich_predb', 'enrich_tmdb'] },
@@ -212,7 +215,8 @@ function defaultSettings(): RuntimeSettings {
       scrape_deferred: { ...stageDefaults(5000, 1, { max_batches: 1 }), enabled: true },
       poster_materialize: stageDefaults(10000),
       crosspost_popularity_refresh: stageDefaults(1000),
-      assemble: stageDefaults(5000, 1, { binary_upsert_db_chunk_size: 250, lane_a_target_pct: 70, lane_b_min_pct: 30 }),
+      article_cohort_schedule: stageDefaults(50000, 0, { subject_queue_batch_size: 1000 }),
+      assemble: stageDefaults(5000, 1, { binary_upsert_db_chunk_size: 1000, binary_part_upsert_db_chunk_size: 5000, binary_stats_refresh_db_chunk_size: 500, lane_a_target_pct: 70, lane_b_min_pct: 30 }),
       recover_yenc: stageDefaults(25, 1, { target_window_pct: 60, newest_pct: 40 }),
       source_window: {
         enabled: true,
@@ -1199,15 +1203,43 @@ export function AdminSettingsPage() {
                             />
                           ) : null}
                         </div>
-                        {showAdvanced && (definition.showBinaryUpsertChunk || definition.showMaxEffectiveConcurrency || definition.showLaneBalance || definition.showYEncTargetWindow) ? (
+                        {showAdvanced && (definition.showBinaryUpsertChunk || definition.showSubjectQueueBatch || definition.showMaxEffectiveConcurrency || definition.showLaneBalance || definition.showYEncTargetWindow) ? (
                           <div className="toolbar-grid toolbar-grid--compact">
                             {definition.showBinaryUpsertChunk ? (
                               <NumberField
                                 label="Binary upsert DB chunk size"
                                 min={1}
-                                value={value.binary_upsert_db_chunk_size ?? 250}
-                                helpText="Internal binary-upsert chunk size for assemble writes. Default 250. Use this only when tuning Postgres lock pressure versus write throughput."
+                                value={value.binary_upsert_db_chunk_size ?? 1000}
+                                helpText="Binary metadata rows written per transaction chunk. This does not control part inserts or binary-stat refresh. Default 1000."
                                 onChange={(next) => updateStage(key, { binary_upsert_db_chunk_size: next })}
+                              />
+                            ) : null}
+                            {definition.showBinaryUpsertChunk ? (
+                              <NumberField
+                                label="Binary part upsert DB chunk size"
+                                min={1}
+                                max={7000}
+                                value={value.binary_part_upsert_db_chunk_size ?? 5000}
+                                helpText="Binary-part rows sent in each INSERT statement inside the part-upsert transaction. Default 5000."
+                                onChange={(next) => updateStage(key, { binary_part_upsert_db_chunk_size: next })}
+                              />
+                            ) : null}
+                            {definition.showBinaryUpsertChunk ? (
+                              <NumberField
+                                label="Binary stats refresh DB chunk size"
+                                min={1}
+                                value={value.binary_stats_refresh_db_chunk_size ?? 500}
+                                helpText="Binaries refreshed per stats transaction, still split at UTC partition-day boundaries. Default 500."
+                                onChange={(next) => updateStage(key, { binary_stats_refresh_db_chunk_size: next })}
+                              />
+                            ) : null}
+                            {definition.showSubjectQueueBatch ? (
+                              <NumberField
+                                label="Subject queue batch size"
+                                min={1}
+                                value={value.subject_queue_batch_size ?? 1000}
+                                helpText="Maximum subject-complete headers admitted to the assembly queue per scheduler pass. Default 1000."
+                                onChange={(next) => updateStage(key, { subject_queue_batch_size: next })}
                               />
                             ) : null}
                             {definition.showMaxEffectiveConcurrency ? (
