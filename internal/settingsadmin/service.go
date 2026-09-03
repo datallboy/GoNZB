@@ -456,8 +456,31 @@ func validateIndexing(indexing *app.IndexingRuntimeSettings) []string {
 		if stage.config.BinaryUpsertDBChunkSize < 0 {
 			issues = append(issues, "indexing."+stage.name+".binary_upsert_db_chunk_size must be greater than or equal to 0")
 		}
-		if strings.HasPrefix(stage.name, "assemble") && stage.config.BinaryUpsertDBChunkSize == 0 {
-			issues = append(issues, "indexing."+stage.name+".binary_upsert_db_chunk_size must be greater than 0 when enabled")
+		if stage.config.BinaryPartUpsertDBChunkSize < 0 {
+			issues = append(issues, "indexing."+stage.name+".binary_part_upsert_db_chunk_size must be greater than or equal to 0")
+		}
+		if stage.config.BinaryPartUpsertDBChunkSize > 7000 {
+			issues = append(issues, "indexing."+stage.name+".binary_part_upsert_db_chunk_size must be less than or equal to 7000")
+		}
+		if stage.config.BinaryStatsRefreshDBChunkSize < 0 {
+			issues = append(issues, "indexing."+stage.name+".binary_stats_refresh_db_chunk_size must be greater than or equal to 0")
+		}
+		if stage.config.SubjectQueueBatchSize < 0 {
+			issues = append(issues, "indexing."+stage.name+".subject_queue_batch_size must be greater than or equal to 0")
+		}
+		if strings.HasPrefix(stage.name, "assemble") {
+			if stage.config.BinaryUpsertDBChunkSize == 0 {
+				issues = append(issues, "indexing."+stage.name+".binary_upsert_db_chunk_size must be greater than 0 when enabled")
+			}
+			if stage.config.BinaryPartUpsertDBChunkSize == 0 {
+				issues = append(issues, "indexing."+stage.name+".binary_part_upsert_db_chunk_size must be greater than 0 when enabled")
+			}
+			if stage.config.BinaryStatsRefreshDBChunkSize == 0 {
+				issues = append(issues, "indexing."+stage.name+".binary_stats_refresh_db_chunk_size must be greater than 0 when enabled")
+			}
+		}
+		if stage.name == "article_cohort_schedule" && stage.config.SubjectQueueBatchSize == 0 {
+			issues = append(issues, "indexing."+stage.name+".subject_queue_batch_size must be greater than 0 when enabled")
 		}
 		if stage.name == "recover_yenc" {
 			if stage.config.FetchTimeoutSeconds < 0 {

@@ -278,6 +278,8 @@ func TestWithRuntimeDefaultsBackfillsAssembleStageDefaults(t *testing.T) {
 		t.Fatalf("expected assemble defaults to be backfilled, got %+v", runtime.Indexing.Assemble)
 	}
 	if runtime.Indexing.Assemble.BinaryUpsertDBChunkSize != 1000 ||
+		runtime.Indexing.Assemble.BinaryPartUpsertDBChunkSize != 5000 ||
+		runtime.Indexing.Assemble.BinaryStatsRefreshDBChunkSize != 500 ||
 		runtime.Indexing.Assemble.LaneATargetPct != 70 ||
 		runtime.Indexing.Assemble.LaneBMinPct != 30 ||
 		runtime.Indexing.Assemble.LaneATimeWindowMinutes != 15 {
@@ -285,6 +287,18 @@ func TestWithRuntimeDefaultsBackfillsAssembleStageDefaults(t *testing.T) {
 	}
 	if !runtime.Indexing.StorageGuard.Enabled || runtime.Indexing.StorageGuard.MinFreeBytes != 0 || runtime.Indexing.StorageGuard.MinFreePercent < 15 {
 		t.Fatalf("expected storage guard defaults to be backfilled, got %+v", runtime.Indexing.StorageGuard)
+	}
+}
+
+func TestWithRuntimeDefaultsBackfillsArticleCohortQueueBatch(t *testing.T) {
+	runtime := WithRuntimeDefaults(&RuntimeSettings{
+		Indexing: &IndexingRuntimeSettings{
+			ArticleCohortSchedule: IndexingStageRuntimeSettings{Enabled: true, IntervalMinutes: 1, BatchSize: 50000},
+		},
+	})
+
+	if got := runtime.Indexing.ArticleCohortSchedule.SubjectQueueBatchSize; got != 1000 {
+		t.Fatalf("expected subject queue batch default 1000, got %d", got)
 	}
 }
 

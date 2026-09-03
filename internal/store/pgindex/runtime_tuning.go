@@ -8,7 +8,12 @@ import (
 	"time"
 )
 
-const defaultBinaryUpsertDBChunkSize = 1000
+const (
+	defaultBinaryUpsertDBChunkSize       = 1000
+	defaultBinaryPartUpsertDBChunkSize   = 5000
+	defaultBinaryStatsRefreshDBChunkSize = 500
+	maxBinaryPartUpsertDBChunkSize       = 7000
+)
 
 const (
 	defaultRetryableTxAttempts = 3
@@ -16,6 +21,8 @@ const (
 )
 
 type binaryUpsertChunkSizeContextKey struct{}
+type binaryPartUpsertChunkSizeContextKey struct{}
+type binaryStatsRefreshChunkSizeContextKey struct{}
 type binaryUpsertTelemetryContextKey struct{}
 type binaryStatsRefreshTelemetryContextKey struct{}
 type skipYEncRecoveryWorkItemSyncContextKey struct{}
@@ -38,6 +45,47 @@ func binaryUpsertChunkSizeFromContext(ctx context.Context) int {
 		}
 	}
 	return defaultBinaryUpsertDBChunkSize
+}
+
+func WithBinaryPartUpsertChunkSize(ctx context.Context, size int) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if size <= 0 {
+		return ctx
+	}
+	if size > maxBinaryPartUpsertDBChunkSize {
+		size = maxBinaryPartUpsertDBChunkSize
+	}
+	return context.WithValue(ctx, binaryPartUpsertChunkSizeContextKey{}, size)
+}
+
+func binaryPartUpsertChunkSizeFromContext(ctx context.Context) int {
+	if ctx != nil {
+		if size, ok := ctx.Value(binaryPartUpsertChunkSizeContextKey{}).(int); ok && size > 0 {
+			return size
+		}
+	}
+	return defaultBinaryPartUpsertDBChunkSize
+}
+
+func WithBinaryStatsRefreshChunkSize(ctx context.Context, size int) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if size <= 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, binaryStatsRefreshChunkSizeContextKey{}, size)
+}
+
+func binaryStatsRefreshChunkSizeFromContext(ctx context.Context) int {
+	if ctx != nil {
+		if size, ok := ctx.Value(binaryStatsRefreshChunkSizeContextKey{}).(int); ok && size > 0 {
+			return size
+		}
+	}
+	return defaultBinaryStatsRefreshDBChunkSize
 }
 
 func WithSkipYEncRecoveryWorkItemSync(ctx context.Context) context.Context {

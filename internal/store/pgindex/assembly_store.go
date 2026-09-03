@@ -29,9 +29,7 @@ const (
 	assembleClaimStatementTimeout          = 30 * time.Second
 	assembleClaimMinQueueAge               = 15 * time.Second
 	assembleDefaultLaneATimeWindowMinutes  = 15
-	refreshBinaryStatsBatchSize            = 500
 	binaryCompletionKeySyncChunkSize       = 8000
-	binaryPartUpsertBatchRecords           = 5000
 )
 
 func assemblyClaimCompletionKeyExistsSQL() string {
@@ -2276,8 +2274,9 @@ func (s *Store) UpsertBinaryParts(ctx context.Context, records []BinaryPartRecor
 		}
 		defer rollbackTx(tx)
 
-		for start := 0; start < len(records); start += binaryPartUpsertBatchRecords {
-			end := start + binaryPartUpsertBatchRecords
+		chunkSize := binaryPartUpsertChunkSizeFromContext(ctx)
+		for start := 0; start < len(records); start += chunkSize {
+			end := start + chunkSize
 			if end > len(records) {
 				end = len(records)
 			}
@@ -2803,12 +2802,13 @@ func (s *Store) RefreshBinaryStatsBatch(ctx context.Context, binaryIDs []int64) 
 		return targets[i].BinaryID < targets[j].BinaryID
 	})
 
+	refreshChunkSize := binaryStatsRefreshChunkSizeFromContext(ctx)
 	for start := 0; start < len(targets); {
 		dayStart := utcDayStart(targets[start].SourcePostedAt)
 		dayEnd := dayStart.Add(24 * time.Hour)
 		end := start
-		batchIDs := make([]int64, 0, refreshBinaryStatsBatchSize)
-		for end < len(targets) && len(batchIDs) < refreshBinaryStatsBatchSize && utcDayStart(targets[end].SourcePostedAt).Equal(dayStart) {
+		batchIDs := make([]int64, 0, refreshChunkSize)
+		for end < len(targets) && len(batchIDs) < refreshChunkSize && utcDayStart(targets[end].SourcePostedAt).Equal(dayStart) {
 			batchIDs = append(batchIDs, targets[end].BinaryID)
 			end++
 		}
@@ -2970,28 +2970,66 @@ func refreshBinaryStatsIDsInTxForWindow(ctx context.Context, tx *sql.Tx, binaryI
 		),
 		part_rows AS MATERIALIZED (
 			SELECT
-					bp.binary_id,
-					lb.source_posted_at AS stats_source_posted_at,
-					bp.segment_bytes,
-					bp.part_number,
-					bp.source_posted_at,
-					bp.article_number,
-					bp.posted_at AS date_utc,
-					bp.part_source
-				FROM locked_binaries lb
-				JOIN binary_effective_parts bp
-				  -- Existing min/max values describe the previous refresh. Widen
-				  -- them so a yEnc merge can extend a target across source times.
-				  ON bp.source_posted_at >= CASE
-						WHEN $4::boolean THEN $5
-						ELSE COALESCE(lb.part_source_posted_at_min, lb.source_posted_at) - INTERVAL '1 day'
-					END
-				 AND bp.source_posted_at <= CASE
-						WHEN $4::boolean THEN $6
-						ELSE COALESCE(lb.part_source_posted_at_max, lb.source_posted_at) + INTERVAL '1 day'
-					END
-				 AND bp.binary_id = lb.binary_id
-				WHERE ($4::boolean = FALSE OR (bp.source_posted_at >= $5 AND bp.source_posted_at < $6))
+				bp.binary_id,
+				lb.source_posted_at AS stats_source_posted_at,
+				bp.segment_bytes,
+				bp.part_number,
+				bp.source_posted_at,
+				COALESCE(ah.article_number, 0) AS article_number,
+				ah.date_utc,
+				'local'::text AS part_source
+			FROM locked_binaries lb
+			JOIN binary_parts bp
+			  -- Existing min/max values describe the previous refresh. Widen
+			  -- them so a yEnc merge can extend a target across source times.
+			  ON bp.source_posted_at >= CASE
+					WHEN $4::boolean THEN $5
+					ELSE COALESCE(lb.part_source_posted_at_min, lb.source_posted_at) - INTERVAL '1 day'
+				END
+			 AND bp.source_posted_at <= CASE
+					WHEN $4::boolean THEN $6
+					ELSE COALESCE(lb.part_source_posted_at_max, lb.source_posted_at) + INTERVAL '1 day'
+				END
+			 AND bp.binary_id = lb.binary_id
+			LEFT JOIN LATERAL (
+				-- Keep hydration driven by the already-filtered part keys. A
+				-- regular join lets PostgreSQL hash-scan every header partition.
+				SELECT ah.article_number, ah.date_utc
+				FROM article_headers ah
+				WHERE ah.source_posted_at = bp.source_posted_at
+				  AND ah.id = bp.article_header_id
+				LIMIT 1
+			) ah ON TRUE
+			WHERE ($4::boolean = FALSE OR (bp.source_posted_at >= $5 AND bp.source_posted_at < $6))
+			UNION ALL
+			SELECT
+				ps.binary_id,
+				lb.source_posted_at AS stats_source_posted_at,
+				ps.segment_bytes,
+				ps.part_number,
+				ps.source_posted_at,
+				0::bigint AS article_number,
+				ps.posted_at AS date_utc,
+				'peer'::text AS part_source
+			FROM locked_binaries lb
+			JOIN binary_peer_segments ps
+			  ON ps.source_posted_at >= CASE
+					WHEN $4::boolean THEN $5
+					ELSE COALESCE(lb.part_source_posted_at_min, lb.source_posted_at) - INTERVAL '1 day'
+				END
+			 AND ps.source_posted_at <= CASE
+					WHEN $4::boolean THEN $6
+					ELSE COALESCE(lb.part_source_posted_at_max, lb.source_posted_at) + INTERVAL '1 day'
+				END
+			 AND ps.binary_id = lb.binary_id
+			 AND ps.acceptance_state = 'accepted'
+			WHERE ($4::boolean = FALSE OR (ps.source_posted_at >= $5 AND ps.source_posted_at < $6))
+			  AND NOT EXISTS (
+				SELECT 1
+				FROM binary_parts local
+				WHERE local.binary_id = ps.binary_id
+				  AND local.part_number = ps.part_number
+			  )
 		),
 		logical_parts AS MATERIALIZED (
 			SELECT DISTINCT ON (p.binary_id, p.stats_source_posted_at, p.part_number)

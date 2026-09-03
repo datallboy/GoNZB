@@ -9,25 +9,26 @@ import (
 )
 
 const (
-	articleCohortDefaultBatchSize      = 50000
-	articleCohortDefaultAssemblyLimit  = 20000
-	articleCohortDefaultYEncLimit      = 25000
-	articleCohortSubjectRunLimit       = 1000
-	articleCohortStatementTimeout      = 20 * time.Second
-	articleCohortOpaqueMinSingletons   = 20
-	articleCohortNoIdentityCooldown    = 30 * time.Minute
-	articleCohortOpaqueScanMultiplier  = 20
-	articleCohortOpaqueScanMax         = 100000
-	articleCohortSubjectScanMultiplier = 4
+	articleCohortDefaultBatchSize             = 50000
+	articleCohortDefaultAssemblyLimit         = 20000
+	articleCohortDefaultYEncLimit             = 25000
+	articleCohortDefaultSubjectQueueBatchSize = 1000
+	articleCohortStatementTimeout             = 20 * time.Second
+	articleCohortOpaqueMinSingletons          = 20
+	articleCohortNoIdentityCooldown           = 30 * time.Minute
+	articleCohortOpaqueScanMultiplier         = 20
+	articleCohortOpaqueScanMax                = 100000
+	articleCohortSubjectScanMultiplier        = 4
 )
 
 type ArticleCohortSchedulerRequest struct {
-	BatchSize         int
-	AssemblyQueueMax  int
-	YEncQueueMax      int
-	TargetWindowStart *time.Time
-	TargetWindowEnd   *time.Time
-	DisableYEnc       bool
+	BatchSize             int
+	SubjectQueueBatchSize int
+	AssemblyQueueMax      int
+	YEncQueueMax          int
+	TargetWindowStart     *time.Time
+	TargetWindowEnd       *time.Time
+	DisableYEnc           bool
 }
 
 func (r ArticleCohortSchedulerRequest) HasTargetWindow() bool {
@@ -53,6 +54,9 @@ func (s *Store) RunArticleCohortScheduler(ctx context.Context, req ArticleCohort
 	}
 	if req.AssemblyQueueMax <= 0 {
 		req.AssemblyQueueMax = articleCohortDefaultAssemblyLimit
+	}
+	if req.SubjectQueueBatchSize <= 0 {
+		req.SubjectQueueBatchSize = articleCohortDefaultSubjectQueueBatchSize
 	}
 	if req.YEncQueueMax <= 0 {
 		req.YEncQueueMax = articleCohortDefaultYEncLimit
@@ -148,7 +152,7 @@ func runSubjectCompleteCohortSchedule(ctx context.Context, tx *sql.Tx, req Artic
 		return 0, 0, nil
 	}
 	queueLimit -= openQueued
-	queueLimit = subjectCohortRunLimit(queueLimit)
+	queueLimit = subjectCohortRunLimit(queueLimit, effectiveReq.SubjectQueueBatchSize)
 
 	effectiveWindow := effectiveReq.HasTargetWindow()
 	scanLimit := queueLimit * articleCohortSubjectScanMultiplier
@@ -313,12 +317,12 @@ func articleCohortTargetWindowArgs(req ArticleCohortSchedulerRequest) (time.Time
 	return req.TargetWindowStart.UTC(), req.TargetWindowEnd.UTC()
 }
 
-func subjectCohortRunLimit(queueCapacity int) int {
-	if queueCapacity <= 0 {
+func subjectCohortRunLimit(queueCapacity, batchSize int) int {
+	if queueCapacity <= 0 || batchSize <= 0 {
 		return 0
 	}
-	if queueCapacity > articleCohortSubjectRunLimit {
-		return articleCohortSubjectRunLimit
+	if queueCapacity > batchSize {
+		return batchSize
 	}
 	return queueCapacity
 }

@@ -209,10 +209,23 @@ func TestIndexerQuerySoak(t *testing.T) {
 	if err := store.UpsertBinaryParts(ctx, parts); err != nil {
 		t.Fatalf("upsert query soak binary parts: %v", err)
 	}
-	if err := store.RefreshBinaryStatsBatch(ctx, binaryIDs); err != nil {
+	t.Logf("upserted %d binary parts in %s", len(parts), time.Since(started))
+
+	refreshTelemetry := &BinaryStatsRefreshTelemetry{}
+	refreshCtx := WithBinaryStatsRefreshTelemetry(ctx, refreshTelemetry)
+	started = time.Now()
+	if err := store.RefreshBinaryStatsBatch(refreshCtx, binaryIDs); err != nil {
 		t.Fatalf("refresh query soak binary stats: %v", err)
 	}
-	t.Logf("upserted %d binary parts and refreshed stats in %s", len(parts), time.Since(started))
+	refreshSnapshot := refreshTelemetry.Snapshot()
+	t.Logf(
+		"refreshed stats for %d binaries in %s (transactions=%d stats_update_ms=%.2f max_chunk_ms=%.2f)",
+		len(binaryIDs),
+		time.Since(started),
+		refreshSnapshot.TxCount,
+		refreshSnapshot.StatsUpdateDurationMs,
+		refreshSnapshot.StatsUpdateDurationMaxMs,
+	)
 
 	if _, err := store.DB().ExecContext(ctx, `
 		UPDATE article_header_assembly_queue

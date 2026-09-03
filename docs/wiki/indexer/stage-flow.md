@@ -76,10 +76,11 @@ assemble priority work and promotes suspicious opaque singleton bursts to yEnc
 priority work. Weak near-time cohorts are scheduling evidence only; they do not
 become binary identity proof without HEAD-complete or recovered BODY evidence.
 
-Subject-complete cohort admission is bounded to 1,000 queue rows per scheduler
-pass. The configured assembly queue limit remains a capacity limit; the smaller
-transaction chunk lets the recurring scheduler drain large partitioned
-backlogs without exceeding its statement timeout. Each pass materializes the
+Subject-complete cohort admission is bounded by the runtime-configurable
+`subject_queue_batch_size` (default 1,000) per scheduler pass. The configured
+assembly queue limit remains a capacity limit; the smaller transaction chunk
+lets the recurring scheduler drain large partitioned backlogs without exceeding
+its statement timeout. Each pass materializes the
 eligible article set once and shares it between the cohort-state upsert and
 assembly-queue insert. The scheduler leaves join selection to PostgreSQL so
 partition-spanning eligibility checks can use parallel hash or merge plans when
@@ -122,6 +123,27 @@ Binary grouping evidence priority is documented in
 NNTP Subject multipart coordinates are stronger grouping evidence than random
 poster/message-id context and can be stronger than a randomized recovered yEnc
 `name=`.
+
+Binary observation refresh must select local and accepted peer parts by the
+requested binary IDs and bounded source-day window before hydrating local
+article metadata. Do not expand the general `binary_effective_parts` view in
+this writer path: PostgreSQL can otherwise choose a hash join over every hot
+`article_headers` partition for each refresh chunk. Exact local header
+hydration uses `(source_posted_at, article_header_id)` after the part set is
+bounded.
+
+Assemble exposes separate advanced runtime controls for each write phase:
+
+- `binary_upsert_db_chunk_size` controls binary metadata rows per transaction
+  chunk (default 1,000).
+- `binary_part_upsert_db_chunk_size` controls binary-part rows per insert chunk
+  within the part-upsert transaction (default 5,000).
+- `binary_stats_refresh_db_chunk_size` controls binaries per stats-refresh
+  transaction while preserving UTC source-day partition boundaries (default
+  500).
+
+These settings do not change the assemble claim size. `batch_size` remains the
+number of article headers claimed by each assemble worker pass.
 
 ## yEnc Recovery
 
