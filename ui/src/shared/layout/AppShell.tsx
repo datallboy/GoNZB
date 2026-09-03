@@ -160,6 +160,7 @@ export function AdminAppShell() {
               <NavLink to="/admin/indexer/dashboard">Overview</NavLink>
               <span className="shell-nav__subheading">Catalog</span>
               <NavLink to="/admin/indexer/releases">Releases</NavLink>
+              <NavLink to="/admin/indexer/release-candidates">Candidates</NavLink>
               <NavLink to="/admin/indexer/binaries">Binaries</NavLink>
               <span className="shell-nav__subheading">Pipeline</span>
               <NavLink to="/admin/indexer/scrape">Scrape</NavLink>

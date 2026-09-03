@@ -45,6 +45,7 @@ type indexerService interface {
 	UpdateMaintenanceTask(ctx context.Context, taskKey string, patch indexerMaintenanceTaskPatch) (*indexerMaintenanceTaskView, error)
 	ListAdminAttention(ctx context.Context, params pgindex.IndexerAdminAttentionParams) ([]pgindex.IndexerAdminAttentionItem, int, error)
 	ListArticleCohorts(ctx context.Context, params pgindex.IndexerArticleCohortParams) ([]pgindex.IndexerArticleCohortItem, int, error)
+	ListReleaseCandidates(ctx context.Context, params pgindex.IndexerReleaseCandidateListParams) ([]pgindex.IndexerReleaseCandidateSummary, int, error)
 	ListReleases(ctx context.Context, params pgindex.PublicIndexerReleaseListParams) ([]pgindex.PublicIndexerReleaseSummary, int, error)
 	GetRelease(ctx context.Context, releaseID string) (*pgindex.PublicIndexerReleaseDetail, error)
 	SendReleaseToDownloadClient(ctx context.Context, releaseID string) (*app.DownloadClientResult, error)
@@ -1230,6 +1231,13 @@ func (s *runtimeIndexerService) ListAdminReleases(ctx context.Context, params pg
 	}
 	params.Query = strings.TrimSpace(params.Query)
 	return s.store.ListIndexerReleases(ctx, params)
+}
+
+func (s *runtimeIndexerService) ListReleaseCandidates(ctx context.Context, params pgindex.IndexerReleaseCandidateListParams) ([]pgindex.IndexerReleaseCandidateSummary, int, error) {
+	if s == nil || s.store == nil {
+		return nil, 0, errIndexerUnavailable
+	}
+	return s.store.ListIndexerReleaseCandidates(ctx, params)
 }
 
 func (s *runtimeIndexerService) ListAdminAttention(ctx context.Context, params pgindex.IndexerAdminAttentionParams) ([]pgindex.IndexerAdminAttentionItem, int, error) {

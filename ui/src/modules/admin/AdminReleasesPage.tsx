@@ -325,6 +325,7 @@ export function AdminReleasesPage() {
             <strong>{data?.total ?? 0}</strong>
             <span>matched</span>
           </div>
+          <Link className="secondary-button" to="/admin/indexer/release-candidates">View release candidates</Link>
         </div>
         <form className="toolbar-grid" onSubmit={handleSubmit}>
           <label className="field">
