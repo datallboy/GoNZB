@@ -15,27 +15,29 @@ import (
 )
 
 type stubIndexerService struct {
-	overview     *pgindex.IndexerOverview
-	dashboard    *pgindex.IndexerDashboardStats
-	backfill     *pgindex.IndexerBackfillProgress
-	capacity     *pgindex.YEncRecoveryAdmissionSnapshot
-	profiles     []pgindex.IndexerGroupProfileSummary
-	deferred     []pgindex.DeferredArticleRangeSummary
-	outcomes     *pgindex.SourceBucketOutcomeReport
-	throughput   *pgindex.IndexerStageThroughput
-	nntpStats    *app.NNTPRuntimeStats
-	stages       []indexerStageView
-	runs         []pgindex.IndexerStageRun
-	run          *pgindex.IndexerStageRun
-	releases     []pgindex.PublicIndexerReleaseSummary
-	releaseTotal int
-	release      *pgindex.PublicIndexerReleaseDetail
-	adminRelease *indexerAdminReleaseView
-	binary       *pgindex.IndexerBinaryDetail
-	file         *pgindex.IndexerFileDetail
-	runErr       error
-	reinspectID  string
-	reenrichID   string
+	overview       *pgindex.IndexerOverview
+	dashboard      *pgindex.IndexerDashboardStats
+	backfill       *pgindex.IndexerBackfillProgress
+	capacity       *pgindex.YEncRecoveryAdmissionSnapshot
+	profiles       []pgindex.IndexerGroupProfileSummary
+	deferred       []pgindex.DeferredArticleRangeSummary
+	outcomes       *pgindex.SourceBucketOutcomeReport
+	throughput     *pgindex.IndexerStageThroughput
+	nntpStats      *app.NNTPRuntimeStats
+	stages         []indexerStageView
+	runs           []pgindex.IndexerStageRun
+	run            *pgindex.IndexerStageRun
+	releases       []pgindex.PublicIndexerReleaseSummary
+	releaseTotal   int
+	release        *pgindex.PublicIndexerReleaseDetail
+	candidates     []pgindex.IndexerReleaseCandidateSummary
+	candidateTotal int
+	adminRelease   *indexerAdminReleaseView
+	binary         *pgindex.IndexerBinaryDetail
+	file           *pgindex.IndexerFileDetail
+	runErr         error
+	reinspectID    string
+	reenrichID     string
 }
 
 func (s *stubIndexerService) Overview(ctx context.Context) (*pgindex.IndexerOverview, error) {
@@ -186,6 +188,10 @@ func (s *stubIndexerService) ListAdminAttention(ctx context.Context, params pgin
 
 func (s *stubIndexerService) ListArticleCohorts(ctx context.Context, params pgindex.IndexerArticleCohortParams) ([]pgindex.IndexerArticleCohortItem, int, error) {
 	return nil, 0, nil
+}
+
+func (s *stubIndexerService) ListReleaseCandidates(ctx context.Context, params pgindex.IndexerReleaseCandidateListParams) ([]pgindex.IndexerReleaseCandidateSummary, int, error) {
+	return s.candidates, s.candidateTotal, nil
 }
 
 func (s *stubIndexerService) GetRelease(ctx context.Context, releaseID string) (*pgindex.PublicIndexerReleaseDetail, error) {
@@ -784,6 +790,50 @@ func TestIndexerControllerListReleasesReturnsStablePublicContract(t *testing.T) 
 	} {
 		if strings.Contains(body, needle) {
 			t.Fatalf("did not expect %s in response, got %s", needle, body)
+		}
+	}
+}
+
+func TestIndexerAdminControllerListReleaseCandidates(t *testing.T) {
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/indexer/release-candidates?evaluation_state=pending&limit=10&offset=2", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+
+	ctrl := &IndexerAdminController{Service: &stubIndexerService{
+		candidateTotal: 3,
+		candidates: []pgindex.IndexerReleaseCandidateSummary{{
+			ReleaseName:              "Candidate.Release.2026-GROUP",
+			KeyKind:                  "release_family",
+			EvaluationState:          "pending",
+			EvaluationNote:           "awaiting_release_stage",
+			BinaryCount:              4,
+			CompleteBinaryCount:      3,
+			CompleteMainPayloadCount: 1,
+		}},
+	}}
+
+	if err := ctrl.ListReleaseCandidates(c); err != nil {
+		t.Fatalf("ListReleaseCandidates returned error: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+	if got := rec.Header().Get(indexerContractScopeHeader); got != indexerContractScopeInternalDebug {
+		t.Fatalf("expected %s header %q, got %q", indexerContractScopeHeader, indexerContractScopeInternalDebug, got)
+	}
+	body := rec.Body.String()
+	for _, needle := range []string{
+		`"count":1`,
+		`"total":3`,
+		`"limit":10`,
+		`"offset":2`,
+		`"evaluation_state":"pending"`,
+		`"evaluation_note":"awaiting_release_stage"`,
+		`"release_name":"Candidate.Release.2026-GROUP"`,
+	} {
+		if !strings.Contains(body, needle) {
+			t.Fatalf("expected %s in response, got %s", needle, body)
 		}
 	}
 }

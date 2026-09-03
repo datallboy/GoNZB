@@ -22,6 +22,7 @@ const AdminGoNZBNetReleaseCardsPage = lazy(() => import('./modules/admin/AdminGo
 const AdminIndexerWorkPage = lazy(() => import('./modules/admin/AdminIndexerWorkPage').then((module) => ({ default: module.AdminIndexerWorkPage })))
 const AdminMaintenancePage = lazy(() => import('./modules/admin/AdminMaintenancePage').then((module) => ({ default: module.AdminMaintenancePage })))
 const AdminReleaseDetailPage = lazy(() => import('./modules/admin/AdminReleaseDetailPage').then((module) => ({ default: module.AdminReleaseDetailPage })))
+const AdminReleaseCandidatesPage = lazy(() => import('./modules/admin/AdminReleaseCandidatesPage').then((module) => ({ default: module.AdminReleaseCandidatesPage })))
 const AdminReleasesPage = lazy(() => import('./modules/admin/AdminReleasesPage').then((module) => ({ default: module.AdminReleasesPage })))
 const AdminRolesPage = lazy(() => import('./modules/admin/AdminRolesPage').then((module) => ({ default: module.AdminRolesPage })))
 const AdminRunDetailPage = lazy(() => import('./modules/admin/AdminRunDetailPage').then((module) => ({ default: module.AdminRunDetailPage })))
@@ -98,6 +99,14 @@ export default function App() {
             element={
               <RequireAuth permission="indexer.runtime.read">
                 <AdminReleasesPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="indexer/release-candidates"
+            element={
+              <RequireAuth permission="indexer.runtime.read">
+                <AdminReleaseCandidatesPage />
               </RequireAuth>
             }
           />

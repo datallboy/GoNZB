@@ -14,6 +14,8 @@ import type {
   AdminAttentionListResponse,
   AdminArticleCohortListResponse,
   AdminReleaseDetailResponse,
+  AdminReleaseCandidateListParams,
+  AdminReleaseCandidateListResponse,
   AdminBinaryListParams,
   AdminBinaryListResponse,
   AdminBinaryDetail,
@@ -368,6 +370,19 @@ export function getAdminReleases(params: AdminReleaseListParams) {
   }
   return apiRequest<AdminReleaseListResponse>(
     `/api/v1/admin/indexer/releases?${query.toString()}`,
+  )
+}
+
+export function getAdminReleaseCandidates(params: AdminReleaseCandidateListParams) {
+  const query = new URLSearchParams()
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null || value === '') {
+      continue
+    }
+    query.set(key, String(value))
+  }
+  return apiRequest<AdminReleaseCandidateListResponse>(
+    `/api/v1/admin/indexer/release-candidates?${query.toString()}`,
   )
 }
 

@@ -180,6 +180,7 @@ type UsenetIndexStore interface {
 	GetIndexerStageThroughput(ctx context.Context) (*pgindex.IndexerStageThroughput, error)
 	ListIndexerAdminAttention(ctx context.Context, params pgindex.IndexerAdminAttentionParams) ([]pgindex.IndexerAdminAttentionItem, int, error)
 	ListIndexerArticleCohorts(ctx context.Context, params pgindex.IndexerArticleCohortParams) ([]pgindex.IndexerArticleCohortItem, int, error)
+	ListIndexerReleaseCandidates(ctx context.Context, params pgindex.IndexerReleaseCandidateListParams) ([]pgindex.IndexerReleaseCandidateSummary, int, error)
 	ListIndexerReleases(ctx context.Context, params pgindex.AdminIndexerReleaseListParams) ([]pgindex.IndexerReleaseSummary, int, error)
 	GetIndexerReleaseDetail(ctx context.Context, releaseID string) (*pgindex.IndexerReleaseDetail, error)
 	ListPublicIndexerReleases(ctx context.Context, params pgindex.PublicIndexerReleaseListParams) ([]pgindex.PublicIndexerReleaseSummary, int, error)

@@ -602,6 +602,57 @@ export type AdminReleaseListResponse = {
   has_more: boolean
 }
 
+export type AdminReleaseCandidate = {
+  source_posted_at: string
+  provider_id: number
+  newsgroup_id: number
+  newsgroup_name: string
+  key_kind: string
+  family_key: string
+  source_release_key: string
+  release_key: string
+  release_name: string
+  binary_count: number
+  complete_binary_count: number
+  complete_main_payload_binary_count: number
+  expected_file_count: number
+  expected_archive_file_count: number
+  has_expected_file_count: boolean
+  has_expected_archive_file_count: boolean
+  expected_file_coverage_pct: number
+  archive_file_coverage_pct: number
+  total_bytes: number
+  posted_at?: string
+  ready_reason: string
+  recover_pending: boolean
+  evaluation_state: 'pending' | 'evaluated' | 'formed'
+  evaluation_note: string
+  evaluated_at?: string
+  updated_at: string
+  formed_release_id: string
+  formed_release_title: string
+}
+
+export type AdminReleaseCandidateListParams = {
+  q?: string
+  newsgroup?: string
+  evaluation_state?: string
+  ready_reason?: string
+  key_kind?: string
+  sort?: string
+  limit?: number
+  offset?: number
+}
+
+export type AdminReleaseCandidateListResponse = {
+  items: AdminReleaseCandidate[]
+  count: number
+  total: number
+  limit: number
+  offset: number
+  has_more: boolean
+}
+
 export type AdminAttentionItem = {
   release_id: string
   title: string

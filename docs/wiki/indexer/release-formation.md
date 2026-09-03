@@ -31,6 +31,26 @@ and lineage tables. It may form releases from binaries that span daily
 partitions because durable identity keys and release-family keys are not scoped
 to a single source day.
 
+## Admin Candidate Visibility
+
+The admin release-candidates view reads `release_ready_candidates` together
+with `release_ready_candidate_acks`, readiness summaries, newsgroups, and any
+matching durable release. It is a diagnostic pipeline view, not part of the
+public catalog.
+
+Candidate rows remain separate from `releases` because one logical source may
+have multiple grouping strategies (`release_family`, `base_stem`, or
+`recovered_file_set`), may still be incomplete, or may have been evaluated
+without forming a durable release. The view distinguishes candidates awaiting
+the release stage, candidates already evaluated at their current revision, and
+candidates linked to a formed release. A candidate becomes pending again when
+summary refresh advances its `updated_at` beyond the stored acknowledgment.
+
+The current acknowledgment schema records evaluation time, not the exact
+formation rejection reason. The admin view therefore presents evidence-based
+status hints from completeness and recovery state and does not describe those
+hints as persisted release-stage outcomes.
+
 ## Completeness Model
 
 Track these states separately:
